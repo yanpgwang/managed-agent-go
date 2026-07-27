@@ -34,8 +34,8 @@ surface-area compatibility.
 
 ## 3. Session continuity
 
-- Move from per-run to session-scoped workspaces with explicit lifecycle and
-  cleanup policies.
+- Add durable checkpoint/restore so an idle session's sandbox survives a process
+  restart, plus quota and eviction policies for session-scoped workspaces.
 - Add context compaction, token usage accounting, and model-request spans.
 - Persist resumable runtime checkpoints where the public contract requires
   continuity.
@@ -68,6 +68,9 @@ When real deployment requirements demand it:
 - Atomic input/run admission and single-node restart recovery.
 - Multi-step model/tool loop.
 - Local sandbox plus optional Docker provider.
+- Session-scoped sandbox ownership: reused across a session's runs, isolated
+  between sessions, released on session deletion (in-memory manager; no durable
+  restore yet).
 - `bash`, `read`, `write`, `edit`, `glob`, and `grep` execution.
 - Custom-tool handoff with `requires_action`.
 - Opt-in streaming preview of `agent.message`.

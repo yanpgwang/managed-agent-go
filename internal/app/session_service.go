@@ -68,7 +68,7 @@ type SessionService struct {
 	events  *EventService
 	runs    *store.RunStore
 	rt      agentruntime.AgentRuntime
-	sandbox sandbox.Provider
+	sandbox *sandbox.SessionManager
 	ids     domain.IDGenerator
 	clock   domain.Clock
 
@@ -81,7 +81,7 @@ func NewSessionService(sess *store.SessionRepo, agents *store.AgentRepo, envs *s
 	sandboxProvider sandbox.Provider, ids domain.IDGenerator, clock domain.Clock,
 ) *SessionService {
 	return &SessionService{sess: sess, agents: agents, envs: envs, events: events, runs: runs, rt: rt,
-		sandbox: sandboxProvider, ids: ids, clock: clock, lockSeed: maphash.MakeSeed()}
+		sandbox: sandbox.NewSessionManager(sandboxProvider), ids: ids, clock: clock, lockSeed: maphash.MakeSeed()}
 }
 
 func (s *SessionService) lockFor(id string) *sync.Mutex {
@@ -252,17 +252,36 @@ func (s *SessionService) Archive(ctx context.Context, id string) (domain.Session
 func (s *SessionService) Delete(ctx context.Context, id string) error {
 	lock := s.lockFor(id)
 	lock.Lock()
-	defer lock.Unlock()
 
 	sess, err := s.sess.Get(ctx, id)
 	if err != nil {
+		lock.Unlock()
 		return err
 	}
 	if sess.Status == domain.StatusRunning {
+		lock.Unlock()
 		return domain.Conflict("cannot delete a running session; interrupt first")
 	}
 	if err := s.sess.Delete(ctx, id); err != nil {
+		lock.Unlock()
 		return err
+	}
+	// The durable delete is committed under the shard lock. Drop the lock before
+	// the external provider teardown and stream close: sandbox Destroy is an
+	// out-of-process call (a Docker container or host temp dir) that must not
+	// hold the shard — and thus stall every other session hashing to it — for
+	// its whole duration. Each path above unlocks exactly once, so there is no
+	// double unlock.
+	lock.Unlock()
+
+	// Permanently clean up the session's logical sandbox. Release is idempotent
+	// and a no-op when the session never provisioned one; when it did, it runs
+	// the provider teardown exactly once. This is an external call made after the
+	// durable delete, outside the store transaction and outside the shard lock.
+	if err := s.sandbox.Release(ctx, id); err != nil {
+		// A teardown failure can leak sandbox resources (a host temp dir or a
+		// container). Log it; the session is already durably deleted.
+		log.Printf("delete: sandbox release failed session_id=%s: %v", id, err)
 	}
 
 	now := s.clock.Now().UTC()
@@ -309,18 +328,22 @@ func (s *SessionService) drainRuns(sessionID string) {
 			runErr = toolErr
 		}
 
-		// Provision one sandbox per run when the session has tools, and destroy
-		// it when the run ends. Provisioning and destruction are external calls
-		// made outside any transaction or process lock. A provisioning failure
-		// terminates the session like any other unrecoverable runtime error.
+		// Resolve the session's logical sandbox when the session has tools. The
+		// sandbox is scoped to the session, not this run: the first run that needs
+		// tools provisions it and later runs in the same session reuse the same
+		// instance, so filesystem state a tool created in an earlier run is visible
+		// now. Acquisition is an external call made outside any transaction or
+		// process lock. A provisioning failure terminates the session like any
+		// other unrecoverable runtime error. The sandbox is NOT destroyed when the
+		// run ends; it is released only when the session is deleted (see Delete).
 		var box sandbox.Sandbox
 		if runErr == nil && toolSetHasTools(toolSet) {
-			box, err = s.sandbox.Provision(ctx, sandbox.Spec{Timeout: 120 * time.Second})
+			box, err = s.sandbox.Acquire(ctx, sessionID, sandbox.Spec{Timeout: 120 * time.Second})
 			if err != nil {
-				log.Printf("drain: sandbox provision failed session_id=%s run_id=%s: %v", sessionID, runID, err)
+				log.Printf("drain: sandbox acquire failed session_id=%s run_id=%s: %v", sessionID, runID, err)
 				runErr = err
 			} else {
-				log.Printf("drain: sandbox provisioned session_id=%s run_id=%s", sessionID, runID)
+				log.Printf("drain: sandbox acquired session_id=%s run_id=%s", sessionID, runID)
 			}
 		}
 
@@ -367,11 +390,11 @@ func (s *SessionService) drainRuns(sessionID string) {
 		}
 
 		if box != nil {
-			if destroyErr := box.Destroy(ctx); destroyErr != nil {
-				// Destroy failure can leak sandbox resources (host temp dir or a
-				// container). Log it; the run outcome itself is unaffected.
-				log.Printf("drain: sandbox destroy failed session_id=%s run_id=%s: %v", sessionID, runID, destroyErr)
-			}
+			// The sandbox is session-scoped: it deliberately outlives this run so
+			// the next run in the session sees the filesystem state this run left
+			// behind. Teardown happens on session deletion (Delete releases it),
+			// not here.
+			log.Printf("drain: sandbox retained for session session_id=%s run_id=%s", sessionID, runID)
 		}
 
 		drafts := sink.Drafts()

@@ -1038,6 +1038,7 @@ func TestSessionService_BuiltinToolRunEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sessions.sandbox.Release(context.Background(), session.ID) })
 
 	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
 
@@ -1104,6 +1105,7 @@ func TestSessionService_CustomToolParksAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sessions.sandbox.Release(context.Background(), session.ID) })
 
 	// The run parks: session goes idle awaiting the custom tool result.
 	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)

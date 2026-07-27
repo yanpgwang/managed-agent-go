@@ -91,12 +91,38 @@ Containers share the host kernel. This provider has not been audited for
 hostile multi-tenant use; stronger isolation such as gVisor or a remote sandbox
 can be added behind the same provider interface.
 
-## Current lifecycle limitation
+## Session-scoped ownership
 
-Sandboxes are provisioned per run and destroyed when the run ends. Files
-created by tools do not persist across session turns. Moving to a
-session-scoped workspace requires an explicit ownership, checkpoint, quota, and
-cleanup model rather than simply retaining temporary directories.
+A sandbox is scoped to the session, not to a single run. The first run in a
+session that needs tools provisions a logical sandbox; every later run in the
+same session reuses that same instance, so filesystem state a tool creates in
+one run is visible to the next. Different sessions acquire under different keys
+and never share a sandbox, so they stay isolated even when they use the same
+agent and environment.
+
+Ownership lives in a session-scoped manager that wraps the provider inside the
+`internal/sandbox` package: acquisition provisions on first use and returns the
+cached instance afterwards; release destroys it. The `AgentRuntime` is unaware
+of this — the application resolves the sandbox and passes it in the run request.
+
+Entering idle does not tear the sandbox down; it stays live between turns.
+Deleting the session releases it, running the provider teardown exactly once. A
+provisioning failure is not cached, so a later run may retry.
+
+The manager holds sandboxes in memory. Restart does not restore an idle
+session's sandbox: a process restart starts from an empty workspace, and the
+first run after restart provisions a fresh one. Durable checkpoint/restore is
+not implemented in this slice. Quotas and eviction are also out of scope here.
+
+This is a process-boundary limitation, not just a persistence gap. Because
+ownership lives only in the in-memory manager, a new process cannot reattach to
+sandboxes an earlier process provisioned. A crash or an ungraceful restart
+therefore leaves those provider resources — Docker containers or local temp
+directories — orphaned, since the only code that would tear them down (`Release`
+on session deletion) died with the process. Nothing reclaims them until an
+external cleanup step or a reaper exists, and neither is built yet. Reclaiming
+in-flight sandboxes on shutdown (a shutdown manager or reaper) is out of scope
+for this slice.
 
 ## Streaming previews
 
