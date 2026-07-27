@@ -10,8 +10,6 @@ surface-area compatibility.
 
 ## 1. Execution semantics
 
-- Define batch input as one turn or one durable run per trigger, then make
-  projection and commit behavior match that definition.
 - Add a first-class durable pending-action model for custom tools and
   permission confirmations.
 - Complete `always_ask` confirmation resume.
@@ -66,6 +64,16 @@ When real deployment requirements demand it:
 - Server-owned, multi-turn Messages API history projection.
 - Versioned agents and immutable session snapshots.
 - Atomic input/run admission and single-node restart recovery.
+- Per-trigger durable runs: a request batch is admitted atomically in input
+  order, each processable trigger gets its own durable run and commit boundary,
+  and each run persists the exact IDs of the output events it committed. The
+  model-facing conversation is reconstructed durably from run causality — each
+  prior run's trigger IDs followed by its persisted output IDs, then the current
+  trigger — so a run projects earlier runs' committed output as separate turns,
+  the ordering survives a restart, and a run never sees a later queued trigger.
+  This is our own causal association; it does not claim to mirror any exact
+  Anthropic-internal ordering. A terminated session never claims its leftover
+  queued work.
 - Multi-step model/tool loop.
 - Local sandbox plus optional Docker provider.
 - Session-scoped sandbox ownership: reused across a session's runs, isolated
