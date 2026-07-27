@@ -25,7 +25,10 @@ func NewRunStore(db *DB, ids domain.IDGenerator, clock domain.Clock) *RunStore {
 type Admission struct {
 	Session domain.Session
 	Events  []domain.Event
-	Run     *domain.SessionRun
+	// Runs holds one durable queued run per processable trigger event, in the
+	// same stable order as the admitted events. Multiple trigger IDs are never
+	// grouped into a single run.
+	Runs []domain.SessionRun
 }
 
 type RunClaim struct {
@@ -42,7 +45,7 @@ type RunCompletion struct {
 }
 
 // CreateSession atomically creates a session and, when initial events are
-// present, admits the first durable run.
+// present, admits one durable queued run per processable trigger event.
 func (s *RunStore) CreateSession(
 	ctx context.Context,
 	session domain.Session,
@@ -68,7 +71,8 @@ func (s *RunStore) CreateSession(
 }
 
 // Admit atomically persists client events, projects the session to running when
-// needed, emits session.status_running, and enqueues one durable run.
+// needed, emits session.status_running, and enqueues one durable run per
+// processable trigger event, in admission order.
 func (s *RunStore) Admit(
 	ctx context.Context,
 	sessionID string,
@@ -137,11 +141,16 @@ func (s *RunStore) admitTx(
 		admission.Session = session
 	}
 
-	run, err := s.insertRunTx(ctx, tx, session.ID, triggerIDs)
-	if err != nil {
-		return Admission{}, err
+	// One durable queued run per trigger, in admission order. Grouping multiple
+	// triggers into a single run would let a later trigger project history
+	// before the earlier trigger's agent output was committed.
+	for _, triggerID := range triggerIDs {
+		run, err := s.insertRunTx(ctx, tx, session.ID, triggerID)
+		if err != nil {
+			return Admission{}, err
+		}
+		admission.Runs = append(admission.Runs, run)
 	}
-	admission.Run = &run
 	return admission, nil
 }
 
@@ -149,8 +158,9 @@ func (s *RunStore) insertRunTx(
 	ctx context.Context,
 	tx *sql.Tx,
 	sessionID string,
-	triggerIDs []string,
+	triggerID string,
 ) (domain.SessionRun, error) {
+	triggerIDs := []string{triggerID}
 	var sequence int64
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(admission_seq), 0) + 1 FROM session_runs WHERE session_id=?`,
@@ -166,7 +176,7 @@ func (s *RunStore) insertRunTx(
 		ID:              s.ids.NewID(domain.PrefixRun),
 		SessionID:       sessionID,
 		AdmissionSeq:    sequence,
-		TriggerEventIDs: append([]string(nil), triggerIDs...),
+		TriggerEventIDs: triggerIDs,
 		State:           domain.RunQueued,
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -188,6 +198,19 @@ func (s *RunStore) ClaimNext(ctx context.Context, sessionID string) (RunClaim, b
 		return RunClaim{}, false, err
 	}
 	defer tx.Rollback()
+
+	// A terminated session is final: never claim its leftover queued work and
+	// never flip it back to running. Guard before selecting a run so a session
+	// that terminated with runs still queued stays terminated.
+	session, err := getSessionTx(ctx, tx, sessionID)
+	if err != nil {
+		// getSessionTx already maps a missing row to domain.NotFound; propagate
+		// the truthful error rather than silently reporting "nothing to claim".
+		return RunClaim{}, false, err
+	}
+	if session.Status == domain.StatusTerminated {
+		return RunClaim{}, false, nil
+	}
 
 	run, err := selectNextQueuedRun(ctx, tx, sessionID)
 	if err == sql.ErrNoRows {
@@ -221,10 +244,6 @@ WHERE id=? AND state=?
 	run.UpdatedAt = now
 
 	triggers, err := loadEventsByIDTx(ctx, tx, sessionID, run.TriggerEventIDs)
-	if err != nil {
-		return RunClaim{}, false, err
-	}
-	session, err := getSessionTx(ctx, tx, sessionID)
 	if err != nil {
 		return RunClaim{}, false, err
 	}
@@ -330,11 +349,26 @@ SELECT EXISTS(
 	if runError != nil {
 		run.State = domain.RunFailed
 	}
+	// Persist the exact committed output event ids on the run in the same
+	// transaction that closes it. These are precisely the events this run
+	// appended above (agent output plus the run's terminal/status events), in
+	// commit order. Writing them here — not in a follow-up statement — keeps the
+	// invariant that there is never a completed run without its output
+	// association. ModelHistory later replays these ids to rebuild causal history.
+	outputIDs := make([]string, len(events))
+	for i, event := range events {
+		outputIDs[i] = event.ID
+	}
+	run.OutputEventIDs = outputIDs
+	outputJSON, err := json.Marshal(outputIDs)
+	if err != nil {
+		return RunCompletion{}, err
+	}
 	_, err = tx.ExecContext(ctx, `
 UPDATE session_runs
-SET state=?, error=?, updated_at=?
+SET state=?, error=?, output_event_ids=?, updated_at=?
 WHERE id=? AND state=?`,
-		string(run.State), nullableString(run.Error), timeVal(run.UpdatedAt),
+		string(run.State), nullableString(run.Error), string(outputJSON), timeVal(run.UpdatedAt),
 		run.ID, string(domain.RunRunning))
 	if err != nil {
 		return RunCompletion{}, err
@@ -343,6 +377,86 @@ WHERE id=? AND state=?`,
 		return RunCompletion{}, err
 	}
 	return RunCompletion{Run: run, Session: session, Events: events}, nil
+}
+
+// ModelHistory reconstructs the causal conversation history for a claimed/current
+// run, to be projected into the model. Public event ordering (History/List/the
+// live stream) is authoritative receipt/commit order and is deliberately NOT
+// what a turn should replay: a later queued trigger admitted before an earlier
+// run finished must not appear in that earlier turn's projection. This method
+// rebuilds history from run causality instead of raw sequence:
+//
+//   - It walks the prior completed/failed runs for the same session in admission
+//     order and, for each, appends that run's trigger events followed by that
+//     run's persisted output events (the exact events it committed on
+//     completion). This interleaves user turn / agent reply in the causal order
+//     they actually resolved.
+//   - It then appends the current run's own trigger events.
+//   - Every later queued trigger (admission_seq greater than this run's, or any
+//     run not yet completed/failed) is excluded, because only prior terminal runs
+//     and this run's trigger are visited.
+//
+// The reconstructed history is finally bounded to the newest `limit` events (the
+// historyProjectionLimit-equivalent), preserving chronological causal order. A
+// window that cuts a tool_use/tool_result pair is left for ProjectMessages'
+// existing dangling/orphan filtering to repair.
+func (s *RunStore) ModelHistory(
+	ctx context.Context,
+	run domain.SessionRun,
+	limit int,
+) ([]domain.Event, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT id
+FROM session_runs
+WHERE session_id=? AND admission_seq<? AND state IN (?, ?)
+ORDER BY admission_seq`,
+		run.SessionID, run.AdmissionSeq, string(domain.RunCompleted), string(domain.RunFailed))
+	if err != nil {
+		return nil, err
+	}
+	var priorRunIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		priorRunIDs = append(priorRunIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+
+	// Build the ordered event-id list: each prior terminal run contributes its
+	// trigger events then its committed output events, then the current run's
+	// trigger closes the causal chain.
+	var orderedIDs []string
+	for _, runID := range priorRunIDs {
+		prior, err := getRunTx(ctx, tx, runID)
+		if err != nil {
+			return nil, err
+		}
+		orderedIDs = append(orderedIDs, prior.TriggerEventIDs...)
+		orderedIDs = append(orderedIDs, prior.OutputEventIDs...)
+	}
+	orderedIDs = append(orderedIDs, run.TriggerEventIDs...)
+
+	// Bound to the newest `limit` events, keeping causal order. A cut pair is
+	// tolerated by ProjectMessages' dangling/orphan filtering.
+	if limit > 0 && len(orderedIDs) > limit {
+		orderedIDs = orderedIDs[len(orderedIDs)-limit:]
+	}
+	return loadEventsByIDTx(ctx, tx, run.SessionID, orderedIDs)
 }
 
 // UpdateTitle keeps the session row and session.updated event in one commit.
@@ -446,20 +560,24 @@ func getRunTx(ctx context.Context, q runQueryRower, id string) (domain.SessionRu
 	var (
 		run                     domain.SessionRun
 		triggerJSON             string
+		outputJSON              string
 		state, created, updated string
 		runError                sql.NullString
 	)
 	err := q.QueryRowContext(ctx, `
-SELECT id, session_id, admission_seq, trigger_event_ids, state, error, created_at, updated_at
+SELECT id, session_id, admission_seq, trigger_event_ids, output_event_ids, state, error, created_at, updated_at
 FROM session_runs
 WHERE id=?`, id).Scan(
-		&run.ID, &run.SessionID, &run.AdmissionSeq, &triggerJSON, &state,
+		&run.ID, &run.SessionID, &run.AdmissionSeq, &triggerJSON, &outputJSON, &state,
 		&runError, &created, &updated)
 	if err != nil {
 		return domain.SessionRun{}, err
 	}
 	if err := json.Unmarshal([]byte(triggerJSON), &run.TriggerEventIDs); err != nil {
 		return domain.SessionRun{}, fmt.Errorf("store: decode run triggers: %w", err)
+	}
+	if err := json.Unmarshal([]byte(outputJSON), &run.OutputEventIDs); err != nil {
+		return domain.SessionRun{}, fmt.Errorf("store: decode run outputs: %w", err)
 	}
 	run.State = domain.RunState(state)
 	if runError.Valid {

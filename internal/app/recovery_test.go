@@ -34,8 +34,8 @@ func TestRecover_RequeuesAndCompletesInterruptedRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if admission.Run == nil {
-		t.Fatal("admission did not create a run")
+	if len(admission.Runs) != 1 {
+		t.Fatalf("admission runs = %d, want 1", len(admission.Runs))
 	}
 	if _, ok, err := runs.ClaimNext(ctx, "sesn_1"); err != nil || !ok {
 		t.Fatalf("claim before simulated crash: ok=%v err=%v", ok, err)
@@ -66,7 +66,7 @@ func TestRecover_RequeuesAndCompletesInterruptedRun(t *testing.T) {
 	if got.Status != domain.StatusIdle {
 		t.Fatalf("expected recovered idle, got %s", got.Status)
 	}
-	run, err := recoveryRuns.Get(ctx, admission.Run.ID)
+	run, err := recoveryRuns.Get(ctx, admission.Runs[0].ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -31,12 +31,12 @@ sequenceDiagram
   participant M as Messages API
   participant S as Sandbox
 
-  C->>A: POST user.message
-  A->>DB: input + status_running + queued run
+  C->>A: POST user.message (batch)
+  A->>DB: input + status_running + one queued run per trigger
   DB-->>A: commit
   A-->>C: accepted input events
-  A->>DB: claim oldest run for session
-  A->>DB: read committed event history
+  A->>DB: claim next queued run (admission order)
+  A->>DB: reconstruct causal run history
   A->>R: Run(snapshot, projected messages)
   R->>M: create streamed message
   M-->>R: text and/or tool_use
@@ -48,19 +48,50 @@ sequenceDiagram
   R-->>A: buffered authoritative events
   A->>DB: output + processed_at + final status + completion
   DB-->>A: commit
+  Note over A,DB: next run is claimed only after this commit,<br/>so it projects the previous run's committed output
 ```
 
 ## Admission invariant
 
-The server commits all of the following atomically:
+The server commits all of the following atomically, in submitted input order:
 
 - submitted client events;
 - a `session.status_running` event when the session was not already running;
 - the mutable session status;
-- one queued internal run referencing the submitted event IDs.
+- one queued internal run **per processable trigger event**, in admission
+  order. A run references exactly one trigger; multiple triggers are never
+  grouped into a single run.
 
 The client is never told that input was accepted unless the corresponding work
 item is durable.
+
+## Two orderings of the event log
+
+The event log is read in two distinct orders:
+
+- **Public event history** — `GET .../events`, list, and the live SSE stream —
+  is the immutable receipt/commit sequence. It is never reordered.
+- **Model-facing conversation order** is reconstructed per turn from run
+  causality. For each prior completed (or failed) run, in admission order, the
+  projection replays that run's trigger event IDs followed by its persisted
+  output event IDs, then appends the current run's trigger. The run's output
+  event IDs are durable state committed in the same transaction that closes the
+  run, so this ordering survives a restart and a run never sees a later trigger
+  queued while it was still running. Tested by
+  `TestRunStore_ModelHistorySurvivesReopenInCausalOrder` (file-backed reopen)
+  and `TestSessionService_BatchedTriplePerRunCausalProjection` (three batched
+  triggers project as three causal turns).
+
+## Per-run boundary
+
+Runs drain one at a time in admission order. A run commits its buffered
+authoritative output and stamps its trigger processed *before* the next run is
+claimed, so each run's causal history already includes the previous run's
+committed output — a later user event in the same batch sees the earlier agent
+reply (`TestRunStore_CompletionBeforeNextClaimObservesOutput`,
+`TestSessionService_SecondUserEventObservesFirstAgentOutput`). A terminated
+session is final: its leftover queued runs are never claimed, and it is never
+flipped back to `running`.
 
 ## Per-session ordering
 
@@ -102,5 +133,11 @@ A custom tool or `always_ask` built-in can park a run:
 3. the stop reason names the event IDs the client must answer;
 4. a custom tool response starts a new durable run.
 
-Custom-tool resume is implemented. Built-in `user.tool_confirmation` is
-accepted by the HTTP API, but its allow/deny resume semantics are not complete.
+Custom-tool resume is implemented and tested for a single park/result cycle.
+Built-in `user.tool_confirmation` is accepted by the HTTP API, but its
+allow/deny resume semantics are not complete.
+
+There is no first-class durable pending-action gate. If other trigger runs were
+already queued before a run parks with `requires_action`, their gating and
+correlation against the parked action are not yet fully modeled; this case is
+not claimed to work.

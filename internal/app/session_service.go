@@ -55,11 +55,18 @@ const sessionLockShardCount = 256
 
 // historyProjectionLimit bounds how many events are replayed into the model
 // conversation per turn. Projection uses the NEWEST window of this size (see
-// EventService.HistoryTail): an over-limit session carries its most recent
+// RunStore.ModelHistory): an over-limit session carries its most recent causal
 // context rather than the oldest events. Compaction is a later slice; until
 // then this is a generous ceiling that keeps a single unbounded session from
 // OOMing a turn.
 const historyProjectionLimit = 10000
+
+// sandboxReleaseTimeout bounds the detached sandbox teardown performed during
+// session deletion. The durable delete has already committed before teardown
+// runs, so teardown executes on a context detached from the request's
+// cancellation; this ceiling keeps that detached cleanup finite instead of
+// letting a stuck provider Destroy block forever.
+const sandboxReleaseTimeout = 30 * time.Second
 
 type SessionService struct {
 	sess    *store.SessionRepo
@@ -158,7 +165,7 @@ func (s *SessionService) Create(ctx context.Context, in CreateSessionInput) (dom
 		return domain.Session{}, err
 	}
 	s.events.PublishCommitted(admission.Events)
-	if admission.Run != nil {
+	if len(admission.Runs) > 0 {
 		s.kick(sess.ID)
 	}
 	return admission.Session, nil
@@ -210,7 +217,7 @@ func (s *SessionService) SendEvent(ctx context.Context, id string, drafts []doma
 		return nil, err
 	}
 	s.events.PublishCommitted(admission.Events)
-	if admission.Run != nil {
+	if len(admission.Runs) > 0 {
 		s.kick(id)
 	}
 	// Send Events echoes only the caller-submitted events, not the status event
@@ -278,7 +285,17 @@ func (s *SessionService) Delete(ctx context.Context, id string) error {
 	// and a no-op when the session never provisioned one; when it did, it runs
 	// the provider teardown exactly once. This is an external call made after the
 	// durable delete, outside the store transaction and outside the shard lock.
-	if err := s.sandbox.Release(ctx, id); err != nil {
+	//
+	// Teardown must not inherit cancellation from the request context. The
+	// durable delete has already committed, so if the caller cancels (client
+	// disconnects, request deadline elapses) we still have to finish tearing the
+	// sandbox down or leak a container / host temp dir. context.WithoutCancel
+	// detaches from the request's cancellation while preserving its context
+	// values (trace metadata, etc.); the timeout then bounds the detached
+	// teardown so a stuck provider Destroy cannot hang deletion forever.
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), sandboxReleaseTimeout)
+	defer cancel()
+	if err := s.sandbox.Release(cleanupCtx, id); err != nil {
 		// A teardown failure can leak sandbox resources (a host temp dir or a
 		// container). Log it; the session is already durably deleted.
 		log.Printf("delete: sandbox release failed session_id=%s: %v", id, err)
@@ -348,22 +365,25 @@ func (s *SessionService) drainRuns(sessionID string) {
 		}
 
 		if runErr == nil {
-			// Process one trigger to completion before the next. Each trigger
-			// re-reads and re-projects the newest bounded window of the ordered
-			// event log (HistoryTail returns the most recent historyProjectionLimit
-			// events in chronological order, not the whole log). Note the limit of
-			// this within a single claim: the runtime's drafts are held in the
-			// in-memory bufferedSink and only committed to the store when the run
-			// completes, so HistoryTail here observes only the user events admission
-			// already persisted — not the agent output an earlier trigger in this
-			// same claim produced but has not yet committed. True per-trigger
-			// isolation (each trigger committed independently before the next
-			// projects) is deferred. History is read outside any transaction,
-			// before calling the runtime — the server owns history via the event
-			// log. ProjectMessages merges adjacent same-role events, so each
-			// snapshot alternates roles and is a legal Messages-API request.
+			// Each claim carries exactly one trigger (admission enqueues one durable
+			// run per processable event, in admission order). The run projects
+			// history reconstructed from run causality — RunStore.ModelHistory walks
+			// prior completed/failed runs in admission order, replaying each run's
+			// trigger events followed by that run's persisted output events, then
+			// this run's own trigger. That deliberately differs from raw
+			// receipt/commit order (EventStore.History): a later trigger admitted
+			// before this run finished is excluded, so a turn never sees a future
+			// user message. Because run N commits its output and marks its trigger
+			// processed before run N+1 is claimed, run N+1's causal history already
+			// includes run N's committed agent reply. History is read outside the
+			// runtime call — the server owns history via the event log.
+			// ProjectMessages merges adjacent same-role events and drops a dangling
+			// tool_use / orphan tool_result, so each snapshot is a legal Messages-API
+			// request even when the bounded window cut a pair. The loop below
+			// iterates the claim's single trigger; the requires_action break still
+			// parks the run so its awaited result is admitted as the next trigger.
 			for _, trigger := range claim.Triggers {
-				history, histErr := s.events.HistoryTail(ctx, sessionID, historyProjectionLimit)
+				history, histErr := s.runs.ModelHistory(ctx, claim.Run, historyProjectionLimit)
 				if histErr != nil {
 					runErr = histErr
 					break

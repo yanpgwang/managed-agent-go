@@ -44,6 +44,11 @@ CREATE TABLE IF NOT EXISTS session_runs (
   session_id TEXT NOT NULL,
   admission_seq INTEGER NOT NULL,
   trigger_event_ids TEXT NOT NULL,
+  -- Internal-only. The exact committed output event ids this run appended when
+  -- it closed, persisted in the same transaction that closes the run so there is
+  -- never a completed run without its output association. Empty until the run
+  -- completes. Never serialized onto the public wire.
+  output_event_ids TEXT NOT NULL DEFAULT '[]',
   state TEXT NOT NULL,
   error TEXT,
   created_at TEXT NOT NULL,

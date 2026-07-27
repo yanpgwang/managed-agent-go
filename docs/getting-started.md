@@ -150,4 +150,6 @@ input or in production.
 
 The pre-release project does not maintain schema migrations. Stop the server
 before deleting a disposable local database, then recreate it on the next
-start.
+start. This applies to schema additions too: the durable run-output association
+column (`session_runs.output_event_ids`) follows the same rebuild-the-dev-DB
+policy — there is no migration subsystem.
