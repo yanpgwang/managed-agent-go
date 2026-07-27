@@ -1,0 +1,42 @@
+openapi: 3.1.0
+info:
+  title: managed-agent-go (v0.1)
+  version: 0.1.0
+  description: Clean-room subset of the public Claude Managed Agents API. Apache-2.0. Not an Anthropic product.
+paths:
+  /v1/agents:
+    post: { summary: Create agent, responses: { "200": { description: ok } } }
+    get: { summary: List agents, responses: { "200": { description: ok } } }
+  /v1/agents/{id}:
+    get: { summary: Get agent, responses: { "200": { description: ok } } }
+    post: { summary: Update agent (new version), responses: { "200": { description: ok }, "409": { description: version conflict } } }
+  /v1/agents/{id}/versions:
+    get: { summary: List agent versions, responses: { "200": { description: ok } } }
+  /v1/agents/{id}/archive:
+    post: { summary: Archive agent, responses: { "200": { description: ok } } }
+  /v1/environments:
+    post: { summary: Create environment, responses: { "200": { description: ok } } }
+    get: { summary: List environments, responses: { "200": { description: ok } } }
+  /v1/environments/{id}:
+    get: { summary: Get environment, responses: { "200": { description: ok } } }
+    delete: { summary: Delete environment, responses: { "200": { description: ok }, "409": { description: referenced } } }
+  /v1/environments/{id}/archive:
+    post: { summary: Archive environment, responses: { "200": { description: ok } } }
+  /v1/sessions:
+    post: { summary: Create session, responses: { "200": { description: ok }, "422": { description: self_hosted unsupported } } }
+    get: { summary: List sessions, responses: { "200": { description: ok } } }
+  /v1/sessions/{id}:
+    get: { summary: Get session, responses: { "200": { description: ok } } }
+    post: { summary: Update session title, responses: { "200": { description: ok } } }
+    delete: { summary: Delete session, responses: { "200": { description: ok }, "409": { description: running } } }
+  /v1/sessions/{id}/archive:
+    post: { summary: Archive session, responses: { "200": { description: ok }, "409": { description: running } } }
+  /v1/sessions/{id}/events:
+    post: { summary: Send events, responses: { "200": { description: ok } } }
+    get: { summary: List event history, responses: { "200": { description: ok } } }
+  /v1/sessions/{id}/events/stream:
+    get: { summary: "SSE event stream (no Last-Event-ID, no replay)", responses: { "200": { description: text/event-stream } } }
+  /healthz:
+    get: { summary: liveness, responses: { "200": { description: ok } } }
+  /readyz:
+    get: { summary: readiness, responses: { "200": { description: ok } } }

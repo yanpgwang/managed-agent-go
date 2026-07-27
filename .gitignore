@@ -1,0 +1,23 @@
+# Binaries
+/managed-agent
+*.exe
+
+# Local databases and data
+*.db
+*.db-shm
+*.db-wal
+/data/
+
+# Go
+/vendor/
+/website/node_modules/
+/website/build/
+/website/.docusaurus/
+/website/.cache-loader/
+
+# Editor/OS
+.DS_Store
+*.swp
+
+# Local agent execution artifacts
+/.superpowers/

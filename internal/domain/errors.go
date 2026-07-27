@@ -1,0 +1,26 @@
+package domain
+
+type ErrKind int
+
+const (
+	KindValidation ErrKind = iota
+	KindConflict
+	KindNotFound
+	KindUnsupported
+	KindTooLarge
+)
+
+type DomainError struct {
+	Kind    ErrKind
+	Message string
+}
+
+func (e *DomainError) Error() string { return e.Message }
+
+var ErrInvalidTransition = &DomainError{Kind: KindValidation, Message: "invalid status transition"}
+
+func Validation(msg string) *DomainError  { return &DomainError{Kind: KindValidation, Message: msg} }
+func Conflict(msg string) *DomainError    { return &DomainError{Kind: KindConflict, Message: msg} }
+func NotFound(msg string) *DomainError    { return &DomainError{Kind: KindNotFound, Message: msg} }
+func Unsupported(msg string) *DomainError { return &DomainError{Kind: KindUnsupported, Message: msg} }
+func TooLarge(msg string) *DomainError    { return &DomainError{Kind: KindTooLarge, Message: msg} }
