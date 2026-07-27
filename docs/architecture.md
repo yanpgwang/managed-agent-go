@@ -116,8 +116,11 @@ The strongest current risks are semantic rather than structural:
    effect without a durable journal of the prior attempt.
 3. Pending client actions are encoded in events and stop reasons rather than a
    first-class durable `pending_actions` model.
-4. Sandboxes are per run rather than per session, so workspace continuity is
-   not yet part of the session contract.
+4. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
+   first tool use, reused across its runs, and released on session deletion.
+   The manager is in-memory, so a process restart does not restore an idle
+   session's workspace, and there is no durable checkpoint, quota, or eviction
+   policy yet.
 5. `SessionService` currently combines session CRUD, admission, dispatch, and
    completion orchestration. These responsibilities should be separated before
    introducing multiple workers or richer retry behavior.

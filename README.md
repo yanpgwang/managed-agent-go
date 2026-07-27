@@ -49,8 +49,9 @@ compatibility is not complete.
 | Storage | SQLite; one process; at-least-once restart recovery |
 
 Important gaps include interrupt propagation, durable per-step runtime output,
-session-scoped workspaces, retries with side-effect idempotency, MCP execution,
-files/skills/memory, resolved multiagent orchestration, and distributed workers.
+durable sandbox checkpoint/restore across process restart, retries with
+side-effect idempotency, MCP execution, files/skills/memory, resolved multiagent
+orchestration, and distributed workers.
 See the [roadmap](docs/roadmap.md).
 
 ## Quick start
@@ -119,8 +120,11 @@ go run ./cmd/managed-agent serve
 
 Docker sandboxes use `--network none` by default, but containers still share
 the host kernel and this path has not been audited for hostile multi-tenant
-workloads. Sandboxes are currently provisioned per run, so filesystem state
-does not persist across session turns.
+workloads. Sandboxes are scoped to the session: the first run needing tools
+provisions one and later runs in the same session reuse it, so filesystem state
+persists across turns; the sandbox is released when the session is deleted. The
+manager is in-memory, so a process restart does not restore an idle session's
+sandbox.
 
 ## Documentation
 
