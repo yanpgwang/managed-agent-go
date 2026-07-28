@@ -50,11 +50,19 @@ func runOrchestrate() {
 	store := pg.NewStore(pool, ids, realClock{})
 
 	// The agent runtime is shared with the SQLite path: same AgentCore, same
-	// model selection. The orchestration slice routes a plain user.message with no
-	// toolset, so the offline fake model is sufficient with no configuration.
-	rt, _, err := resolveRuntime()
+	// model selection. A tool-using user.message routes a built-in step through
+	// the RunTurn Activity under the durable journal; a plain message runs one
+	// model round. The offline fake model is sufficient with no configuration.
+	rt, realModel, err := resolveRuntime()
 	if err != nil {
 		log.Fatalf("orchestrate: runtime: %v", err)
+	}
+	provider, localSandbox, err := resolveSandboxProvider()
+	if err != nil {
+		log.Fatalf("orchestrate: sandbox: %v", err)
+	}
+	if err := guardModelSandbox(realModel, localSandbox, os.Getenv(unsafeLocalSandboxEnv) == "1"); err != nil {
+		log.Fatalf("orchestrate: %v", err)
 	}
 
 	client, err := temporalpkg.Dial(temporalpkg.ClientConfig{
@@ -67,7 +75,7 @@ func runOrchestrate() {
 	defer client.Close()
 	log.Printf("orchestrate: temporal connected")
 
-	runtime := temporalpkg.NewRuntime(client, store, rt, ids, temporalpkg.RelayConfig{})
+	runtime := temporalpkg.NewRuntime(client, store, rt, provider, ids, temporalpkg.RelayConfig{})
 
 	if err := runtime.Worker.Start(); err != nil {
 		log.Fatalf("orchestrate: worker start: %v", err)

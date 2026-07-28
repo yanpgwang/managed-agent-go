@@ -18,6 +18,36 @@ The milestone deliberately does **not** cut over all traffic. The SQLite
 dispatcher (`internal/store`, `internal/app`) remains the default and is
 unchanged. The PostgreSQL/Temporal path is additive and feature-gated.
 
+## Architecture re-review (2026-07-28)
+
+A short re-review was run before extending the slice, against the newly
+confirmed native **Temporal Schedules** capability and the runner-up
+orchestrators. Conclusion: **no architectural blocker; Temporal stands.**
+
+- Native Schedules (POSIX cron + IANA time zone, DST, jitter, pause, overlap
+  policy, manual trigger, per-run records) only **strengthens** the existing
+  decision — scheduling was already the dimension where Temporal was "materially
+  better" in the [fit review](orchestration-fit.md). It removes a hand-rolled
+  scheduler from the roadmap rather than adding one.
+- **Restate** remains the credible runner-up but is not overturned: it still has
+  no native cron (its guide hand-rolls a Cron Virtual Object), its Go SDK 1.0 is
+  weeks old, and it does not remove the PostgreSQL event-ledger ownership, the
+  idempotency boundary, or the tool-ambiguity journal — the exact boundaries this
+  slice implements.
+- **Hatchet** (PostgreSQL-backed task orchestration) and **Inngest**
+  (event-driven durable functions) are viable durable-execution engines with
+  cron, but neither is a stronger fit than Temporal for one *long-lived* workflow
+  per session with Continue-As-New, child-workflow multiagent, and worker
+  versioning, and neither has comparable Go + coding-agent production evidence.
+  Both would still leave PostgreSQL as the event source of truth.
+- **Trigger.dev** is TypeScript-first with no first-class Go SDK — disqualified
+  for this Go control plane.
+
+The data-ownership boundary is unchanged: PostgreSQL owns public events,
+projections, the admission outbox, and now the tool-execution journal; Temporal
+owns only in-flight orchestration. Nothing here motivates moving an
+authoritative fact into the orchestrator.
+
 ## What is implemented
 
 ### Local development stack
@@ -100,13 +130,46 @@ The API/orchestrator may make a best-effort post-commit Signal to reduce latency
 
 ### Vertical path for one `user.message`
 
-`temporal.Runtime` wires the worker, relay, signaler, and store. The `RunTurn`
-Activity invokes the **existing** agent runtime (`agentruntime.AgentCore`) for a
-plain `user.message` with no toolset — one model round — and commits the
-authoritative `agent.message` and terminal `session.status_idle` through
-`pg.Store.CompleteTurn`, which is **idempotent**: a duplicate Activity execution
-finds the trigger already processed and replays the same committed events instead
-of appending a second copy.
+`temporal.Runtime` wires the worker, relay, signaler, store, and a session-scoped
+sandbox manager. The `RunTurn` Activity invokes the **existing** agent runtime
+(`agentruntime.AgentCore`) and commits the authoritative output through
+`pg.Store.CompleteTurn`, which is **idempotent**: an already-processed trigger
+short-circuits before the model runs and replays the same committed events
+instead of appending a second copy.
+
+Two shapes are supported:
+
+- **No toolset** — one model round to `agent.message` + terminal
+  `session.status_idle`.
+- **A single built-in tool step** — a tool-using `user.message` runs the
+  built-in inside the session-scoped sandbox lease, under the durable
+  tool-execution journal, and commits the paired `agent.tool_use` /
+  `agent.tool_result` before `end_turn`.
+
+### Tool-execution journal and the ambiguity boundary
+
+A tool-using turn preserves the same prepared → started → completed → ambiguous
+boundary as the SQLite path, now in PostgreSQL (`turn_attempts`, `tool_steps`,
+migration `00002`). The turn is identified by `(session_id, trigger_event_id)`;
+each `RunTurn` Activity execution is an attempt. The runtime calls the journal's
+`Prepare` / `Start` / `Complete` around each built-in execution.
+
+Because a Temporal Activity runs at least once, `RunTurn` protects the
+side-effect boundary on entry:
+
+1. an already-processed trigger short-circuits (no re-execution);
+2. otherwise, for a tool-using turn, **recovery runs first** — any tool step left
+   in `started` by a crashed prior attempt is classified **ambiguous** and the
+   active attempt is failed;
+3. if the turn already crossed the side-effect boundary (an ambiguous or
+   completed step exists), `RunTurn` **refuses to re-run** and terminates the turn
+   honestly (`session.error` + `session.status_terminated`) rather than silently
+   replaying the side effect.
+
+A model error *before* any tool step leaves no started step, so it is safely
+retried as a fresh attempt. Client-action tools (custom tools, `always_ask`) and
+interrupts are still out of scope on this path and terminate the turn honestly if
+requested.
 
 Run it with the feature-gated subcommand:
 
@@ -145,7 +208,12 @@ integration tests skip unless their env vars are set. Failure-boundary coverage:
 | Relay crash after signal, before delete | `temporal.TestRelay_CrashAfterSignalBeforeDeleteRedelivers` |
 | Worker temporarily unavailable | `temporal.TestRelay_WorkerUnavailableLeavesWakeup` |
 | Continue-As-New carries cursor | `temporal.TestSessionWorkflow_ContinueAsNewCarriesCursor` |
-| Real end-to-end (Temporal + PostgreSQL) | `temporal.TestVerticalSlice_EndToEnd` |
+| Tool step happy path (prepared→started→completed) | `temporal.TestRunTurn_ToolStepHappyPath`, `pg.TestJournal_HappyPath` |
+| Ambiguous tool step is not silently replayed | `temporal.TestRunTurn_AmbiguousToolNotReplayed`, `pg.TestJournal_StartedStepRecoveredAsAmbiguous` |
+| Attempt refuses to close with unclassified started step | `pg.TestJournal_FinishRefusesUnclassifiedStartedStep` |
+| One active attempt per turn | `pg.TestJournal_OneActiveAttempt` |
+| Idempotent retry after a processed turn | `temporal.TestRunTurn_IdempotentAfterProcessed` |
+| Real end-to-end (Temporal + PostgreSQL) | `temporal.TestVerticalSlice_EndToEnd`, `temporal.TestVerticalSlice_ToolStepEndToEnd` |
 
 To run the integration tests locally:
 
@@ -163,14 +231,19 @@ scope** and not implemented on the Temporal path:
 
 - **No traffic cutover.** The HTTP API still runs entirely on the SQLite
   dispatcher. The `orchestrate` command runs the execution plane only.
-- **Only `user.message` with no toolset.** Tools, sandboxes, the tool journal at
-  the Activity boundary, custom-tool/`always_ask` parking, and interrupts are not
-  wired into the Temporal path. The existing tool ambiguity journal
-  (`internal/app/tool_journal.go`, `internal/store/execution_store.go`) is
-  preserved and unchanged.
+- **One built-in tool step, always_allow only.** A single always_allow built-in
+  runs per turn to `end_turn`. Client-action tools (custom tools, `always_ask`
+  confirmations) and their park/resume protocol, `user.interrupt` cancellation,
+  and multi-step recovery *resuming* from a durable tool result are out of scope
+  and terminate the turn honestly if requested. The SQLite path's own tool
+  journal (`internal/app/tool_journal.go`, `internal/store/execution_store.go`)
+  is preserved and unchanged; the Temporal path adds a parallel PostgreSQL
+  journal (`turn_attempts`, `tool_steps`) rather than reusing the SQLite store.
 - **No exactly-once tool execution.** As documented in the fit review, no
   component removes the ambiguity between an external side effect and its
-  acknowledgment. This slice does not claim otherwise.
+  acknowledgment. This slice makes that ambiguity explicit (a crashed tool step
+  becomes `ambiguous` and the turn is refused, never silently replayed); it does
+  not eliminate it.
 - **No previews/SSE over NATS.** NATS is in the stack but the workflow path does
   not yet publish previews or persisted-event wakeups through it.
 - **No multiagent, schedules, webhooks, memory/vault/files, or sandbox
@@ -182,8 +255,16 @@ scope** and not implemented on the Temporal path:
 
 ## Next smallest slice
 
-The next increment that keeps the same boundaries: route a tool-using
-`user.message` through the `RunTurn` Activity by threading the existing
-`ToolExecutionJournal` and a sandbox lease into the Activity, so a single
-built-in tool step runs under Temporal with the durable prepared/started/
-completed/ambiguous boundary preserved — still without cutting over the API.
+Two candidates keep the same boundaries and API non-cutover:
+
+- **Client-action tools under Temporal.** Model a park on a custom tool or an
+  `always_ask` confirmation as a durable wait in the `SessionWorkflow`: commit
+  the pending action + `session.status_idle{requires_action}`, and resume the
+  turn when the resolving `user.custom_tool_result` / `user.tool_confirmation` is
+  admitted and delivered as a wakeup — reusing the existing pending-action
+  semantics rather than inventing a Temporal-specific park protocol.
+- **Resume from a durable tool result.** Instead of terminating a turn whose
+  prior attempt has a `completed` (not ambiguous) tool step, re-project that
+  durable result and continue the model loop — turning the current honest refusal
+  into a genuine recovery for the unambiguous case, while still refusing the
+  ambiguous one.

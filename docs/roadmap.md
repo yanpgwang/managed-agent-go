@@ -33,6 +33,17 @@ This still does not promise exactly-once execution for arbitrary shell
 commands. Temporal owns orchestration recovery; the tool journal records the
 irreducible uncertainty between an external side effect and its acknowledgment.
 
+**Status (2026-07-28):** the spine is landing incrementally and is documented in
+the [platform-spine milestone](architecture/platform-spine-milestone.md).
+Delivered: PostgreSQL (`pgx` + `goose` + `sqlc`), transactional admission with a
+coalescible outbox, the retrying Signal-With-Start relay, a `SessionWorkflow`
+with a durable cursor and Continue-As-New, and one `user.message` — including a
+single always_allow **built-in tool step** run under a PostgreSQL tool journal
+that preserves the prepared/started/completed/ambiguous boundary (a crashed step
+becomes `ambiguous` and is never silently replayed). Still open on this path:
+client-action park/resume, `user.interrupt`, resuming from a durable tool
+result, and cutting the HTTP API over from the SQLite dispatcher.
+
 ## Now: replace infrastructure, preserve semantics
 
 - Establish OpenAPI-generated wire types and PostgreSQL migrations.

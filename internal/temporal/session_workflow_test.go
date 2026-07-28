@@ -149,7 +149,7 @@ func TestSessionWorkflow_ProcessesOneTurn(t *testing.T) {
 	env := ts.NewTestWorkflowEnvironment()
 
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, source, &testIDGen{})
+	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
 
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	// RunTurn needs a runtime; use a stub runtime through a wrapper activity that
@@ -201,7 +201,7 @@ func TestSessionWorkflow_DuplicateWakeupsProcessOnce(t *testing.T) {
 	env := ts.NewTestWorkflowEnvironment()
 
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, source, &testIDGen{})
+	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
 
@@ -228,7 +228,7 @@ func TestSessionWorkflow_OrderedConsumption(t *testing.T) {
 	// Two user messages at seq 1 and 2. (Their turns' output events get higher
 	// sequences as the fake source appends them.)
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1), userMsg("evt_2", 2)})
-	acts := NewActivities(nil, source, &testIDGen{})
+	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 
 	var order []string
@@ -265,7 +265,7 @@ func TestSessionWorkflow_ContinueAsNewCarriesCursor(t *testing.T) {
 	env := ts.NewTestWorkflowEnvironment()
 
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, source, &testIDGen{})
+	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
 

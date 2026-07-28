@@ -7,6 +7,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
+	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 )
@@ -67,22 +68,27 @@ func (o *Orchestrator) CreateSession(ctx context.Context, session domain.Session
 // Runtime bundles the worker and relay so cmd can run the execution plane with a
 // single call. It is only constructed when the feature gate is on.
 type Runtime struct {
-	Client client.Client
-	Worker worker.Worker
-	Relay  *Relay
-	Store  *pg.Store
-	Signal *Signaler
+	Client  client.Client
+	Worker  worker.Worker
+	Relay   *Relay
+	Store   *pg.Store
+	Signal  *Signaler
+	Sandbox *sandbox.SessionManager
 }
 
-// NewRuntime wires the full Temporal execution plane against a PostgreSQL store
-// and an agent runtime. The returned Runtime's Worker and Relay must be started
-// by the caller.
-func NewRuntime(c client.Client, store *pg.Store, rt agentruntime.AgentRuntime, ids domain.IDGenerator, relayCfg RelayConfig) *Runtime {
-	acts := NewActivities(rt, NewStoreSource(store), ids)
+// NewRuntime wires the full Temporal execution plane against a PostgreSQL store,
+// an agent runtime, and a sandbox provider. The store is used both as the event
+// source and as the durable tool-execution journal; the provider is wrapped in a
+// session-scoped SessionManager so a tool's filesystem state persists across
+// turns. The returned Runtime's Worker and Relay must be started by the caller.
+func NewRuntime(c client.Client, store *pg.Store, rt agentruntime.AgentRuntime, provider sandbox.Provider, ids domain.IDGenerator, relayCfg RelayConfig) *Runtime {
+	sandboxes := sandbox.NewSessionManager(provider)
+	src := storeSource{store: store} // satisfies both EventSource and JournalStore
+	acts := NewActivities(rt, src, src, sandboxes, ids)
 	w := NewWorker(c, acts)
 	signaler := NewSignaler(c)
 	relay := NewRelay(store, signaler, relayCfg)
-	return &Runtime{Client: c, Worker: w, Relay: relay, Store: store, Signal: signaler}
+	return &Runtime{Client: c, Worker: w, Relay: relay, Store: store, Signal: signaler, Sandbox: sandboxes}
 }
 
 // Orchestrator returns an admission orchestrator sharing this runtime's store

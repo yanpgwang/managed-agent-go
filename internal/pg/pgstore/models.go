@@ -35,3 +35,30 @@ type Session struct {
 	CreatedAt pgtype.Timestamptz
 	UpdatedAt pgtype.Timestamptz
 }
+
+type ToolStep struct {
+	ID             string
+	AttemptID      string
+	Ordinal        int32
+	ToolUseEventID string
+	ToolName       string
+	Input          []byte
+	State          string
+	Result         []byte
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	StartedAt      pgtype.Timestamptz
+	FinishedAt     pgtype.Timestamptz
+}
+
+type TurnAttempt struct {
+	ID             string
+	SessionID      string
+	TriggerEventID string
+	AttemptNo      int32
+	State          string
+	Error          *string
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	FinishedAt     pgtype.Timestamptz
+}

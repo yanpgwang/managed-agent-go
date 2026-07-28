@@ -40,3 +40,34 @@ func (s storeSource) CompleteTurn(ctx context.Context, sessionID, triggerEventID
 	}
 	return TurnCompletionResult{Events: res.Events, Applied: res.Applied}, nil
 }
+
+// storeSource also satisfies JournalStore, adapting BeginAttempt's rich return to
+// the bare attempt id the Activity needs. The rest delegate directly.
+
+func (s storeSource) RecoverTurn(ctx context.Context, sessionID, triggerEventID string) (bool, error) {
+	return s.store.RecoverTurn(ctx, sessionID, triggerEventID)
+}
+
+func (s storeSource) BeginAttempt(ctx context.Context, sessionID, triggerEventID string) (string, error) {
+	attempt, err := s.store.BeginAttempt(ctx, sessionID, triggerEventID)
+	if err != nil {
+		return "", err
+	}
+	return attempt.ID, nil
+}
+
+func (s storeSource) FinishAttempt(ctx context.Context, attemptID string, state domain.RunAttemptState, attemptError *string) error {
+	return s.store.FinishAttempt(ctx, attemptID, state, attemptError)
+}
+
+func (s storeSource) PrepareToolStep(ctx context.Context, attemptID string, ordinal int, toolUseEventID, toolName string, input map[string]any) (string, error) {
+	return s.store.PrepareToolStep(ctx, attemptID, ordinal, toolUseEventID, toolName, input)
+}
+
+func (s storeSource) StartToolStep(ctx context.Context, stepID string) error {
+	return s.store.StartToolStep(ctx, stepID)
+}
+
+func (s storeSource) CompleteToolStep(ctx context.Context, stepID string, result domain.ToolStepResult) error {
+	return s.store.CompleteToolStep(ctx, stepID, result)
+}
