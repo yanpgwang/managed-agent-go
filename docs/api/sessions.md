@@ -106,8 +106,9 @@ POST /v1/sessions/{id}/archive
 DELETE /v1/sessions/{id}
 ```
 
-A running session cannot be archived or deleted and returns `409`. Interrupt is
-not implemented, so callers should wait until it returns to `idle`.
+A running session cannot be archived or deleted and returns `409`. A
+single-process `user.interrupt` can cancel the active run; interrupt routing to
+a specific multi-agent thread and cross-process delivery are not supported.
 
 Delete removes the session and persisted history, sends a final
 `session.deleted` event to active subscribers, and closes their streams:
@@ -121,5 +122,5 @@ Delete removes the session and persisted history, sends a final
 The response embeds the resolved agent snapshot and includes `resources`,
 `vault_ids`, `outcome_evaluations`, `stats`, `usage`, and `deployment_id`.
 Several of those fields are currently empty or zero placeholders. SDK decoding
-does not imply full semantic compatibility; see the
-[compatibility ledger](../compatibility.md).
+does not imply that every upstream field is implemented; see
+[Claude API coverage](../compatibility.md).

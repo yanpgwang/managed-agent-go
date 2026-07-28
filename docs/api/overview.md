@@ -5,14 +5,14 @@ slug: /api
 
 # API overview
 
-The server implements a compatibility-oriented subset of the Claude Managed
-Agents HTTP API under `/v1`.
+The server implements a practical subset of the Claude Managed Agents HTTP API
+under `/v1`.
 
-:::info Source of truth
+:::info Supported surface
 
-This reference documents repository behavior. The
-[compatibility ledger](../compatibility.md) records where that behavior is
-exact, partial, or unsupported relative to the upstream API.
+This reference documents repository behavior. [Claude API
+coverage](../compatibility.md) summarizes which integration workflows are
+supported, limited, or not supported.
 
 :::
 
@@ -103,4 +103,4 @@ The running server exposes `/openapi.yaml`, sourced from
 complete generated client contract: schemas, examples, parameter definitions,
 and the full event union still need to be added.
 
-For now, use these guides and the compatibility ledger when integrating.
+For now, use these guides and the API coverage page when integrating.

@@ -6,17 +6,17 @@ sidebar_position: 1
 
 # managed-agent-go
 
-`managed-agent-go` is an independent, Apache-2.0-licensed Go implementation of
-the Claude Managed Agents HTTP API. It combines a compatible control plane with
-a self-hosted agent runtime that owns conversation history and delegates only
-inference to a Messages API endpoint.
+`managed-agent-go` is an independent, Apache-2.0-licensed, self-hosted managed
+agent runtime written in Go. It owns conversation history and tool execution,
+delegates inference to a Messages API endpoint, and exposes a Claude Managed
+Agents-compatible HTTP surface for common workflows.
 
 :::caution[Experimental project]
 
 This is a pre-release implementation of a documented API subset, not an
-Anthropic product. Check the [compatibility ledger](compatibility.md) before
-depending on a capability, and do not treat the default local sandbox as a
-security boundary.
+Anthropic product or a drop-in replacement. Check
+[Claude API coverage](compatibility.md) before depending on a capability, and
+do not treat the default local sandbox as a security boundary.
 
 :::
 
@@ -45,12 +45,15 @@ previews of assistant text.
 The default runtime uses a deterministic offline model. A real
 Anthropic-shaped Messages API endpoint is enabled through environment variables.
 
-## Compatibility policy
+## Project direction
 
-This project is a clean-room implementation. Public behavior is derived from
-official documentation and validated through raw HTTP golden tests and
-black-box use of the official Go SDK. Internal code and topology are original.
+The runtime is the product; Claude API compatibility is an integration surface.
+The project prioritizes reliable server-owned sessions, durable execution, safe
+tool handoffs, and replaceable model and sandbox backends. It supports a useful
+documented subset of the Managed Agents API so existing clients can integrate
+with low friction.
 
-Capabilities are labeled `exact`, `partial`, or `unsupported`. A successful SDK
-decode alone does not qualify as exact compatibility; complete field semantics
-and relevant edge cases must also be tested.
+It does not aim to reproduce every upstream field, product feature, edge case,
+or internal execution detail one-for-one. Public behavior is derived from
+official documentation and exercised through raw HTTP tests and black-box use
+of the official Go SDK; internal code and topology are original.

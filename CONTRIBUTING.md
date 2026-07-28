@@ -1,8 +1,9 @@
 # Contributing to managed-agent-go
 
 Thanks for helping improve the project. This repository is a clean-room,
-compatibility-oriented implementation, so changes should preserve a clear line
-between observed public behavior and original internal design.
+self-hosted runtime with a Claude-compatible integration surface, so changes
+should preserve a clear line between observed public behavior and original
+internal design.
 
 ## Before opening a change
 
@@ -51,7 +52,8 @@ When changing the public HTTP surface:
 1. cite an official source in `docs/provenance.md`;
 2. add or update raw HTTP golden tests for exact JSON and status behavior;
 3. add an official SDK black-box test when the SDK exposes the capability;
-4. update `docs/compatibility.md` without overstating evidence;
+4. update `docs/compatibility.md` when the supported integration surface or a
+   user-visible limitation changes;
 5. update the API docs and embedded `internal/httpapi/openapi.yaml`.
 
 Do not copy upstream implementation code or internal types. Official public

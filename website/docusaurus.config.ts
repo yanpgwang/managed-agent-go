@@ -94,7 +94,7 @@ const config: Config = {
           title: 'Project',
           items: [
             {
-              label: 'Compatibility',
+              label: 'API Coverage',
               to: '/compatibility',
             },
             {

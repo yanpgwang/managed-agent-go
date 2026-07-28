@@ -1,215 +1,75 @@
 ---
-title: Compatibility ledger
+title: Claude API coverage
 slug: /compatibility
 ---
 
-# Compatibility ledger
+# Claude API coverage
 
-How this implementation compares to the Claude Managed Agents contract. One row
-per capability or endpoint, grounded only in this repository's behavior.
+`managed-agent-go` is a self-hosted managed agent runtime with a practical
+Claude Managed Agents-compatible HTTP surface. Compatibility makes existing
+clients easier to adopt; reproducing every upstream product feature or internal
+execution detail one-for-one is not a project goal.
 
-- **Status** is `exact` only when tests assert the complete relevant behavior.
-  A passing implementation test or successful SDK decode alone is not enough.
-  Use `partial` when a flow works but fields, edge cases, or evidence remain
-  incomplete, and `unsupported` when it is not implemented.
-- **Test** names the proving test; `—` means no test yet.
+This page describes the user-visible integration surface:
 
-Go SDK black-box tests live in `internal/httpapi/sdk_test.go`; raw-HTTP golden
-tests in `internal/httpapi/sdk_golden_test.go`.
+- **Supported** means the documented workflow is implemented and exercised
+  end-to-end for the scope described here.
+- **Limited** means the workflow is usable with important constraints.
+- **Not supported** means the server may accept or preserve part of the shape,
+  but does not provide the corresponding behavior.
 
-## Agents
+The official Anthropic Go SDK is used as a black-box client for core lifecycle
+tests. That verifies useful interoperability, not universal drop-in
+compatibility.
 
-| Capability | Status | Test | Notes |
-|---|---|---|---|
-| Create agent (`POST /v1/agents`), `version` starts at 1 | partial | `TestSDK_AgentLifecycle` | SDK request/decoding, initial version, and an opaque `multiagent` object are asserted; resolved-roster semantics and a complete response key set are not. |
-| Get agent (`GET /v1/agents/{id}`) | partial | `TestSDK_AgentLifecycle` | Latest version is returned; response-field completeness is not proven. |
-| Update agent (`POST /v1/agents/{id}`), `version` optimistic concurrency | partial | `TestSDK_AgentLifecycle` | Matching/stale-version paths are exercised; required-field, missing-version, and full update semantics remain incomplete. |
-| Update field semantics (patch vs full-replace, clear-with-null) | partial | `TestAgents_ClearSystemWithNull`, `TestAgents_UpdateModelNullRejected`, `TestAgents_MultiagentNullAndInvalidShapes` | `system`/`description` and opaque `multiagent` clear-with-null plus metadata patch are proven; per-field full-replacement of `tools`/`mcp_servers`/`skills` is not yet asserted. |
-| List agents (`GET /v1/agents`) | partial | `TestSDK_AgentLifecycle` | Latest-per-id returned with a `next_page` field; `limit`/`page`/`order`/`created_at`/`include_archived` filters not implemented. |
-| List agent versions (`GET /v1/agents/{id}/versions`) | partial | `TestAgents_CreateGetVersionArchive` | Convenience route; exact wire not confirmed. |
-| Archive agent (`POST /v1/agents/{id}/archive`) | partial | `TestSDK_AgentLifecycle`, `TestAgentService_ArchiveIdempotent` | Archive is idempotent, creates no new version/history entry, and archived agents reject updates; exact error wire and all list/read interactions remain incomplete. |
-| Effort/speed model config, tools/mcp/skills/multiagent bodies | partial | `TestSDK_AgentLifecycle`, `TestAgents_MultiagentObjectPersistsAndReplaces`, `TestAgents_MultiagentNullAndInvalidShapes` | Opaque `multiagent` objects persist, replace atomically, and clear with explicit null. Basic tools/MCP/skills storage exists, but resolved rosters, reference validation, orchestration, and complete per-field validation are absent. |
+## Coverage summary
 
-## Sessions
+| Area | Status | Current scope and limitations |
+|---|---|---|
+| Agent lifecycle | Supported | Create, get, list, version, update with optimistic concurrency, and archive. Agent list filtering and pagination are not implemented. |
+| Agent configuration | Limited | Model, system, tools, MCP references, skills, metadata, and opaque `multiagent` values are stored. MCP resolution, skills execution, and multi-agent orchestration are not supported. |
+| Environment lifecycle | Limited | Create, get, list, archive, and delete work for local `cloud` records. Environment pagination and a remote self-hosted worker protocol are not implemented. |
+| Session lifecycle | Supported | Create from latest or pinned agent versions, preserve an immutable resolved snapshot, get, list, update title, archive, and delete. Several upstream response fields remain empty placeholders. |
+| Session listing | Limited | Bidirectional cursor pagination and core agent, status, archive, and time filters work. Deployment and memory matching are not implemented. |
+| Event send and list | Supported | Implemented event variants use one persisted tagged-union shape and durable per-trigger processing. The complete upstream event union is not implemented. |
+| SSE event stream | Supported | Streams new persisted events and supports open-stream-then-list reconciliation. It does not replay history or support `Last-Event-ID`; fan-out is process-local. |
+| Live message previews | Limited | Opt-in `agent.message` start/delta frames are ephemeral and never persisted. Thinking and span previews are not implemented. |
+| Built-in tool loop | Limited | `bash`, `read`, `write`, `edit`, `glob`, and `grep` execute. `web_fetch` and `web_search` return a not-implemented result. |
+| Custom tools | Supported | A custom tool can park a run, persist a pending action, accept the matching result, and resume. Aggregate resolution of several pending actions is not implemented. |
+| Tool confirmations | Supported | One `always_ask` built-in can park and resume through allow or deny. Crash replay after an allowed side effect remains possible without a durable side-effect journal. |
+| User interrupt | Limited | Cancels the active run in a single process and single-agent session. Parked-session abort, `session_thread_id` targeting, durable cancellation, and cross-process delivery are not supported. |
+| MCP execution | Not supported | MCP toolset references parse and persist but are not resolved or executed. |
+| Files, skills, memory, and vaults | Not supported | These product surfaces are outside the current runtime slice. |
+| Multi-agent orchestration | Not supported | `multiagent` configuration can be stored, but rosters, threads, delegation, and orchestration are not executed. |
+| Distributed workers | Not supported | The current topology is one process with SQLite, an in-memory stream hub, and at-least-once restart recovery. |
 
-| Capability | Status | Test | Notes |
-|---|---|---|---|
-| Create session, `agent` string (latest) | partial | `TestSDK_SessionLifecycleAndSnapshot` | SDK decoding, selected snapshot values, and presence of required top-level collection/stats/usage/deployment keys plus nested `multiagent` are asserted. Their full semantics are not implemented. |
-| Create session, pinned `{type:"agent",id,version}` | partial | `TestSDK_SessionPinnedVersion` | Version/system pinning is exercised; the full response and invalid-reference cases are incomplete. |
-| Create session, `agent_with_overrides` | partial | `TestCreateSession_RejectsInvalidAgentReferences` | Model/system/tools/MCP/skills replacement and invalid/null forms are validated with raw HTTP; successful override behavior is not yet SDK-proven. |
-| Resolved agent snapshot is immutable | partial | `TestSDK_SessionLifecycleAndSnapshot` | Stability of `system` and `version` after one agent update is tested; other fields and archival are not. |
-| Get session (`GET /v1/sessions/{id}`) | partial | `TestSDK_SessionLifecycleAndSnapshot` | Selected fields decode; the full required response shape is incomplete. |
-| List sessions (`GET /v1/sessions`) | partial | `TestSDK_SessionListBidirectionalPaginationAndStatusesFilter`, `TestListSessions_BidirectionalStablePagination`, `TestListSessions_FiltersAndArchivedDefault` | Bidirectional keyset cursors are bound to order and normalized filters; agent/version/status/time/archive filters are exercised. Deployment/memory matching, mutation-concurrency guarantees, and complete semantics remain incomplete. |
-| Session statuses (`idle`/`running`/`rescheduling`/`terminated`) | partial | `TestSessionService_InitialEventsRunToIdle`, `TestSessionService_SendEventDrivesRun`, `TestSessionService_RuntimeFailureClosesDurableRun`, `TestSessionService_RuntimeReceivesImmutableAgentSnapshot`, `TestRunStore_ClaimAndCompleteClosesRunAtomically`, `TestWorkshop_*` | Admission and completion commit the mutable projection with their status events and durable run state. An unrecoverable runtime error terminates the session (`session.error` + `session.status_terminated`); with no retry machinery we do not project `rescheduling`. The fake proves the full drive-to-idle path; the real agent core drives multi-turn model/tool runs, while durable incremental output and multi-node behavior are incomplete. Single-process, single-agent interrupt cancellation is implemented (see the *User interrupt* row). |
-| Update session (title) | partial | `TestSDK_SessionTitleUpdateEmitsChangedFieldsEvent`, `TestSessionService_UpdateTitleEmitsOnlyOnChange`, `TestUpdateSession_OmittedTitlePreservesValue` | Title and `session.updated` commit together; omitted/same title is a no-op. Metadata and `agent.tools`/`mcp_servers` session-local updates are absent. |
-| Archive session | partial | — | Handler and running-session guard exist, but the archive endpoint is not SDK-proven. |
-| Delete session | partial | `TestStreamEvents_DeleteTerminalAndEOF`, `TestSessionService_DeletePublishesTerminalEventAndClosesStream` | Removes the session/events, publishes a terminal `session.deleted` event to current subscribers, then closes the stream. Slow-subscriber, concurrent-delete, and multi-node behavior remain incomplete. |
-| `metadata`, `vault_ids`, `resources`, `initial_events` inputs | partial | — | `metadata`/`title`/`initial_events` are accepted. Non-empty `vault_ids`/`resources` are explicitly unsupported; corresponding empty/default response fields are emitted. |
+## Integration contract
 
-## Session events
+For supported workflows, the project aims to keep request and response shapes,
+status codes, headers, event correlation, and SDK usage stable. Known
+limitations should produce an explicit validation or not-supported result when
+possible rather than silently claiming upstream behavior.
 
-| Capability | Status | Test | Notes |
-|---|---|---|---|
-| Event is a flat top-level tagged union (`{id,type,...,processed_at}`) | partial | `TestGolden_EventIsFlatTaggedUnion` | The raw golden covers one `user.message`; the full event union and exact per-variant keys are not covered. |
-| `user.message` with `content[]` blocks | partial | `TestSDK_EventSendAndList`, `TestGolden_EventIsFlatTaggedUnion` | One text block round-trips; other block variants and validation are incomplete. |
-| Send events (`POST .../events`) echoes submitted events | partial | `TestSDK_EventSendAndList`, `TestSessionService_InitialEventBatchProcessesEveryEventInOrder`, `TestSessionService_SendEventBatchProcessesEveryEventInOrder`, `TestRunStore_QueuesRunsPerSessionInAdmissionOrder`, `TestRunStore_AdmitBatchCreatesOneRunPerTrigger`, `TestRunStore_CompletionBeforeNextClaimObservesOutput`, `TestSessionService_SecondUserEventObservesFirstAgentOutput`, `TestSessionService_BatchedTriplePerRunCausalProjection`, `TestRunStore_ModelHistorySurvivesReopenInCausalOrder` | A batch is admitted atomically in input order; each processable trigger gets its own durable queued run (never grouped), and runs drain one at a time. Model-facing history is reconstructed from run causality (each prior run's trigger IDs then its persisted output IDs, then the current trigger), so a later trigger's projection observes the earlier run's committed agent output as a separate turn — proven for A/B (`TestSessionService_SecondUserEventObservesFirstAgentOutput`) and A/B/C (`TestSessionService_BatchedTriplePerRunCausalProjection`), and durable across a file-backed reopen (`TestRunStore_ModelHistorySurvivesReopenInCausalOrder`). All event variants and external-side-effect idempotency remain incomplete; single-process, single-agent interrupt cancellation is implemented (see the *User interrupt* row). |
-| Reject unknown / server-only event types and validate client variants | partial | `TestGolden_RejectsServerOnlyEventType`, `TestSendEvents_ValidatesVariantShape` | Type gating, empty-batch rejection, and validation for the currently modeled client variants are exercised; the full client-event union and every field constraint are not. |
-| List events (`GET .../events`): `types` filter, `limit`, `page`, `next_page` | partial | `TestSDK_EventListPaginationAndTypesFilter`, `TestListEvents_CursorIsBoundToSessionAndFilters` | Cursors are bound to the session and normalized filters. Bounds and `processed_at` ordering/keyset semantics remain incomplete. |
-| List events: `order`, `created_at[gt|gte|lt|lte]` filters | partial | `TestQuery_CreatedAtNamedFilterUsesProcessedAt`, `TestQuery_ProcessedAtFiltersExactAndFractionalWithinSecond`, `TestListEvents_RejectsInvalidQueryValues` | The public `created_at` query name compares a fixed-width `processed_at` key. Results and cursors are still ordered by internal sequence rather than a `processed_at` keyset, including its null/tie semantics. |
-| Send/list/stream share one event JSON shape | partial | `TestGolden_EventIsFlatTaggedUnion`, `TestWorkshop_ReconnectNoGapNoDup`, `TestSDK_EventStream` | One mapper renders event JSON and SSE emits an `event:` discriminator plus `data:` JSON that the Go SDK decodes. The full event union is incomplete. |
-| SSE stream and open-then-list reconnect | partial | `TestSession_FullLifecycleWithSSE`, `TestWorkshop_ReconnectNoGapNoDup`, `TestSDK_EventStream` | The SDK stream decoder is exercised, but current reconciliation tests start with empty history and do not perform a real disconnect/reconnect. |
-| SSE deletion terminal and EOF | partial | `TestStreamEvents_DeleteTerminalAndEOF`, `TestSessionService_DeletePublishesTerminalEventAndClosesStream` | An active stream receives `session.deleted` with an ID and `processed_at`, then EOF. Backpressure, reconnect-after-delete, and distributed delivery are not proven. |
-| Streaming preview of `agent.message` (`event_start`/`event_delta`, opt-in via `event_deltas[]`) | partial | `TestPreviewFrame_WireJSON_Start`, `TestPreviewFrame_WireJSON_Delta`, `TestHub_PreviewOnlyToOptedIn`, `TestAgentCore_EmitsPreviewThenPersistedMessage`, `TestSessionService_PreviewStreamsToOptedInOnlyNeverPersisted`, `TestAnthropic_CreateMessageStream_DecodesSSE` | While an `agent.message` is generated, the stream can emit an `event_start` frame followed by incremental `event_delta` frames carrying a `content_delta` shape, then the authoritative persisted `agent.message` event. Preview frames are delivered **only** to subscribers that opted in via the `event_deltas[]` stream parameter, and are **stream-only, never persisted** — a `list events` call never returns them. The real Messages-API client decodes the upstream SSE (`content_block_delta`/`text_delta`) to drive previews (`TestAnthropic_CreateMessageStream_DecodesSSE`). `agent.thinking` preview and `span.*` events are deferred. The upstream/inbound stream uses `content_block_delta`; our outbound preview uses `content_delta` — they are different wires. The exact outbound SSE `event:` line format for preview frames is `unknown` against the official contract. |
-| `processed_at` on-receipt vs queued | partial | `TestAppend_ProcessedOnReceipt`, `TestRunStore_ClaimAndCompleteClosesRunAtomically`, `TestSessionService_SendEventDrivesRun` | Server/on-receipt events are stamped immediately; queued trigger timestamps commit atomically with runtime output and run completion. Exact timing for every variant remains incomplete. |
-| Interrupt / tool confirmation / custom-tool result semantics | partial | `TestWorkshop_CustomToolHandoff`, `TestSessionService_CustomToolParksAndResumes`, `TestAgentCore_CustomToolParksWithRequiresAction`, `TestAgentCore_AlwaysAskBuiltinParks`, `TestAgentCore_ConfirmationAllowExecutesAndContinues`, `TestAgentCore_ConfirmationDenySkipsExecutorIncludesDenyMessage`, `TestAgentCore_ConfirmationInvalidFailsWithoutExecution`, `TestSessionService_ConfirmationAllowResumeExecutesSideEffect`, `TestSessionService_ConfirmationDenyResumeSkipsSideEffect`, `TestPending_QueuedRunBeforeParkStaysGated`, `TestPending_MatchingResolutionBypassesEarlierQueued`, `TestPending_ResumeCompletionReleasesEarlierQueued`, `TestPending_GateSurvivesReopen` | Custom-tool and `always_ask` calls park the run behind a first-class durable pending-action gate (see the *Known gaps* durable-gate entry): the app emits `session.status_idle` with `stop_reason.type == "requires_action"` and `event_ids` naming the committed `agent.custom_tool_use` / `agent.tool_use{evaluated_permission:"ask"}` event, `RunStore.Complete` persists a durable pending action in the same transaction, and the matching resolution resumes a fresh run to `end_turn`. Correlation uses the committed event id (pre-assigned by the runtime sink) and is validated/claimed at admission; while unresolved the gate blocks ordinary queued work admitted before the park. Both the custom-tool resume (`user.custom_tool_result`) and the single built-in confirmation **execution** resume (`user.tool_confirmation` allow/deny → original built-in executed or rejected with `deny_message` → `agent.tool_result` correlated to the original id) are implemented and tested end to end. Still unproven against the official wire: exact `requires_action` payload shape and the exact rejection-result wording/shape. Aggregate multi-action resume is not implemented (each action resolves individually); an allowed built-in side effect can replay after a crash before completion commit (no side-effect journal). Single-process, single-agent `user.interrupt` is implemented (see the dedicated *User interrupt* row); `session_thread_id` routing is not. |
-| User interrupt (`user.interrupt`) cancels the active run | partial | `TestSessionService_InterruptCancelsActiveRunScopedAndCleansUp`, `TestSessionService_InterruptBatchRedirectRunsNormally`, `TestSessionService_InterruptOnlyEndsSingleIdleAndAllowsArchiveDelete`, `TestSessionService_InterruptStripsBufferedTerminalAndNoRedundantRunning`, `TestSessionService_InterruptWhileIdleIsNoOpControlEvent`, `TestSessionService_LateInterruptWinsClassifiesInterrupted`, `TestSessionService_DuplicateConcurrentInterruptsSafe`, `TestSessionService_NonInterruptCancellationStillTerminates`, `TestRunCancelers_FinishBeforeCancelIsNormalCompletion`, `TestRunCancelers_CancelBeforeFinishIsInterrupt`, `TestPending_InterruptWhileParkedStaysGated`, `TestFake_InterruptEndsIdleNotTerminated` | Single-process, single-agent only. After the interrupt is durably admitted, `SendEvent` cancels the session's active run (under the session shard lock, serialized with `drainRuns`' claim+register) via `context.WithCancelCause`, propagating through the runtime, model, and tool calls. Finish-vs-interrupt is linearized under the shard lock by an explicit finish/interrupt state on the per-run canceler token (not by the raw cancel cause): if an interrupt admits before the run claims completion the run is classified interrupted, and if the run completes first the later interrupt is an idempotent no-op — closing the late-admit window between the runtime call returning and the completion commit. The canceled run completes gracefully — buffered authoritative nonterminal drafts committed honestly, any runtime-buffered session terminal-status draft stripped, run marked completed, **no** `session.error` / `session.status_terminated` and no idle terminal of its own — and its completion is committed as `running` (the session never left running), so no synthetic `session.status_running` is appended for the still-queued interrupt run; the interrupt's own durable control run then emits exactly one `session.status_idle{stop_reason:end_turn}` (no invented stop reason), and a same-batch redirect `user.message` runs normally with the interrupt event marked processed. An ordinary `context.Canceled` runtime error with no admitted interrupt still terminates. An interrupt admitted while the session is idle **with no unresolved pending action** is a durably-processed no-op that never calls the model; interrupting a session that is idle because a run **parked** (`requires_action`) is **unsupported/unproven** in this milestone — the `requires_action` gate requires the blocking event to be resolved first, and an interrupt is not a resolution, so it is admitted and queued but the pending-action claim gate blocks it (it stays unprocessed, the session keeps its `requires_action` projection, and admission emits no `session.status_running`) until the park resolves. The cancellation registry is per-session (RunStore's one-running-run invariant), race-safe, leak-free, and never cross-cancels; repeated cancellation is idempotent, and concurrent interrupts are stressed under `-race`. **Not** supported/proven: `session_thread_id` routing / multi-agent targeting; cross-process (multi-node) delivery; and a durable cancellation signal — the signal is in-memory only, so a crash between interrupt admission and the active run's completion commit loses it (the run is requeued at-least-once but not distinguished as interrupted on replay). No external side-effect rollback. |
+The project does **not** promise:
 
-## Tools and sandbox
+- that every official SDK method or upstream field works;
+- exact parity for undocumented behavior and error wording;
+- Anthropic-internal scheduling, storage, or orchestration semantics;
+- production-grade authentication, multi-tenancy, or distributed execution.
 
-| Capability | Status | Test | Notes |
-|---|---|---|---|
-| Parse agent tool declarations (built-in toolset / custom / MCP) | partial | `TestParseTools_BuiltinCustomMCP`, `TestParseTools_RejectsUnknownType`, `TestParseTools_Empty` | `agent_toolset_20260401` with `default_config` and per-tool `configs` (`enabled`, `permission_policy`), `custom` tools, and `mcp_toolset` server references parse into `domain.ToolSet`; unknown types are rejected. Full config-field and validation coverage is incomplete. |
-| Built-in tool loop (model `tool_use` → sandbox exec → `tool_result` → repeat) | partial | `TestAgentCore_ExecutesBuiltinToolLoop`, `TestFake_CallsOfferedToolThenEnds` | `AgentCore` loops model↔tool up to 20 turns (`maxToolTurns`), executing enabled built-ins with `always_allow` policy and feeding results back until `end_turn`. `bash`/`read`/`write`/`edit`/`glob`/`grep` execute; `web_fetch`/`web_search` are declared to the model but return `is_error` "not implemented". |
-| Built-in tool input schemas sent to the model | partial | `TestAnthropic_SerializesToolsAndToolBlocks` | The per-tool JSON schema we hand the model is an **internal** design choice following Anthropic's public bash/text-editor parameter conventions; it is not part of the Managed Agents public wire and is not asserted against an official contract. |
-| `agent.tool_use` / `agent.tool_result` events | partial | `TestAgentCore_ExecutesBuiltinToolLoop`, `TestProjectMessages_ToolUseAndResultPairing`, `TestProjectMessages_KeepsPairedToolUseUnderFilter` | Built-in calls commit `agent.tool_use` and `agent.tool_result` events (correlated by committed event id) and project back into paired Messages-API `tool_use`/`tool_result` blocks. Exact per-variant wire keys are not asserted against the official contract. |
-| Custom-tool handoff (`agent.custom_tool_use` → park → `user.custom_tool_result` → resume) | partial | `TestWorkshop_CustomToolHandoff`, `TestSessionService_CustomToolParksAndResumes`, `TestAgentCore_CustomToolParksWithRequiresAction`, `TestFake_CustomToolResultEndsIdle`, `TestProjectMessages_CustomToolResultPairing` | A custom tool call parks the run at `session.status_idle` with `stop_reason.type == "requires_action"` and `event_ids` naming the committed `agent.custom_tool_use`; a `user.custom_tool_result` referencing that id resumes a fresh run to `end_turn`. End-to-end proven; the exact `requires_action` payload shape is unconfirmed against the official wire. |
-| Built-in tool run end-to-end via the app layer | partial | `TestSessionService_BuiltinToolRunEndToEnd` | A session-driven run provisions a sandbox, executes a built-in tool, and reaches `end_turn` through the durable run path. |
-| `always_ask` permission policy on built-in tools | partial | `TestAgentCore_AlwaysAskBuiltinParks`, `TestPending_CompleteAcceptsAskToolUse`, `TestPending_CompleteRejectsNonAskToolUseAtomically`, `TestAgentCore_ConfirmationAllowExecutesAndContinues`, `TestAgentCore_ConfirmationDenySkipsExecutorIncludesDenyMessage`, `TestAgentCore_ConfirmationInvalidFailsWithoutExecution`, `TestSessionService_ConfirmationAllowResumeExecutesSideEffect`, `TestSessionService_ConfirmationDenyResumeSkipsSideEffect`, `TestProjectMessages_ConfirmationToolResultPairing` | An `always_ask` built-in call parks the run (`agent.tool_use{evaluated_permission:"ask"}` + `requires_action`) and persists a durable `PendingToolConfirmation` in the completion transaction; the pending kind is derived from the committed event's type AND payload, so an `always_allow`/`always_deny`/missing-permission `tool_use` is rejected and never parks. The single built-in **confirmation execution resume** is implemented: a `user.tool_confirmation` drives a fresh run, the app recovers the original `agent.tool_use` from server-owned causal history by `tool_use_id`, and the runtime re-validates it is an `ask`-policy built-in that is enabled. **Allow** runs it once via `tools.Registry`/`Sandbox` and emits `agent.tool_result` (original committed id, actual content/`is_error`); **deny** skips the executor entirely and emits an `is_error` result preserving `deny_message`; both continue the loop to `end_turn`. A malformed/unresolvable confirmation fails safely and executes nothing. Before execution `ProjectMessages` drops the dangling `tool_use` so the parked call never poisons a real request (`TestProjectMessages_DropsDanglingToolUse`, `TestProjectMessages_DropsDanglingCustomToolUse`); after completion the confirmation-generated result re-projects as a valid pair. Not claimed: exact official rejection-result wording/wire shape, aggregate multi-action resume, and crash-replay safety (no side-effect journal). |
-| Session-scoped sandbox lifecycle (`internal/sandbox` `SessionManager`) | partial | `TestSessionManager_ReusesSandboxPerSession`, `TestSessionManager_IsolatesSessions`, `TestSessionManager_ReleaseDestroysExactlyOnce`, `TestSessionService_SandboxPersistsAcrossRuns`, `TestSessionService_SandboxIsolatedBetweenSessions`, `TestSessionService_SandboxProvisionedOncePerSession`, `TestSessionService_IdleDoesNotDestroySandbox`, `TestSessionService_DeleteReleasesSandboxExactlyOnce`, `TestSessionService_DeleteTeardownSurvivesRequestCancellation` | A sandbox is **scoped to the session**, not the run. The first run needing tools provisions one logical sandbox; later runs in the same session reuse it, so tool-produced file state **persists across turns**. Different sessions get distinct sandboxes and stay isolated. Entering idle does not destroy the sandbox; deleting the session releases it exactly once. Delete runs that teardown *after* the durable delete has committed, on a context detached from the request context (`context.WithoutCancel`) and bounded by its own timeout, so a client disconnect cannot cancel an in-flight `Destroy` yet a stuck provider cannot hang forever. Ownership lives in a session-scoped manager that wraps the provider inside the `sandbox` package; `AgentRuntime` receives a resolved sandbox and is unaware of the lifecycle. The manager is in-memory: a process restart does not restore an idle session's sandbox, and there is no durable checkpoint, quota, or eviction yet. |
-| Local sandbox (`Provider`/`Sandbox`, restricted local process) | partial | `TestLocal_ExecEcho`, `TestLocal_FileRoundTripAndConfinement`, `TestLocal_Timeout` | `internal/sandbox` provides a two-layer interface and a local-process default that confines paths to a work dir, clears the environment, applies a timeout, and caps output. **Dev-grade guardrail, not a security boundary — do not run untrusted code.** Sandboxes are session-scoped (see the row above): provisioned on first tool use and reused across the session's runs. |
-| Docker sandbox (real-isolation `Provider`, opt-in) | partial | `TestDocker_*` (skipped without a daemon), `TestResolveSandboxProvider_DefaultsToLocal` | The same `Provider`/`Sandbox` interface has a Docker-backed implementation (shells out to the `docker` CLI, no extra module dependency). It gives **real isolation**: each sandbox is a container with its own Linux namespaces/cgroups, a separate filesystem, and `--network none` by default. Selected at startup via `MANAGED_AGENT_SANDBOX=docker` (default is local); image via `MANAGED_AGENT_SANDBOX_IMAGE` (defaults `alpine:latest`). gVisor (`--runtime=runsc`) can layer under the same interface later with no interface change. Not audited for hostile multi-tenant use (shared host kernel). Docker tests are gated on a running daemon and skip in default offline CI. |
-| MCP toolsets | unsupported | `TestParseTools_BuiltinCustomMCP` | Parsed into `domain.ToolSet` but never resolved or executed. |
+See the [API reference](api/overview.md) for repository behavior and
+[compatibility provenance](provenance.md) for the official public sources used
+when shaping this integration surface.
 
-## Transport
+## How coverage is verified
 
-| Capability | Status | Test | Notes |
-|---|---|---|---|
-| Error envelope with top-level `type`, nested `error`, and `request_id` | partial | `TestGolden_ErrorEnvelopeShape`, `TestRequestIDMiddleware_AllResponses`, `TestSDK_AgentLifecycle` (409) | The common shape and matching response-header/body request ID are exercised; exact per-status error types remain incomplete. |
-| `anthropic-beta` required in strict mode | partial | `TestBetaMiddleware_Strict`, all SDK tests (strict server) | Exact token parsing is implemented; tests cover missing and exact-good values but not multi-token or invalid-superset cases. |
-| `anthropic-version: 2023-06-01` required in strict mode | partial | `TestVersionAndContentTypeMiddleware_Strict`, all SDK tests | Missing and exact-good values are exercised; route-by-route behavior is not separately asserted. |
-| `x-api-key` / `Authorization` auth in strict mode | partial | `TestAuthMiddleware_Strict`, all SDK tests | Strict mode is **header validation, not authentication**: the server checks only that a header is present/valid, not that any credential is genuine or authorized. The test directly covers `x-api-key`, not the Authorization form. |
-| 32 MiB body limit → 413 `request_too_large` | partial | `TestGolden_BodyLimitRejects`, `TestGolden_ChunkedBodyLimitRejects` | Known-length and consuming chunked JSON paths are tested; endpoints that do not consume an unknown-length body are not. |
-| JSON request/response content type | partial | `TestVersionAndContentTypeMiddleware_Strict` | Strict request parsing accepts `application/json` parameters; JSON response content type is set but not separately asserted across every route. |
-| HTTP status codes per error kind | partial | `TestWriteError_MapsKinds` | 400/404/409/413/422 mapped; the `conflict_error` type string is our choice and unconfirmed. |
-| `limit` query bound on List Sessions / List Events | partial | `TestListSessions_LimitBoundary`, `TestListEvents_LimitBoundary` | Both list endpoints accept `limit` up to a shared maximum of 1000; a value above 1000 returns a `validation_error` rather than being silently clamped. Defaults (100) and cursor semantics are unchanged. |
+Compatibility-related changes should use the smallest evidence appropriate to
+the behavior:
 
-## Runtime
+- raw HTTP tests for JSON shapes, status codes, headers, and validation;
+- official Go SDK tests for client interoperability;
+- application and store tests for durable execution semantics;
+- end-to-end tests for runtime, tool, interrupt, and streaming workflows.
 
-| Capability | Status | Test | Notes |
-|---|---|---|---|
-| Self-hosted agent core (Messages-API-backed loop) | partial | `TestAgentCore_*`, `TestSessionService_MultiTurnProjectsPriorHistory` | The default runtime. Projects the session event log into `messages[]` each turn (`domain.ProjectMessages`), merging adjacent same-role events so the request satisfies the Messages API strict-alternation constraint (`TestProjectMessages_MergesConsecutiveUsers`, `TestProjectMessages_MergesConsecutiveAssistantsAndAlternates`), then calls the stateless Messages API. It runs a multi-step built-in tool loop (`bash`/`read`/`write`/`edit`/`glob`/`grep`; `web_fetch`/`web_search` are declared to the model but return `is_error` "not implemented") over a sandbox, hands off custom/`always_ask` tools by parking, and streams an ephemeral `agent.message` preview. Durable incremental output, interrupt cancellation, thinking/spans, and compaction are deferred. |
-| Real Messages API client (`/v1/messages`) | partial | `TestAnthropic_*` | Env-configured (`MANAGED_AGENT_MODEL_*`), Anthropic-shape, `x-api-key` or bearer auth. Serializes `tools[]` and round-trips `tool_use`/`tool_result` content blocks (`TestAnthropic_SerializesToolsAndToolBlocks`, `TestAnthropic_ParsesToolUseResponse`). `CreateMessageStream` opens the real SSE stream (`"stream": true`) and decodes it incrementally: text is streamed per `content_block_delta`/`text_delta` (`TestAnthropic_CreateMessageStream_DecodesSSE`), and tool_use blocks are assembled from `content_block_start` + accumulated `input_json_delta` (parsed at `content_block_stop`; partial_json is not surfaced incrementally). On a non-2xx response the upstream error body (JSON `{"error":{"message":...}}` or plain text) is sanitized, length-bounded, and folded into the returned error so operators see the cause; headers and the API key are never included (`TestAnthropic_BearerAuthAndErrorStatus`, `TestAnthropic_NonJSONErrorBodyIsSurfaced`). Verified against `httptest`; real-service calls are opt-in. |
-| Offline fake model client | partial | `TestFake_EchoesLastUserTextAndRecordsRequest` | Deterministic echo `model.Client`; the default agent core uses it with no env, keeping the suite offline. |
-| Fake control-plane runtime | partial | `TestSessionService_*`, `TestWorkshop_*` | An in-process `AgentRuntime` double (`agentruntime.Fake`), no longer the default. Drives sessions to `agent.message` + terminal status for control-plane tests without a model layer. |
-
-## Known gaps
-
-- `domain.ProjectMessages` merges adjacent same-role events into one message
-  (concatenating their content blocks in order) so the projected conversation
-  always alternates roles and forms a legal Messages-API request. Under the
-  causal Run history model, multiple `user.message` events queued before
-  `drainRuns` claims them are **not** collapsed into one projected user message:
-  each processable trigger runs as its own durable run and projects as a
-  separate turn (`TestSessionService_SecondUserEventObservesFirstAgentOutput`,
-  `TestSessionService_BatchedTriplePerRunCausalProjection`), and the causal
-  ordering survives a restart (`TestRunStore_ModelHistorySurvivesReopenInCausalOrder`).
-  Merging still fires only when a turn genuinely emits no assistant content —
-  e.g. a model turn that produces no `agent.message`, leaving two user turns
-  adjacent (`TestProjectMessages_MergesConsecutiveUsers`,
-  `TestProjectMessages_MergesConsecutiveAssistantsAndAlternates`). Context
-  compaction when a session exceeds the projection limit is still deferred.
-- Server shutdown does not cancel in-flight model calls. `drainRuns`' base
-  context is `context.Background()`, so a SIGTERM does not propagate cancellation
-  to an in-progress Messages-API request. The runtime call does run on a child
-  `context.WithCancelCause` derived from that base, but it is canceled only by a
-  durably admitted `user.interrupt` (see the *User interrupt* row), not by process
-  shutdown; shutdown-driven cancellation is not implemented.
-
-- `session.error` carries `{error:{type,message}}` but omits the documented
-  `retry_status` field. The `retry_status` enum values are unconfirmed from the
-  docs, so this stays `partial`; the field's absence is a known gap.
-- On an unrecoverable runtime error the session projects to `terminated`, not
-  `rescheduling`: there is no attempt/lease/retry mechanism, so `rescheduling`
-  (which promises an automatic retry) would be dishonest. No `stop_reason` is
-  emitted on the failure path, since the documented `stop_reason.type` union is
-  only `end_turn | requires_action`. Transient-vs-unrecoverable classification
-  and true rescheduling are not implemented.
-- The 409 error `type` string is `conflict_error`; the exact type returned for
-  an agent version conflict is unconfirmed, so the status (409) is matched but
-  the type string is not.
-- Agent and session responses include the SDK keys exercised by the lifecycle
-  tests, but several values are empty/default placeholders. The SDK decoder is
-  lenient, so field presence and values still require explicit assertions.
-- The SSE handler's `event:` + `data:` frames decode, but a true
-  disconnect/reconnect boundary has not been tested.
-- Agent listing is single-page. Session listing has bidirectional cursors and
-  core filters, but deployment/memory matching and mutation-concurrency
-  guarantees are incomplete.
-- Event time filters compare `processed_at`, but ordering/pagination is still
-  based on internal sequence; null, tie, and concurrent-write semantics are not
-  established.
-- Opaque `multiagent` input is stored with tested replace/null-clear behavior;
-  roster resolution, reference validation, and multiagent execution are absent.
-- There is a first-class durable pending-action gate. When a run parks with
-  `requires_action`, `RunStore.Complete` persists one durable pending action per
-  committed action event in the same transaction that closes the run, deriving
-  the expected response kind from the committed event's type AND payload (an
-  `agent.tool_use` parks only when its `evaluated_permission` is `"ask"`; an
-  `always_allow`/`always_deny`/missing-permission `tool_use` is rejected). Each
-  parked id must name an action event committed by that same `Complete` call —
-  an old action event from an earlier run in the same session, a phantom id, or
-  any non-action output is rejected and the whole transaction (drafts, trigger
-  `processed_at`, session projection, run state, pending rows) rolls back
-  atomically (`TestPending_CompleteRejectsOldSameSessionActionAtomically`,
-  `TestPending_CompleteRejectsNonAskToolUseAtomically`,
-  `TestPending_CompleteAcceptsAskToolUse`). Duplicate ids in one park are
-  rejected explicitly rather than silently collapsing to one gate
-  (`TestPending_CompleteRejectsDuplicateActionIDs`). While any pending action is
-  unresolved the gate blocks ordinary queued runs even when they were admitted
-  before the park; only the matching resolution trigger (correlated by the
-  committed action event id, validated and claimed at admission) may bypass the
-  gate, and the gate clears only after the resume run closes
-  (`TestPending_QueuedRunBeforeParkStaysGated`,
-  `TestPending_MatchingResolutionBypassesEarlierQueued`,
-  `TestPending_ResumeCompletionReleasesEarlierQueued`,
-  `TestPending_AdmissionRejectsBadResolutions`,
-  `TestPending_WrongSessionReferenceRejected`), and the gate survives a
-  file-backed restart (`TestPending_GateSurvivesReopen`). The single built-in
-  `always_ask` **confirmation execution resume** is now implemented and tested
-  end to end for both decisions: a `user.tool_confirmation` drives a fresh run,
-  the app recovers the original committed `agent.tool_use` from server-owned
-  causal history by its `tool_use_id` (never from client-supplied name/input)
-  and passes it to the runtime, which re-validates that it is an `ask`-policy
-  `agent.tool_use` for an enabled built-in. **Allow** executes that built-in once
-  per successful run attempt (crash replay before the completion commit remains
-  possible — see the at-least-once limitation below)
-  through the existing `tools.Registry`/`Sandbox` path and emits
-  `agent.tool_result` (original committed id, actual content/`is_error`);
-  **deny** never invokes the sandbox and emits an `is_error` result preserving
-  `deny_message`; both thread the paired `tool_use`/`tool_result` into the model
-  conversation and continue to `end_turn`; a malformed/unresolvable confirmation
-  fails safely without executing anything
-  (`TestAgentCore_ConfirmationAllowExecutesAndContinues`,
-  `TestAgentCore_ConfirmationDenySkipsExecutorIncludesDenyMessage`,
-  `TestAgentCore_ConfirmationInvalidFailsWithoutExecution`,
-  `TestSessionService_ConfirmationAllowResumeExecutesSideEffect`,
-  `TestSessionService_ConfirmationDenyResumeSkipsSideEffect`,
-  `TestProjectMessages_ConfirmationToolResultPairing`). Remaining limitations are
-  honest and explicit: the exact official **result wording and wire shape** of
-  the rejection `agent.tool_result` (and the `requires_action` payload) are
-  unconfirmed against the stable contract; **aggregate multi-action resume** is
-  not implemented — a run that parks with several action events gates all of them
-  but each must be resolved individually, with no batched resume protocol
-  (`TestPending_MultiActionParkGatesAllButNoAggregateResume`); and, because there
-  is no durable side-effect journal, an allowed built-in's side effect can be
-  **replayed** after a crash between execution and completion commit (see the
-  restart-recovery gap below).
-- The durable queue is single-process and restart recovery is at-least-once. A
-  crash after an external side effect but before completion commit may replay
-  it; no lease, fencing, or idempotency-key protocol exists yet.
-- `422` is used for unsupported operations (e.g. sessions against `self_hosted`
-  environments). This is an internal choice.
-- The tool loop targets the self-hosted agent core only. Sessions against a
-  `self_hosted` *environment* are rejected outright, so the
-  self-hosted-environment `user.tool_result` worker path (a client executing the
-  tool and returning results) is not implemented.
+Test names and edge-case details live beside the implementation and in the
+architecture guides rather than in this user-facing coverage table.

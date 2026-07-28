@@ -134,10 +134,10 @@ The strongest current risks are semantic rather than structural:
    trigger bypasses them, and the gate clears atomically when the resume run
    closes. Admission rejects unknown, already-resolved, duplicate, wrong-session,
    and wrong-kind references. The single custom-tool park/resume cycle is proven
-   end to end and survives restart. Remaining gaps: the `always_ask`
-   `user.tool_confirmation` allow/deny **execution** resume is not implemented,
-   and a park with multiple action events gates all of them but has no
-   aggregated multi-action resume protocol (each must be resolved individually).
+   end to end and survives restart. A single `always_ask`
+   `user.tool_confirmation` allow/deny execution resume is also implemented.
+   A park with multiple action events still gates all of them but has no
+   aggregated multi-action resume protocol; each must be resolved individually.
 3. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
    first tool use, reused across its runs, and released on session deletion.
    The manager is in-memory, so a process restart does not restore an idle

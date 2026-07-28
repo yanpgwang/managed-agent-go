@@ -29,9 +29,9 @@ Accepted input types are:
 | --- | --- |
 | `user.message` | Starts a model turn |
 | `user.custom_tool_result` | Resumes a parked custom tool |
-| `user.tool_confirmation` | Accepted; full allow/deny resume is incomplete |
+| `user.tool_confirmation` | Resumes one pending built-in tool confirmation; allow executes it and deny emits an error result |
 | `user.tool_result` | Accepted; self-hosted worker flow is incomplete |
-| `user.interrupt` | Accepted; cancellation propagation is not implemented |
+| `user.interrupt` | Cancels the active run in the current process; multi-agent targeting and cross-process delivery are not supported |
 | `user.define_outcome` | Stored and validated |
 | `system.message` | Stored and admitted as input |
 
