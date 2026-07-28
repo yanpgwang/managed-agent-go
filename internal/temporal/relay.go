@@ -18,7 +18,7 @@ type WakeupDeliverer interface {
 // OutboxStore is the relay's view of the PostgreSQL outbox. *pg.Store implements
 // it; the narrow interface keeps the relay testable.
 type OutboxStore interface {
-	ClaimWakeups(ctx context.Context, limit int) ([]pg.OutboxWakeup, error)
+	ListWakeupsForDelivery(ctx context.Context, limit int) ([]pg.OutboxWakeup, error)
 	DeleteWakeupIfUnchanged(ctx context.Context, sessionID string, maxSeq int64) (bool, error)
 	RecordAttempt(ctx context.Context, sessionID string, cause string) error
 }
@@ -28,7 +28,7 @@ type RelayConfig struct {
 	// PollInterval is how often the relay scans the outbox when the last scan
 	// found no pending wakeups.
 	PollInterval time.Duration
-	// BatchSize bounds how many wakeups one scan claims.
+	// BatchSize bounds how many wakeups one scan reads.
 	BatchSize int
 }
 
@@ -95,11 +95,13 @@ func (r *Relay) Run(ctx context.Context) error {
 	}
 }
 
-// RunOnce claims a batch of pending wakeups, delivers each, and reconciles the
+// RunOnce reads a batch of pending wakeups, delivers each, and reconciles the
 // outbox. It returns the number of wakeups successfully delivered-and-removed.
-// It is the unit the tests drive directly to exercise crash boundaries.
+// It is the unit the tests drive directly to exercise crash boundaries. Delivery
+// is at-least-once: a concurrent relay may read and deliver the same wakeup, and
+// the SessionWorkflow deduplicates by receipt sequence.
 func (r *Relay) RunOnce(ctx context.Context) (int, error) {
-	wakeups, err := r.store.ClaimWakeups(ctx, r.cfg.BatchSize)
+	wakeups, err := r.store.ListWakeupsForDelivery(ctx, r.cfg.BatchSize)
 	if err != nil {
 		return 0, err
 	}

@@ -69,15 +69,17 @@ func TestOutbox_DeleteRespectsCoalescedSequence(t *testing.T) {
 	}
 }
 
-// TestOutbox_ClaimSkipsLocked proves ClaimWakeups uses FOR UPDATE SKIP LOCKED:
-// a wakeup locked by one transaction is invisible to a concurrent claimer, so
-// cooperating relays never block on each other or double-deliver within a lock
-// window.
-func TestOutbox_ClaimSkipsLocked(t *testing.T) {
+// TestOutbox_ListIsAtLeastOnce proves the honest delivery semantics: the outbox
+// read is a plain list, NOT a lease. Two concurrent reads both see the same
+// pending wakeup — so two relay instances can both deliver a Signal for it. That
+// is deliberately harmless: delivery is at-least-once and the SessionWorkflow
+// deduplicates duplicate wakeups by receipt sequence. This test guards against
+// anyone reintroducing a claim/lease promise the code does not actually make.
+func TestOutbox_ListIsAtLeastOnce(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 
-	sess := newSession("sess_skiplocked")
+	sess := newSession("sess_atleastonce")
 	if _, err := store.CreateSession(ctx, sess, nil); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -87,32 +89,34 @@ func TestOutbox_ClaimSkipsLocked(t *testing.T) {
 		t.Fatalf("admit: %v", err)
 	}
 
-	// Open a transaction that claims (and holds a lock on) the wakeup.
-	tx, err := store.pool.Begin(ctx)
+	// Two independent reads (as two relay instances would issue) both observe the
+	// same pending wakeup — there is no claim that hides it from the second reader.
+	first, err := store.ListWakeupsForDelivery(ctx, 10)
 	if err != nil {
-		t.Fatalf("begin: %v", err)
+		t.Fatalf("list 1: %v", err)
 	}
-	defer tx.Rollback(ctx)
-	rows, err := tx.Query(ctx,
-		`SELECT session_id FROM orchestration_outbox ORDER BY enqueued_at LIMIT 1 FOR UPDATE SKIP LOCKED`)
+	second, err := store.ListWakeupsForDelivery(ctx, 10)
 	if err != nil {
-		t.Fatalf("lock query: %v", err)
+		t.Fatalf("list 2: %v", err)
 	}
-	locked := 0
-	for rows.Next() {
-		locked++
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("expected both reads to see the wakeup, got %d and %d", len(first), len(second))
 	}
-	rows.Close()
-	if locked != 1 {
-		t.Fatalf("expected to lock 1 row, locked %d", locked)
+	if first[0].SessionID != sess.ID || second[0].SessionID != sess.ID {
+		t.Fatal("both reads should return the same session's wakeup")
 	}
 
-	// A concurrent claim (separate pool connection) must skip the locked row.
-	claimed, err := store.ClaimWakeups(ctx, 10)
-	if err != nil {
-		t.Fatalf("concurrent claim: %v", err)
+	// A guarded delete removes it once; a second delete on the same sequence is a
+	// no-op, so a duplicate delivery+delete pair does not error or double-remove.
+	removed, err := store.DeleteWakeupIfUnchanged(ctx, sess.ID, first[0].MaxEventSeq)
+	if err != nil || !removed {
+		t.Fatalf("first delete should remove: removed=%v err=%v", removed, err)
 	}
-	if len(claimed) != 0 {
-		t.Fatalf("expected concurrent claim to skip the locked wakeup, got %d", len(claimed))
+	removed, err = store.DeleteWakeupIfUnchanged(ctx, sess.ID, second[0].MaxEventSeq)
+	if err != nil {
+		t.Fatalf("second delete errored: %v", err)
+	}
+	if removed {
+		t.Fatal("second delete of an already-removed wakeup should be a no-op")
 	}
 }

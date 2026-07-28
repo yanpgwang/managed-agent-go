@@ -48,11 +48,19 @@ func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 	cursor := in.StartCursor
 	highestSignaled := cursor
 	turnsThisRun := 0
+	// Capture the threshold once at the start of this history run into a local, so
+	// it is a fixed value for the run's lifetime. The package var exists only so
+	// tests can lower it; reading it once here keeps replay deterministic even if
+	// the var were changed under a running workflow.
+	canThreshold := continueAsNewThreshold
 
 	wakeupCh := workflow.GetSignalChannel(ctx, WakeupSignalName)
 
 	// drain applies every currently-available event after the cursor, driving one
 	// turn per user.message and advancing the cursor past each turn's own output.
+	// It sets `terminated` and returns early when a turn ended the session, so the
+	// caller can stop the whole workflow rather than just this drain pass.
+	terminated := false
 	drain := func() error {
 		for {
 			var loaded LoadEventsResult
@@ -73,13 +81,27 @@ func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 					continue
 				}
 				if e.Type == domain.EvUserMessage {
+					var res RunTurnResult
 					if err := workflow.ExecuteActivity(actx, ActivityRunTurn, RunTurnInput{
 						SessionID:      in.SessionID,
 						TriggerEventID: e.ID,
-					}).Get(actx, nil); err != nil {
+					}).Get(actx, &res); err != nil {
 						return err
 					}
 					turnsThisRun++
+					// A turn that terminated the session ends orchestration: stop
+					// draining the rest of the loaded batch. Later queued user.message
+					// events stay unprocessed and the session stays terminated — the
+					// workflow must never resurrect a terminated session by processing a
+					// message queued behind the terminating one. Signal the caller to
+					// end the whole workflow (a bare return here would only end this
+					// drain pass and the workflow would block on the next wakeup).
+					if res.Terminated {
+						logger.Info("session terminated by turn; stopping",
+							"session_id", in.SessionID, "trigger", e.ID)
+						terminated = true
+						return nil
+					}
 					// Advance the cursor only to the trigger's own sequence, NOT to
 					// the turn's output sequence. The turn's agent.message /
 					// session.status_idle events take higher sequences than any input
@@ -105,10 +127,17 @@ func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 			}
 		}
 
+		// A turn terminated the session: end the workflow. Any events still queued
+		// behind the terminating message stay unprocessed and the session stays
+		// terminated.
+		if terminated {
+			return nil
+		}
+
 		// Continue-As-New with the small cursor once this history run has driven
 		// enough turns. Draining first guarantees we do not strand already-visible
 		// work across the boundary.
-		if turnsThisRun >= continueAsNewThreshold {
+		if turnsThisRun >= canThreshold {
 			logger.Info("continue-as-new", "session_id", in.SessionID, "cursor", cursor)
 			return workflow.NewContinueAsNewError(ctx, SessionWorkflow, SessionWorkflowInput{
 				SessionID:   in.SessionID,

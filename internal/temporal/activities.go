@@ -22,7 +22,7 @@ const (
 // Activities testable with an in-memory fake.
 type EventSource interface {
 	EventsAfter(ctx context.Context, sessionID string, cursor int64, limit int) ([]domain.Event, error)
-	HistoryThrough(ctx context.Context, sessionID string, seq int64, limit int) ([]domain.Event, error)
+	HistoryThrough(ctx context.Context, sessionID, triggerEventID string, limit int) ([]domain.Event, error)
 	GetSession(ctx context.Context, id string) (domain.Session, error)
 	GetEvent(ctx context.Context, sessionID, id string) (domain.Event, error)
 	CompleteTurn(ctx context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error)
@@ -54,9 +54,12 @@ type SandboxLease interface {
 
 // TurnCompletionResult mirrors pg.TurnCompletion without importing the pg
 // package into the workflow-facing types, keeping the domain boundary intact.
+// Status is the session's projected status after the completion committed, so
+// the Activity can tell the workflow whether the session is now terminated.
 type TurnCompletionResult struct {
 	Events  []domain.Event
 	Applied bool
+	Status  domain.Status
 }
 
 // historyLimit bounds how many prior events a turn projects into the model. It
@@ -121,17 +124,19 @@ func (a *Activities) RunTurn(ctx context.Context, in RunTurnInput) (RunTurnResul
 	if err != nil {
 		return RunTurnResult{}, err
 	}
-	// Idempotent short-circuit: a trigger already stamped processed means this
-	// turn's completion already committed. Do not re-invoke the model or re-run a
-	// tool; the workflow's cursor advances past the committed events on its own.
-	if trigger.ProcessedAt != nil {
-		return RunTurnResult{}, nil
-	}
 	session, err := a.source.GetSession(ctx, in.SessionID)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
-	history, err := a.source.HistoryThrough(ctx, in.SessionID, trigger.Sequence, historyLimit)
+	// Idempotent short-circuit: a trigger already stamped processed means this
+	// turn's completion already committed. Do not re-invoke the model or re-run a
+	// tool. Report the session's CURRENT projected status so a turn that
+	// previously terminated the session is not treated as an ordinary completion
+	// on retry — the workflow must still stop draining the batch.
+	if trigger.ProcessedAt != nil {
+		return RunTurnResult{Terminated: session.Status == domain.StatusTerminated}, nil
+	}
+	history, err := a.source.HistoryThrough(ctx, in.SessionID, in.TriggerEventID, historyLimit)
 	if err != nil {
 		return RunTurnResult{}, err
 	}
@@ -157,17 +162,21 @@ func (a *Activities) RunTurn(ctx context.Context, in RunTurnInput) (RunTurnResul
 		}
 		// Recover any leftover tool execution from a crashed prior attempt BEFORE
 		// starting a fresh one. If the turn already crossed the side-effect boundary
-		// (a started step now classified ambiguous, or a completed/ambiguous step),
-		// it must not be replayed: terminate honestly instead.
+		// (a step left started and now classified ambiguous, or an already
+		// completed/ambiguous step), it must not be freshly re-run: terminate
+		// honestly. This slice does not yet resume the model loop from a durable
+		// completed result — that is deferred — so a completed prior step is treated
+		// as "prior tool execution that cannot be resumed here", NOT as ambiguous.
 		hasPrior, err := a.journal.RecoverTurn(ctx, in.SessionID, in.TriggerEventID)
 		if err != nil {
 			return RunTurnResult{}, err
 		}
 		if hasPrior {
-			log.Printf("temporal: refusing to replay ambiguous tool turn session_id=%s trigger=%s",
+			log.Printf("temporal: refusing to re-run a turn with prior tool execution session_id=%s trigger=%s",
 				in.SessionID, in.TriggerEventID)
 			return a.terminate(ctx, in.SessionID, in.TriggerEventID,
-				"tool execution outcome is ambiguous and cannot be safely retried")
+				"a prior attempt already executed a tool for this turn; resuming from a durable "+
+					"tool result is not supported yet, so the turn cannot be safely retried")
 		}
 		box, err := a.sandboxes.Acquire(ctx, in.SessionID, sandbox.Spec{Timeout: sandboxTurnTimeout})
 		if err != nil {
@@ -184,15 +193,18 @@ func (a *Activities) RunTurn(ctx context.Context, in RunTurnInput) (RunTurnResul
 	sink := newActivitySink(a.ids)
 	outcome, runErr := a.rt.Run(ctx, req, sink)
 	if runErr != nil {
-		// Best-effort close of the attempt as failed. If a tool step is still in
-		// started state (the crash happened mid-side-effect), FinishAttempt refuses;
-		// that is fine — the started step is left for the next attempt's RecoverTurn
-		// to classify ambiguous. Either way we surface the error so Temporal retries.
+		// Best-effort close of the attempt as failed, on a durable context so a
+		// cancellation that surfaced as runErr does not also prevent recording the
+		// classification. If a tool step is still in started state, FinishAttempt
+		// refuses; that is fine — the started step is left for the next attempt's
+		// RecoverTurn to classify ambiguous. We surface the error so Temporal retries.
 		if attemptID != "" {
+			dctx, cancel := durableCtx(ctx)
 			msg := runErr.Error()
-			if ferr := a.journal.FinishAttempt(ctx, attemptID, domain.RunAttemptFailed, &msg); ferr != nil {
+			if ferr := a.journal.FinishAttempt(dctx, attemptID, domain.RunAttemptFailed, &msg); ferr != nil {
 				log.Printf("temporal: finish failed attempt (left for recovery) session_id=%s: %v", in.SessionID, ferr)
 			}
+			cancel()
 		}
 		return RunTurnResult{}, runErr
 	}
@@ -202,14 +214,24 @@ func (a *Activities) RunTurn(ctx context.Context, in RunTurnInput) (RunTurnResul
 	// honestly rather than inventing a park protocol here.
 	if outcome.RequiresAction {
 		if attemptID != "" {
-			_ = a.journal.FinishAttempt(ctx, attemptID, domain.RunAttemptFailed, strPtr("requires_action not supported on the Temporal path yet"))
+			dctx, cancel := durableCtx(ctx)
+			_ = a.journal.FinishAttempt(dctx, attemptID, domain.RunAttemptFailed, strPtr("requires_action not supported on the Temporal path yet"))
+			cancel()
 		}
 		return a.terminate(ctx, in.SessionID, in.TriggerEventID,
 			"client-action tools are not supported on the Temporal path yet")
 	}
 
+	// Finalize the attempt and commit the turn on durable contexts: after the tool
+	// side effect has happened, an Activity-context cancellation must not prevent
+	// recording that the attempt completed and committing the authoritative
+	// output. Each durable write gets its own fresh WithoutCancel+timeout context
+	// (never one created before the long runtime call, which could expire mid-run).
 	if attemptID != "" {
-		if err := a.journal.FinishAttempt(ctx, attemptID, domain.RunAttemptCompleted, nil); err != nil {
+		dctx, cancel := durableCtx(ctx)
+		err := a.journal.FinishAttempt(dctx, attemptID, domain.RunAttemptCompleted, nil)
+		cancel()
+		if err != nil {
 			return RunTurnResult{}, err
 		}
 	}
@@ -218,18 +240,25 @@ func (a *Activities) RunTurn(ctx context.Context, in RunTurnInput) (RunTurnResul
 		Type:    domain.EvSessionStatusIdle,
 		Payload: map[string]any{"stop_reason": map[string]any{"type": "end_turn"}},
 	})
-	completion, err := a.source.CompleteTurn(ctx, in.SessionID, in.TriggerEventID, drafts, domain.StatusIdle)
+	dctx, cancel := durableCtx(ctx)
+	completion, err := a.source.CompleteTurn(dctx, in.SessionID, in.TriggerEventID, drafts, domain.StatusIdle)
+	cancel()
 	if err != nil {
 		return RunTurnResult{}, err
 	}
-	return RunTurnResult{MaxEventSeq: maxSeq(completion.Events)}, nil
+	return RunTurnResult{
+		MaxEventSeq: maxSeq(completion.Events),
+		Terminated:  completion.Status == domain.StatusTerminated,
+	}, nil
 }
 
 // terminate commits an honest terminal failure for a turn: a session.error and
 // session.status_terminated, with the session projected to terminated. It is the
-// path taken when a turn cannot proceed safely (ambiguous tool replay, an
-// out-of-scope park, or a misconfiguration). It returns success to Temporal
-// because the turn is durably resolved — retrying would not help.
+// path taken when a turn cannot proceed safely (prior tool execution that cannot
+// be resumed, an out-of-scope park, or a misconfiguration). It returns success
+// to Temporal because the turn is durably resolved — retrying would not help —
+// and reports Terminated so the workflow stops draining the loaded batch. The
+// completion runs on a durable context for the same reason as the success path.
 func (a *Activities) terminate(ctx context.Context, sessionID, triggerEventID, message string) (RunTurnResult, error) {
 	drafts := []domain.EventDraft{
 		{Type: domain.EvSessionError, Payload: map[string]any{"error": map[string]any{
@@ -237,11 +266,16 @@ func (a *Activities) terminate(ctx context.Context, sessionID, triggerEventID, m
 		}}},
 		{Type: domain.EvSessionStatusTerminated, Payload: map[string]any{}},
 	}
-	completion, err := a.source.CompleteTurn(ctx, sessionID, triggerEventID, drafts, domain.StatusTerminated)
+	dctx, cancel := durableCtx(ctx)
+	completion, err := a.source.CompleteTurn(dctx, sessionID, triggerEventID, drafts, domain.StatusTerminated)
+	cancel()
 	if err != nil {
 		return RunTurnResult{}, err
 	}
-	return RunTurnResult{MaxEventSeq: maxSeq(completion.Events)}, nil
+	return RunTurnResult{
+		MaxEventSeq: maxSeq(completion.Events),
+		Terminated:  true,
+	}, nil
 }
 
 func maxSeq(events []domain.Event) int64 {
@@ -255,6 +289,21 @@ func maxSeq(events []domain.Event) int64 {
 }
 
 func strPtr(s string) *string { return &s }
+
+// durableWriteTimeout bounds a durable write that must run even after the
+// Activity context is canceled (e.g. a tool side effect already happened and its
+// fact must be recorded). It is deliberately generous but finite.
+const durableWriteTimeout = 30 * time.Second
+
+// durableCtx returns a context detached from the caller's cancellation
+// (context.WithoutCancel preserves values like tracing metadata) with a fresh
+// bounded timeout. It is created per durable write, never once before a long
+// runtime call, so the timeout cannot expire mid-run. This mirrors the SQLite
+// app's runToolJournal, which records tool facts on a durable context so an
+// interrupt reaching a tool executor still commits the result.
+func durableCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), durableWriteTimeout)
+}
 
 // toolSetHasTools reports whether a resolved toolset offers any tool, in which
 // case the turn needs a provisioned sandbox and a durable journal.

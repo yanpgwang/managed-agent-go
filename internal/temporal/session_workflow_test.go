@@ -52,12 +52,21 @@ func (f *fakeSource) EventsAfter(_ context.Context, _ string, cursor int64, limi
 	return out, nil
 }
 
-func (f *fakeSource) HistoryThrough(_ context.Context, _ string, seq int64, _ int) ([]domain.Event, error) {
+func (f *fakeSource) HistoryThrough(_ context.Context, _ string, triggerEventID string, _ int) ([]domain.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	// Find the trigger's sequence, then return every event at or below it. The
+	// workflow tests here exercise ordering/dedup, not causal reconstruction, so a
+	// simple sequence bound suffices for the fake.
+	var triggerSeq int64
+	for _, e := range f.events {
+		if e.ID == triggerEventID {
+			triggerSeq = e.Sequence
+		}
+	}
 	out := []domain.Event{}
 	for _, e := range f.events {
-		if e.Sequence <= seq {
+		if e.Sequence <= triggerSeq {
 			out = append(out, e)
 		}
 	}
@@ -79,13 +88,13 @@ func (f *fakeSource) GetEvent(_ context.Context, _ string, id string) (domain.Ev
 	return domain.Event{}, domain.NotFound("event not found")
 }
 
-func (f *fakeSource) CompleteTurn(_ context.Context, sessionID, triggerEventID string, output []domain.EventDraft, _ domain.Status) (TurnCompletionResult, error) {
+func (f *fakeSource) CompleteTurn(_ context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	// Idempotent: if this trigger's turn already committed, replay its output
 	// events without appending again — exactly the pg.Store contract.
 	if f.completes[triggerEventID] > 0 {
-		return TurnCompletionResult{Events: f.byTurn[triggerEventID], Applied: false}, nil
+		return TurnCompletionResult{Events: f.byTurn[triggerEventID], Applied: false, Status: status}, nil
 	}
 	f.completes[triggerEventID]++
 	committed := make([]domain.Event, 0, len(output))
@@ -99,7 +108,7 @@ func (f *fakeSource) CompleteTurn(_ context.Context, sessionID, triggerEventID s
 		committed = append(committed, e)
 	}
 	f.byTurn[triggerEventID] = committed
-	return TurnCompletionResult{Events: committed, Applied: true}, nil
+	return TurnCompletionResult{Events: committed, Applied: true, Status: status}, nil
 }
 
 func (f *fakeSource) completions(triggerID string) int {
@@ -289,4 +298,44 @@ func TestSessionWorkflow_ContinueAsNewCarriesCursor(t *testing.T) {
 	require.Equal(t, SessionWorkflowType, canErr.WorkflowType.Name)
 	// The turn ran exactly once before the boundary.
 	require.Equal(t, 1, source.completions("evt_1"))
+}
+
+// TestSessionWorkflow_TerminationStopsBatch proves that when a turn terminates
+// the session (RunTurnResult.Terminated), the workflow stops processing the rest
+// of the loaded batch: a second user.message queued behind the terminating one
+// is never handed to RunTurn. This guards the P0 termination-propagation fix.
+func TestSessionWorkflow_TerminationStopsBatch(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+
+	source := newFakeSource([]domain.Event{userMsg("evt_1", 1), userMsg("evt_2", 2)})
+	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
+
+	var seen []string
+	var mu sync.Mutex
+	env.RegisterActivityWithOptions(func(ctx context.Context, in RunTurnInput) (RunTurnResult, error) {
+		mu.Lock()
+		seen = append(seen, in.TriggerEventID)
+		mu.Unlock()
+		// The first turn terminates the session; report Terminated so the workflow
+		// must stop before the second message.
+		return RunTurnResult{MaxEventSeq: 1, Terminated: true}, nil
+	}, activity.RegisterOptions{Name: ActivityRunTurn})
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 2})
+	}, time.Millisecond)
+
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_term", StartCursor: 0})
+
+	// The workflow returns (completes) after the terminating turn rather than
+	// blocking forever on the signal channel.
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"evt_1"}, seen, "only the first (terminating) turn should run; evt_2 must stay unprocessed")
 }

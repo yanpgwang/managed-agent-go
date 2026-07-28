@@ -135,12 +135,14 @@ sandbox.
 
 The first Temporal/PostgreSQL platform-spine slice is implemented alongside the
 default SQLite path — it does **not** replace it. It routes one `user.message`
-end to end through PostgreSQL admission, a coalescible outbox, a retrying
-Signal-With-Start relay, and a durable `SessionWorkflow` — including a single
-always_allow **built-in tool step** run under a PostgreSQL tool journal that
-preserves the prepared/started/completed/ambiguous boundary (a crashed step is
-classified ambiguous and never silently replayed). Start the local stack and run
-the execution plane:
+end to end through PostgreSQL admission, a coalescible outbox, an at-least-once
+Signal-With-Start relay, and a durable `SessionWorkflow` — including a tool-using
+turn (an always_allow **built-in tool step**) run under a PostgreSQL tool journal
+that preserves the `prepared → started → completed` boundary with `ambiguous`
+branching from `started`. A step left `started` by a crash is classified
+`ambiguous` and the turn is refused rather than silently replayed; a `completed`
+step is honestly reported as prior execution that cannot yet be resumed. Start
+the local stack and run the execution plane:
 
 ```bash
 make -C deployments/local up

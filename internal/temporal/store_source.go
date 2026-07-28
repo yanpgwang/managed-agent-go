@@ -21,8 +21,8 @@ func (s storeSource) EventsAfter(ctx context.Context, sessionID string, cursor i
 	return s.store.EventsAfter(ctx, sessionID, cursor, limit)
 }
 
-func (s storeSource) HistoryThrough(ctx context.Context, sessionID string, seq int64, limit int) ([]domain.Event, error) {
-	return s.store.HistoryThrough(ctx, sessionID, seq, limit)
+func (s storeSource) HistoryThrough(ctx context.Context, sessionID, triggerEventID string, limit int) ([]domain.Event, error) {
+	return s.store.HistoryThrough(ctx, sessionID, triggerEventID, limit)
 }
 
 func (s storeSource) GetSession(ctx context.Context, id string) (domain.Session, error) {
@@ -38,7 +38,7 @@ func (s storeSource) CompleteTurn(ctx context.Context, sessionID, triggerEventID
 	if err != nil {
 		return TurnCompletionResult{}, err
 	}
-	return TurnCompletionResult{Events: res.Events, Applied: res.Applied}, nil
+	return TurnCompletionResult{Events: res.Events, Applied: res.Applied, Status: res.Session.Status}, nil
 }
 
 // storeSource also satisfies JournalStore, adapting BeginAttempt's rich return to

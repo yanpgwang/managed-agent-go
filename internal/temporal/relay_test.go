@@ -35,7 +35,7 @@ func (f *fakeOutbox) enqueue(sessionID string, maxSeq int64) {
 	f.rows[sessionID] = &pg.OutboxWakeup{SessionID: sessionID, MaxEventSeq: maxSeq}
 }
 
-func (f *fakeOutbox) ClaimWakeups(_ context.Context, limit int) ([]pg.OutboxWakeup, error) {
+func (f *fakeOutbox) ListWakeupsForDelivery(_ context.Context, limit int) ([]pg.OutboxWakeup, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	out := make([]pg.OutboxWakeup, 0, len(f.rows))

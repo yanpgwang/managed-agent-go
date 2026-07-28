@@ -20,22 +20,19 @@ type OutboxWakeup struct {
 	Attempts    int
 }
 
-// ClaimWakeups reads up to limit pending wakeups for delivery, oldest first,
-// using FOR UPDATE SKIP LOCKED so concurrent relays never block each other. The
-// returned rows are locked for the lifetime of tx; the caller must call the
-// returned finish func (commit) once delivery decisions are recorded.
-//
-// Because delivery to Temporal is an external call, ClaimWakeups deliberately
-// does NOT hold the tx across it: it reads within a short tx, commits, and the
-// caller delivers and then calls DeleteWakeupIfUnchanged / RecordAttempt in
-// separate short transactions. This keeps row locks brief and makes duplicate
-// delivery (relay crash after signal, before delete) harmless rather than
-// blocking.
-func (s *Store) ClaimWakeups(ctx context.Context, limit int) ([]OutboxWakeup, error) {
+// ListWakeupsForDelivery reads up to limit pending wakeups, oldest first. It is
+// a plain read, NOT a lease or claim: it takes no row lock that outlives the
+// query, so two relay instances scanning concurrently can both read the same row
+// and both deliver a Signal for it. That is deliberate — delivery is
+// at-least-once and duplicates are harmless because the SessionWorkflow
+// deduplicates by receipt sequence (a wakeup at or below its cursor is a no-op).
+// A delivered row is removed only by DeleteWakeupIfUnchanged, itself guarded by
+// the sequence, so a duplicate delete is also safe.
+func (s *Store) ListWakeupsForDelivery(ctx context.Context, limit int) ([]OutboxWakeup, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.q.ClaimOutboxBatch(ctx, int32(limit))
+	rows, err := s.q.ListOutboxBatch(ctx, int32(limit))
 	if err != nil {
 		return nil, err
 	}
@@ -52,10 +49,10 @@ func (s *Store) ClaimWakeups(ctx context.Context, limit int) ([]OutboxWakeup, er
 }
 
 // DeleteWakeupIfUnchanged removes a delivered wakeup, but only if no later
-// admission raised its sequence since it was claimed. It reports whether a row
-// was actually deleted: false means new work coalesced into the row after the
-// signal was sent, so the wakeup remains and will be re-delivered with the
-// higher sequence — a harmless duplicate.
+// admission raised its sequence since it was read. It reports whether a row was
+// actually deleted: false means either new work coalesced into the row after the
+// signal was sent (it remains and is re-delivered with the higher sequence) or
+// another relay already deleted it — both harmless.
 func (s *Store) DeleteWakeupIfUnchanged(ctx context.Context, sessionID string, maxSeq int64) (bool, error) {
 	affected, err := s.q.DeleteOutboxIfSeq(ctx, pgstore.DeleteOutboxIfSeqParams{
 		SessionID:   sessionID,

@@ -11,42 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const claimOutboxBatch = `-- name: ClaimOutboxBatch :many
-SELECT session_id, max_event_seq, enqueued_at, attempts, last_attempt_at, last_error
-FROM orchestration_outbox
-ORDER BY enqueued_at
-LIMIT $1
-FOR UPDATE SKIP LOCKED
+const countUnprocessedUserMessages = `-- name: CountUnprocessedUserMessages :one
+SELECT COUNT(*)::int AS n
+FROM events
+WHERE session_id = $1
+  AND type = 'user.message'
+  AND processed_at IS NULL
+  AND id <> $2
 `
 
-// ClaimOutboxBatch reads the oldest pending wakeups for delivery. SKIP LOCKED
-// lets multiple relay workers cooperate without blocking on each other; a row
-// claimed by one relay is invisible to another for the duration of its tx.
-func (q *Queries) ClaimOutboxBatch(ctx context.Context, rowLimit int32) ([]OrchestrationOutbox, error) {
-	rows, err := q.db.Query(ctx, claimOutboxBatch, rowLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []OrchestrationOutbox{}
-	for rows.Next() {
-		var i OrchestrationOutbox
-		if err := rows.Scan(
-			&i.SessionID,
-			&i.MaxEventSeq,
-			&i.EnqueuedAt,
-			&i.Attempts,
-			&i.LastAttemptAt,
-			&i.LastError,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+type CountUnprocessedUserMessagesParams struct {
+	SessionID string
+	ExcludeID string
+}
+
+// CountUnprocessedUserMessages counts user.message events still awaiting a turn,
+// excluding one id (the trigger just processed in the same transaction). It lets
+// CompleteTurn decide whether this turn is the last: only then does the session
+// go idle; otherwise it stays running with no intermediate idle event.
+func (q *Queries) CountUnprocessedUserMessages(ctx context.Context, arg CountUnprocessedUserMessagesParams) (int32, error) {
+	row := q.db.QueryRow(ctx, countUnprocessedUserMessages, arg.SessionID, arg.ExcludeID)
+	var n int32
+	err := row.Scan(&n)
+	return n, err
 }
 
 const deleteOutboxIfSeq = `-- name: DeleteOutboxIfSeq :execrows
@@ -286,6 +273,47 @@ func (q *Queries) ListEventsByTurn(ctx context.Context, arg ListEventsByTurnPara
 	return items, nil
 }
 
+const listOutboxBatch = `-- name: ListOutboxBatch :many
+SELECT session_id, max_event_seq, enqueued_at, attempts, last_attempt_at, last_error
+FROM orchestration_outbox
+ORDER BY enqueued_at
+LIMIT $1
+`
+
+// ListOutboxBatch reads the oldest pending wakeups for delivery, oldest first.
+// This is a plain read, not a lease/claim: delivery to Temporal happens outside
+// any transaction, so two relay instances can read the same row and both send a
+// Signal. That is deliberately harmless — delivery is at-least-once and the
+// SessionWorkflow deduplicates by receipt sequence (a wakeup at or below its
+// cursor is a no-op). A delivered row is removed only by DeleteOutboxIfSeq, which
+// is itself guarded by the sequence.
+func (q *Queries) ListOutboxBatch(ctx context.Context, rowLimit int32) ([]OrchestrationOutbox, error) {
+	rows, err := q.db.Query(ctx, listOutboxBatch, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []OrchestrationOutbox{}
+	for rows.Next() {
+		var i OrchestrationOutbox
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.MaxEventSeq,
+			&i.EnqueuedAt,
+			&i.Attempts,
+			&i.LastAttemptAt,
+			&i.LastError,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockSession = `-- name: LockSession :one
 SELECT id, status, body, created_at, updated_at
 FROM sessions
@@ -361,6 +389,54 @@ func (q *Queries) MaxEventSeq(ctx context.Context, sessionID string) (int64, err
 	var max_seq int64
 	err := row.Scan(&max_seq)
 	return max_seq, err
+}
+
+const priorProcessedUserTriggers = `-- name: PriorProcessedUserTriggers :many
+SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+FROM events
+WHERE session_id = $1
+  AND type = 'user.message'
+  AND processed_at IS NOT NULL
+  AND seq < $2
+ORDER BY seq
+`
+
+type PriorProcessedUserTriggersParams struct {
+	SessionID string
+	BeforeSeq int64
+}
+
+// PriorProcessedUserTriggers returns the processed user.message events before a
+// given sequence, in receipt order. These are the prior turns whose causal
+// history (trigger followed by its committed outputs) is replayed into the model
+// for the current turn.
+func (q *Queries) PriorProcessedUserTriggers(ctx context.Context, arg PriorProcessedUserTriggersParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, priorProcessedUserTriggers, arg.SessionID, arg.BeforeSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Event{}
+	for rows.Next() {
+		var i Event
+		if err := rows.Scan(
+			&i.ID,
+			&i.SessionID,
+			&i.Seq,
+			&i.Type,
+			&i.Payload,
+			&i.TurnEventID,
+			&i.CreatedAt,
+			&i.ProcessedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateSessionStatus = `-- name: UpdateSessionStatus :exec

@@ -323,22 +323,66 @@ func (s *Store) GetEvent(ctx context.Context, sessionID, id string) (domain.Even
 	return eventFromRow(row)
 }
 
-// HistoryThrough returns the session's public events with sequence at or below
-// seq, in ascending receipt order. It is the conversation projection input for a
-// turn: bounding at the trigger's own sequence guarantees a turn never sees a
-// later event admitted while it was queued.
-func (s *Store) HistoryThrough(ctx context.Context, sessionID string, seq int64, limit int) ([]domain.Event, error) {
-	all, err := s.EventsAfter(ctx, sessionID, 0, limit)
+// HistoryThrough reconstructs the causal conversation history for the turn
+// triggered by triggerEventID, to be projected into the model. It mirrors the
+// SQLite path's RunStore.ModelHistory: public receipt order is deliberately NOT
+// what a turn replays, because a later user.message admitted (at a lower
+// sequence) before an earlier turn finished must not appear as a peer of the
+// current trigger.
+//
+// The reconstruction walks the prior *processed* user.message triggers in
+// receipt order and, for each, appends that trigger followed by the exact output
+// events it committed (identified by turn_event_id). It then appends the current
+// trigger. This interleaves user turn / agent reply in causal order, so a batch
+// A,B projects as [A, agent(A), B] rather than collapsing A and B into two
+// consecutive user turns.
+//
+// The result is bounded to the newest `limit` events, preserving causal order —
+// an over-limit session carries its most recent context, not the oldest. A
+// window that cuts a tool_use/tool_result pair is left to ProjectMessages'
+// existing dangling/orphan repair.
+func (s *Store) HistoryThrough(ctx context.Context, sessionID, triggerEventID string, limit int) ([]domain.Event, error) {
+	trigger, err := s.GetEvent(ctx, sessionID, triggerEventID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]domain.Event, 0, len(all))
-	for _, e := range all {
-		if e.Sequence <= seq {
-			out = append(out, e)
-		}
+
+	priorRows, err := s.q.PriorProcessedUserTriggers(ctx, pgstore.PriorProcessedUserTriggersParams{
+		SessionID: sessionID,
+		BeforeSeq: trigger.Sequence,
+	})
+	if err != nil {
+		return nil, err
 	}
-	return out, nil
+	priors, err := eventsFromRows(priorRows)
+	if err != nil {
+		return nil, err
+	}
+
+	var ordered []domain.Event
+	for _, prior := range priors {
+		ordered = append(ordered, prior)
+		id := prior.ID
+		outRows, err := s.q.ListEventsByTurn(ctx, pgstore.ListEventsByTurnParams{
+			SessionID:   sessionID,
+			TurnEventID: &id,
+		})
+		if err != nil {
+			return nil, err
+		}
+		outputs, err := eventsFromRows(outRows)
+		if err != nil {
+			return nil, err
+		}
+		ordered = append(ordered, outputs...)
+	}
+	ordered = append(ordered, trigger)
+
+	// Bound to the newest `limit` events, keeping causal order.
+	if limit > 0 && len(ordered) > limit {
+		ordered = ordered[len(ordered)-limit:]
+	}
+	return ordered, nil
 }
 
 // TurnCompletion reports the committed output of a turn and whether this call
@@ -406,7 +450,33 @@ func (s *Store) CompleteTurn(
 		if err != nil {
 			return err
 		}
-		events, _, err := s.appendDrafts(ctx, q, sessionID, outputDrafts, maxSeq, &triggerEventID)
+
+		// Intermediate-idle suppression: when this is an ordinary end_turn
+		// completion (status idle) but more user.message triggers are still
+		// unprocessed — e.g. a batch A,B where A finishes while B is queued — the
+		// session must NOT flip to idle between turns. Doing so would emit a
+		// spurious public session.status_idle and momentarily lie about the session
+		// being done. Keep it running and drop the terminal idle draft; only the
+		// last turn's completion (no remaining unprocessed user.message) idles the
+		// session. A terminated status is never softened, and a non-idle status
+		// (e.g. still running by the caller's choice) is left as-is.
+		effectiveStatus := status
+		drafts := outputDrafts
+		if status == domain.StatusIdle {
+			remaining, err := q.CountUnprocessedUserMessages(ctx, pgstore.CountUnprocessedUserMessagesParams{
+				SessionID: sessionID,
+				ExcludeID: triggerEventID,
+			})
+			if err != nil {
+				return err
+			}
+			if remaining > 0 {
+				effectiveStatus = domain.StatusRunning
+				drafts = withoutTerminalIdle(outputDrafts)
+			}
+		}
+
+		events, _, err := s.appendDrafts(ctx, q, sessionID, drafts, maxSeq, &triggerEventID)
 		if err != nil {
 			return err
 		}
@@ -418,7 +488,7 @@ func (s *Store) CompleteTurn(
 		}); err != nil {
 			return err
 		}
-		session.Status = status
+		session.Status = effectiveStatus
 		session.UpdatedAt = now
 		if err := s.putProjection(ctx, q, session); err != nil {
 			return err
@@ -430,4 +500,18 @@ func (s *Store) CompleteTurn(
 		return TurnCompletion{}, err
 	}
 	return result, nil
+}
+
+// withoutTerminalIdle returns drafts with any session.status_idle draft removed,
+// keeping every other draft in order. Used when an intermediate turn must not
+// publish an idle event because later user.message work is still queued.
+func withoutTerminalIdle(drafts []domain.EventDraft) []domain.EventDraft {
+	out := make([]domain.EventDraft, 0, len(drafts))
+	for _, d := range drafts {
+		if d.Type == domain.EvSessionStatusIdle {
+			continue
+		}
+		out = append(out, d)
+	}
+	return out
 }

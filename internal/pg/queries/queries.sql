@@ -61,6 +61,31 @@ SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_
 FROM events
 WHERE session_id = @session_id AND id = @id;
 
+-- PriorProcessedUserTriggers returns the processed user.message events before a
+-- given sequence, in receipt order. These are the prior turns whose causal
+-- history (trigger followed by its committed outputs) is replayed into the model
+-- for the current turn.
+-- name: PriorProcessedUserTriggers :many
+SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+FROM events
+WHERE session_id = @session_id
+  AND type = 'user.message'
+  AND processed_at IS NOT NULL
+  AND seq < @before_seq
+ORDER BY seq;
+
+-- CountUnprocessedUserMessages counts user.message events still awaiting a turn,
+-- excluding one id (the trigger just processed in the same transaction). It lets
+-- CompleteTurn decide whether this turn is the last: only then does the session
+-- go idle; otherwise it stays running with no intermediate idle event.
+-- name: CountUnprocessedUserMessages :one
+SELECT COUNT(*)::int AS n
+FROM events
+WHERE session_id = @session_id
+  AND type = 'user.message'
+  AND processed_at IS NULL
+  AND id <> @exclude_id;
+
 -- MarkEventProcessed stamps a trigger event processed, but only once
 -- (COALESCE keeps the first timestamp). Returns the row so the caller can tell a
 -- first processing from a repeat.
@@ -84,15 +109,18 @@ SELECT session_id, max_event_seq, enqueued_at, attempts, last_attempt_at, last_e
 FROM orchestration_outbox
 WHERE session_id = @session_id;
 
--- ClaimOutboxBatch reads the oldest pending wakeups for delivery. SKIP LOCKED
--- lets multiple relay workers cooperate without blocking on each other; a row
--- claimed by one relay is invisible to another for the duration of its tx.
--- name: ClaimOutboxBatch :many
+-- ListOutboxBatch reads the oldest pending wakeups for delivery, oldest first.
+-- This is a plain read, not a lease/claim: delivery to Temporal happens outside
+-- any transaction, so two relay instances can read the same row and both send a
+-- Signal. That is deliberately harmless — delivery is at-least-once and the
+-- SessionWorkflow deduplicates by receipt sequence (a wakeup at or below its
+-- cursor is a no-op). A delivered row is removed only by DeleteOutboxIfSeq, which
+-- is itself guarded by the sequence.
+-- name: ListOutboxBatch :many
 SELECT session_id, max_event_seq, enqueued_at, attempts, last_attempt_at, last_error
 FROM orchestration_outbox
 ORDER BY enqueued_at
-LIMIT @row_limit
-FOR UPDATE SKIP LOCKED;
+LIMIT @row_limit;
 
 -- DeleteOutboxIfSeq removes a delivered wakeup, but only if no later admission
 -- raised its sequence since it was read. A mismatch means new work coalesced
