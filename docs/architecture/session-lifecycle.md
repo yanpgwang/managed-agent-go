@@ -181,9 +181,43 @@ file-backed close/reopen keeps the pending action, an earlier queued run stays
 gated, and a later matching result still resumes. Session deletion removes
 pending-action rows with the session.
 
-Built-in `user.tool_confirmation` is accepted, gated, and validated as a pending
-action, but its allow/deny **execution** resume (re-driving the built-in) is
-intentionally out of scope for this milestone.
+The single built-in `user.tool_confirmation` **execution** resume is now
+implemented and tested end to end for both decisions:
+
+- The confirmation trigger drives a fresh run. The app recovers the **original**
+  committed `agent.tool_use` from server-owned causal history by the id in
+  `tool_use_id` (never from any client-supplied name/input) and passes it to the
+  runtime. Only a persisted `agent.tool_use` whose `evaluated_permission` is
+  `"ask"` — one that already passed the durable pending-action admission gate —
+  can resume; the runtime re-validates that the recovered event is an ask-policy
+  `agent.tool_use`, that its tool is a registered built-in, and that the built-in
+  is enabled in the session's toolset.
+- **Allow**: the runtime executes the original built-in once per successful run
+  attempt through the existing `tools.Registry`/`Sandbox` path (a crash between
+  execution and the completion commit can replay it — see below), emits
+  `agent.tool_result` with
+  `tool_use_id` equal to the original committed action event id and the actual
+  content/`is_error`, threads the paired `tool_use`/`tool_result` into the model
+  conversation, and continues the bounded model loop to `end_turn`.
+- **Deny**: the sandbox/executor is never invoked; the runtime emits an
+  `agent.tool_result` correlated to the original id marked `is_error`, with the
+  `deny_message` preserved in the delivered text, then continues the loop so the
+  model can react.
+- A malformed or unresolvable confirmation (missing/unknown original action,
+  non-`ask`, non-built-in, or disabled built-in) fails the run safely and
+  executes nothing. Because the paired result answers the previously parked
+  `agent.tool_use`, the two re-project as a valid `tool_use`/`tool_result` pair
+  (`TestProjectMessages_ConfirmationToolResultPairing`); before execution the
+  dangling `tool_use` is still dropped so no malformed request reaches the model.
+
+Two limitations remain explicit. The project has **no durable side-effect
+journal**: an allowed built-in runs before its `agent.tool_result` and the run
+completion commit, so a crash between execution and commit can **replay the side
+effect** on restart recovery. No retry/idempotency subsystem is added here. And
+the exact official **result wording and wire shape** of the rejection
+`agent.tool_result` (and of the `requires_action` payload) remain unconfirmed
+against the stable Managed Agents service; only single-action behavior is
+claimed.
 
 A run that parks with **multiple** action event IDs persists and gates *all* of
 them, but there is **no aggregated multi-action resume protocol** in this

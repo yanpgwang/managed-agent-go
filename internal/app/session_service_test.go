@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1784,3 +1785,294 @@ plainLoop:
 		t.Fatal("history is missing the persisted agent.message")
 	}
 }
+
+// confirmClient is a scripted model.Client for the confirmation-resume tests. On
+// the first turn (no tool_result yet) it emits assistant text AND requests the
+// always_ask built-in with a real input, which parks the run. Emitting text
+// alongside the tool_use exercises the alternation-merge path: the dangling
+// tool_use is dropped from projected history, so the resume seeds the recovered
+// tool_use into the trailing assistant text message. Once the projected history
+// carries a tool_result for that call (the confirmation was resolved), it ends
+// the turn with a plain text reply. This lets an end-to-end test observe a
+// genuine side effect on allow and its absence on deny.
+//
+// It is strict about the Messages contract: every request it receives must have
+// strictly alternating roles, so a merge regression that produces two
+// consecutive assistant messages fails the test here rather than passing under a
+// lenient fake. Failures are recorded via t.
+type confirmClient struct {
+	t        *testing.T
+	toolName string
+	input    map[string]any
+}
+
+func (c confirmClient) CreateMessage(_ context.Context, req model.Request) (model.Response, error) {
+	if c.t != nil {
+		c.t.Helper()
+		for i := 1; i < len(req.Messages); i++ {
+			if req.Messages[i].Role == req.Messages[i-1].Role {
+				c.t.Errorf("model received consecutive %s messages at index %d: %#v",
+					req.Messages[i].Role, i, req.Messages)
+			}
+		}
+	}
+	if !hasToolResultMsg(req.Messages) {
+		return model.Response{
+			Content: []domain.ContentBlock{
+				{Type: "text", Text: "I'll write the file."},
+				{Type: "tool_use", ToolUseID: "fake_use", ToolName: c.toolName, Input: c.input},
+			},
+			StopReason: "tool_use",
+		}, nil
+	}
+	return model.Response{
+		Content:    []domain.ContentBlock{{Type: "text", Text: "done"}},
+		StopReason: "end_turn",
+	}, nil
+}
+
+func (c confirmClient) CreateMessageStream(ctx context.Context, req model.Request, _ func(int, string)) (model.Response, error) {
+	return c.CreateMessage(ctx, req)
+}
+
+func hasToolResultMsg(msgs []domain.Message) bool {
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// setupConfirmSession builds a session whose agent enables exactly the write
+// built-in under an always_ask policy, using the given scripted model client. It
+// returns the wired services and the parked session, having driven the initial
+// turn to the requires_action park.
+func setupConfirmSession(t *testing.T, client model.Client) (*SessionService, *EventService, domain.Session) {
+	t.Helper()
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+	ids := domain.NewSeqIDGen()
+	clk := domain.FixedClock{T: time.Unix(1, 0).UTC()}
+	events := NewEventService(store.NewEventStore(db, ids, clk), NewHub(64))
+	runs := store.NewRunStore(db, ids, clk)
+	agents := NewAgentService(store.NewAgentRepo(db), ids, clk)
+	environments := NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
+	sessions := NewSessionService(
+		store.NewSessionRepo(db), store.NewAgentRepo(db), store.NewEnvironmentRepo(db),
+		events, runs, agentruntime.NewAgentCore(client, ids), sandbox.NewLocalProvider(), ids, clk,
+	)
+
+	enabled := true
+	agent, err := agents.Create(ctx, domain.Agent{
+		Name:  "ask-agent",
+		Model: domain.Model{ID: "claude-opus-4-8"},
+		Tools: []any{map[string]any{
+			"type":           domain.BuiltinToolsetType,
+			"default_config": map[string]any{"enabled": false},
+			"configs": []any{map[string]any{
+				"name":              "write",
+				"enabled":           enabled,
+				"permission_policy": map[string]any{"type": "always_ask"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := environments.Create(ctx, domain.Environment{Name: "e", ConfigType: "cloud"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := sessions.Create(ctx, CreateSessionInput{
+		AgentID:       agent.ID,
+		EnvironmentID: environment.ID,
+		InitialEvents: []domain.EventDraft{{
+			Type:    domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{map[string]any{"type": "text", "text": "write the file"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessions.sandbox.Release(context.Background(), session.ID) })
+	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
+	return sessions, events, session
+}
+
+// parkedToolUseID returns the committed always_ask agent.tool_use id from the
+// session history and asserts the park's requires_action stop_reason names it.
+func parkedToolUseID(t *testing.T, events *EventService, sessionID string) string {
+	t.Helper()
+	hist, err := events.History(context.Background(), sessionID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var useID string
+	var parked *domain.Event
+	for i := range hist {
+		switch hist[i].Type {
+		case domain.EvAgentToolUse:
+			useID = hist[i].ID
+		case domain.EvSessionStatusIdle:
+			e := hist[i]
+			parked = &e
+		}
+	}
+	if useID == "" {
+		t.Fatal("no agent.tool_use in history")
+	}
+	if parked == nil {
+		t.Fatal("no session.status_idle in history")
+	}
+	stop, _ := parked.Payload["stop_reason"].(map[string]any)
+	if stop == nil || stop["type"] != "requires_action" {
+		t.Fatalf("stop_reason = %#v, want requires_action", parked.Payload["stop_reason"])
+	}
+	eventIDs, _ := stop["event_ids"].([]any)
+	if len(eventIDs) != 1 || eventIDs[0] != useID {
+		t.Fatalf("stop_reason.event_ids = %#v, want [%s]", stop["event_ids"], useID)
+	}
+	return useID
+}
+
+// TestSessionService_ConfirmationAllowResumeExecutesSideEffect drives the full
+// always_ask allow flow end-to-end: park → durable confirmation → resume →
+// agent.tool_result → end_turn. The allowed side effect (the file write) occurs
+// and the pending gate clears.
+func TestSessionService_ConfirmationAllowResumeExecutesSideEffect(t *testing.T) {
+	ctx := context.Background()
+	sessions, events, session := setupConfirmSession(t, confirmClient{
+		t:        t,
+		toolName: "write",
+		input:    map[string]any{"path": "confirmed.txt", "file_text": "allowed content"},
+	})
+	useID := parkedToolUseID(t, events, session.ID)
+
+	if _, err := sessions.SendEvent(ctx, session.ID, []domain.EventDraft{{
+		Type:    domain.EvUserToolConfirmation,
+		Payload: map[string]any{"tool_use_id": useID, "result": "allow"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
+
+	// The allowed side effect occurred: the file is present in the session sandbox.
+	box, err := sessions.sandbox.Acquire(ctx, session.ID, sandbox.Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := box.ReadFile(ctx, "confirmed.txt")
+	if err != nil {
+		t.Fatalf("allowed write did not occur: %v", err)
+	}
+	if string(data) != "allowed content" {
+		t.Fatalf("written content = %q, want %q", data, "allowed content")
+	}
+
+	// The resumed run emitted an agent.tool_result correlated to the original id
+	// and reached end_turn.
+	hist, err := events.History(ctx, session.ID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawResult, sawEndTurn bool
+	for _, e := range hist {
+		if e.Type == domain.EvAgentToolResult && e.Payload["tool_use_id"] == useID {
+			sawResult = true
+			if isErr, _ := e.Payload["is_error"].(bool); isErr {
+				t.Fatalf("allow tool_result is_error = true, want false")
+			}
+		}
+		if e.Type == domain.EvSessionStatusIdle {
+			if stop, _ := e.Payload["stop_reason"].(map[string]any); stop != nil && stop["type"] == "end_turn" {
+				sawEndTurn = true
+			}
+		}
+	}
+	if !sawResult {
+		t.Error("no agent.tool_result correlated to the original tool_use id")
+	}
+	if !sawEndTurn {
+		t.Error("resumed run did not reach end_turn")
+	}
+}
+
+// TestSessionService_ConfirmationDenyResumeSkipsSideEffect drives the full
+// always_ask deny flow end-to-end: park → durable confirmation → resume →
+// rejection agent.tool_result → end_turn. The side effect does NOT occur, the
+// tool_result is an error carrying the deny_message, and the gate clears.
+func TestSessionService_ConfirmationDenyResumeSkipsSideEffect(t *testing.T) {
+	ctx := context.Background()
+	sessions, events, session := setupConfirmSession(t, confirmClient{
+		t:        t,
+		toolName: "write",
+		input:    map[string]any{"path": "denied.txt", "file_text": "should not be written"},
+	})
+	useID := parkedToolUseID(t, events, session.ID)
+
+	if _, err := sessions.SendEvent(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserToolConfirmation,
+		Payload: map[string]any{
+			"tool_use_id": useID, "result": "deny", "deny_message": "policy forbids writes",
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
+
+	// The denied side effect did NOT occur: the file is absent from the sandbox.
+	box, err := sessions.sandbox.Acquire(ctx, session.ID, sandbox.Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := box.ReadFile(ctx, "denied.txt"); err == nil {
+		t.Fatal("denied write occurred, want no side effect")
+	}
+
+	hist, err := events.History(ctx, session.ID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRejection, sawEndTurn bool
+	for _, e := range hist {
+		if e.Type == domain.EvAgentToolResult && e.Payload["tool_use_id"] == useID {
+			isErr, _ := e.Payload["is_error"].(bool)
+			if !isErr {
+				t.Fatalf("deny tool_result is_error = false, want true")
+			}
+			content, _ := e.Payload["content"].([]any)
+			var text string
+			for _, item := range content {
+				if m, ok := item.(map[string]any); ok {
+					if s, _ := m["text"].(string); s != "" {
+						text += s
+					}
+				}
+			}
+			if !contains(text, "policy forbids writes") {
+				t.Fatalf("deny tool_result text = %q, want it to include deny_message", text)
+			}
+			sawRejection = true
+		}
+		if e.Type == domain.EvSessionStatusIdle {
+			if stop, _ := e.Payload["stop_reason"].(map[string]any); stop != nil && stop["type"] == "end_turn" {
+				sawEndTurn = true
+			}
+		}
+	}
+	if !sawRejection {
+		t.Error("no rejection agent.tool_result correlated to the original tool_use id")
+	}
+	if !sawEndTurn {
+		t.Error("resumed run did not reach end_turn")
+	}
+}
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }

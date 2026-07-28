@@ -388,13 +388,26 @@ func (s *SessionService) drainRuns(sessionID string) {
 					runErr = histErr
 					break
 				}
+				// A user.tool_confirmation resumes a parked always_ask built-in. Recover
+				// the ORIGINAL committed agent.tool_use from server-owned causal history
+				// (never from client-supplied name/input) so the runtime can execute
+				// (allow) or reject (deny) it and emit the paired agent.tool_result. The
+				// event is one of the parked run's output events, so it is present in the
+				// reconstructed history. A confirmation with no resolvable original action
+				// leaves ConfirmedToolUse nil; the runtime then fails safely without
+				// executing anything.
+				var confirmedToolUse *domain.Event
+				if trigger.Type == domain.EvUserToolConfirmation {
+					confirmedToolUse = confirmedToolUseFromHistory(trigger, history)
+				}
 				if outcome, runErr = s.rt.Run(ctx, agentruntime.RunRequest{
-					SessionID:     sessionID,
-					Trigger:       trigger,
-					Messages:      domain.ProjectMessages(history),
-					AgentSnapshot: claim.AgentSnapshot,
-					ToolSet:       toolSet,
-					Sandbox:       box,
+					SessionID:        sessionID,
+					Trigger:          trigger,
+					Messages:         domain.ProjectMessages(history),
+					AgentSnapshot:    claim.AgentSnapshot,
+					ToolSet:          toolSet,
+					Sandbox:          box,
+					ConfirmedToolUse: confirmedToolUse,
 				}, sink); runErr != nil {
 					log.Printf("drain: runtime execution failed session_id=%s run_id=%s: %v", sessionID, runID, runErr)
 					break
@@ -489,6 +502,27 @@ func (s *SessionService) drainRuns(sessionID string) {
 		}
 		s.events.PublishCommitted(completion.Events)
 	}
+}
+
+// confirmedToolUseFromHistory resolves the original committed agent.tool_use
+// event a user.tool_confirmation trigger references. The referenced id lives in
+// the trigger's tool_use_id payload field (validated at admission); the event
+// itself is recovered from server-owned causal history, so the client cannot
+// substitute a different tool name or input. It returns nil when the reference
+// is missing or resolves to anything other than a persisted agent.tool_use —
+// the runtime then fails the resume safely without executing a tool.
+func confirmedToolUseFromHistory(trigger domain.Event, history []domain.Event) *domain.Event {
+	actionEventID, kind, ok := domain.ResolutionReference(trigger.Type, trigger.Payload)
+	if !ok || kind != domain.PendingToolConfirmation {
+		return nil
+	}
+	for i := range history {
+		if history[i].ID == actionEventID && history[i].Type == domain.EvAgentToolUse {
+			e := history[i]
+			return &e
+		}
+	}
+	return nil
 }
 
 // toolSetHasTools reports whether a resolved toolset offers any tool, in which
