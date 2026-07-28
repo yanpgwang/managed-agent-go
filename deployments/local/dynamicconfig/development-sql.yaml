@@ -1,0 +1,10 @@
+# Temporal dynamic config for local development.
+#
+# These overrides make a single-node auto-setup cluster comfortable for local
+# work. They are NOT production values.
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true # do not cache search attributes locally during development
+frontend.enableUpdateWorkflowExecution:
+  - value: true # allow synchronous Workflow Update (operator commands)
+frontend.enableUpdateWorkflowExecutionAsyncAccepted:
+  - value: true

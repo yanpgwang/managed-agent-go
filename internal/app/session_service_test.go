@@ -1404,6 +1404,44 @@ func TestSessionService_BuiltinToolRunEndToEnd(t *testing.T) {
 			t.Errorf("expected %s in event history", evType)
 		}
 	}
+
+	var runID string
+	if err := db.QueryRowContext(ctx, `
+SELECT id FROM session_runs WHERE session_id=? ORDER BY rowid LIMIT 1`,
+		session.ID).Scan(&runID); err != nil {
+		t.Fatal(err)
+	}
+	attempts, err := runs.ListAttempts(ctx, runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(attempts) != 1 || attempts[0].State != domain.RunAttemptCompleted {
+		t.Fatalf("attempts = %#v, want one completed attempt", attempts)
+	}
+	steps, err := runs.ListToolSteps(ctx, attempts[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].State != domain.ToolStepCompleted || steps[0].Result == nil {
+		t.Fatalf("tool steps = %#v, want one completed step with a durable result", steps)
+	}
+	history, err := events.History(ctx, session.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var publicToolUseID string
+	for _, event := range history {
+		if event.Type == domain.EvAgentToolUse {
+			publicToolUseID = event.ID
+			break
+		}
+	}
+	if publicToolUseID == "" || steps[0].ToolUseEventID != publicToolUseID {
+		t.Fatalf(
+			"journal tool_use_event_id = %q, want public event id %q",
+			steps[0].ToolUseEventID, publicToolUseID,
+		)
+	}
 }
 
 // TestSessionService_CustomToolParksAndResumes drives the full park/resume loop

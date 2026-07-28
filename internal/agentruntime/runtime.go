@@ -28,6 +28,25 @@ type PreviewEmitter interface {
 	PreviewDelta(eventID string, index int, text string)
 }
 
+// ToolExecutionJournal persists the uncertainty boundary around a built-in
+// tool call. Prepare must commit the request before execution can begin, Start
+// records that side effects may now occur, and Complete must commit the result
+// before the runtime emits it or continues the model loop.
+//
+// The app owns the durable implementation. The runtime deliberately depends on
+// this narrow interface rather than on the database package.
+type ToolExecutionJournal interface {
+	Prepare(
+		ctx context.Context,
+		ordinal int,
+		toolUseEventID string,
+		toolName string,
+		input map[string]any,
+	) (stepID string, err error)
+	Start(ctx context.Context, stepID string) error
+	Complete(ctx context.Context, stepID string, result domain.ToolStepResult) error
+}
+
 type RunRequest struct {
 	SessionID string
 	Trigger   domain.Event
@@ -55,6 +74,10 @@ type RunRequest struct {
 	// core recovers the tool name and input from its payload and re-validates the
 	// built-in/toolset assumptions before executing (allow) or rejecting (deny).
 	ConfirmedToolUse *domain.Event
+	// ToolJournal is required whenever the core executes a built-in locally. It
+	// makes the request and result durable across process loss without coupling
+	// AgentCore to a concrete store.
+	ToolJournal ToolExecutionJournal
 }
 
 // RunOutcome is what a single Run reports back to the app layer so the app can

@@ -131,12 +131,44 @@ persists across turns; the sandbox is released when the session is deleted. The
 manager is in-memory, so a process restart does not restore an idle session's
 sandbox.
 
+## Platform spine (experimental, feature-gated)
+
+The first Temporal/PostgreSQL platform-spine slice is implemented alongside the
+default SQLite path — it does **not** replace it. It routes one `user.message`
+end to end through PostgreSQL admission, a coalescible outbox, an at-least-once
+Signal-With-Start relay, and a durable `SessionWorkflow` — including a tool-using
+turn (an always_allow **built-in tool step**) run under a PostgreSQL tool journal
+that preserves the `prepared → started → completed` boundary with `ambiguous`
+branching from `started`. A step left `started` by a crash is classified
+`ambiguous` and the turn is refused rather than silently replayed; a `completed`
+step is honestly reported as prior execution that cannot yet be resumed. A
+recovered/failed attempt is atomically fenced from advancing a stale prepared
+step into tool execution. The real integration suite also runs that tool path
+through a Docker sandbox and verifies a command executed inside the container.
+Start the local stack and run the execution plane:
+
+```bash
+make -C deployments/local up
+make -C deployments/local health
+
+export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
+export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"     # default
+export MANAGED_AGENT_TEMPORAL_NAMESPACE="default"           # default
+go run ./cmd/managed-agent orchestrate
+```
+
+The default `serve` command is unchanged and reads none of these variables. See
+the [platform spine milestone](docs/architecture/platform-spine-milestone.md)
+for scope, configuration, tests, and explicit limitations.
+
 ## Documentation
 
 - [Hosted documentation](https://yanpgwang.github.io/managed-agent-go/)
 - [Getting started](docs/getting-started.md)
 - [Sandbox backends](docs/sandboxes.md)
 - [Architecture](docs/architecture.md)
+- [Target platform and technology selection](docs/architecture/target-platform.md)
+- [Managed Agents orchestration fit review](docs/architecture/orchestration-fit.md)
 - [Domain model](docs/architecture/domain-model.md)
 - [API reference](docs/api/overview.md)
 - [Claude API coverage](docs/compatibility.md)

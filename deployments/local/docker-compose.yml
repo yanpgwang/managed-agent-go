@@ -1,0 +1,91 @@
+# Reproducible local development stack for the Temporal platform spine.
+#
+# Brings up exactly the three backing services the first vertical slice needs:
+#   - PostgreSQL   the event ledger, projections, and admission outbox (and, on a
+#                  separate database, Temporal's own persistence)
+#   - Temporal     durable session orchestration (auto-setup + web UI)
+#   - NATS Core    ephemeral preview / SSE wakeup transport (wired in a later slice)
+#
+# Versions are pinned deliberately. Bump them intentionally, not implicitly.
+#
+# Start:   make -C deployments/local up      (or: docker compose -f deployments/local/docker-compose.yml up -d)
+# Health:  make -C deployments/local health
+# Stop:    make -C deployments/local down     (add VOLUMES=1 to also drop data)
+#
+# See deployments/local/README.md for the full workflow and connection strings.
+
+name: managed-agent-local
+
+services:
+  postgres:
+    image: postgres:17.5-alpine
+    container_name: managed-agent-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      # Temporal's auto-setup creates its own `temporal` / `temporal_visibility`
+      # databases. This default database is the application's ledger.
+      POSTGRES_DB: managed_agent
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready exits 0 only once the server accepts connections.
+      test: ["CMD-SHELL", "pg_isready -U postgres -d managed_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  temporal:
+    image: temporalio/auto-setup:1.29.7
+    container_name: managed-agent-temporal
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB: postgres12                # driver name for PostgreSQL >= 12
+      DB_PORT: 5432
+      POSTGRES_USER: postgres
+      POSTGRES_PWD: postgres
+      POSTGRES_SEEDS: postgres
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/development-sql.yaml
+    ports:
+      - "7233:7233"               # gRPC frontend (SDK clients connect here)
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig
+    healthcheck:
+      # tctl reaches the frontend only after namespaces are registered.
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+
+  temporal-ui:
+    image: temporalio/ui:2.52.1
+    container_name: managed-agent-temporal-ui
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8233
+    ports:
+      - "8233:8080"               # http://localhost:8233 for the workflow explorer
+
+  nats:
+    image: nats:2.11-alpine
+    container_name: managed-agent-nats
+    command:
+      - "--http_port=8222"        # monitoring endpoint used by the health check
+    ports:
+      - "4222:4222"               # client connections
+      - "8222:8222"               # monitoring / /healthz
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8222/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  postgres-data:

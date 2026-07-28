@@ -23,10 +23,83 @@ func (s *captureSink) Emit(_ context.Context, d []domain.EventDraft) ([]domain.E
 	out := make([]domain.Event, len(d))
 	for i, dr := range d {
 		s.n++
-		out[i] = domain.Event{ID: fmt.Sprintf("evt_%d", s.n), Type: dr.Type, Payload: dr.Payload}
+		id := dr.ID
+		if id == "" {
+			id = fmt.Sprintf("evt_%d", s.n)
+		}
+		out[i] = domain.Event{ID: id, Type: dr.Type, Payload: dr.Payload}
 	}
 	s.events = append(s.events, out...)
 	return out, nil
+}
+
+type journalCall struct {
+	operation      string
+	stepID         string
+	ordinal        int
+	toolUseEventID string
+	toolName       string
+	input          map[string]any
+	result         domain.ToolStepResult
+}
+
+type captureToolJournal struct {
+	calls []journalCall
+	next  int
+	fail  string
+	trace *[]string
+}
+
+func (j *captureToolJournal) traceOperation(operation string) {
+	if j.trace != nil {
+		*j.trace = append(*j.trace, operation)
+	}
+}
+
+func (j *captureToolJournal) Prepare(
+	_ context.Context,
+	ordinal int,
+	toolUseEventID string,
+	toolName string,
+	input map[string]any,
+) (string, error) {
+	j.next++
+	stepID := fmt.Sprintf("tstep_%d", j.next)
+	j.calls = append(j.calls, journalCall{
+		operation:      "prepare",
+		stepID:         stepID,
+		ordinal:        ordinal,
+		toolUseEventID: toolUseEventID,
+		toolName:       toolName,
+		input:          input,
+	})
+	j.traceOperation("prepare")
+	if j.fail == "prepare" {
+		return "", fmt.Errorf("journal prepare failed")
+	}
+	return stepID, nil
+}
+
+func (j *captureToolJournal) Start(_ context.Context, stepID string) error {
+	j.calls = append(j.calls, journalCall{operation: "start", stepID: stepID})
+	j.traceOperation("start")
+	if j.fail == "start" {
+		return fmt.Errorf("journal start failed")
+	}
+	return nil
+}
+
+func (j *captureToolJournal) Complete(
+	_ context.Context,
+	stepID string,
+	result domain.ToolStepResult,
+) error {
+	j.calls = append(j.calls, journalCall{operation: "complete", stepID: stepID, result: result})
+	j.traceOperation("complete")
+	if j.fail == "complete" {
+		return fmt.Errorf("journal complete failed")
+	}
+	return nil
 }
 
 // draftTypes returns the ordered list of emitted event types.
@@ -214,6 +287,7 @@ func TestAgentCore_ExecutesBuiltinToolLoop(t *testing.T) {
 
 	core := NewAgentCore(model.NewFake(), domain.NewSeqIDGen())
 	sink := &captureSink{}
+	journal := &captureToolJournal{}
 	enabled := true
 	ts := domain.ToolSet{Builtin: &domain.BuiltinToolset{
 		DefaultEnabled: true,
@@ -225,6 +299,7 @@ func TestAgentCore_ExecutesBuiltinToolLoop(t *testing.T) {
 		Messages:      []domain.Message{{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "cat note.txt"}}}},
 		ToolSet:       ts,
 		Sandbox:       sb,
+		ToolJournal:   journal,
 		AgentSnapshot: domain.Agent{Model: domain.Model{ID: "m"}},
 	}, sink)
 	if err != nil {
@@ -248,6 +323,19 @@ func TestAgentCore_ExecutesBuiltinToolLoop(t *testing.T) {
 	}
 	if useID == "" || useID != resultFor {
 		t.Fatalf("tool_result tool_use_id = %q, want committed use id %q", resultFor, useID)
+	}
+	if len(journal.calls) != 3 ||
+		journal.calls[0].operation != "prepare" ||
+		journal.calls[1].operation != "start" ||
+		journal.calls[2].operation != "complete" {
+		t.Fatalf("journal calls = %#v, want prepare/start/complete", journal.calls)
+	}
+	if journal.calls[0].ordinal != 0 || journal.calls[0].toolUseEventID != useID ||
+		journal.calls[0].toolName != "bash" {
+		t.Fatalf("prepared call = %#v, want ordinal 0 and tool_use id %q", journal.calls[0], useID)
+	}
+	if len(journal.calls[2].result.Content) == 0 {
+		t.Fatalf("completed result = %#v, want durable tool output", journal.calls[2].result)
 	}
 }
 
@@ -297,18 +385,28 @@ func TestAgentCore_CustomToolParksWithRequiresAction(t *testing.T) {
 type spySandbox struct {
 	execN, writeN, readN int
 	files                map[string][]byte
+	trace                *[]string
 }
 
 func (s *spySandbox) Exec(_ context.Context, _ sandbox.Command) (*sandbox.Result, error) {
 	s.execN++
+	if s.trace != nil {
+		*s.trace = append(*s.trace, "exec")
+	}
 	return &sandbox.Result{}, nil
 }
 func (s *spySandbox) ReadFile(_ context.Context, path string) ([]byte, error) {
 	s.readN++
+	if s.trace != nil {
+		*s.trace = append(*s.trace, "read")
+	}
 	return s.files[path], nil
 }
 func (s *spySandbox) WriteFile(_ context.Context, path string, data []byte) error {
 	s.writeN++
+	if s.trace != nil {
+		*s.trace = append(*s.trace, "write")
+	}
 	if s.files == nil {
 		s.files = map[string][]byte{}
 	}
@@ -358,6 +456,7 @@ func TestAgentCore_ConfirmationAllowExecutesAndContinues(t *testing.T) {
 	core := NewAgentCore(fake, domain.NewSeqIDGen())
 	sink := &captureSink{}
 	sb := &spySandbox{}
+	journal := &captureToolJournal{}
 	input := map[string]any{"path": "out.txt", "file_text": "hello"}
 	outcome, err := core.Run(context.Background(), RunRequest{
 		Trigger: domain.Event{Type: domain.EvUserToolConfirmation, Payload: map[string]any{
@@ -367,6 +466,7 @@ func TestAgentCore_ConfirmationAllowExecutesAndContinues(t *testing.T) {
 		ToolSet:          askBuiltinToolSet("write"),
 		Sandbox:          sb,
 		ConfirmedToolUse: origToolUse("evt_use", "write", input),
+		ToolJournal:      journal,
 		AgentSnapshot:    domain.Agent{Model: domain.Model{ID: "m"}},
 	}, sink)
 	if err != nil {
@@ -405,6 +505,54 @@ func TestAgentCore_ConfirmationAllowExecutesAndContinues(t *testing.T) {
 	// The continued turn reached end_turn (an agent.message was emitted).
 	if !hasSeq(draftTypes(sink), domain.EvAgentToolResult, domain.EvAgentMessage) {
 		t.Fatalf("draft types = %v, want tool_result then agent.message", draftTypes(sink))
+	}
+	if len(journal.calls) != 3 ||
+		journal.calls[0].operation != "prepare" ||
+		journal.calls[0].toolUseEventID != "evt_use" ||
+		journal.calls[1].operation != "start" ||
+		journal.calls[2].operation != "complete" {
+		t.Fatalf("journal calls = %#v, want durable execution for evt_use", journal.calls)
+	}
+}
+
+func TestAgentCore_JournalCompletionFailureStopsAfterSideEffectWithoutEmittingResult(t *testing.T) {
+	core := NewAgentCore(model.NewFake(), domain.NewSeqIDGen())
+	sink := &captureSink{}
+	var trace []string
+	sb := &spySandbox{trace: &trace}
+	journal := &captureToolJournal{fail: "complete", trace: &trace}
+	input := map[string]any{"path": "out.txt", "file_text": "hello"}
+
+	_, err := core.Run(context.Background(), RunRequest{
+		Trigger: domain.Event{Type: domain.EvUserToolConfirmation, Payload: map[string]any{
+			"tool_use_id": "evt_use", "result": "allow",
+		}},
+		Messages:         []domain.Message{{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "write it"}}}},
+		ToolSet:          askBuiltinToolSet("write"),
+		Sandbox:          sb,
+		ConfirmedToolUse: origToolUse("evt_use", "write", input),
+		ToolJournal:      journal,
+		AgentSnapshot:    domain.Agent{Model: domain.Model{ID: "m"}},
+	}, sink)
+	if err == nil || !strings.Contains(err.Error(), "journal complete failed") {
+		t.Fatalf("err = %v, want journal completion failure", err)
+	}
+	if sb.writeN != 1 {
+		t.Fatalf("sandbox WriteFile calls = %d, want the side effect to have returned once", sb.writeN)
+	}
+	for _, event := range sink.events {
+		if event.Type == domain.EvAgentToolResult {
+			t.Fatalf("tool result emitted without a durable journal result: %#v", event)
+		}
+	}
+	if len(journal.calls) != 3 ||
+		journal.calls[0].operation != "prepare" ||
+		journal.calls[1].operation != "start" ||
+		journal.calls[2].operation != "complete" {
+		t.Fatalf("journal calls = %#v, want prepare/start/complete", journal.calls)
+	}
+	if got := strings.Join(trace, ","); got != "prepare,start,write,complete" {
+		t.Fatalf("execution trace = %q, want prepare,start,write,complete", got)
 	}
 }
 
@@ -655,6 +803,7 @@ func TestAgentCore_ConfirmationMergesRecoveredToolUseWithTrailingAssistantText(t
 			core := NewAgentCore(fake, domain.NewSeqIDGen())
 			sink := &captureSink{}
 			sb := &spySandbox{}
+			journal := &captureToolJournal{}
 			input := map[string]any{"path": "out.txt", "file_text": "hello"}
 			// Projected history: user turn, then an assistant TEXT message that was
 			// emitted alongside the parked (now-dropped) always_ask tool_use.
@@ -672,6 +821,7 @@ func TestAgentCore_ConfirmationMergesRecoveredToolUseWithTrailingAssistantText(t
 				ToolSet:          askBuiltinToolSet("write"),
 				Sandbox:          sb,
 				ConfirmedToolUse: origToolUse("evt_use", "write", input),
+				ToolJournal:      journal,
 				AgentSnapshot:    domain.Agent{Model: domain.Model{ID: "m"}},
 			}, sink)
 			if err != nil {

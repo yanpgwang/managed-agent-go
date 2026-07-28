@@ -410,13 +410,35 @@ func (s *SessionService) drainRuns(sessionID string) {
 		sink := newBufferedSink(s.ids, s.events, sessionID)
 		var runErr error
 		var outcome agentruntime.RunOutcome
+		var toolJournal agentruntime.ToolExecutionJournal
+
+		// Every claimed logical run gets an immutable execution attempt before
+		// runtime work begins. Recovery may requeue an unfinished logical run, but
+		// BeginAttempt refuses to cross an active/completed attempt or prior tool
+		// execution until a recovery policy has classified it. That conservative
+		// stop prevents a side-effecting tool from being silently replayed.
+		attempt, attemptErr := s.runs.BeginAttempt(ctx, runID)
+		if attemptErr != nil {
+			log.Printf("drain: begin attempt failed session_id=%s run_id=%s: %v", sessionID, runID, attemptErr)
+			runErr = attemptErr
+		} else {
+			toolJournal = runToolJournal{
+				durableCtx: ctx,
+				runs:       s.runs,
+				attemptID:  attempt.ID,
+			}
+		}
 
 		// Resolve the session's tool configuration from the immutable agent
 		// snapshot. A parse failure here is a misconfigured session and is
 		// surfaced as a session error via the terminate path below.
-		toolSet, toolErr := domain.ParseTools(claim.AgentSnapshot.Tools)
-		if toolErr != nil {
-			runErr = toolErr
+		var toolSet domain.ToolSet
+		if runErr == nil {
+			var toolErr error
+			toolSet, toolErr = domain.ParseTools(claim.AgentSnapshot.Tools)
+			if toolErr != nil {
+				runErr = toolErr
+			}
 		}
 
 		// Resolve the session's logical sandbox when the session has tools. The
@@ -482,6 +504,7 @@ func (s *SessionService) drainRuns(sessionID string) {
 					ToolSet:          toolSet,
 					Sandbox:          box,
 					ConfirmedToolUse: confirmedToolUse,
+					ToolJournal:      toolJournal,
 				}, sink); runErr != nil {
 					log.Printf("drain: runtime execution failed session_id=%s run_id=%s: %v", sessionID, runID, runErr)
 					break
@@ -523,6 +546,33 @@ func (s *SessionService) drainRuns(sessionID string) {
 
 		var errorMessage *string
 		var pendingActionEventIDs []string
+
+		// Close the execution attempt before publishing any buffered tool result or
+		// closing the logical run. A completed attempt requires all prepared steps
+		// to have durable results; any unclassified started step therefore stops
+		// here and leaves the logical run mid-flight for recovery rather than
+		// claiming success or risking replay.
+		if attempt.ID != "" {
+			attemptState := domain.RunAttemptCompleted
+			var attemptError *string
+			switch {
+			case interrupted:
+				attemptState = domain.RunAttemptInterrupted
+			case runErr != nil:
+				attemptState = domain.RunAttemptFailed
+				message := runErr.Error()
+				attemptError = &message
+			}
+			if _, err := s.runs.FinishAttempt(ctx, attempt.ID, attemptState, attemptError); err != nil {
+				lock.Unlock()
+				log.Printf(
+					"drain: finish attempt failed session_id=%s run_id=%s attempt_id=%s: %v",
+					sessionID, runID, attempt.ID, err,
+				)
+				return
+			}
+		}
+
 		switch {
 		case interrupted:
 			// Deliberate user interrupt. This is NOT a failure: commit the
@@ -546,10 +596,11 @@ func (s *SessionService) drainRuns(sessionID string) {
 		case runErr != nil:
 			message := runErr.Error()
 			errorMessage = &message
-			// An unrecoverable runtime error terminates the session. We have no
-			// attempt/lease/retry machinery, so projecting to `rescheduling`
-			// would promise an automatic retry that never happens; `terminated`
-			// is the honest public status. We deliberately do NOT emit a
+			// An unrecoverable runtime error terminates the session. The execution
+			// journal prevents unsafe replay but does not yet resume a run from a
+			// durable tool result, so projecting to `rescheduling` would promise an
+			// automatic retry that never happens; `terminated` is the honest public
+			// status. We deliberately do NOT emit a
 			// session.status_idle with a stop_reason here: the documented
 			// stop_reason.type union is only end_turn | requires_action, so a
 			// stop_reason of "error" would be an invented wire field.

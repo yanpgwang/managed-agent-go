@@ -1,0 +1,41 @@
+# Local development stack for the Temporal platform spine.
+#
+#   make up       start Postgres, Temporal (+UI), and NATS in the background
+#   make health   block until every service reports healthy
+#   make ps       show container status
+#   make logs     tail all service logs
+#   make down     stop and remove containers (keeps data)
+#   make down VOLUMES=1   also delete the Postgres volume
+
+COMPOSE ?= docker compose
+FILE := $(dir $(lastword $(MAKEFILE_LIST)))docker-compose.yml
+
+.PHONY: up down health ps logs
+
+up:
+	$(COMPOSE) -f $(FILE) up -d
+
+down:
+	$(COMPOSE) -f $(FILE) down $(if $(VOLUMES),--volumes,)
+
+ps:
+	$(COMPOSE) -f $(FILE) ps
+
+logs:
+	$(COMPOSE) -f $(FILE) logs -f
+
+# health polls docker's own health status for each service that declares a
+# healthcheck, then confirms the Temporal frontend answers. It exits non-zero if
+# any service is not healthy within the compose-defined retry windows.
+health:
+	@echo "waiting for postgres, temporal, nats to become healthy..."
+	@for svc in managed-agent-postgres managed-agent-temporal managed-agent-nats; do \
+		printf "  %-28s " "$$svc"; \
+		for i in $$(seq 1 60); do \
+			state=$$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $$svc 2>/dev/null || echo missing); \
+			if [ "$$state" = "healthy" ]; then echo "healthy"; break; fi; \
+			if [ "$$i" = "60" ]; then echo "NOT healthy ($$state)"; exit 1; fi; \
+			sleep 2; \
+		done; \
+	done
+	@echo "all services healthy"
