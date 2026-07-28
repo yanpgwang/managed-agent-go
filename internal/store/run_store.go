@@ -9,9 +9,9 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
-// RunStore owns the small transactional boundary between sessions, public
-// events, and internal work items. It intentionally implements a single-node
-// queue only: there are no leases, attempts, or distributed-worker semantics.
+// RunStore owns the transactional boundary between sessions, public events,
+// internal work items, and the durable execution-attempt/tool-step journal. It
+// remains a single-node queue; distributed leases are outside this layer.
 type RunStore struct {
 	db    *DB
 	ids   domain.IDGenerator

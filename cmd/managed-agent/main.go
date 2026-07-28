@@ -124,9 +124,20 @@ func buildHandler(db *store.DB, cfg httpapi.Config, rt agentruntime.AgentRuntime
 }
 
 func main() {
-	if len(os.Args) < 2 || os.Args[1] != "serve" {
-		log.Fatal("usage: managed-agent serve [-addr 127.0.0.1:8080] [-db managed-agent.db] [-strict]")
+	if len(os.Args) < 2 {
+		log.Fatal("usage: managed-agent <serve|orchestrate> [flags]")
 	}
+	switch os.Args[1] {
+	case "serve":
+		runServe()
+	case "orchestrate":
+		runOrchestrate()
+	default:
+		log.Fatal("usage: managed-agent <serve|orchestrate> [flags]")
+	}
+}
+
+func runServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "listen address (default binds to loopback; use e.g. :8080 to expose on all interfaces)")
 	dbPath := fs.String("db", "managed-agent.db", "sqlite path")

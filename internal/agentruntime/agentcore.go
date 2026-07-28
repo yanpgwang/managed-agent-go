@@ -83,6 +83,7 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 	// history and grown with assistant tool_use / user tool_result blocks so the
 	// model sees tool outcomes within this run.
 	messages := req.Messages
+	toolOrdinal := 0
 
 	// A user.tool_confirmation resumes a parked always_ask built-in. Before the
 	// model loop, resolve the original committed agent.tool_use, execute it (allow)
@@ -91,7 +92,7 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 	// conversation. A malformed/unresolvable confirmation fails safely here without
 	// executing anything, so the loop below never replays a dangling tool_use.
 	if req.Trigger.Type == domain.EvUserToolConfirmation {
-		seeded, err := a.seedConfirmation(ctx, req, sink)
+		seeded, err := a.seedConfirmation(ctx, req, sink, &toolOrdinal)
 		if err != nil {
 			return RunOutcome{}, err
 		}
@@ -201,23 +202,28 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 
 			switch {
 			case isBuiltin && enabled && policy.Type == "always_allow":
-				// Emit the tool_use alone first so we can read back its committed id
-				// and use it to correlate the tool_result. The public event id is the
-				// committed event's own id (out[0].ID); the model's tool_use id is not
-				// part of the wire payload, so it is intentionally not persisted here.
-				out, err := sink.Emit(ctx, []domain.EventDraft{{
+				// Allocate the public correlation id before execution so the durable
+				// journal and the eventual event pair refer to the same tool call.
+				id := a.ids.NewID(domain.PrefixEvent)
+				stepID, err := a.prepareBuiltin(ctx, req, toolOrdinal, id, use.ToolName, use.Input)
+				if err != nil {
+					return RunOutcome{}, err
+				}
+				toolOrdinal++
+				if _, err := sink.Emit(ctx, []domain.EventDraft{{
+					ID:   id,
 					Type: domain.EvAgentToolUse,
 					Payload: map[string]any{
 						"name":  use.ToolName,
 						"input": use.Input,
 					},
-				}})
+				}}); err != nil {
+					return RunOutcome{}, err
+				}
+				result, err := a.executePreparedBuiltin(ctx, req, stepID, use.Input, exec)
 				if err != nil {
 					return RunOutcome{}, err
 				}
-				id := out[0].ID
-
-				result := exec(ctx, req.Sandbox, use.Input)
 
 				if _, err := sink.Emit(ctx, []domain.EventDraft{{
 					Type: domain.EvAgentToolResult,
@@ -322,13 +328,17 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 //
 // Any failure returns an error and emits nothing.
 //
-// On allow the built-in executes once per successful run attempt through the same
-// tools.Registry/Sandbox path a normal turn uses (crash replay before the
-// completion commit remains possible; there is no side-effect journal). Allow
-// requires a non-nil sandbox. On deny the executor is never invoked and no
-// sandbox is required; the result is marked is_error and carries the deny_message
-// text so the model can react.
-func (a *AgentCore) seedConfirmation(ctx context.Context, req RunRequest, sink EventSink) ([]domain.Message, error) {
+// On allow the built-in executes through the same durable journal and
+// tools.Registry/Sandbox path a normal turn uses. Allow requires a non-nil
+// sandbox and journal. On deny the executor is never invoked and neither is
+// required; the result is marked is_error and carries the deny_message text so
+// the model can react.
+func (a *AgentCore) seedConfirmation(
+	ctx context.Context,
+	req RunRequest,
+	sink EventSink,
+	toolOrdinal *int,
+) ([]domain.Message, error) {
 	orig := req.ConfirmedToolUse
 	if orig == nil || orig.ID == "" {
 		return nil, domain.Validation("tool_confirmation has no resolvable original action")
@@ -413,13 +423,15 @@ func (a *AgentCore) seedConfirmation(ctx context.Context, req RunRequest, sink E
 		content = []any{map[string]any{"type": "text", "text": text}}
 		isError = true
 	} else {
-		// Allow: the executor needs a provisioned sandbox. Refuse rather than call
-		// an executor with a nil sandbox, which could panic. Deny above never
-		// reaches here, so it works with a nil sandbox.
-		if req.Sandbox == nil {
-			return nil, domain.Validation("cannot execute confirmed built-in without a sandbox")
+		stepID, err := a.prepareBuiltin(ctx, req, *toolOrdinal, orig.ID, name, input)
+		if err != nil {
+			return nil, err
 		}
-		res := exec(ctx, req.Sandbox, input)
+		(*toolOrdinal)++
+		res, err := a.executePreparedBuiltin(ctx, req, stepID, input, exec)
+		if err != nil {
+			return nil, err
+		}
 		content = res.Content
 		isError = res.IsError
 	}
@@ -445,6 +457,49 @@ func (a *AgentCore) seedConfirmation(ctx context.Context, req RunRequest, sink E
 			Type: "tool_result", ToolResultFor: orig.ID, Text: flattenResultText(content), IsError: isError,
 		}}},
 	}, nil
+}
+
+func (a *AgentCore) prepareBuiltin(
+	ctx context.Context,
+	req RunRequest,
+	ordinal int,
+	toolUseEventID string,
+	toolName string,
+	input map[string]any,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if req.Sandbox == nil {
+		return "", domain.Validation("cannot execute built-in without a sandbox")
+	}
+	if req.ToolJournal == nil {
+		return "", domain.Validation("cannot execute built-in without a tool journal")
+	}
+	return req.ToolJournal.Prepare(ctx, ordinal, toolUseEventID, toolName, input)
+}
+
+func (a *AgentCore) executePreparedBuiltin(
+	ctx context.Context,
+	req RunRequest,
+	stepID string,
+	input map[string]any,
+	exec tools.Executor,
+) (tools.Result, error) {
+	if err := ctx.Err(); err != nil {
+		return tools.Result{}, err
+	}
+	if err := req.ToolJournal.Start(ctx, stepID); err != nil {
+		return tools.Result{}, err
+	}
+	result := exec(ctx, req.Sandbox, input)
+	if err := req.ToolJournal.Complete(ctx, stepID, domain.ToolStepResult{
+		Content: result.Content,
+		IsError: result.IsError,
+	}); err != nil {
+		return tools.Result{}, err
+	}
+	return result, nil
 }
 
 // appendMerging appends added messages to base, folding an added message into

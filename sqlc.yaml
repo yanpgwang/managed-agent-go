@@ -1,0 +1,21 @@
+version: "2"
+sql:
+  - engine: "postgresql"
+    # Schema is the goose migration set. sqlc understands the goose Up/Down
+    # annotations and derives the catalog from the Up statements, so the
+    # migrations remain the single source of truth for the schema.
+    schema: "internal/pg/migrations"
+    queries: "internal/pg/queries"
+    gen:
+      go:
+        package: "pgstore"
+        out: "internal/pg/pgstore"
+        sql_package: "pgx/v5"
+        emit_pointers_for_null_types: true
+        emit_empty_slices: true
+        emit_json_tags: false
+        overrides:
+          # jsonb columns are marshalled/unmarshalled by the application layer.
+          - db_type: "jsonb"
+            go_type:
+              type: "[]byte"

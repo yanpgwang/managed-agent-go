@@ -10,6 +10,17 @@ HTTP API, durable control plane, run dispatcher, agent runtime, and sandbox
 provider. SQLite is the durable store. These are current deployment choices,
 not permanent topology constraints.
 
+The production direction is now fixed in
+[Target platform and technology selection](architecture/target-platform.md):
+Temporal orchestration, PostgreSQL, NATS Core, object storage, and managed or
+self-hosted sandbox providers. This page documents the **current** alpha so the
+migration can preserve its proven behavior.
+
+The
+[Managed Agents orchestration fit review](architecture/orchestration-fit.md)
+contains the API-by-API validation, the PostgreSQL-outbox-to-Temporal admission
+path, and the detailed Temporal versus Restate decision.
+
 ```mermaid
 flowchart LR
   Client["Managed Agents client"] --> HTTP["HTTP compatibility layer"]
@@ -103,17 +114,13 @@ history.
 ## Scaling boundaries
 
 The current process uses an in-memory stream hub and goroutines to drain durable
-runs. The durable queue and package boundaries make an API/worker split
-possible, but multi-process execution still requires:
+runs. It will not be extended into a custom distributed scheduler. The accepted
+target uses Temporal for durable orchestration, PostgreSQL for public state,
+and NATS Core for ephemeral multi-process delivery. The migration and deletion
+gates are defined in the
+[target-platform decision](architecture/target-platform.md#migration-sequence).
 
-- database migrations and a production database implementation;
-- leases, fencing tokens, and attempt records;
-- durable or replayable runtime progress;
-- an outbox or equivalent post-commit delivery mechanism;
-- side-effect idempotency and a clear retry policy;
-- a distributed stream fan-out layer.
-
-Adding worker replicas before those invariants exist would create ambiguous
+Adding worker replicas before that cut-over would still create ambiguous
 ownership and duplicate-side-effect risks.
 
 ## Known architectural debt

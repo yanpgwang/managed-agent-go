@@ -1,8 +1,6 @@
 package store
 
-import (
-	"testing"
-)
+import "testing"
 
 func TestOpenMemory_CreatesCurrentSchema(t *testing.T) {
 	db, err := OpenMemory()
@@ -20,6 +18,12 @@ func TestOpenMemory_CreatesCurrentSchema(t *testing.T) {
 	}
 	if err := db.QueryRow(`SELECT count(*) FROM session_runs`).Scan(&n); err != nil {
 		t.Fatalf("session_runs table missing: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM run_attempts`).Scan(&n); err != nil {
+		t.Fatalf("run_attempts table missing: %v", err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM tool_steps`).Scan(&n); err != nil {
+		t.Fatalf("tool_steps table missing: %v", err)
 	}
 }
 

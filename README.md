@@ -131,12 +131,36 @@ persists across turns; the sandbox is released when the session is deleted. The
 manager is in-memory, so a process restart does not restore an idle session's
 sandbox.
 
+## Platform spine (experimental, feature-gated)
+
+The first Temporal/PostgreSQL platform-spine slice is implemented alongside the
+default SQLite path — it does **not** replace it. It routes one `user.message`
+end to end through PostgreSQL admission, a coalescible outbox, a retrying
+Signal-With-Start relay, and a durable `SessionWorkflow`. Start the local stack
+and run the execution plane:
+
+```bash
+make -C deployments/local up
+make -C deployments/local health
+
+export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
+export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"     # default
+export MANAGED_AGENT_TEMPORAL_NAMESPACE="default"           # default
+go run ./cmd/managed-agent orchestrate
+```
+
+The default `serve` command is unchanged and reads none of these variables. See
+the [platform spine milestone](docs/architecture/platform-spine-milestone.md)
+for scope, configuration, tests, and explicit limitations.
+
 ## Documentation
 
 - [Hosted documentation](https://yanpgwang.github.io/managed-agent-go/)
 - [Getting started](docs/getting-started.md)
 - [Sandbox backends](docs/sandboxes.md)
 - [Architecture](docs/architecture.md)
+- [Target platform and technology selection](docs/architecture/target-platform.md)
+- [Managed Agents orchestration fit review](docs/architecture/orchestration-fit.md)
 - [Domain model](docs/architecture/domain-model.md)
 - [API reference](docs/api/overview.md)
 - [Claude API coverage](docs/compatibility.md)
