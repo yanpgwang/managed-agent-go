@@ -143,7 +143,9 @@ branching from `started`. A step left `started` by a crash is classified
 `ambiguous` and the turn is refused rather than silently replayed; a `completed`
 step is honestly reported as prior execution that cannot yet be resumed. A
 recovered/failed attempt is atomically fenced from advancing a stale prepared
-step into tool execution. Start the local stack and run the execution plane:
+step into tool execution. The real integration suite also runs that tool path
+through a Docker sandbox and verifies a command executed inside the container.
+Start the local stack and run the execution plane:
 
 ```bash
 make -C deployments/local up

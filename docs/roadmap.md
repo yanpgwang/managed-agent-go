@@ -44,10 +44,10 @@ always_allow **built-in tool step**) run under a PostgreSQL tool journal with a
 a step left `started` by a crash is refused as `ambiguous`, and a `completed`
 step is reported as prior execution that cannot yet be resumed. Durable writes
 after a side effect survive Activity cancellation; recovery also fences a stale
-attempt before it can start a merely prepared tool step. Still open on this
-path: resuming the model loop from a durable tool result, client-action
-park/resume, `user.interrupt`, and cutting the HTTP API over from the SQLite
-dispatcher.
+attempt before it can start a merely prepared tool step. The real tool path is
+validated with both local and Docker sandbox providers. Still open on this path:
+resuming the model loop from a durable tool result, client-action park/resume,
+`user.interrupt`, and cutting the HTTP API over from the SQLite dispatcher.
 
 ## Now: replace infrastructure, preserve semantics
 

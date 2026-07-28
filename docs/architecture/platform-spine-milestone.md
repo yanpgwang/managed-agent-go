@@ -260,7 +260,10 @@ The default `serve` command (SQLite) reads none of these and is unchanged.
 ## Tests
 
 `go test ./...` passes with no local stack: the PostgreSQL and Temporal
-integration tests skip unless their env vars are set. Failure-boundary coverage:
+integration tests skip unless their env vars are set. The Docker-specific
+end-to-end test also skips when the Docker CLI or daemon is unavailable.
+
+Failure-boundary coverage:
 
 | Property | Test |
 | --- | --- |
@@ -286,6 +289,7 @@ integration tests skip unless their env vars are set. Failure-boundary coverage:
 | Recovered/concurrently fenced stale attempt cannot start a prepared step | `pg.TestJournal_StalePreparedStepCannotStartAfterRecovery`, `pg.TestJournal_StartWaitsForConcurrentAttemptFence` |
 | Idempotent retry after a processed turn | `temporal.TestRunTurn_IdempotentAfterProcessed` |
 | Real end-to-end (Temporal + PostgreSQL) | `temporal.TestVerticalSlice_EndToEnd`, `temporal.TestVerticalSlice_ToolStepEndToEnd` |
+| Real tool execution inside Docker sandbox | `temporal.TestVerticalSlice_DockerToolStepEndToEnd` |
 
 To run the integration tests locally:
 

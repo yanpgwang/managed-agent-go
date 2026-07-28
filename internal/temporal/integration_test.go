@@ -2,10 +2,14 @@ package temporal_test
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
@@ -83,6 +87,7 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("admit: %v", err)
 	}
+	defer terminateIntegrationWorkflow(t, c, sess.ID)
 
 	// Poll PostgreSQL until the agent.message and terminal idle land.
 	deadline := time.Now().Add(30 * time.Second)
@@ -135,6 +140,37 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 // commits the paired agent.tool_use / agent.tool_result plus a terminal idle to
 // PostgreSQL. Skips unless both the DB and Temporal env vars are set.
 func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
+	runToolStepEndToEnd(t, sandbox.NewLocalProvider(), model.NewFake(), "sess_tool_e2e_", "")
+}
+
+// TestVerticalSlice_DockerToolStepEndToEnd runs the same real PostgreSQL +
+// Temporal tool path through the Docker sandbox provider. Unlike the generic
+// fake-model path, its model requests a real shell command that checks
+// /.dockerenv, writes inside /workspace, and reads the marker back. The committed
+// non-error tool_result therefore proves the Activity actually executed inside
+// the provisioned container, not merely that Docker provisioning succeeded.
+func TestVerticalSlice_DockerToolStepEndToEnd(t *testing.T) {
+	if os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL") == "" ||
+		os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT") == "" {
+		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the Docker tool end-to-end slice")
+	}
+	dockerPath, err := exec.LookPath("docker")
+	if err != nil {
+		t.Skip("docker CLI not installed")
+	}
+	if err := exec.Command(dockerPath, "version", "--format", "{{.Server.Version}}").Run(); err != nil {
+		t.Skipf("docker daemon unreachable: %v", err)
+	}
+	provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{DockerPath: dockerPath, DefaultImage: "alpine:latest"})
+	if err != nil {
+		t.Fatalf("docker provider: %v", err)
+	}
+	const marker = "managed-agent-temporal-docker-ok"
+	runToolStepEndToEnd(t, provider, dockerProbeModel{marker: marker}, "sess_docker_tool_e2e_", marker)
+}
+
+func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient model.Client, sessionPrefix, expectedToolOutput string) {
+	t.Helper()
 	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
 	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
 	if dbURL == "" || hostPort == "" {
@@ -152,8 +188,8 @@ func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
 	defer c.Close()
 
 	ids := domain.NewRandomIDGen()
-	rt := agentruntime.NewAgentCore(model.NewFake(), ids)
-	runtime := temporalpkg.NewRuntime(c, store, rt, sandbox.NewLocalProvider(), ids, temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond})
+	rt := agentruntime.NewAgentCore(modelClient, ids)
+	runtime := temporalpkg.NewRuntime(c, store, rt, provider, ids, temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond})
 
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)
@@ -164,7 +200,15 @@ func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
 	go func() { _ = runtime.Relay.Run(relayCtx) }()
 
 	orch := runtime.Orchestrator()
-	sessID := "sess_tool_e2e_" + ids.NewID("")
+	sessID := sessionPrefix + ids.NewID("")
+	// SessionManager keeps a sandbox alive across turns by design. Explicitly
+	// release it after this integration test so the Docker variant cannot leak a
+	// container (the second call is a harmless no-op after normal-path release).
+	defer func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = runtime.Sandbox.Release(releaseCtx, sessID)
+	}()
 	sess := domain.Session{
 		ID:            sessID,
 		AgentID:       "agent_1",
@@ -188,6 +232,11 @@ func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("admit: %v", err)
 	}
+	// The production workflow is intentionally long-lived at idle. Integration
+	// tests use disposable PostgreSQL schemas, so terminate their execution before
+	// cleanup drops the schema; otherwise a later local worker can pick up a stale
+	// retry against data that no longer exists.
+	defer terminateIntegrationWorkflow(t, c, sessID)
 
 	deadline := time.Now().Add(30 * time.Second)
 	var events []domain.Event
@@ -209,6 +258,18 @@ func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
 		domain.EvAgentToolResult,
 		domain.EvSessionStatusIdle,
 	)
+	if expectedToolOutput != "" {
+		text, isError, ok := toolResult(events)
+		if !ok {
+			t.Fatalf("agent.tool_result missing; got %s", typeList(events))
+		}
+		if isError {
+			t.Fatalf("Docker probe tool_result is_error=true; content=%q", text)
+		}
+		if !strings.Contains(text, expectedToolOutput) {
+			t.Fatalf("Docker probe output %q does not contain %q", text, expectedToolOutput)
+		}
+	}
 
 	final, err := store.GetSession(ctx, sessID)
 	if err != nil {
@@ -217,6 +278,48 @@ func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
 	if final.Status != domain.StatusIdle {
 		t.Fatalf("expected idle, got %s", final.Status)
 	}
+	releaseCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := runtime.Sandbox.Release(releaseCtx, sessID); err != nil {
+		t.Fatalf("release session sandbox: %v", err)
+	}
+}
+
+// dockerProbeModel is a deterministic, retry-safe model client for the Docker
+// integration test. Before a tool result exists it requests one real bash step;
+// afterwards it ends the turn. Behavior depends only on projected history, not a
+// mutable call counter, so an Activity retry receives the same response.
+type dockerProbeModel struct {
+	marker string
+}
+
+func (m dockerProbeModel) CreateMessage(_ context.Context, req model.Request) (model.Response, error) {
+	for _, message := range req.Messages {
+		for _, block := range message.Content {
+			if block.Type == "tool_result" {
+				return model.Response{
+					Content:    []domain.ContentBlock{{Type: "text", Text: "Docker probe completed"}},
+					StopReason: "end_turn",
+				}, nil
+			}
+		}
+	}
+	command := "test -f /.dockerenv && test \"$(pwd)\" = /workspace && printf '" + m.marker + "' > probe.txt && cat probe.txt"
+	return model.Response{
+		Content: []domain.ContentBlock{{
+			Type: "tool_use", ToolUseID: "docker_probe_tool_1", ToolName: "bash",
+			Input: map[string]any{"command": command},
+		}},
+		StopReason: "tool_use",
+	}, nil
+}
+
+func (m dockerProbeModel) CreateMessageStream(ctx context.Context, req model.Request, onDelta func(index int, text string)) (model.Response, error) {
+	resp, err := m.CreateMessage(ctx, req)
+	if err == nil && resp.StopReason == "end_turn" && len(resp.Content) == 1 && onDelta != nil {
+		onDelta(0, resp.Content[0].Text)
+	}
+	return resp, err
 }
 
 func hasType(events []domain.Event, t string) bool {
@@ -234,6 +337,37 @@ func typeList(events []domain.Event) string {
 		s += e.Type + " "
 	}
 	return s
+}
+
+func toolResult(events []domain.Event) (text string, isError bool, ok bool) {
+	for _, event := range events {
+		if event.Type != domain.EvAgentToolResult {
+			continue
+		}
+		isError, _ = event.Payload["is_error"].(bool)
+		content, _ := event.Payload["content"].([]any)
+		var out strings.Builder
+		for _, raw := range content {
+			block, _ := raw.(map[string]any)
+			part, _ := block["text"].(string)
+			out.WriteString(part)
+		}
+		return out.String(), isError, true
+	}
+	return "", false, false
+}
+
+func terminateIntegrationWorkflow(t *testing.T, c client.Client, workflowID string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.TerminateWorkflow(ctx, workflowID, "", "managed-agent integration test cleanup"); err != nil {
+		var notFound *serviceerror.NotFound
+		if errors.As(err, &notFound) {
+			return
+		}
+		t.Errorf("terminate integration workflow %s: %v", workflowID, err)
+	}
 }
 
 // assertOrder checks that the given event types appear in the slice in the given
