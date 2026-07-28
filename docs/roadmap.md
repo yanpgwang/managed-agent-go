@@ -13,14 +13,31 @@ The roadmap is organized by outcome rather than by complete upstream API
 parity. Detailed design constraints and completed mechanics live in the
 [architecture guides](architecture.md).
 
+## Next implementation slice: recoverable tool execution
+
+The highest-value next step is to remove the ambiguity between a tool side
+effect and the durable record of that side effect. Today authoritative runtime
+output is buffered until run completion. A crash after `bash`, `write`, or
+another tool changes the world but before completion commits can cause recovery
+to repeat the run.
+
+The next slice should establish durable attempt and tool-step boundaries:
+
+- persist the model's tool request before invoking the tool;
+- distinguish prepared, started, and completed tool execution;
+- persist the tool result before continuing the model loop;
+- never silently retry an execution whose external outcome is ambiguous;
+- use idempotency keys where a downstream tool actually supports them.
+
+This does not promise exactly-once execution for arbitrary shell commands.
+Instead, it makes uncertainty explicit and gives later retry policy a durable
+fact model. Additional sandbox backends do not take priority over this
+correctness boundary.
+
 ## Now: make single-node execution trustworthy
 
-- Persist meaningful runtime checkpoints instead of buffering all
-  authoritative output until a run completes.
-- Add a durable tool and side-effect journal with idempotency keys so restart
-  recovery does not repeat committed external effects.
-- Separate logical runs from attempts and define retryable versus terminal
-  failures.
+- Deliver the recoverable tool-execution slice above, then define retryable
+  versus terminal failures around durable attempts.
 - Harden streaming around upstream errors, late subscribers, preview
   completion, and slow consumers.
 - Add context compaction when session history exceeds the model projection
@@ -45,7 +62,9 @@ parity. Detailed design constraints and completed mechanics live in the
   concrete use cases require them.
 - Model multi-agent rosters, threads, delegation, and targeted interrupts as
   first-class domain concepts.
-- Add stronger sandbox backends such as gVisor or a remote sandbox service.
+- Follow the ordered [sandbox backend evolution path](sandboxes.md), including
+  Environment-backed selection, durable lifecycle management, and stronger or
+  remote providers.
 - Introduce a production database adapter and versioned schema migrations.
 - Split API and worker roles with leases, fencing, an outbox, distributed event
   delivery, and observability.

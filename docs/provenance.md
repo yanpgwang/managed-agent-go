@@ -49,7 +49,7 @@ Verified 2026-07-24.
 
 ## Tool and sandbox sources
 
-Verified 2026-07-26. These inform the tool-use loop, the built-in toolset
+Verified 2026-07-28. These inform the tool-use loop, the built-in toolset
 declaration, the custom/permission handoff, and the tool-block event wire.
 
 - [Managed Agents tools](https://platform.claude.com/docs/en/managed-agents/tools)
@@ -64,6 +64,10 @@ declaration, the custom/permission handoff, and the tool-block event wire.
 - [Permission policies](https://platform.claude.com/docs/en/managed-agents/permission-policies)
   — `always_allow` / `always_ask` / `always_deny` evaluation and the
   `requires_action` stop reason that a pending confirmation produces.
+- [Cloud environment setup](https://platform.claude.com/docs/en/managed-agents/environments)
+  — reusable Environment configuration and isolated session sandbox ownership.
+- [Self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
+  — the control-plane/worker boundary and session-scoped sandbox guidance.
 - [Bash tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool)
   and
   [Text editor tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/text-editor-tool)
@@ -72,6 +76,12 @@ declaration, the custom/permission handoff, and the tool-block event wire.
   conventions, not part of the Managed Agents public wire; the schemas we send
   are an internal design choice and are marked `partial`/internal in
   `docs/compatibility.md`.
+
+The
+[Anthropic Sandbox Runtime](https://github.com/anthropic-experimental/sandbox-runtime)
+repository is referenced only as an experimental candidate backend. It does
+not establish Managed Agents API compatibility and no SRT integration is
+currently implemented.
 
 Beta header for all Managed Agents routes covered here:
 `anthropic-beta: managed-agents-2026-04-01`.
