@@ -10,9 +10,12 @@ surface-area compatibility.
 
 ## 1. Execution semantics
 
-- Add a first-class durable pending-action model for custom tools and
-  permission confirmations.
-- Complete `always_ask` confirmation resume.
+- A first-class durable pending-action model with a claim gate is implemented
+  for custom tools (park → durable pending action → matching
+  `user.custom_tool_result` → resume → `end_turn`). Remaining: complete the
+  `always_ask` confirmation allow/deny execution resume, and an aggregated
+  multi-action resume protocol (a multi-action park currently gates all actions
+  but each must be resolved individually).
 - Implement `user.interrupt` and propagate cancellation through model and tool
   execution.
 - Harden stream behavior around upstream errors, late subscribers, preview
