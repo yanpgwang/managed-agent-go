@@ -278,8 +278,13 @@ func validateClientEvent(event map[string]any) error {
 		if result != "allow" && result != "deny" {
 			return domain.Validation("result must be allow or deny for user.tool_confirmation")
 		}
-		if _, present := event["deny_message"]; present && result != "deny" {
-			return domain.Validation("deny_message is only allowed when result is deny")
+		if _, present := event["deny_message"]; present {
+			if result != "deny" {
+				return domain.Validation("deny_message is only allowed when result is deny")
+			}
+			if err := optionalString(event, "deny_message"); err != nil {
+				return err
+			}
 		}
 	case domain.EvUserDefineOutcome:
 		if err := requireString("description"); err != nil {

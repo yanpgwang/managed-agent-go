@@ -256,6 +256,40 @@ func TestProjectMessages_KeepsPairedToolUseUnderFilter(t *testing.T) {
 	}
 }
 
+// TestProjectMessages_ConfirmationToolResultPairing guards test #4: a resolved
+// always_ask confirmation emits an agent.tool_result whose tool_use_id is the
+// ORIGINAL committed agent.tool_use{evaluated_permission:"ask"} event id. After
+// completion the parked tool_use is no longer dangling — the confirmation-
+// generated result answers it — so the two must re-project as a legal
+// assistant tool_use + user tool_result pair. This holds for both the allowed
+// result and the deny rejection (is_error true), which projects identically.
+func TestProjectMessages_ConfirmationToolResultPairing(t *testing.T) {
+	events := []Event{
+		ev(EvUserMessage, "write the file"),
+		{ID: "evt_ask", Type: EvAgentToolUse, Payload: map[string]any{
+			"id": "fake_use", "name": "write", "input": map[string]any{"path": "x", "file_text": "y"},
+			"evaluated_permission": "ask"}},
+		// Emitted by the confirmation resume, correlated to the committed evt_ask.
+		{Type: EvAgentToolResult, Payload: map[string]any{
+			"tool_use_id": "evt_ask", "is_error": true,
+			"content": []any{map[string]any{"type": "text", "text": "Tool call denied by user. nope"}}}},
+		ev(EvAgentMessage, "understood"),
+	}
+	got := ProjectMessages(events)
+	if len(got) != 4 {
+		t.Fatalf("want 4 messages, got %d: %#v", len(got), got)
+	}
+	if got[1].Role != RoleAssistant || got[1].Content[0].Type != "tool_use" || got[1].Content[0].ToolUseID != "evt_ask" {
+		t.Fatalf("parked always_ask tool_use dropped or altered: %#v", got[1])
+	}
+	if got[2].Role != RoleUser || got[2].Content[0].Type != "tool_result" || got[2].Content[0].ToolResultFor != "evt_ask" {
+		t.Fatalf("confirmation tool_result unpaired: %#v", got[2])
+	}
+	if !got[2].Content[0].IsError {
+		t.Fatalf("deny tool_result should project is_error=true: %#v", got[2].Content[0])
+	}
+}
+
 // TestProjectMessages_DropsOrphanCustomToolResult guards I2: a client can send a
 // user.custom_tool_result whose custom_tool_use_id references no preceding
 // tool_use event. Emitting that orphan tool_result would make the projected

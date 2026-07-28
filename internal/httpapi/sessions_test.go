@@ -217,6 +217,7 @@ func TestSendEvents_ValidatesVariantShape(t *testing.T) {
 		`{"events":[{"type":"user.message"}]}`,
 		`{"events":[{"type":"user.custom_tool_result","content":[]}]}`,
 		`{"events":[{"type":"user.tool_confirmation","tool_use_id":"sevt_x","result":"maybe"}]}`,
+		`{"events":[{"type":"user.tool_confirmation","tool_use_id":"sevt_x","result":"deny","deny_message":42}]}`,
 		`{"events":[{"type":"user.define_outcome","description":"x"}]}`,
 	} {
 		rec := do(h, "POST", "/v1/sessions/"+id+"/events", body)

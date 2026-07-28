@@ -12,10 +12,15 @@ surface-area compatibility.
 
 - A first-class durable pending-action model with a claim gate is implemented
   for custom tools (park → durable pending action → matching
-  `user.custom_tool_result` → resume → `end_turn`). Remaining: complete the
-  `always_ask` confirmation allow/deny execution resume, and an aggregated
-  multi-action resume protocol (a multi-action park currently gates all actions
-  but each must be resolved individually).
+  `user.custom_tool_result` → resume → `end_turn`) and for the single built-in
+  `always_ask` confirmation allow/deny **execution** resume (park →
+  `user.tool_confirmation` → recover original `agent.tool_use` from causal
+  history → allow executes the built-in / deny rejects with `deny_message` →
+  `agent.tool_result` correlated to the original id → `end_turn`). Remaining: an
+  aggregated multi-action resume protocol (a multi-action park currently gates
+  all actions but each must be resolved individually), and — because there is no
+  durable side-effect journal yet — crash-replay safety for an allowed built-in
+  whose side effect committed before its result did.
 - Implement `user.interrupt` and propagate cancellation through model and tool
   execution.
 - Harden stream behavior around upstream errors, late subscribers, preview

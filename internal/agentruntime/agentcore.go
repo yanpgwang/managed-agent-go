@@ -48,20 +48,22 @@ func NewAgentCore(c model.Client, ids domain.IDGenerator) *AgentCore {
 }
 
 // drivesModelTurn reports whether a trigger should start a model turn. A plain
-// user.message does, and so does a user.custom_tool_result that resolves a
-// parked custom tool: the projected history now pairs that result with its
-// agent.custom_tool_use, so the model sees the outcome and the loop continues.
+// user.message does; so does a user.custom_tool_result that resolves a parked
+// custom tool; and so does a user.tool_confirmation that resolves a parked
+// always_ask built-in. In each resolution case the projected history now pairs
+// the awaited result with its agent.(custom_)tool_use, so the model sees the
+// outcome and the loop continues.
 //
-// user.tool_confirmation (the always_ask resume) is intentionally not here yet:
-// resolving it requires projecting the confirmation into a tool_result AND, on
-// allow, executing the built-in the model asked for — neither of which exists.
-// Driving a turn on it would replay a dangling agent.tool_use with no paired
-// result, which is a malformed Messages request. Parking on always_ask works;
-// its resume is a follow-up. Interrupts and outcome definitions never by
+// For a confirmation the pairing is produced by the core itself (seedConfirmation
+// below): the original agent.tool_use is dangling in projected history until its
+// tool_result exists, so the core executes-or-denies the recovered built-in,
+// emits the agent.tool_result correlated to the original committed id, and
+// threads the paired tool_use/tool_result into the run's local conversation
+// before the model loop runs. Interrupts and outcome definitions never by
 // themselves drive a turn.
 func drivesModelTurn(triggerType string) bool {
 	switch triggerType {
-	case domain.EvUserMessage, domain.EvUserCustomToolResult:
+	case domain.EvUserMessage, domain.EvUserCustomToolResult, domain.EvUserToolConfirmation:
 		return true
 	}
 	return false
@@ -81,6 +83,29 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 	// history and grown with assistant tool_use / user tool_result blocks so the
 	// model sees tool outcomes within this run.
 	messages := req.Messages
+
+	// A user.tool_confirmation resumes a parked always_ask built-in. Before the
+	// model loop, resolve the original committed agent.tool_use, execute it (allow)
+	// or reject it (deny), emit the agent.tool_result correlated to the original
+	// committed event id, and thread the paired tool_use/tool_result into the local
+	// conversation. A malformed/unresolvable confirmation fails safely here without
+	// executing anything, so the loop below never replays a dangling tool_use.
+	if req.Trigger.Type == domain.EvUserToolConfirmation {
+		seeded, err := a.seedConfirmation(ctx, req, sink)
+		if err != nil {
+			return RunOutcome{}, err
+		}
+		// Merge the seeded pair into the running conversation with the same
+		// role-collapsing semantics ProjectMessages uses. When the parked model
+		// response emitted assistant text alongside the always_ask tool_use, the
+		// dangling tool_use is dropped from projected history, so req.Messages ends
+		// with an assistant text message. Blindly appending the seeded assistant
+		// tool_use message would then produce two consecutive assistant messages,
+		// which the Messages API rejects. Merging folds the recovered tool_use into
+		// that trailing assistant message (text then tool_use), preserving strict
+		// role alternation before the model loop runs.
+		messages = appendMerging(messages, seeded)
+	}
 
 	for turn := 0; turn < maxToolTurns; turn++ {
 		if err := ctx.Err(); err != nil {
@@ -273,6 +298,179 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 		)
 	}
 	return RunOutcome{}, nil
+}
+
+// seedConfirmation resolves a user.tool_confirmation into the paired
+// assistant tool_use / user tool_result blocks that unblock the parked
+// always_ask built-in, emitting the public agent.tool_result correlated to the
+// ORIGINAL committed agent.tool_use event id. It returns those two messages to
+// append to the run's local conversation before the model loop runs.
+//
+// The original action is recovered from server-owned causal history
+// (req.ConfirmedToolUse), never from client-supplied name/input. The core
+// re-validates every durable assumption the admission gate cannot, BEFORE any
+// executor/sandbox call or sink.Emit, so a malformed confirmation fails safely
+// at this boundary rather than executing a tool or emitting a result:
+//   - the trigger resolves a tool_confirmation whose tool_use_id references
+//     exactly this original event (domain.ResolutionReference);
+//   - the referenced event is a persisted agent.tool_use whose
+//     evaluated_permission is "ask", naming a registered built-in with a present
+//     input object (an empty object is valid; missing/wrong-type is not);
+//   - the built-in is still enabled AND its current immutable session policy is
+//     always_ask (never always_allow);
+//   - result is exactly allow|deny, and deny_message is only present on deny.
+//
+// Any failure returns an error and emits nothing.
+//
+// On allow the built-in executes once per successful run attempt through the same
+// tools.Registry/Sandbox path a normal turn uses (crash replay before the
+// completion commit remains possible; there is no side-effect journal). Allow
+// requires a non-nil sandbox. On deny the executor is never invoked and no
+// sandbox is required; the result is marked is_error and carries the deny_message
+// text so the model can react.
+func (a *AgentCore) seedConfirmation(ctx context.Context, req RunRequest, sink EventSink) ([]domain.Message, error) {
+	orig := req.ConfirmedToolUse
+	if orig == nil || orig.ID == "" {
+		return nil, domain.Validation("tool_confirmation has no resolvable original action")
+	}
+
+	// Re-derive the trigger's own reference from server-owned payload rather than
+	// trusting that the app resolved the correct original: the trigger must be a
+	// user.tool_confirmation whose tool_use_id references exactly this original
+	// event. A mismatch means the recovered action does not answer the trigger.
+	refID, refKind, ok := domain.ResolutionReference(req.Trigger.Type, req.Trigger.Payload)
+	if !ok || refKind != domain.PendingToolConfirmation {
+		return nil, domain.Validation("trigger is not a tool_confirmation resolution")
+	}
+	if refID != orig.ID {
+		return nil, domain.Validation("tool_confirmation references a different action than the recovered original")
+	}
+
+	// The original must be a persisted always_ask agent.tool_use (the helper
+	// requires evaluated_permission == "ask"), naming a registered built-in with a
+	// present input object. An empty object is valid; a missing/wrong-type input is
+	// not — a malformed action must never reach an executor.
+	kind, ok := domain.PendingActionKindForEvent(orig.Type, orig.Payload)
+	if !ok || kind != domain.PendingToolConfirmation {
+		return nil, domain.Validation("confirmed event is not an always_ask agent.tool_use")
+	}
+	name, _ := orig.Payload["name"].(string)
+	if name == "" {
+		return nil, domain.Validation("confirmed tool_use has no name")
+	}
+	input, ok := orig.Payload["input"].(map[string]any)
+	if !ok {
+		return nil, domain.Validation("confirmed tool_use input is missing or not an object")
+	}
+	exec, isBuiltin := tools.Registry()[name]
+	if !isBuiltin {
+		return nil, domain.Validation("confirmed tool is not a built-in")
+	}
+
+	// Re-resolve the CURRENT immutable session policy for this built-in: it must be
+	// enabled AND still always_ask. If the policy is now (or was mistakenly)
+	// always_allow/anything else, this confirmation path must not execute — the
+	// only decision surface it models is an ask gate.
+	enabled, policy := req.ToolSet.BuiltinEnabled(name)
+	if !enabled {
+		return nil, domain.Validation("confirmed built-in is not enabled in this session")
+	}
+	if policy.Type != "always_ask" {
+		return nil, domain.Validation("confirmed built-in is not under an always_ask policy")
+	}
+
+	// The confirmation decision comes from the trigger payload. Re-validate the
+	// HTTP invariants at the runtime boundary so an internal caller that bypasses
+	// the edge cannot execute on a malformed result: result must be exactly
+	// allow|deny, and deny_message is only permitted on deny.
+	result, _ := req.Trigger.Payload["result"].(string)
+	if result != "allow" && result != "deny" {
+		return nil, domain.Validation("tool_confirmation result must be allow or deny")
+	}
+	if raw, present := req.Trigger.Payload["deny_message"]; present {
+		if result != "deny" {
+			return nil, domain.Validation("deny_message is only allowed when result is deny")
+		}
+		if _, ok := raw.(string); !ok {
+			return nil, domain.Validation("deny_message must be a string")
+		}
+	}
+	denyMessage, _ := req.Trigger.Payload["deny_message"].(string)
+
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	var content []any
+	var isError bool
+	if result == "deny" {
+		// Never touch the sandbox/executor on deny. Deliver a rejection tool
+		// result including the deny_message so the model sees why it was refused.
+		text := "Tool call denied by user."
+		if denyMessage != "" {
+			text += " " + denyMessage
+		}
+		content = []any{map[string]any{"type": "text", "text": text}}
+		isError = true
+	} else {
+		// Allow: the executor needs a provisioned sandbox. Refuse rather than call
+		// an executor with a nil sandbox, which could panic. Deny above never
+		// reaches here, so it works with a nil sandbox.
+		if req.Sandbox == nil {
+			return nil, domain.Validation("cannot execute confirmed built-in without a sandbox")
+		}
+		res := exec(ctx, req.Sandbox, input)
+		content = res.Content
+		isError = res.IsError
+	}
+
+	// Emit the public agent.tool_result correlated to the ORIGINAL committed
+	// event id, so agent.tool_use/agent.tool_result re-project as a valid pair.
+	if _, err := sink.Emit(ctx, []domain.EventDraft{{
+		Type: domain.EvAgentToolResult,
+		Payload: map[string]any{
+			"tool_use_id": orig.ID,
+			"content":     content,
+			"is_error":    isError,
+		},
+	}}); err != nil {
+		return nil, err
+	}
+
+	return []domain.Message{
+		{Role: domain.RoleAssistant, Content: []domain.ContentBlock{{
+			Type: "tool_use", ToolUseID: orig.ID, ToolName: name, Input: input,
+		}}},
+		{Role: domain.RoleUser, Content: []domain.ContentBlock{{
+			Type: "tool_result", ToolResultFor: orig.ID, Text: flattenResultText(content), IsError: isError,
+		}}},
+	}, nil
+}
+
+// appendMerging appends added messages to base, folding an added message into
+// the previous message when their roles match — the same role-collapsing rule
+// ProjectMessages applies to committed events. This keeps the running
+// conversation strictly role-alternating even when the seeded confirmation pair
+// begins with the same role as base's final message (e.g. base ends with
+// assistant text and the recovered tool_use is also assistant).
+func appendMerging(base, added []domain.Message) []domain.Message {
+	out := base
+	for _, m := range added {
+		if n := len(out); n > 0 && out[n-1].Role == m.Role {
+			// Replace the trailing message with a merged copy rather than mutating
+			// it in place: base may alias the caller's slice, whose elements must
+			// not change under it.
+			merged := make([]domain.ContentBlock, 0, len(out[n-1].Content)+len(m.Content))
+			merged = append(merged, out[n-1].Content...)
+			merged = append(merged, m.Content...)
+			dup := append([]domain.Message(nil), out...)
+			dup[n-1] = domain.Message{Role: out[n-1].Role, Content: merged}
+			out = dup
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // enabledToolSchemas returns the model-facing tool schemas the session offers:
