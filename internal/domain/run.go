@@ -18,8 +18,13 @@ type SessionRun struct {
 	SessionID       string
 	AdmissionSeq    int64
 	TriggerEventIDs []string
-	State           RunState
-	Error           *string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	// OutputEventIDs are the exact committed event ids this run appended when it
+	// closed (agent output plus the run's terminal/status events), persisted in
+	// the same transaction that closes the run. Empty until completion. This is
+	// internal-only durable state and is never serialized onto the public API.
+	OutputEventIDs []string
+	State          RunState
+	Error          *string
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }

@@ -1,24 +1,29 @@
 # managed-agent-go
 
-An independent, open-source Go implementation of the Claude Managed Agents
-HTTP API.
+An open-source, self-hosted managed agent runtime in Go with a Claude Managed
+Agents-compatible HTTP API.
 
 > [!IMPORTANT]
 > **Alpha.** This project is an early, experimental, **single-node** (SQLite,
-> one process) implementation of a documented subset of the Managed Agents API.
+> one process) runtime that implements a documented subset of the Managed
+> Agents API.
 > It is **independent and not an Anthropic product**. It is **not
 > production-ready**: do not use it as a drop-in production service. The default
-> local sandbox is **not a security boundary**. The
-> [compatibility ledger](docs/compatibility.md) is the **source of truth** for
-> what is and is not implemented — where prose and the ledger disagree, the
-> ledger wins.
+> local sandbox is **not a security boundary**. See
+> [Claude API coverage](docs/compatibility.md) for the supported integration
+> surface and known differences.
 
 ## Why this project?
 
 `managed-agent-go` explores a server-owned agent runtime: the service persists
-session history, projects that history into stateless Messages API requests,
-executes tools in a replaceable sandbox, and exposes the result through a
+session history, projects that history into stateless model requests, executes
+tools in a replaceable sandbox, and exposes the result through a familiar
 Managed Agents-compatible HTTP surface.
+
+The runtime is the product; Claude API compatibility is an integration surface.
+The project aims to support common Managed Agents workflows and the official Go
+SDK for that documented subset. It does not aim to reproduce every upstream
+field, feature, edge case, or internal execution detail one-for-one.
 
 The current implementation provides:
 
@@ -35,8 +40,8 @@ The current implementation provides:
 ## Project status
 
 This is a **pre-release single-node implementation**. Its module boundaries and
-durability model are suitable for continued OSS development, but API
-compatibility is not complete.
+durability model are suitable for continued OSS development, while its public
+API intentionally covers only the workflows listed below.
 
 | Area | Current state |
 | --- | --- |
@@ -45,12 +50,13 @@ compatibility is not complete.
 | Sessions | Create, get, list, update title, archive, delete |
 | Events | Send, list, SSE stream, opt-in message previews |
 | Runtime | Multi-turn Messages API loop and custom-tool handoff |
-| Sandboxes | Local development guardrail and optional Docker isolation |
+| Sandboxes | Local development guardrail and optional Docker isolation; see the [backend matrix](docs/sandboxes.md) |
 | Storage | SQLite; one process; at-least-once restart recovery |
 
-Important gaps include interrupt propagation, durable per-step runtime output,
-session-scoped workspaces, retries with side-effect idempotency, MCP execution,
-files/skills/memory, resolved multiagent orchestration, and distributed workers.
+Important gaps include durable per-step runtime output, durable sandbox
+checkpoint/restore across process restart, retries with side-effect
+idempotency, MCP execution, files/skills/memory, resolved multiagent
+orchestration, and distributed workers.
 See the [roadmap](docs/roadmap.md).
 
 ## Quick start
@@ -119,17 +125,21 @@ go run ./cmd/managed-agent serve
 
 Docker sandboxes use `--network none` by default, but containers still share
 the host kernel and this path has not been audited for hostile multi-tenant
-workloads. Sandboxes are currently provisioned per run, so filesystem state
-does not persist across session turns.
+workloads. Sandboxes are scoped to the session: the first run needing tools
+provisions one and later runs in the same session reuse it, so filesystem state
+persists across turns; the sandbox is released when the session is deleted. The
+manager is in-memory, so a process restart does not restore an idle session's
+sandbox.
 
 ## Documentation
 
 - [Hosted documentation](https://yanpgwang.github.io/managed-agent-go/)
 - [Getting started](docs/getting-started.md)
+- [Sandbox backends](docs/sandboxes.md)
 - [Architecture](docs/architecture.md)
 - [Domain model](docs/architecture/domain-model.md)
 - [API reference](docs/api/overview.md)
-- [Compatibility ledger](docs/compatibility.md)
+- [Claude API coverage](docs/compatibility.md)
 - [Roadmap](docs/roadmap.md)
 - [Compatibility provenance](docs/provenance.md)
 

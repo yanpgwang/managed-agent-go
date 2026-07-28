@@ -60,14 +60,20 @@ func (f *Fake) Run(ctx context.Context, req RunRequest, sink EventSink) (RunOutc
 	case domain.EvUserMessage:
 		text := contentText(req.Trigger.Payload)
 		if strings.Contains(text, "tool:") {
-			_, err := sink.Emit(ctx, []domain.EventDraft{{
+			out, err := sink.Emit(ctx, []domain.EventDraft{{
 				Type: domain.EvAgentCustomToolUse,
 				Payload: map[string]any{
 					"name":  "get_metrics",
 					"input": map[string]any{},
 				},
 			}})
-			return RunOutcome{}, err
+			if err != nil {
+				return RunOutcome{}, err
+			}
+			// Park like the real core: report the committed action event id so the
+			// app layer persists a durable pending action and the session idles with
+			// stop_reason.requires_action awaiting a user.custom_tool_result.
+			return RunOutcome{RequiresAction: true, ActionEventIDs: []string{out[0].ID}}, nil
 		}
 		_, err := sink.Emit(ctx, []domain.EventDraft{
 			{Type: domain.EvAgentMessage, Payload: map[string]any{"content": textContent("echo: " + text)}},

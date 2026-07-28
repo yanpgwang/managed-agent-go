@@ -29,10 +29,22 @@ flowchart LR
 
 ### The server owns history
 
-The event log is the source of truth for a session. Before each model turn the
-application reads committed events and projects them into a Messages API
-conversation. The model endpoint performs inference; it does not own session
-state.
+The event log is the source of truth for a session, but two different orderings
+are read from it:
+
+- **Public event history** (`GET .../events`, list, and the live SSE stream) is
+  the immutable receipt/commit sequence. It never reorders or hides events.
+- **Model-facing conversation order** is reconstructed per turn from run
+  causality, not from raw commit order. For each prior completed run, in
+  admission order, the projection replays that run's trigger event IDs followed
+  by its persisted output event IDs, then appends the current run's trigger. The
+  output association is durable state on the run, so this ordering is rebuilt
+  identically after a restart, and a run never sees a later trigger that was
+  queued while it was still running.
+
+Before each model turn the application reconstructs that causal history and
+projects it into a Messages API conversation. The model endpoint performs
+inference; it does not own session state.
 
 ### Wire and domain models are separate
 
@@ -75,9 +87,9 @@ or sandbox dependencies.
 ## Durable write path
 
 Submitting input is not “write an event, then enqueue work.” The store commits
-the client events, `session.status_running`, session projection, and queued run
-in one transaction. A crash therefore cannot leave accepted input without
-corresponding work.
+the client events, `session.status_running`, session projection, and one queued
+run per processable trigger (in admission order) in one transaction. A crash
+therefore cannot leave accepted input without corresponding work.
 
 Runtime calls happen outside SQL transactions. At run completion, buffered
 authoritative output, trigger `processed_at`, the final session status, and run
@@ -108,17 +120,30 @@ ownership and duplicate-side-effect risks.
 
 The strongest current risks are semantic rather than structural:
 
-1. A batch of multiple triggering input events is admitted as one run, while
-   each trigger currently reprojects only committed history. Output buffered by
-   an earlier trigger in the same claim is not visible to the next trigger.
-2. Runtime output is buffered until completion even though tools may already
+1. Runtime output is buffered until completion even though tools may already
    have performed side effects. A process crash can therefore repeat a side
    effect without a durable journal of the prior attempt.
-3. Pending client actions are encoded in events and stop reasons rather than a
-   first-class durable `pending_actions` model.
-4. Sandboxes are per run rather than per session, so workspace continuity is
-   not yet part of the session contract.
-5. `SessionService` currently combines session CRUD, admission, dispatch, and
+2. Pending client actions are now a first-class durable `pending_actions` model
+   with a claim gate: a parked run persists one pending action per action event
+   (kind derived from the committed event's type AND payload) in the same transaction as the
+   action events, the `requires_action` terminal, the session projection, and
+   the run completion. While unresolved, ordinary queued runs — including runs
+   admitted before the park — are not claimable, and work admitted while the gate
+   is closed stays queued with the session left idle (no `session.status_running`);
+   only a matching resolution
+   trigger bypasses them, and the gate clears atomically when the resume run
+   closes. Admission rejects unknown, already-resolved, duplicate, wrong-session,
+   and wrong-kind references. The single custom-tool park/resume cycle is proven
+   end to end and survives restart. A single `always_ask`
+   `user.tool_confirmation` allow/deny execution resume is also implemented.
+   A park with multiple action events still gates all of them but has no
+   aggregated multi-action resume protocol; each must be resolved individually.
+3. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
+   first tool use, reused across its runs, and released on session deletion.
+   The manager is in-memory, so a process restart does not restore an idle
+   session's workspace, and there is no durable checkpoint, quota, or eviction
+   policy yet.
+4. `SessionService` currently combines session CRUD, admission, dispatch, and
    completion orchestration. These responsibilities should be separated before
    introducing multiple workers or richer retry behavior.
 

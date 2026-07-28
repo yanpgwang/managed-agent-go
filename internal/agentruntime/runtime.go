@@ -48,6 +48,13 @@ type RunRequest struct {
 	// be nil when the session has no tools; the core must not execute a tool
 	// without one.
 	Sandbox sandbox.Sandbox
+	// ConfirmedToolUse is the original committed agent.tool_use event a
+	// user.tool_confirmation trigger resolves, recovered by the app layer from
+	// server-owned causal history (never from client-supplied tool name/input).
+	// It is set only when Trigger is a user.tool_confirmation; nil otherwise. The
+	// core recovers the tool name and input from its payload and re-validates the
+	// built-in/toolset assumptions before executing (allow) or rejecting (deny).
+	ConfirmedToolUse *domain.Event
 }
 
 // RunOutcome is what a single Run reports back to the app layer so the app can

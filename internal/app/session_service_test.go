@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -560,6 +561,357 @@ func textBlocks(text string) []any {
 	return []any{map[string]any{"type": "text", "text": text}}
 }
 
+// projectingRuntime records the projected Messages it receives for each run and
+// emits a distinct agent.message per trigger so a later run's projection can be
+// asserted to include an earlier run's committed output.
+type projectingRuntime struct {
+	projections chan []domain.Message
+}
+
+func (r projectingRuntime) Run(
+	ctx context.Context,
+	req agentruntime.RunRequest,
+	sink agentruntime.EventSink,
+) (agentruntime.RunOutcome, error) {
+	r.projections <- req.Messages
+	_, err := sink.Emit(ctx, []domain.EventDraft{
+		{Type: domain.EvAgentMessage, Payload: map[string]any{
+			"content": []any{map[string]any{
+				"type": "text",
+				"text": "reply-to: " + contentText(req.Trigger.Payload),
+			}},
+		}},
+		{Type: domain.EvSessionStatusIdle, Payload: map[string]any{
+			"stop_reason": map[string]any{"type": "end_turn"},
+		}},
+	})
+	return agentruntime.RunOutcome{}, err
+}
+
+func contentText(payload map[string]any) string {
+	blocks, _ := payload["content"].([]any)
+	if len(blocks) == 0 {
+		return ""
+	}
+	block, _ := blocks[0].(map[string]any)
+	text, _ := block["text"].(string)
+	return text
+}
+
+// TestSessionService_SecondUserEventObservesFirstAgentOutput proves the
+// completion-before-next-claim guarantee end to end with EXACT projections: two
+// user events admitted in one batch produce two runs. Run A's projected Messages
+// are exactly user(A). Run B's are exactly user(A), assistant(reply-to:A),
+// user(B) — the second run observes the first run's committed reply, in causal
+// order, and nothing more. The public event history preserves receipt/commit
+// order and is not rewritten.
+func TestSessionService_SecondUserEventObservesFirstAgentOutput(t *testing.T) {
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+	ids := domain.NewSeqIDGen()
+	clk := domain.FixedClock{T: time.Unix(1, 0).UTC()}
+	events := NewEventService(store.NewEventStore(db, ids, clk), NewHub(64))
+	agents := NewAgentService(store.NewAgentRepo(db), ids, clk)
+	envs := NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
+	projections := make(chan []domain.Message, 4)
+	ss := NewSessionService(
+		store.NewSessionRepo(db), store.NewAgentRepo(db), store.NewEnvironmentRepo(db),
+		events, store.NewRunStore(db, ids, clk),
+		projectingRuntime{projections: projections}, sandbox.NewLocalProvider(), ids, clk,
+	)
+	ag, _ := agents.Create(ctx, domain.Agent{Name: "a", Model: domain.Model{ID: "claude-opus-4-8"}})
+	env, _ := envs.Create(ctx, domain.Environment{Name: "e", ConfigType: "cloud"})
+
+	sess, err := ss.Create(ctx, CreateSessionInput{
+		AgentID:       ag.ID,
+		EnvironmentID: env.ID,
+		InitialEvents: []domain.EventDraft{
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": textBlocks("first")}},
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": textBlocks("second")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	first := receiveProjection(t, projections)
+	second := receiveProjection(t, projections)
+	pollUntilStatus(t, ss, sess.ID, domain.StatusIdle)
+
+	// Run A's projection is exactly the first user message.
+	assertMessages(t, "run A", first, []wantMessage{
+		{domain.RoleUser, "first"},
+	})
+	// Run B's projection is exactly user(A), assistant(reply-to:A), user(B).
+	assertMessages(t, "run B", second, []wantMessage{
+		{domain.RoleUser, "first"},
+		{domain.RoleAssistant, "reply-to: first"},
+		{domain.RoleUser, "second"},
+	})
+
+	// The public event history preserves receipt/commit order and is not
+	// rewritten: both user triggers are committed (with ascending seq) before the
+	// agent replies they caused.
+	assertUserTriggersBeforeOutputs(t, ss, sess.ID, []string{"first", "second"})
+}
+
+// TestSessionService_BatchedTriplePerRunCausalProjection admits A,B,C in one
+// batch and asserts each run's projection contains ONLY the completed prior
+// trigger/output turns plus its current trigger, in exact role/content order —
+// never a later, still-queued trigger.
+func TestSessionService_BatchedTriplePerRunCausalProjection(t *testing.T) {
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+	ids := domain.NewSeqIDGen()
+	clk := domain.FixedClock{T: time.Unix(1, 0).UTC()}
+	events := NewEventService(store.NewEventStore(db, ids, clk), NewHub(64))
+	agents := NewAgentService(store.NewAgentRepo(db), ids, clk)
+	envs := NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
+	projections := make(chan []domain.Message, 8)
+	ss := NewSessionService(
+		store.NewSessionRepo(db), store.NewAgentRepo(db), store.NewEnvironmentRepo(db),
+		events, store.NewRunStore(db, ids, clk),
+		projectingRuntime{projections: projections}, sandbox.NewLocalProvider(), ids, clk,
+	)
+	ag, _ := agents.Create(ctx, domain.Agent{Name: "a", Model: domain.Model{ID: "claude-opus-4-8"}})
+	env, _ := envs.Create(ctx, domain.Environment{Name: "e", ConfigType: "cloud"})
+
+	sess, err := ss.Create(ctx, CreateSessionInput{
+		AgentID:       ag.ID,
+		EnvironmentID: env.ID,
+		InitialEvents: []domain.EventDraft{
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": textBlocks("A")}},
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": textBlocks("B")}},
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": textBlocks("C")}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	runA := receiveProjection(t, projections)
+	runB := receiveProjection(t, projections)
+	runC := receiveProjection(t, projections)
+	pollUntilStatus(t, ss, sess.ID, domain.StatusIdle)
+
+	assertMessages(t, "run A", runA, []wantMessage{
+		{domain.RoleUser, "A"},
+	})
+	assertMessages(t, "run B", runB, []wantMessage{
+		{domain.RoleUser, "A"},
+		{domain.RoleAssistant, "reply-to: A"},
+		{domain.RoleUser, "B"},
+	})
+	assertMessages(t, "run C", runC, []wantMessage{
+		{domain.RoleUser, "A"},
+		{domain.RoleAssistant, "reply-to: A"},
+		{domain.RoleUser, "B"},
+		{domain.RoleAssistant, "reply-to: B"},
+		{domain.RoleUser, "C"},
+	})
+
+	// Public history keeps receipt/commit order: A,B,C triggers are all committed
+	// before any of the agent replies they produced.
+	assertUserTriggersBeforeOutputs(t, ss, sess.ID, []string{"A", "B", "C"})
+}
+
+type wantMessage struct {
+	role domain.Role
+	text string
+}
+
+// assertMessages requires msgs to equal want exactly: same length, same role
+// and single-text-block content per message, in order.
+func assertMessages(t *testing.T, label string, msgs []domain.Message, want []wantMessage) {
+	t.Helper()
+	if len(msgs) != len(want) {
+		t.Fatalf("%s: projection has %d messages, want %d: %#v", label, len(msgs), len(want), msgs)
+	}
+	for i, w := range want {
+		m := msgs[i]
+		if m.Role != w.role {
+			t.Fatalf("%s: message[%d] role = %s, want %s: %#v", label, i, m.Role, w.role, msgs)
+		}
+		if len(m.Content) != 1 || m.Content[0].Text != w.text {
+			t.Fatalf("%s: message[%d] content = %#v, want single text %q", label, i, m.Content, w.text)
+		}
+	}
+}
+
+// assertUserTriggersBeforeOutputs proves the public event history is authentic
+// receipt/commit order: the user.message triggers (in wantUserText order, with
+// strictly ascending sequence) all precede the agent.message replies. Nothing
+// rewrites event seq to match causal projection.
+func assertUserTriggersBeforeOutputs(t *testing.T, ss *SessionService, sessionID string, wantUserText []string) {
+	t.Helper()
+	history, err := ss.events.History(context.Background(), sessionID, 0, 1000)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	var userText []string
+	var lastSeq int64
+	var firstAgentSeq int64 = -1
+	var lastUserTriggerSeq int64
+	for _, e := range history {
+		if e.Sequence <= lastSeq {
+			t.Fatalf("event history not in ascending seq order: %d after %d", e.Sequence, lastSeq)
+		}
+		lastSeq = e.Sequence
+		switch e.Type {
+		case domain.EvUserMessage:
+			userText = append(userText, contentBlockText(e.Payload["content"]))
+			lastUserTriggerSeq = e.Sequence
+		case domain.EvAgentMessage:
+			if firstAgentSeq < 0 {
+				firstAgentSeq = e.Sequence
+			}
+		}
+	}
+	if len(userText) != len(wantUserText) {
+		t.Fatalf("user triggers = %q, want %q", userText, wantUserText)
+	}
+	for i := range wantUserText {
+		if userText[i] != wantUserText[i] {
+			t.Fatalf("user trigger order = %q, want %q", userText, wantUserText)
+		}
+	}
+	if firstAgentSeq >= 0 && lastUserTriggerSeq >= firstAgentSeq {
+		t.Fatalf("public history reordered: a user trigger (seq %d) landed after an agent reply (seq %d)",
+			lastUserTriggerSeq, firstAgentSeq)
+	}
+}
+
+func receiveProjection(t *testing.T, ch chan []domain.Message) []domain.Message {
+	t.Helper()
+	select {
+	case msgs := <-ch:
+		return msgs
+	case <-time.After(2 * time.Second):
+		t.Fatal("runtime did not receive a projected turn")
+		return nil
+	}
+}
+
+// blockingDestroySandbox is a sandbox whose Destroy blocks until the test
+// releases it, and which records the state of the context it was destroyed
+// under. It lets a test hold a teardown mid-flight, cancel the original request
+// context, and then assert on the context the teardown actually ran with.
+type blockingDestroySandbox struct {
+	started chan struct{} // closed when Destroy begins
+	release chan struct{} // closed by the test to let Destroy finish
+
+	// Captured inside Destroy, after the test has cancelled the original request
+	// context. Read only after Destroy has returned (via the delete result
+	// channel), so no synchronization beyond that happens-before is needed.
+	errAfterReqCancel error
+	hasDeadline       bool
+}
+
+func (b *blockingDestroySandbox) Exec(context.Context, sandbox.Command) (*sandbox.Result, error) {
+	return &sandbox.Result{}, nil
+}
+func (b *blockingDestroySandbox) ReadFile(context.Context, string) ([]byte, error) { return nil, nil }
+func (b *blockingDestroySandbox) WriteFile(context.Context, string, []byte) error  { return nil }
+func (b *blockingDestroySandbox) Root() string                                     { return "" }
+
+func (b *blockingDestroySandbox) Destroy(ctx context.Context) error {
+	close(b.started)
+	<-b.release
+	// The test cancels the original request context before closing release, so
+	// this read observes the teardown context after that cancellation. Because
+	// Delete detaches teardown from the request context, Err must still be nil.
+	b.errAfterReqCancel = ctx.Err()
+	_, b.hasDeadline = ctx.Deadline()
+	return nil
+}
+
+// stubSandboxProvider provisions a single pre-built sandbox, so a test can
+// inject a controllable box into a SessionService's SessionManager.
+type stubSandboxProvider struct{ box sandbox.Sandbox }
+
+func (p stubSandboxProvider) Provision(context.Context, sandbox.Spec) (sandbox.Sandbox, error) {
+	return p.box, nil
+}
+
+// TestSessionService_DeleteTeardownSurvivesRequestCancellation proves that once
+// sandbox teardown has started during Delete, cancelling the original request
+// context does not cancel that teardown, while the teardown context is still
+// bounded by a deadline. Coordination is by channels only — no timing sleeps.
+func TestSessionService_DeleteTeardownSurvivesRequestCancellation(t *testing.T) {
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+	ids := domain.NewSeqIDGen()
+	clk := domain.FixedClock{T: time.Unix(1, 0).UTC()}
+	events := NewEventService(store.NewEventStore(db, ids, clk), NewHub(64))
+	agents := NewAgentService(store.NewAgentRepo(db), ids, clk)
+	envs := NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
+
+	box := &blockingDestroySandbox{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	ss := NewSessionService(
+		store.NewSessionRepo(db), store.NewAgentRepo(db), store.NewEnvironmentRepo(db),
+		events, store.NewRunStore(db, ids, clk),
+		agentruntime.NewFake(), stubSandboxProvider{box: box}, ids, clk,
+	)
+	ag, _ := agents.Create(ctx, domain.Agent{Name: "a", Model: domain.Model{ID: "claude-opus-4-8"}})
+	env, _ := envs.Create(ctx, domain.Environment{Name: "e", ConfigType: "cloud"})
+
+	// An idle session (no initial events) that Delete is allowed to remove.
+	sess, err := ss.Create(ctx, CreateSessionInput{AgentID: ag.ID, EnvironmentID: env.ID})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	// Provision the session's sandbox so Delete's Release has a box to destroy.
+	if _, err := ss.sandbox.Acquire(ctx, sess.ID, sandbox.Spec{}); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	reqCtx, cancelReq := context.WithCancel(context.Background())
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- ss.Delete(reqCtx, sess.ID) }()
+
+	// Wait for teardown to start under a timeout so a regression (Delete never
+	// reaching Release, or Release never invoking Destroy) fails the test instead
+	// of hanging it forever.
+	select {
+	case <-box.started: // teardown is now in flight
+	case <-time.After(2 * time.Second):
+		cancelReq()
+		t.Fatal("sandbox teardown never started during Delete")
+	}
+	cancelReq()        // cancel the ORIGINAL request context mid-teardown
+	close(box.release) // let Destroy observe its context and return
+
+	select {
+	case err := <-deleteDone:
+		if err != nil {
+			t.Fatalf("Delete: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Delete did not return after teardown was released")
+	}
+	if box.errAfterReqCancel != nil {
+		t.Fatalf("teardown context was cancelled by request cancellation: %v", box.errAfterReqCancel)
+	}
+	if !box.hasDeadline {
+		t.Fatal("teardown context was not bounded by a deadline")
+	}
+}
+
 func assertBatchProcessedInOrder(
 	t *testing.T,
 	ss *SessionService,
@@ -1038,6 +1390,7 @@ func TestSessionService_BuiltinToolRunEndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sessions.sandbox.Release(context.Background(), session.ID) })
 
 	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
 
@@ -1104,6 +1457,7 @@ func TestSessionService_CustomToolParksAndResumes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sessions.sandbox.Release(context.Background(), session.ID) })
 
 	// The run parks: session goes idle awaiting the custom tool result.
 	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
@@ -1173,7 +1527,124 @@ func TestSessionService_CustomToolParksAndResumes(t *testing.T) {
 	}
 }
 
-// TestSessionService_PreviewStreamsToOptedInOnlyNeverPersisted drives a full
+// TestSessionService_PendingGateReleasesPriorQueuedWork drives the full pending
+// gate through the real AgentCore + model.Fake. A batch admits two user
+// messages: the first parks on the custom tool, the second is ordinary work
+// queued BEFORE the park. While the pending action is unresolved the second run
+// must stay gated (no second agent.custom_tool_use appears and the session stays
+// idle). A matching user.custom_tool_result resumes and clears the gate; only
+// then does the previously queued ordinary run execute to end_turn.
+func TestSessionService_PendingGateReleasesPriorQueuedWork(t *testing.T) {
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	ids := domain.NewSeqIDGen()
+	clk := domain.FixedClock{T: time.Unix(1, 0).UTC()}
+	events := NewEventService(store.NewEventStore(db, ids, clk), NewHub(64))
+	runs := store.NewRunStore(db, ids, clk)
+	agents := NewAgentService(store.NewAgentRepo(db), ids, clk)
+	environments := NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
+	sessions := NewSessionService(
+		store.NewSessionRepo(db), store.NewAgentRepo(db), store.NewEnvironmentRepo(db),
+		events, runs, agentruntime.NewAgentCore(model.NewFake(), ids), sandbox.NewLocalProvider(), ids, clk,
+	)
+
+	agent, err := agents.Create(ctx, domain.Agent{
+		Name:  "sre-agent",
+		Model: domain.Model{ID: "claude-opus-4-8"},
+		Tools: []any{map[string]any{
+			"type": "custom", "name": "get_metrics", "description": "d",
+			"input_schema": map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := environments.Create(ctx, domain.Environment{Name: "e", ConfigType: "cloud"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two messages in one admission: run 1 parks, run 2 is prior-queued ordinary work.
+	session, err := sessions.Create(ctx, CreateSessionInput{
+		AgentID:       agent.ID,
+		EnvironmentID: environment.ID,
+		InitialEvents: []domain.EventDraft{
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": []any{map[string]any{"type": "text", "text": "metrics?"}}}},
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": []any{map[string]any{"type": "text", "text": "ordinary-queued"}}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessions.sandbox.Release(context.Background(), session.ID) })
+
+	// Run 1 parks; the session goes idle awaiting the custom tool result.
+	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
+
+	// The gate holds: exactly one agent.custom_tool_use so far (run 2 did not run
+	// and park a second time). Give the drain loop a moment to prove it stays put.
+	time.Sleep(100 * time.Millisecond)
+	history, err := events.History(ctx, session.ID, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var customToolUseID string
+	var toolUseCount int
+	for i := range history {
+		if history[i].Type == domain.EvAgentCustomToolUse {
+			toolUseCount++
+			customToolUseID = history[i].ID
+		}
+	}
+	if toolUseCount != 1 {
+		t.Fatalf("agent.custom_tool_use count while gated = %d, want 1 (prior-queued run must not run)", toolUseCount)
+	}
+
+	// Resolve the pending action; the resume run reaches end_turn and clears the
+	// gate. Only then is the previously queued ordinary run claimed. With the
+	// deterministic fake it re-requests the same custom tool (tools are offered
+	// and its own history has no tool_result yet), so releasing the gate is proven
+	// by a SECOND agent.custom_tool_use appearing.
+	if _, err := sessions.SendEvent(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserCustomToolResult,
+		Payload: map[string]any{
+			"custom_tool_use_id": customToolUseID,
+			"content":            []any{map[string]any{"type": "text", "text": "cpu 99%"}},
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait until the prior-queued ordinary run has executed (a second tool_use).
+	deadline := time.Now().Add(3 * time.Second)
+	released := false
+	for time.Now().Before(deadline) && !released {
+		hist, err := events.History(ctx, session.ID, 0, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for _, e := range hist {
+			if e.Type == domain.EvAgentCustomToolUse {
+				count++
+			}
+		}
+		// Releasing the gate lets the prior-queued ordinary run be claimed; with the
+		// deterministic fake it re-requests the same custom tool, so a SECOND
+		// agent.custom_tool_use is the proof the gate cleared and prior work ran.
+		if count == 2 {
+			released = true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !released {
+		t.Fatal("prior-queued ordinary run never executed after the gate cleared")
+	}
+}
+
 // run through the real AgentCore + model.Fake and proves the preview contract:
 //   - a subscriber opted into agent.message previews receives event_start and at
 //     least one event_delta, all carrying the same event id, followed by the
@@ -1314,3 +1785,294 @@ plainLoop:
 		t.Fatal("history is missing the persisted agent.message")
 	}
 }
+
+// confirmClient is a scripted model.Client for the confirmation-resume tests. On
+// the first turn (no tool_result yet) it emits assistant text AND requests the
+// always_ask built-in with a real input, which parks the run. Emitting text
+// alongside the tool_use exercises the alternation-merge path: the dangling
+// tool_use is dropped from projected history, so the resume seeds the recovered
+// tool_use into the trailing assistant text message. Once the projected history
+// carries a tool_result for that call (the confirmation was resolved), it ends
+// the turn with a plain text reply. This lets an end-to-end test observe a
+// genuine side effect on allow and its absence on deny.
+//
+// It is strict about the Messages contract: every request it receives must have
+// strictly alternating roles, so a merge regression that produces two
+// consecutive assistant messages fails the test here rather than passing under a
+// lenient fake. Failures are recorded via t.
+type confirmClient struct {
+	t        *testing.T
+	toolName string
+	input    map[string]any
+}
+
+func (c confirmClient) CreateMessage(_ context.Context, req model.Request) (model.Response, error) {
+	if c.t != nil {
+		c.t.Helper()
+		for i := 1; i < len(req.Messages); i++ {
+			if req.Messages[i].Role == req.Messages[i-1].Role {
+				c.t.Errorf("model received consecutive %s messages at index %d: %#v",
+					req.Messages[i].Role, i, req.Messages)
+			}
+		}
+	}
+	if !hasToolResultMsg(req.Messages) {
+		return model.Response{
+			Content: []domain.ContentBlock{
+				{Type: "text", Text: "I'll write the file."},
+				{Type: "tool_use", ToolUseID: "fake_use", ToolName: c.toolName, Input: c.input},
+			},
+			StopReason: "tool_use",
+		}, nil
+	}
+	return model.Response{
+		Content:    []domain.ContentBlock{{Type: "text", Text: "done"}},
+		StopReason: "end_turn",
+	}, nil
+}
+
+func (c confirmClient) CreateMessageStream(ctx context.Context, req model.Request, _ func(int, string)) (model.Response, error) {
+	return c.CreateMessage(ctx, req)
+}
+
+func hasToolResultMsg(msgs []domain.Message) bool {
+	for _, m := range msgs {
+		for _, b := range m.Content {
+			if b.Type == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// setupConfirmSession builds a session whose agent enables exactly the write
+// built-in under an always_ask policy, using the given scripted model client. It
+// returns the wired services and the parked session, having driven the initial
+// turn to the requires_action park.
+func setupConfirmSession(t *testing.T, client model.Client) (*SessionService, *EventService, domain.Session) {
+	t.Helper()
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	ctx := context.Background()
+	ids := domain.NewSeqIDGen()
+	clk := domain.FixedClock{T: time.Unix(1, 0).UTC()}
+	events := NewEventService(store.NewEventStore(db, ids, clk), NewHub(64))
+	runs := store.NewRunStore(db, ids, clk)
+	agents := NewAgentService(store.NewAgentRepo(db), ids, clk)
+	environments := NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
+	sessions := NewSessionService(
+		store.NewSessionRepo(db), store.NewAgentRepo(db), store.NewEnvironmentRepo(db),
+		events, runs, agentruntime.NewAgentCore(client, ids), sandbox.NewLocalProvider(), ids, clk,
+	)
+
+	enabled := true
+	agent, err := agents.Create(ctx, domain.Agent{
+		Name:  "ask-agent",
+		Model: domain.Model{ID: "claude-opus-4-8"},
+		Tools: []any{map[string]any{
+			"type":           domain.BuiltinToolsetType,
+			"default_config": map[string]any{"enabled": false},
+			"configs": []any{map[string]any{
+				"name":              "write",
+				"enabled":           enabled,
+				"permission_policy": map[string]any{"type": "always_ask"},
+			}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := environments.Create(ctx, domain.Environment{Name: "e", ConfigType: "cloud"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := sessions.Create(ctx, CreateSessionInput{
+		AgentID:       agent.ID,
+		EnvironmentID: environment.ID,
+		InitialEvents: []domain.EventDraft{{
+			Type:    domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{map[string]any{"type": "text", "text": "write the file"}}},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessions.sandbox.Release(context.Background(), session.ID) })
+	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
+	return sessions, events, session
+}
+
+// parkedToolUseID returns the committed always_ask agent.tool_use id from the
+// session history and asserts the park's requires_action stop_reason names it.
+func parkedToolUseID(t *testing.T, events *EventService, sessionID string) string {
+	t.Helper()
+	hist, err := events.History(context.Background(), sessionID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var useID string
+	var parked *domain.Event
+	for i := range hist {
+		switch hist[i].Type {
+		case domain.EvAgentToolUse:
+			useID = hist[i].ID
+		case domain.EvSessionStatusIdle:
+			e := hist[i]
+			parked = &e
+		}
+	}
+	if useID == "" {
+		t.Fatal("no agent.tool_use in history")
+	}
+	if parked == nil {
+		t.Fatal("no session.status_idle in history")
+	}
+	stop, _ := parked.Payload["stop_reason"].(map[string]any)
+	if stop == nil || stop["type"] != "requires_action" {
+		t.Fatalf("stop_reason = %#v, want requires_action", parked.Payload["stop_reason"])
+	}
+	eventIDs, _ := stop["event_ids"].([]any)
+	if len(eventIDs) != 1 || eventIDs[0] != useID {
+		t.Fatalf("stop_reason.event_ids = %#v, want [%s]", stop["event_ids"], useID)
+	}
+	return useID
+}
+
+// TestSessionService_ConfirmationAllowResumeExecutesSideEffect drives the full
+// always_ask allow flow end-to-end: park → durable confirmation → resume →
+// agent.tool_result → end_turn. The allowed side effect (the file write) occurs
+// and the pending gate clears.
+func TestSessionService_ConfirmationAllowResumeExecutesSideEffect(t *testing.T) {
+	ctx := context.Background()
+	sessions, events, session := setupConfirmSession(t, confirmClient{
+		t:        t,
+		toolName: "write",
+		input:    map[string]any{"path": "confirmed.txt", "file_text": "allowed content"},
+	})
+	useID := parkedToolUseID(t, events, session.ID)
+
+	if _, err := sessions.SendEvent(ctx, session.ID, []domain.EventDraft{{
+		Type:    domain.EvUserToolConfirmation,
+		Payload: map[string]any{"tool_use_id": useID, "result": "allow"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
+
+	// The allowed side effect occurred: the file is present in the session sandbox.
+	box, err := sessions.sandbox.Acquire(ctx, session.ID, sandbox.Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := box.ReadFile(ctx, "confirmed.txt")
+	if err != nil {
+		t.Fatalf("allowed write did not occur: %v", err)
+	}
+	if string(data) != "allowed content" {
+		t.Fatalf("written content = %q, want %q", data, "allowed content")
+	}
+
+	// The resumed run emitted an agent.tool_result correlated to the original id
+	// and reached end_turn.
+	hist, err := events.History(ctx, session.ID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawResult, sawEndTurn bool
+	for _, e := range hist {
+		if e.Type == domain.EvAgentToolResult && e.Payload["tool_use_id"] == useID {
+			sawResult = true
+			if isErr, _ := e.Payload["is_error"].(bool); isErr {
+				t.Fatalf("allow tool_result is_error = true, want false")
+			}
+		}
+		if e.Type == domain.EvSessionStatusIdle {
+			if stop, _ := e.Payload["stop_reason"].(map[string]any); stop != nil && stop["type"] == "end_turn" {
+				sawEndTurn = true
+			}
+		}
+	}
+	if !sawResult {
+		t.Error("no agent.tool_result correlated to the original tool_use id")
+	}
+	if !sawEndTurn {
+		t.Error("resumed run did not reach end_turn")
+	}
+}
+
+// TestSessionService_ConfirmationDenyResumeSkipsSideEffect drives the full
+// always_ask deny flow end-to-end: park → durable confirmation → resume →
+// rejection agent.tool_result → end_turn. The side effect does NOT occur, the
+// tool_result is an error carrying the deny_message, and the gate clears.
+func TestSessionService_ConfirmationDenyResumeSkipsSideEffect(t *testing.T) {
+	ctx := context.Background()
+	sessions, events, session := setupConfirmSession(t, confirmClient{
+		t:        t,
+		toolName: "write",
+		input:    map[string]any{"path": "denied.txt", "file_text": "should not be written"},
+	})
+	useID := parkedToolUseID(t, events, session.ID)
+
+	if _, err := sessions.SendEvent(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserToolConfirmation,
+		Payload: map[string]any{
+			"tool_use_id": useID, "result": "deny", "deny_message": "policy forbids writes",
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
+
+	// The denied side effect did NOT occur: the file is absent from the sandbox.
+	box, err := sessions.sandbox.Acquire(ctx, session.ID, sandbox.Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := box.ReadFile(ctx, "denied.txt"); err == nil {
+		t.Fatal("denied write occurred, want no side effect")
+	}
+
+	hist, err := events.History(ctx, session.ID, 0, 200)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRejection, sawEndTurn bool
+	for _, e := range hist {
+		if e.Type == domain.EvAgentToolResult && e.Payload["tool_use_id"] == useID {
+			isErr, _ := e.Payload["is_error"].(bool)
+			if !isErr {
+				t.Fatalf("deny tool_result is_error = false, want true")
+			}
+			content, _ := e.Payload["content"].([]any)
+			var text string
+			for _, item := range content {
+				if m, ok := item.(map[string]any); ok {
+					if s, _ := m["text"].(string); s != "" {
+						text += s
+					}
+				}
+			}
+			if !contains(text, "policy forbids writes") {
+				t.Fatalf("deny tool_result text = %q, want it to include deny_message", text)
+			}
+			sawRejection = true
+		}
+		if e.Type == domain.EvSessionStatusIdle {
+			if stop, _ := e.Payload["stop_reason"].(map[string]any); stop != nil && stop["type"] == "end_turn" {
+				sawEndTurn = true
+			}
+		}
+	}
+	if !sawRejection {
+		t.Error("no rejection agent.tool_result correlated to the original tool_use id")
+	}
+	if !sawEndTurn {
+		t.Error("resumed run did not reach end_turn")
+	}
+}
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }

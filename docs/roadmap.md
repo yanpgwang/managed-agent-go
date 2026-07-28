@@ -5,71 +5,85 @@ slug: /roadmap
 
 # Roadmap
 
-The roadmap prioritizes semantic correctness and recoverability before adding
-surface-area compatibility.
+The goal is a reliable, self-hosted managed agent runtime in Go. Claude Managed
+Agents compatibility is the first client-facing integration surface, not a
+requirement to reproduce every upstream feature one-for-one.
 
-## 1. Execution semantics
+The roadmap is organized by outcome rather than by complete upstream API
+parity. Detailed design constraints and completed mechanics live in the
+[architecture guides](architecture.md).
 
-- Define batch input as one turn or one durable run per trigger, then make
-  projection and commit behavior match that definition.
-- Add a first-class durable pending-action model for custom tools and
-  permission confirmations.
-- Complete `always_ask` confirmation resume.
-- Implement `user.interrupt` and propagate cancellation through model and tool
-  execution.
-- Harden stream behavior around upstream errors, late subscribers, preview
+## Next implementation slice: recoverable tool execution
+
+The highest-value next step is to remove the ambiguity between a tool side
+effect and the durable record of that side effect. Today authoritative runtime
+output is buffered until run completion. A crash after `bash`, `write`, or
+another tool changes the world but before completion commits can cause recovery
+to repeat the run.
+
+The next slice should establish durable attempt and tool-step boundaries:
+
+- persist the model's tool request before invoking the tool;
+- distinguish prepared, started, and completed tool execution;
+- persist the tool result before continuing the model loop;
+- never silently retry an execution whose external outcome is ambiguous;
+- use idempotency keys where a downstream tool actually supports them.
+
+This does not promise exactly-once execution for arbitrary shell commands.
+Instead, it makes uncertainty explicit and gives later retry policy a durable
+fact model. Additional sandbox backends do not take priority over this
+correctness boundary.
+
+## Now: make single-node execution trustworthy
+
+- Deliver the recoverable tool-execution slice above, then define retryable
+  versus terminal failures around durable attempts.
+- Harden streaming around upstream errors, late subscribers, preview
   completion, and slow consumers.
-- Use newest-history windows or explicit compaction when a session exceeds the
-  projection limit.
+- Add context compaction when session history exceeds the model projection
+  limit.
+- Add durable sandbox checkpoint/restore, cleanup of orphaned sandboxes, quotas,
+  and eviction.
 
-## 2. Durable execution
+## Next: complete the practical integration surface
 
-- Record run attempts separately from logical runs.
-- Add a durable tool/side-effect journal and idempotency keys.
-- Commit meaningful execution checkpoints instead of buffering all
-  authoritative output until the end of a run.
-- Define retryable versus terminal failures and project `rescheduling`
-  truthfully.
-- Add an outbox for reliable post-commit event delivery.
-
-## 3. Session continuity
-
-- Move from per-run to session-scoped workspaces with explicit lifecycle and
-  cleanup policies.
-- Add context compaction, token usage accounting, and model-request spans.
-- Persist resumable runtime checkpoints where the public contract requires
-  continuity.
-
-## 4. Compatibility breadth
-
-- Complete request/response fields, raw JSON key-set tests, filters, and
-  pagination behavior.
-- Implement the remaining built-ins: `web_fetch` and `web_search`.
+- Implement `web_fetch` and `web_search`.
 - Resolve and execute MCP toolsets.
-- Add files, skills, memory, vaults, deployment scheduling, and webhooks.
-- Model resolved multiagent rosters, threads, delegation, and orchestration as
+- Add token usage accounting and model-request spans.
+- Support aggregate resolution when a run parks on several client actions.
+- Support aborting a session parked on `requires_action`.
+- Complete the request and response fields, filters, pagination behavior, and
+  event variants needed by real integrations.
+- Expand preview support to thinking and span lifecycle events.
+
+## Later: broaden runtime capabilities
+
+- Add files, executable skills, memory, vaults, scheduling, and webhooks when
+  concrete use cases require them.
+- Model multi-agent rosters, threads, delegation, and targeted interrupts as
   first-class domain concepts.
-- Expand preview support to `agent.thinking` and add `span.*` lifecycle events.
+- Follow the ordered [sandbox backend evolution path](sandboxes.md), including
+  Environment-backed selection, durable lifecycle management, and stronger or
+  remote providers.
+- Introduce a production database adapter and versioned schema migrations.
+- Split API and worker roles with leases, fencing, an outbox, distributed event
+  delivery, and observability.
 
-## 5. Production topology
+## Current foundation
 
-When real deployment requirements demand it:
+The repository already provides:
 
-- introduce versioned schema migrations and a production database adapter;
-- split API and worker roles;
-- add leases and fencing for distributed claims;
-- add distributed event fan-out and observability;
-- support stronger sandbox backends such as gVisor or a remote sandbox service.
+- server-owned multi-turn history projected into stateless model requests;
+- versioned agents and immutable per-session snapshots;
+- atomic event admission and one durable run per processable trigger;
+- single-node restart recovery and causal reconstruction of prior run output;
+- a multi-step model and built-in tool loop;
+- session-scoped local and Docker sandboxes;
+- custom-tool and `always_ask` confirmation park/resume flows;
+- single-process active-run interruption;
+- persisted events, cursor pagination, SSE, and opt-in message previews;
+- official Go SDK coverage for the supported API subset.
 
-## Completed foundations
-
-- Server-owned, multi-turn Messages API history projection.
-- Versioned agents and immutable session snapshots.
-- Atomic input/run admission and single-node restart recovery.
-- Multi-step model/tool loop.
-- Local sandbox plus optional Docker provider.
-- `bash`, `read`, `write`, `edit`, `glob`, and `grep` execution.
-- Custom-tool handoff with `requires_action`.
-- Opt-in streaming preview of `agent.message`.
-- Cursor pagination and SDK-backed compatibility tests for the implemented
-  subset.
+The immediate release threshold is a dependable single-node runtime. Distributed
+topology and wider product parity follow only when their use cases justify the
+additional operational complexity.
