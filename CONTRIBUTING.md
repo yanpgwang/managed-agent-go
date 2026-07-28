@@ -60,6 +60,19 @@ Do not copy upstream implementation code or internal types. Official public
 documentation and public SDK behavior may establish the wire contract; internal
 design must remain this project's own.
 
+## Sandbox backend changes
+
+Open an issue before adding a substantial sandbox backend. Describe the target
+use case, trust boundary, host dependencies, network defaults, resource
+controls, session persistence, and restart behavior.
+
+Backend changes should preserve the provider contract and session-scoped
+ownership described in the [sandbox backend guide](docs/sandboxes.md). Keep
+external runtimes optional, keep default tests offline, add shared lifecycle
+and tool-contract coverage, and label experimental integrations honestly.
+Command execution alone is not evidence that a backend is production-ready or
+safe for hostile multi-tenant workloads.
+
 ## Architecture expectations
 
 - Keep wire DTOs in `internal/httpapi` and persistence/execution facts out of

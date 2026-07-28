@@ -56,7 +56,9 @@ Built-ins with `always_allow` execute inside the current run. Custom tools and
 
 The application provisions a sandbox only when the resolved toolset contains
 tools. The same interface supports process execution and confined file reads
-and writes.
+and writes. This is currently an in-process Go interface, not a separate
+sandbox HTTP service. See the [sandbox backend matrix](../sandboxes.md) for
+support levels, backend requirements, and the ordered evolution path.
 
 ### Local provider
 
@@ -90,6 +92,12 @@ override.
 Containers share the host kernel. This provider has not been audited for
 hostile multi-tenant use; stronger isolation such as gVisor or a remote sandbox
 can be added behind the same provider interface.
+
+Anthropic Sandbox Runtime (SRT) is a technically compatible candidate for a
+future local process provider, but it is not implemented. SRT is an
+experimental command wrapper rather than a persistent container service, so it
+would preserve a session workspace without providing a durable container root
+filesystem or remote sandbox identity.
 
 ## Session-scoped ownership
 

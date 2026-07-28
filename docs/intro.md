@@ -24,6 +24,8 @@ do not treat the default local sandbox as a security boundary.
 
 - [Getting started](getting-started.md) runs the server and completes a first
   session turn.
+- [Sandbox backends](sandboxes.md) shows what is available today, the security
+  boundary of each backend, and the ordered path toward remote execution.
 - [Architecture overview](architecture.md) explains boundaries, data flow, and
   current architectural debt.
 - [Domain model](architecture/domain-model.md) describes agents, environments,

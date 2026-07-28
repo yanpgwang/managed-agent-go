@@ -50,7 +50,7 @@ API intentionally covers only the workflows listed below.
 | Sessions | Create, get, list, update title, archive, delete |
 | Events | Send, list, SSE stream, opt-in message previews |
 | Runtime | Multi-turn Messages API loop and custom-tool handoff |
-| Sandboxes | Local development guardrail and optional Docker isolation |
+| Sandboxes | Local development guardrail and optional Docker isolation; see the [backend matrix](docs/sandboxes.md) |
 | Storage | SQLite; one process; at-least-once restart recovery |
 
 Important gaps include durable per-step runtime output, durable sandbox
@@ -135,6 +135,7 @@ sandbox.
 
 - [Hosted documentation](https://yanpgwang.github.io/managed-agent-go/)
 - [Getting started](docs/getting-started.md)
+- [Sandbox backends](docs/sandboxes.md)
 - [Architecture](docs/architecture.md)
 - [Domain model](docs/architecture/domain-model.md)
 - [API reference](docs/api/overview.md)

@@ -4,6 +4,7 @@ const sidebars: SidebarsConfig = {
   docs: [
     'intro',
     'getting-started',
+    'sandboxes',
     {
       type: 'category',
       label: 'Architecture',

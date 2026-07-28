@@ -35,6 +35,7 @@ compatibility.
 | SSE event stream | Supported | Streams new persisted events and supports open-stream-then-list reconciliation. It does not replay history or support `Last-Event-ID`; fan-out is process-local. |
 | Live message previews | Limited | Opt-in `agent.message` start/delta frames are ephemeral and never persisted. Thinking and span previews are not implemented. |
 | Built-in tool loop | Limited | `bash`, `read`, `write`, `edit`, `glob`, and `grep` execute. `web_fetch` and `web_search` return a not-implemented result. |
+| Sandbox execution | Limited | Session-scoped local and Docker providers execute built-ins. Provider selection is process-global; Environment config does not yet choose a backend, and restart cannot reattach or restore a sandbox. See the [backend matrix](sandboxes.md). |
 | Custom tools | Supported | A custom tool can park a run, persist a pending action, accept the matching result, and resume. Aggregate resolution of several pending actions is not implemented. |
 | Tool confirmations | Supported | One `always_ask` built-in can park and resume through allow or deny. Crash replay after an allowed side effect remains possible without a durable side-effect journal. |
 | User interrupt | Limited | Cancels the active run in a single process and single-agent session. Parked-session abort, `session_thread_id` targeting, durable cancellation, and cross-process delivery are not supported. |
