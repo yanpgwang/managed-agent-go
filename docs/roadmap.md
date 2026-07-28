@@ -21,8 +21,20 @@ surface-area compatibility.
   all actions but each must be resolved individually), and — because there is no
   durable side-effect journal yet — crash-replay safety for an allowed built-in
   whose side effect committed before its result did.
-- Implement `user.interrupt` and propagate cancellation through model and tool
-  execution.
+- Single-process, single-agent `user.interrupt` is implemented: an admitted
+  interrupt promptly cancels the session's active run through a
+  `context.WithCancelCause` scoped to the runtime (propagating to model and tool
+  calls), the canceled run completes gracefully (no `session.error` /
+  `terminated`, no extra idle terminal), and the interrupt's own control run emits
+  the single `session.status_idle{end_turn}`; a same-batch redirect
+  `user.message` then runs normally. Remaining: `session_thread_id`
+  routing / multi-agent interrupt targeting, interrupting a parked
+  (`requires_action`) session — currently the pending-action gate blocks the
+  interrupt until the blocking event resolves, so aborting a parked turn is not yet
+  supported — cross-process (multi-node) delivery,
+  and a durable cancellation signal that survives a process crash between
+  interrupt admission and the active run's completion commit (the signal is
+  currently in-memory only).
 - Harden stream behavior around upstream errors, late subscribers, preview
   completion, and slow consumers.
 - Use newest-history windows or explicit compaction when a session exceeds the

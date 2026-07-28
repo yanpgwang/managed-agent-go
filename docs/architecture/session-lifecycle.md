@@ -225,3 +225,167 @@ milestone. Each pending action must be resolved individually; the gate stays
 closed until every one is resolved. This limitation is explicit and tested at the
 store/gate level (`TestPending_MultiActionParkGatesAllButNoAggregateResume`); the
 single-action flow is not regressed.
+
+## User interrupt
+
+`user.interrupt` stops the agent mid-execution. The common flow is one events
+request carrying `user.interrupt` followed by a redirecting `user.message`; the
+interrupted turn ends with an ordinary `session.status_idle{stop_reason:end_turn}`
+(there is **no** interrupt-specific stop reason), and the follow-up message then
+runs normally.
+
+### In-process cancellation contract
+
+The interrupt is an ordinary durable client event: admission commits it, enqueues
+its own durable control run, and marks it processed when that run completes (it is
+**not** one of the on-receipt processed exceptions). What the interrupt adds is
+prompt cancellation of the session's *currently active* run:
+
+1. `SendEvent` admits the batch, **publishes the admitted events to subscribers
+   while still holding the shard lock**, then — **only after** the admission
+   transaction commits, never before the interrupt is durable — cancels the
+   session's active run, still under the same lock.
+2. `drainRuns` claims the next run **and registers its cancel function under the
+   same shard lock**, then executes the runtime on a child `context` derived from
+   `context.WithCancelCause`. Claim+register and admit+cancel are serialized by the
+   shard lock, so a running session can never miss an interrupt: once the interrupt
+   is admitted, either the active run's canceler is already registered (it is
+   canceled) or the run is not yet claimed (the cancel is a no-op and the interrupt
+   is handled through normal claim ordering).
+3. Cancellation propagates through `AgentRuntime` → model → tool calls via that
+   context. The cancel cause is a private `errInterrupted` sentinel.
+4. The active-run canceler registry is keyed by session id (RunStore guarantees at
+   most one running run per session), guarded by its own mutex, and cleaned up when
+   the run settles. One session can never cancel another's run; duplicate and
+   repeated cancellation is idempotent, and concurrent interrupts are leak-free
+   (`TestSessionService_InterruptCancelsActiveRunScopedAndCleansUp`,
+   `TestSessionService_DuplicateConcurrentInterruptsSafe`).
+
+### Live-stream ordering under cancellation
+
+Hub publication is nonblocking, so the order in which committed events reach
+subscribers is the order `PublishCommitted` is called, not durable sequence. To
+keep the live stream consistent with durable order for a session, **every
+same-session commit publishes while holding that session's shard lock, in commit
+order**: `SendEvent` publishes the admission (including a `user.interrupt`) before
+it fires the cancel and before it unlocks; `drainRuns` publishes a claim's events
+after registering the canceler but before unlocking, and publishes a completion's
+events before unlocking. External and runtime work (the model/tool call, sandbox
+acquire) stays outside the lock. Without this, a canceled drain could take the lock,
+commit its higher-sequence output, and publish it before the earlier
+`user.interrupt` admission reached subscribers — a live reordering relative to
+durable sequence. The guarantee (a subscriber never sees sequence regress across an
+interrupt+cancel) is guarded by
+`TestSessionService_InterruptStreamPreservesCommitOrder`.
+
+### Finish-vs-interrupt linearization
+
+There is a narrow late window: an interrupt can durably admit *after* the runtime
+call returns but *before* the run's completion commits. `context.Cause` alone
+cannot order that admission against the completion, so classification does **not**
+rely on it. Instead the per-run canceler token carries an explicit
+finish/interrupt state, and both transitions run under the session shard lock:
+
+- `SendEvent`'s post-admission `cancel` marks the token interrupted (and fires the
+  cancel func) **only if** the run has not already claimed completion.
+- `drainRuns`' `finish` marks the token finished and reports whether an interrupt
+  had already claimed it — then classifies and calls `RunStore.Complete` **while
+  still holding the shard lock**, so no interrupt can admit between classification
+  and the completion commit.
+
+Serialized by the shard lock, exactly one side wins: if the interrupt admits
+before the run claims completion, the run is classified **interrupted**; if the
+run completes first, the later interrupt is an idempotent **no-op** and the run is
+an ordinary normal completion. The `errInterrupted` cause remains the signal the
+runtime observes for cancellation, but the token state — not the cause — is the
+source of truth for classification, closing the late-admit race
+(`TestRunCancelers_FinishBeforeCancelIsNormalCompletion`,
+`TestRunCancelers_CancelBeforeFinishIsInterrupt`).
+
+### Completion of a canceled run
+
+An interrupt is **not** a failure. Whether cancellation was a deliberate interrupt
+is decided by the **finish-vs-interrupt linearization above** — the canceler
+token's interrupt state, resolved under the shard lock — not by the raw cancel
+cause. A context canceled for any other reason — or a `context.Canceled` error the
+runtime surfaces without an admitted interrupt — is an ordinary runtime error and
+terminates the session exactly as before
+(`TestSessionService_NonInterruptCancellationStillTerminates`).
+
+On the graceful path the canceled run:
+
+- commits any already-buffered authoritative **nonterminal** drafts honestly (a
+  partial `agent.message` streamed before cancellation stays committed);
+- **strips any buffered session terminal-status draft** (`session.status_idle` /
+  `_rescheduled` / `_terminated`). `AgentCore` leaves terminal ownership to the app
+  and buffers none, but a Fake/custom runtime can stage a `session.status_idle`
+  before the interrupt wins the completion race; stripping it keeps the interrupt's
+  own control run the single public idle;
+- closes as **completed** — no `session.error`, no `session.status_terminated`, and
+  the run is not marked failed;
+- appends **no** terminal `session.status_idle` of its own, and drops any
+  `requires_action` outcome that raced with the cancellation (no idle terminal and
+  no durable pending action are persisted from it).
+
+The single public handoff — exactly one
+`session.status_idle{stop_reason:end_turn}` — is produced by the interrupt's **own**
+durable control run, which the drain loop claims next. Because more queued work
+exists (the interrupt run, plus any redirect message), the canceled run's
+completion is committed with an explicit **running** status: the session never
+actually left `running`, so completion neither idles it here nor appends a
+synthetic `session.status_running` for that still-queued work (which would show as
+a spurious running→running blip). There is no extra idle terminal and no invented
+stop reason
+(`TestSessionService_InterruptOnlyEndsSingleIdleAndAllowsArchiveDelete`,
+`TestSessionService_InterruptBatchRedirectRunsNormally`,
+`TestSessionService_InterruptStripsBufferedTerminalAndNoRedundantRunning`).
+
+### Interrupt with no active run
+
+An interrupt admitted while the session is idle **with no unresolved pending
+action** is a safe no-op control event: the cancel is a no-op, the interrupt's
+control run drives no model turn (the existing runtime no-op for `user.interrupt`),
+and the session is durably processed and stays idle without ever calling the model
+(`TestSessionService_InterruptWhileIdleIsNoOpControlEvent`).
+
+If the session is idle because a run **parked** (an unresolved pending action gates
+it), interrupting is **unsupported/unproven** in this milestone. The `requires_action`
+gate requires every blocking event to be resolved before the session transitions
+back to running, and a `user.interrupt` is not a resolution: it neither resolves nor
+bypasses the pending action. Such an interrupt is durably admitted and enqueued like
+any ordinary run, but the pending-action claim gate blocks it — it stays queued and
+**unprocessed**, the session stays idle with its `requires_action` projection intact
+(no `session.status_idle{end_turn}` replaces it), and admission emits no
+`session.status_running`. Only the matching `user.custom_tool_result` /
+`user.tool_confirmation` bypasses the gate; the interrupt's control run is claimed
+and processed only once the park resolves and the gate clears
+(`TestPending_InterruptWhileParkedStaysGated`). Aborting a parked turn via interrupt
+is left for a future milestone.
+
+### Scope and limitations
+
+Only **single-process, single-agent** interrupt is supported and proven. Left
+explicitly unsupported/unproven in this milestone:
+
+- **`session_thread_id` routing / multi-agent.** The HTTP layer accepts an optional
+  `session_thread_id` on `user.interrupt`, but it is not routed: cancellation
+  targets the session's single active run. Multi-thread / multi-agent interrupt
+  targeting is out of scope.
+- **Process-crash cancellation gap.** The cancellation signal is **in-memory only**.
+  If the process crashes after an interrupt is durably admitted but before the
+  active run's completion commit, the in-memory cancel is lost; restart recovery
+  requeues the interrupted `running` run (at-least-once, see below) and the
+  interrupt's durable control run still runs, but the original run is **not**
+  distinguished as interrupted on replay. There is no distributed/durable
+  cancellation and none is claimed.
+- **Cross-process delivery.** A single node owns the cancellation registry; an
+  interrupt admitted on one node does not cancel a run executing on another. Only
+  single-node operation is supported.
+- **Interrupting a parked (`requires_action`) session.** A `user.interrupt`
+  admitted while an unresolved pending action gates the session does not abort the
+  park: it is queued but gated (unprocessed) until the blocking event resolves, per
+  the *Interrupt with no active run* section. Aborting a parked turn is out of scope.
+- **External side-effect rollback / idempotency.** Cancellation stops further
+  progress but does not roll back a tool side effect already performed, and the
+  at-least-once replay caveat below still applies. No side-effect journal or
+  idempotency contract is added.
