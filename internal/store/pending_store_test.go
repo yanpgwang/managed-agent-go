@@ -546,6 +546,66 @@ func TestPending_OrdinaryWorkAdmittedDuringParkStaysIdleAndGated(t *testing.T) {
 	}
 }
 
+// TestPending_InterruptWhileParkedStaysGated proves the honest gate semantics: a
+// user.interrupt admitted while an unresolved pending action gates the session is
+// enqueued like any ordinary run but is NOT claimable — it is not the matching
+// resolution, so the pending-action claim gate blocks it. It stays queued while the
+// park is open; only the matching resolution bypasses the gate. This documents that
+// interrupting a parked session is unsupported/unproven in this milestone: a
+// mid-park interrupt does not resolve the blocking action, and the session's
+// requires_action projection must not be replaced by an idle/end_turn.
+func TestPending_InterruptWhileParkedStaysGated(t *testing.T) {
+	db, runs, session := newRunStoreFixture(t)
+	ctx := context.Background()
+	if _, err := runs.CreateSession(ctx, session, []domain.EventDraft{{Type: domain.EvUserMessage}}); err != nil {
+		t.Fatal(err)
+	}
+	// Run 1 parks, leaving an unresolved pending action that gates the session.
+	parkRun(t, runs, session.ID)
+
+	// Admit a user.interrupt while the park is open. It is durably queued but does
+	// not resolve the pending action.
+	admission, err := runs.Admit(ctx, session.ID, []domain.EventDraft{
+		{Type: domain.EvUserInterrupt, Payload: map[string]any{}},
+	})
+	if err != nil {
+		t.Fatalf("admit interrupt during park: %v", err)
+	}
+	if len(admission.Runs) != 1 {
+		t.Fatalf("interrupt admission runs = %d, want 1 (durably queued)", len(admission.Runs))
+	}
+	// The gated admission must leave the session idle and emit no status_running.
+	if admission.Session.Status != domain.StatusIdle {
+		t.Fatalf("session after gated interrupt admission = %s, want idle", admission.Session.Status)
+	}
+	for _, ev := range admission.Events {
+		if ev.Type == domain.EvSessionStatusRunning {
+			t.Fatalf("gated interrupt admission emitted %s, want none", domain.EvSessionStatusRunning)
+		}
+	}
+
+	// The interrupt run is NOT claimable while the pending action is unresolved: the
+	// gate blocks it exactly like any other non-resolution run.
+	if claim, ok, err := runs.ClaimNext(ctx, session.ID); err != nil || ok {
+		t.Fatalf("gated interrupt run was claimed: claim=%#v ok=%v err=%v", claim.Run, ok, err)
+	}
+
+	// The pending action remains unresolved, confirming the interrupt did not
+	// disturb the gate or replace the requires_action projection.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	pending, err := unresolvedPendingActions(ctx, tx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("unresolved pending = %d, want 1 (interrupt did not resolve the park)", len(pending))
+	}
+}
+
 func isValidation(err error) bool {
 	var de *domain.DomainError
 	return errors.As(err, &de) && de.Kind == domain.KindValidation
