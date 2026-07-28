@@ -65,6 +65,11 @@ The server commits all of the following atomically, in submitted input order:
 The client is never told that input was accepted unless the corresponding work
 item is durable.
 
+When an admitted event is a resolution (`user.custom_tool_result` /
+`user.tool_confirmation`), the same admission transaction validates it against an
+open pending action and records the resolving event id, so a bad reference fails
+atomically before any run is enqueued.
+
 ## Two orderings of the event log
 
 The event log is read in two distinct orders:
@@ -131,13 +136,58 @@ A custom tool or `always_ask` built-in can park a run:
 1. the runtime emits `agent.custom_tool_use` or `agent.tool_use`;
 2. the session returns to `idle` with `stop_reason.type=requires_action`;
 3. the stop reason names the event IDs the client must answer;
-4. a custom tool response starts a new durable run.
+4. the park persists a first-class durable **pending action** per named action
+   event, in the *same transaction* that commits the action events, the
+   terminal `session.status_idle{requires_action}`, the session projection, and
+   the run completion.
 
-Custom-tool resume is implemented and tested for a single park/result cycle.
-Built-in `user.tool_confirmation` is accepted by the HTTP API, but its
-allow/deny resume semantics are not complete.
+A pending action is internal-only durable state (never on the public wire). It
+records the session id, the blocking action event id, and the expected response
+kind. The kind is **derived from the committed action event's type AND payload**
+(`agent.custom_tool_use` → `custom_tool_result`; `agent.tool_use` →
+`tool_confirmation`, but only when its `evaluated_permission` is `"ask"`) — never
+trusted from a caller string.
 
-There is no first-class durable pending-action gate. If other trigger runs were
-already queued before a run parks with `requires_action`, their gating and
-correlation against the parked action are not yet fully modeled; this case is
-not claimed to work.
+### Pending-action claim gate
+
+While a session has any unresolved pending action, its ordinary queued runs are
+**not claimable**, even runs that were admitted before the run parked. Only a run
+whose trigger is the matching resolution may bypass those earlier queued runs.
+Work admitted while the gate is closed — an ordinary `user.message` that is not
+the matching resolution — is durably queued but leaves the session **idle** and
+emits no `session.status_running`, since that run cannot yet be claimed. The gate
+clears when the resume run closes, in the same transaction that resolves the
+pending action, so previously-blocked queued work continues only after the resume
+commit. (A terminally *failed* resume also closes the run and marks the action
+resolved — the park is answered honestly — but a terminated session is never
+resurrected.) At most one run per session is ever running, and selection stays
+deterministic within whichever set (resume-only, or ordinary) is claimable.
+
+### Admission validation
+
+`user.custom_tool_result` and `user.tool_confirmation` must reference a currently
+open pending action of the matching kind. Unknown, already-resolved, duplicate,
+wrong-session, and wrong-kind references fail atomically at admission (validation
+or conflict errors under the existing HTTP conventions) and create no runnable
+work.
+
+### Proven behavior and limitation
+
+The single custom-tool cycle is implemented and tested end to end: park →
+durable pending action → matching `user.custom_tool_result` → resume run →
+`end_turn`, with the gate clearing atomically so prior ordinary queued work
+continues only after the resume closes. Restart recovery retains the gate: a
+file-backed close/reopen keeps the pending action, an earlier queued run stays
+gated, and a later matching result still resumes. Session deletion removes
+pending-action rows with the session.
+
+Built-in `user.tool_confirmation` is accepted, gated, and validated as a pending
+action, but its allow/deny **execution** resume (re-driving the built-in) is
+intentionally out of scope for this milestone.
+
+A run that parks with **multiple** action event IDs persists and gates *all* of
+them, but there is **no aggregated multi-action resume protocol** in this
+milestone. Each pending action must be resolved individually; the gate stays
+closed until every one is resolved. This limitation is explicit and tested at the
+store/gate level (`TestPending_MultiActionParkGatesAllButNoAggregateResume`); the
+single-action flow is not regressed.

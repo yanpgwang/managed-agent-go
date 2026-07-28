@@ -471,7 +471,15 @@ func (s *SessionService) drainRuns(sessionID string) {
 			})
 		}
 		status := terminalStatus(drafts)
-		completion, err := s.runs.Complete(ctx, claim.Run.ID, drafts, status, errorMessage)
+		// When the run parked, its outcome names the committed action events; the
+		// store persists one durable pending action per id in the same transaction
+		// that closes the run, deriving the expected response kind from each event's
+		// type. A normal end_turn / error passes no action ids.
+		var pendingActionEventIDs []string
+		if runErr == nil && outcome.RequiresAction {
+			pendingActionEventIDs = outcome.ActionEventIDs
+		}
+		completion, err := s.runs.Complete(ctx, claim.Run.ID, drafts, status, errorMessage, pendingActionEventIDs)
 		if err != nil {
 			// The run's terminal drafts could not be committed. Ending the loop
 			// leaves the run mid-flight for restart recovery; log so the failure

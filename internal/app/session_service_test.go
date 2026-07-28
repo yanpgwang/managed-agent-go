@@ -1526,7 +1526,124 @@ func TestSessionService_CustomToolParksAndResumes(t *testing.T) {
 	}
 }
 
-// TestSessionService_PreviewStreamsToOptedInOnlyNeverPersisted drives a full
+// TestSessionService_PendingGateReleasesPriorQueuedWork drives the full pending
+// gate through the real AgentCore + model.Fake. A batch admits two user
+// messages: the first parks on the custom tool, the second is ordinary work
+// queued BEFORE the park. While the pending action is unresolved the second run
+// must stay gated (no second agent.custom_tool_use appears and the session stays
+// idle). A matching user.custom_tool_result resumes and clears the gate; only
+// then does the previously queued ordinary run execute to end_turn.
+func TestSessionService_PendingGateReleasesPriorQueuedWork(t *testing.T) {
+	db, err := store.OpenMemory()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	ids := domain.NewSeqIDGen()
+	clk := domain.FixedClock{T: time.Unix(1, 0).UTC()}
+	events := NewEventService(store.NewEventStore(db, ids, clk), NewHub(64))
+	runs := store.NewRunStore(db, ids, clk)
+	agents := NewAgentService(store.NewAgentRepo(db), ids, clk)
+	environments := NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
+	sessions := NewSessionService(
+		store.NewSessionRepo(db), store.NewAgentRepo(db), store.NewEnvironmentRepo(db),
+		events, runs, agentruntime.NewAgentCore(model.NewFake(), ids), sandbox.NewLocalProvider(), ids, clk,
+	)
+
+	agent, err := agents.Create(ctx, domain.Agent{
+		Name:  "sre-agent",
+		Model: domain.Model{ID: "claude-opus-4-8"},
+		Tools: []any{map[string]any{
+			"type": "custom", "name": "get_metrics", "description": "d",
+			"input_schema": map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, err := environments.Create(ctx, domain.Environment{Name: "e", ConfigType: "cloud"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Two messages in one admission: run 1 parks, run 2 is prior-queued ordinary work.
+	session, err := sessions.Create(ctx, CreateSessionInput{
+		AgentID:       agent.ID,
+		EnvironmentID: environment.ID,
+		InitialEvents: []domain.EventDraft{
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": []any{map[string]any{"type": "text", "text": "metrics?"}}}},
+			{Type: domain.EvUserMessage, Payload: map[string]any{"content": []any{map[string]any{"type": "text", "text": "ordinary-queued"}}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sessions.sandbox.Release(context.Background(), session.ID) })
+
+	// Run 1 parks; the session goes idle awaiting the custom tool result.
+	pollUntilStatus(t, sessions, session.ID, domain.StatusIdle)
+
+	// The gate holds: exactly one agent.custom_tool_use so far (run 2 did not run
+	// and park a second time). Give the drain loop a moment to prove it stays put.
+	time.Sleep(100 * time.Millisecond)
+	history, err := events.History(ctx, session.ID, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var customToolUseID string
+	var toolUseCount int
+	for i := range history {
+		if history[i].Type == domain.EvAgentCustomToolUse {
+			toolUseCount++
+			customToolUseID = history[i].ID
+		}
+	}
+	if toolUseCount != 1 {
+		t.Fatalf("agent.custom_tool_use count while gated = %d, want 1 (prior-queued run must not run)", toolUseCount)
+	}
+
+	// Resolve the pending action; the resume run reaches end_turn and clears the
+	// gate. Only then is the previously queued ordinary run claimed. With the
+	// deterministic fake it re-requests the same custom tool (tools are offered
+	// and its own history has no tool_result yet), so releasing the gate is proven
+	// by a SECOND agent.custom_tool_use appearing.
+	if _, err := sessions.SendEvent(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserCustomToolResult,
+		Payload: map[string]any{
+			"custom_tool_use_id": customToolUseID,
+			"content":            []any{map[string]any{"type": "text", "text": "cpu 99%"}},
+		},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wait until the prior-queued ordinary run has executed (a second tool_use).
+	deadline := time.Now().Add(3 * time.Second)
+	released := false
+	for time.Now().Before(deadline) && !released {
+		hist, err := events.History(ctx, session.ID, 0, 1000)
+		if err != nil {
+			t.Fatal(err)
+		}
+		count := 0
+		for _, e := range hist {
+			if e.Type == domain.EvAgentCustomToolUse {
+				count++
+			}
+		}
+		// Releasing the gate lets the prior-queued ordinary run be claimed; with the
+		// deterministic fake it re-requests the same custom tool, so a SECOND
+		// agent.custom_tool_use is the proof the gate cleared and prior work ran.
+		if count == 2 {
+			released = true
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !released {
+		t.Fatal("prior-queued ordinary run never executed after the gate cleared")
+	}
+}
+
 // run through the real AgentCore + model.Fake and proves the preview contract:
 //   - a subscriber opted into agent.message previews receives event_start and at
 //     least one event_delta, all carrying the same event id, followed by the

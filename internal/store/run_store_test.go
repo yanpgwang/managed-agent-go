@@ -106,7 +106,7 @@ func TestRunStore_ClaimAndCompleteClosesRunAtomically(t *testing.T) {
 	completion, err := runs.Complete(ctx, claim.Run.ID, []domain.EventDraft{
 		{Type: domain.EvAgentMessage, Payload: map[string]any{"content": []any{}}},
 		{Type: domain.EvSessionStatusIdle},
-	}, domain.StatusIdle, nil)
+	}, domain.StatusIdle, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +162,7 @@ func TestRunStore_QueuesRunsPerSessionInAdmissionOrder(t *testing.T) {
 	}
 	firstDone, err := runs.Complete(ctx, first.Runs[0].ID,
 		[]domain.EventDraft{{Type: domain.EvSessionStatusIdle}},
-		domain.StatusIdle, nil)
+		domain.StatusIdle, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestRunStore_CompletionBeforeNextClaimObservesOutput(t *testing.T) {
 			map[string]any{"type": "text", "text": "answer-one"},
 		}}},
 		{Type: domain.EvSessionStatusIdle},
-	}, domain.StatusRunning, nil); err != nil {
+	}, domain.StatusRunning, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -313,7 +313,7 @@ func TestRunStore_TerminatedSessionNeverClaims(t *testing.T) {
 			"type": "api_error", "message": msg,
 		}}},
 		{Type: domain.EvSessionStatusTerminated},
-	}, domain.StatusTerminated, &msg); err != nil {
+	}, domain.StatusTerminated, &msg, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -393,7 +393,7 @@ func TestRunStore_ModelHistorySurvivesReopenInCausalOrder(t *testing.T) {
 			map[string]any{"type": "text", "text": "reply-A"},
 		}}},
 		{Type: domain.EvSessionStatusIdle},
-	}, domain.StatusRunning, nil); err != nil {
+	}, domain.StatusRunning, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {

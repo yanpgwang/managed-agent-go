@@ -318,6 +318,9 @@ func (r *SessionRepo) Delete(ctx context.Context, id string) error {
 	if _, err := tx.ExecContext(ctx, `DELETE FROM session_runs WHERE session_id=?`, id); err != nil {
 		return err
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM pending_actions WHERE session_id=?`, id); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM events WHERE session_id=?`, id); err != nil {
 		return err
 	}

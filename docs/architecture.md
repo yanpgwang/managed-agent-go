@@ -123,12 +123,21 @@ The strongest current risks are semantic rather than structural:
 1. Runtime output is buffered until completion even though tools may already
    have performed side effects. A process crash can therefore repeat a side
    effect without a durable journal of the prior attempt.
-2. Pending client actions are encoded in events and stop reasons rather than a
-   first-class durable `pending_actions` model. A single custom-tool park and
-   its `user.custom_tool_result` resume are implemented and tested, but there is
-   no durable pending-action gate: if other trigger runs were already queued
-   before a run parks with `requires_action`, their gating and correlation
-   against the parked action are not yet fully modeled.
+2. Pending client actions are now a first-class durable `pending_actions` model
+   with a claim gate: a parked run persists one pending action per action event
+   (kind derived from the committed event's type AND payload) in the same transaction as the
+   action events, the `requires_action` terminal, the session projection, and
+   the run completion. While unresolved, ordinary queued runs — including runs
+   admitted before the park — are not claimable, and work admitted while the gate
+   is closed stays queued with the session left idle (no `session.status_running`);
+   only a matching resolution
+   trigger bypasses them, and the gate clears atomically when the resume run
+   closes. Admission rejects unknown, already-resolved, duplicate, wrong-session,
+   and wrong-kind references. The single custom-tool park/resume cycle is proven
+   end to end and survives restart. Remaining gaps: the `always_ask`
+   `user.tool_confirmation` allow/deny **execution** resume is not implemented,
+   and a park with multiple action events gates all of them but has no
+   aggregated multi-action resume protocol (each must be resolved individually).
 3. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
    first tool use, reused across its runs, and released on session deletion.
    The manager is in-memory, so a process restart does not restore an idle
