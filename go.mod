@@ -3,7 +3,7 @@ module github.com/yanpgwang/managed-agent-go
 go 1.26.4
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.60.0
+	github.com/anthropics/anthropic-sdk-go v1.61.0
 	modernc.org/sqlite v1.54.0
 )
 
