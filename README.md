@@ -141,8 +141,9 @@ turn (an always_allow **built-in tool step**) run under a PostgreSQL tool journa
 that preserves the `prepared → started → completed` boundary with `ambiguous`
 branching from `started`. A step left `started` by a crash is classified
 `ambiguous` and the turn is refused rather than silently replayed; a `completed`
-step is honestly reported as prior execution that cannot yet be resumed. Start
-the local stack and run the execution plane:
+step is honestly reported as prior execution that cannot yet be resumed. A
+recovered/failed attempt is atomically fenced from advancing a stale prepared
+step into tool execution. Start the local stack and run the execution plane:
 
 ```bash
 make -C deployments/local up

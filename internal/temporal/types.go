@@ -49,15 +49,12 @@ type RunTurnInput struct {
 	TriggerEventID string `json:"trigger_event_id"`
 }
 
-// RunTurnResult reports the outcome of a turn to the workflow. MaxEventSeq is the
-// highest public receipt sequence after the turn committed, so the workflow can
-// advance its durable cursor past the turn's own output events. Terminated is
-// true when the turn ended the session (an honest termination: ambiguous tool
-// replay refusal or a misconfiguration); the workflow then stops processing the
-// rest of the loaded batch and does not resurrect the session.
+// RunTurnResult reports the outcome of a turn to the workflow. Terminated is true
+// when the turn ended the session (an honest termination: ambiguous tool replay
+// refusal or a misconfiguration); the workflow then stops processing the rest of
+// the loaded batch and does not resurrect the session.
 type RunTurnResult struct {
-	MaxEventSeq int64 `json:"max_event_seq"`
-	Terminated  bool  `json:"terminated"`
+	Terminated bool `json:"terminated"`
 }
 
 // LoadEventsInput requests the ordered public events after a cursor.

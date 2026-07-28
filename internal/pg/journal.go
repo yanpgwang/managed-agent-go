@@ -100,6 +100,19 @@ func (s *Store) FinishAttempt(ctx context.Context, attemptID string, state domai
 	}
 
 	return s.withTx(ctx, func(q *pgstore.Queries) error {
+		// Lock the parent attempt before inspecting its steps. StartToolStep takes
+		// the same lock before crossing the side-effect boundary, so completion
+		// cannot race a prepared step into started after these checks.
+		attempt, err := q.GetTurnAttempt(ctx, attemptID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("turn attempt not found")
+		}
+		if err != nil {
+			return err
+		}
+		if attempt.State != string(domain.RunAttemptActive) {
+			return domain.Conflict("attempt is not active")
+		}
 		started, err := q.CountStartedStepsForAttempt(ctx, attemptID)
 		if err != nil {
 			return err
@@ -195,6 +208,27 @@ func (s *Store) PrepareToolStep(ctx context.Context, attemptID string, ordinal i
 // external world.
 func (s *Store) StartToolStep(ctx context.Context, stepID string) error {
 	return s.withTx(ctx, func(q *pgstore.Queries) error {
+		step, err := q.GetToolStep(ctx, stepID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("tool step not found")
+		}
+		if err != nil {
+			return err
+		}
+		// Serialize the side-effect boundary with recovery and attempt
+		// finalization. The SQL update repeats the active-state guard, but taking
+		// this parent-row lock is what prevents a concurrent recovery from changing
+		// the parent between the state check and prepared -> started.
+		attempt, err := q.GetTurnAttempt(ctx, step.AttemptID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("turn attempt not found")
+		}
+		if err != nil {
+			return err
+		}
+		if attempt.State != string(domain.RunAttemptActive) {
+			return domain.Conflict("tool step requires an active attempt")
+		}
 		now := s.clock.Now().UTC()
 		affected, err := q.StartToolStep(ctx, pgstore.StartToolStepParams{
 			StartedAt: tsUTC(now), UpdatedAt: tsUTC(now), ID: stepID,
@@ -237,6 +271,17 @@ func (s *Store) CompleteToolStep(ctx context.Context, stepID string, result doma
 // turn must not be freshly re-run, only reported.
 func (s *Store) RecoverTurn(ctx context.Context, sessionID, triggerEventID string) (hasPriorExecution bool, err error) {
 	err = s.withTx(ctx, func(q *pgstore.Queries) error {
+		// Lock the active parent attempt first. StartToolStep and FinishAttempt take
+		// the same lock, establishing one ordering around the side-effect boundary:
+		// either Start wins and recovery observes/classifies it, or recovery wins and
+		// the stale Start is rejected.
+		activeID, activeErr := q.ActiveAttemptForTurn(ctx, pgstore.ActiveAttemptForTurnParams{
+			SessionID: sessionID, TriggerEventID: triggerEventID,
+		})
+		if activeErr != nil && !errors.Is(activeErr, pgx.ErrNoRows) {
+			return activeErr
+		}
+
 		startedIDs, err := q.StartedStepsForTurn(ctx, pgstore.StartedStepsForTurnParams{
 			SessionID: sessionID, TriggerEventID: triggerEventID,
 		})
@@ -251,11 +296,9 @@ func (s *Store) RecoverTurn(ctx context.Context, sessionID, triggerEventID strin
 				return err
 			}
 		}
-		// Fail any active attempt so a fresh BeginAttempt is not blocked by the
+		// Fail the active attempt so a fresh BeginAttempt is not blocked by the
 		// one-active guard once the turn is (correctly) refused.
-		if activeID, err := q.ActiveAttemptForTurn(ctx, pgstore.ActiveAttemptForTurnParams{
-			SessionID: sessionID, TriggerEventID: triggerEventID,
-		}); err == nil {
+		if activeErr == nil {
 			msg := "recovered: attempt abandoned before completion"
 			if _, err := q.FinishTurnAttempt(ctx, pgstore.FinishTurnAttemptParams{
 				State: string(domain.RunAttemptFailed), Error: &msg,
@@ -263,8 +306,6 @@ func (s *Store) RecoverTurn(ctx context.Context, sessionID, triggerEventID strin
 			}); err != nil {
 				return err
 			}
-		} else if !errors.Is(err, pgx.ErrNoRows) {
-			return err
 		}
 		prior, err := q.PriorToolExecutionForTurn(ctx, pgstore.PriorToolExecutionForTurnParams{
 			SessionID: sessionID, TriggerEventID: triggerEventID,

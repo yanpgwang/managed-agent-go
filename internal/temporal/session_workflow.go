@@ -11,10 +11,8 @@ import (
 
 // continueAsNewThreshold bounds how many turns one workflow history run drives
 // before it carries its small cursor state into a fresh history via
-// Continue-As-New. It is a package var (not a const) only so tests can lower it;
-// it is read once per history run and never changes during a run, so it does not
-// affect determinism.
-var continueAsNewThreshold = 500
+// Continue-As-New.
+const continueAsNewThreshold = 500
 
 // loadBatchLimit bounds how many event references one LoadEvents call returns.
 const loadBatchLimit = 100
@@ -33,6 +31,14 @@ const loadBatchLimit = 100
 //     and tool payloads never travel through workflow history — Activities persist
 //     them to PostgreSQL and return references.
 func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
+	return sessionWorkflow(ctx, in, continueAsNewThreshold)
+}
+
+// sessionWorkflow contains the implementation behind SessionWorkflow. The
+// threshold is an argument so workflow tests can exercise Continue-As-New after
+// one turn without a mutable package variable. Production always passes the
+// compile-time constant above, keeping the value deterministic across replay.
+func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold int) error {
 	logger := workflow.GetLogger(ctx)
 	ao := workflow.ActivityOptions{
 		StartToCloseTimeout: 5 * time.Minute,
@@ -48,13 +54,27 @@ func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 	cursor := in.StartCursor
 	highestSignaled := cursor
 	turnsThisRun := 0
-	// Capture the threshold once at the start of this history run into a local, so
-	// it is a fixed value for the run's lifetime. The package var exists only so
-	// tests can lower it; reading it once here keeps replay deterministic even if
-	// the var were changed under a running workflow.
-	canThreshold := continueAsNewThreshold
 
 	wakeupCh := workflow.GetSignalChannel(ctx, WakeupSignalName)
+	// coalesceWakeups deterministically consumes every wakeup currently buffered
+	// in Workflow history and retains only the highest sequence metadata. Temporal
+	// rejects a close/Continue-As-New command when a Signal arrived during the
+	// current Workflow Task. Consuming at both sides of Activity-driven draining
+	// means that rejection replays into this code, consumes the now-visible Signal,
+	// and makes progress instead of proposing the same close forever.
+	coalesceWakeups := func() bool {
+		sawSignal := false
+		for {
+			var sig WakeupSignal
+			if ok := wakeupCh.ReceiveAsync(&sig); !ok {
+				return sawSignal
+			}
+			sawSignal = true
+			if sig.MaxEventSeq > highestSignaled {
+				highestSignaled = sig.MaxEventSeq
+			}
+		}
+	}
 
 	// drain applies every currently-available event after the cursor, driving one
 	// turn per user.message and advancing the cursor past each turn's own output.
@@ -117,6 +137,11 @@ func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 	}
 
 	for {
+		// On a normal iteration this picks up a burst before any database work. On
+		// replay after Temporal rejected a close/CAN due to a buffered Signal, this
+		// is what consumes that Signal before we propose the boundary again.
+		coalesceWakeups()
+
 		// Process everything already committed up to the highest wakeup we have
 		// seen. Loading from PostgreSQL (not the signal) is what makes a gap — a
 		// signal that names a sequence not yet visible — self-correcting: we apply
@@ -127,11 +152,23 @@ func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 			}
 		}
 
+		// A Signal may have arrived while an Activity was running. Consume it before
+		// either terminal completion or Continue-As-New. If it advances the known
+		// sequence, loop once more so PostgreSQL is drained before CAN. A signal that
+		// races after this check is still safe: Temporal rejects the close command
+		// and replay consumes it at this same deterministic boundary.
+		sawSignalDuringDrain := coalesceWakeups()
+
 		// A turn terminated the session: end the workflow. Any events still queued
 		// behind the terminating message stay unprocessed and the session stays
-		// terminated.
+		// terminated. Wakeups are consumed above but deliberately do not resurrect
+		// the session or drive the queued events.
 		if terminated {
 			return nil
+		}
+
+		if sawSignalDuringDrain && highestSignaled > cursor {
+			continue
 		}
 
 		// Continue-As-New with the small cursor once this history run has driven
@@ -152,15 +189,6 @@ func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 		wakeupCh.Receive(ctx, &sig)
 		if sig.MaxEventSeq > highestSignaled {
 			highestSignaled = sig.MaxEventSeq
-		}
-		for {
-			var more WakeupSignal
-			if ok := wakeupCh.ReceiveAsync(&more); !ok {
-				break
-			}
-			if more.MaxEventSeq > highestSignaled {
-				highestSignaled = more.MaxEventSeq
-			}
 		}
 	}
 }

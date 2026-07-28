@@ -117,8 +117,12 @@ last observed receipt sequence — and:
 - stops draining and ends when a turn reports it terminated the session, so a
   message queued behind a terminating one stays unprocessed and the session is
   never resurrected;
+- non-blockingly coalesces buffered wakeups before terminal completion and
+  Continue-As-New, so a Signal that arrived while an Activity was running is
+  consumed on the next deterministic replay boundary instead of causing a
+  rejected-close replay loop;
 - carries the cursor across **Continue-As-New** so history stays bounded (the
-  threshold is captured once per history run into a local).
+  production threshold is a compile-time constant).
 
 ### Causal model history and no intermediate idle
 
@@ -210,7 +214,10 @@ side-effect boundary on entry:
 2. otherwise, for a tool-using turn, **recovery runs first** — any tool step left
    in `started` by a crashed prior attempt is classified **ambiguous** and the
    active attempt is failed;
-3. if the turn already crossed the side-effect boundary (a `completed` or
+3. the `prepared → started` write atomically requires its parent attempt to
+   remain `active`, so an overlapping stale Activity cannot execute a prepared
+   step after recovery fenced its attempt;
+4. if the turn already crossed the side-effect boundary (a `completed` or
    `ambiguous` step exists), `RunTurn` **refuses to re-run** and terminates the
    turn honestly (`session.error` + `session.status_terminated`) rather than
    silently replaying the side effect. The refusal wording distinguishes the two:
@@ -265,6 +272,7 @@ integration tests skip unless their env vars are set. Failure-boundary coverage:
 | Delete respects coalesced sequence | `pg.TestOutbox_DeleteRespectsCoalescedSequence` |
 | Outbox read is at-least-once (no lease) | `pg.TestOutbox_ListIsAtLeastOnce` |
 | Duplicate wakeups processed once | `temporal.TestSessionWorkflow_DuplicateWakeupsProcessOnce` |
+| Buffered wakeup consumed before close / Continue-As-New | `temporal.TestSessionWorkflow_DrainsBufferedWakeupBeforeCloseBoundary` |
 | Relay crash after signal, before delete | `temporal.TestRelay_CrashAfterSignalBeforeDeleteRedelivers` |
 | Worker temporarily unavailable | `temporal.TestRelay_WorkerUnavailableLeavesWakeup` |
 | Continue-As-New carries cursor | `temporal.TestSessionWorkflow_ContinueAsNewCarriesCursor` |
@@ -275,6 +283,7 @@ integration tests skip unless their env vars are set. Failure-boundary coverage:
 | Completed step not replayed, not called ambiguous | `temporal.TestRunTurn_CompletedStepNotReplayedNotCalledAmbiguous` |
 | Attempt refuses to close with unclassified started step | `pg.TestJournal_FinishRefusesUnclassifiedStartedStep` |
 | One active attempt per turn | `pg.TestJournal_OneActiveAttempt` |
+| Recovered/concurrently fenced stale attempt cannot start a prepared step | `pg.TestJournal_StalePreparedStepCannotStartAfterRecovery`, `pg.TestJournal_StartWaitsForConcurrentAttemptFence` |
 | Idempotent retry after a processed turn | `temporal.TestRunTurn_IdempotentAfterProcessed` |
 | Real end-to-end (Temporal + PostgreSQL) | `temporal.TestVerticalSlice_EndToEnd`, `temporal.TestVerticalSlice_ToolStepEndToEnd` |
 

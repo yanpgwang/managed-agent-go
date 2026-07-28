@@ -15,14 +15,16 @@ VALUES (@id, @session_id, @trigger_event_id, @attempt_no, @state, @created_at, @
 -- name: GetTurnAttempt :one
 SELECT id, session_id, trigger_event_id, attempt_no, state, error, created_at, updated_at, finished_at
 FROM turn_attempts
-WHERE id = @id;
+WHERE id = @id
+FOR UPDATE;
 
 -- ActiveAttemptForTurn returns the id of the turn's active attempt, if any.
 -- name: ActiveAttemptForTurn :one
 SELECT id
 FROM turn_attempts
 WHERE session_id = @session_id AND trigger_event_id = @trigger_event_id AND state = 'active'
-LIMIT 1;
+LIMIT 1
+FOR UPDATE;
 
 -- FinishTurnAttempt closes an active attempt. The from-state guard makes the
 -- transition safe under concurrency; the Go caller checks rows-affected.
@@ -51,11 +53,17 @@ FROM tool_steps
 WHERE id = @id;
 
 -- StartToolStep advances prepared -> started, stamping started_at. The from-state
--- guard prevents re-starting; the caller checks rows-affected.
+-- guard prevents re-starting, and the parent-attempt guard fences an overlapping
+-- stale Activity after recovery has failed its attempt. The caller checks
+-- rows-affected.
 -- name: StartToolStep :execrows
-UPDATE tool_steps
+UPDATE tool_steps AS ts
 SET state = 'started', started_at = @started_at, updated_at = @updated_at
-WHERE id = @id AND state = 'prepared';
+FROM turn_attempts AS ta
+WHERE ts.id = @id
+  AND ts.state = 'prepared'
+  AND ta.id = ts.attempt_id
+  AND ta.state = 'active';
 
 -- CompleteToolStep advances started -> completed with a durable result.
 -- name: CompleteToolStep :execrows

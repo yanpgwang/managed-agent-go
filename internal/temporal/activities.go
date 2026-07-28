@@ -247,8 +247,7 @@ func (a *Activities) RunTurn(ctx context.Context, in RunTurnInput) (RunTurnResul
 		return RunTurnResult{}, err
 	}
 	return RunTurnResult{
-		MaxEventSeq: maxSeq(completion.Events),
-		Terminated:  completion.Status == domain.StatusTerminated,
+		Terminated: completion.Status == domain.StatusTerminated,
 	}, nil
 }
 
@@ -267,25 +266,12 @@ func (a *Activities) terminate(ctx context.Context, sessionID, triggerEventID, m
 		{Type: domain.EvSessionStatusTerminated, Payload: map[string]any{}},
 	}
 	dctx, cancel := durableCtx(ctx)
-	completion, err := a.source.CompleteTurn(dctx, sessionID, triggerEventID, drafts, domain.StatusTerminated)
+	_, err := a.source.CompleteTurn(dctx, sessionID, triggerEventID, drafts, domain.StatusTerminated)
 	cancel()
 	if err != nil {
 		return RunTurnResult{}, err
 	}
-	return RunTurnResult{
-		MaxEventSeq: maxSeq(completion.Events),
-		Terminated:  true,
-	}, nil
-}
-
-func maxSeq(events []domain.Event) int64 {
-	var m int64
-	for _, e := range events {
-		if e.Sequence > m {
-			m = e.Sequence
-		}
-	}
-	return m
+	return RunTurnResult{Terminated: true}, nil
 }
 
 func strPtr(s string) *string { return &s }

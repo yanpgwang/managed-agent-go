@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
@@ -148,6 +149,21 @@ func userMsg(id string, seq int64) domain.Event {
 	return domain.Event{ID: id, Sequence: seq, Type: domain.EvUserMessage, Payload: map[string]any{"content": "hi"}}
 }
 
+// sessionWorkflowExitChecked turns a buffered wakeup at a close boundary into a
+// test failure. Production relies on Temporal rejecting such a close and
+// replaying; this wrapper lets the unit suite assert that sessionWorkflow
+// proactively consumed every currently visible wakeup before returning or
+// Continue-As-New.
+func sessionWorkflowExitChecked(ctx workflow.Context, in SessionWorkflowInput, threshold int) error {
+	err := sessionWorkflow(ctx, in, threshold)
+	for _, name := range workflow.GetUnhandledSignalNames(ctx) {
+		if name == WakeupSignalName {
+			return errors.New("session workflow exited with a buffered wakeup")
+		}
+	}
+	return err
+}
+
 // TestSessionWorkflow_ProcessesOneTurn drives one wakeup and asserts the turn's
 // RunTurn Activity ran exactly once. It uses the Temporal test environment,
 // registering the real workflow against activity mocks backed by the fake
@@ -184,20 +200,14 @@ func TestSessionWorkflow_ProcessesOneTurn(t *testing.T) {
 // end_turn output through the fake source, standing in for the real runtime.
 func runTurnStub(source *fakeSource) func(ctx context.Context, in RunTurnInput) (RunTurnResult, error) {
 	return func(ctx context.Context, in RunTurnInput) (RunTurnResult, error) {
-		res, err := source.CompleteTurn(ctx, in.SessionID, in.TriggerEventID, []domain.EventDraft{
+		_, err := source.CompleteTurn(ctx, in.SessionID, in.TriggerEventID, []domain.EventDraft{
 			{Type: domain.EvAgentMessage, Payload: map[string]any{"content": "ok"}},
 			{Type: domain.EvSessionStatusIdle, Payload: map[string]any{"stop_reason": map[string]any{"type": "end_turn"}}},
 		}, domain.StatusIdle)
 		if err != nil {
 			return RunTurnResult{}, err
 		}
-		var max int64
-		for _, e := range res.Events {
-			if e.Sequence > max {
-				max = e.Sequence
-			}
-		}
-		return RunTurnResult{MaxEventSeq: max}, nil
+		return RunTurnResult{}, nil
 	}
 }
 
@@ -266,10 +276,6 @@ func TestSessionWorkflow_OrderedConsumption(t *testing.T) {
 // forward, so the fresh history run does not reprocess consumed events. It
 // lowers the threshold to 1 for the test.
 func TestSessionWorkflow_ContinueAsNewCarriesCursor(t *testing.T) {
-	orig := continueAsNewThreshold
-	continueAsNewThreshold = 1
-	defer func() { continueAsNewThreshold = orig }()
-
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
 
@@ -283,7 +289,8 @@ func TestSessionWorkflow_ContinueAsNewCarriesCursor(t *testing.T) {
 	}, time.Millisecond)
 
 	env.SetTestTimeout(10 * time.Second)
-	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_can", StartCursor: 0})
+	env.ExecuteWorkflow(sessionWorkflowExitChecked,
+		SessionWorkflowInput{SessionID: "sess_can", StartCursor: 0}, 1)
 
 	require.True(t, env.IsWorkflowCompleted())
 	// Continue-As-New surfaces as a ContinueAsNewError from the test env. Its
@@ -298,6 +305,62 @@ func TestSessionWorkflow_ContinueAsNewCarriesCursor(t *testing.T) {
 	require.Equal(t, SessionWorkflowType, canErr.WorkflowType.Name)
 	// The turn ran exactly once before the boundary.
 	require.Equal(t, 1, source.completions("evt_1"))
+}
+
+// TestSessionWorkflow_DrainsBufferedWakeupBeforeCloseBoundary places a second
+// wakeup into history while RunTurn is in flight. Both terminal completion and
+// Continue-As-New must consume it before proposing their close command; otherwise
+// Temporal rejects the close and replay can propose the same invalid command
+// forever. sessionWorkflowExitChecked makes an unconsumed wakeup fail the test.
+func TestSessionWorkflow_DrainsBufferedWakeupBeforeCloseBoundary(t *testing.T) {
+	tests := []struct {
+		name       string
+		result     RunTurnResult
+		threshold  int
+		wantCANErr bool
+	}{
+		{name: "continue-as-new", threshold: 1, wantCANErr: true},
+		{name: "terminal-completion", result: RunTurnResult{Terminated: true}, threshold: continueAsNewThreshold},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var ts testsuite.WorkflowTestSuite
+			env := ts.NewTestWorkflowEnvironment()
+
+			source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
+			acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+			env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
+			env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
+			env.OnActivity(ActivityRunTurn, mock.Anything, RunTurnInput{
+				SessionID: "sess_close_boundary", TriggerEventID: "evt_1",
+			}).After(time.Hour).Return(tc.result, nil).Once()
+
+			env.RegisterDelayedCallback(func() {
+				env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+			}, time.Minute)
+			env.RegisterDelayedCallback(func() {
+				// Arrives while RunTurn is in flight, so it is buffered for the next
+				// Workflow Task and must be consumed at the close boundary.
+				env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+			}, 30*time.Minute)
+
+			env.SetTestTimeout(10 * time.Second)
+			env.ExecuteWorkflow(sessionWorkflowExitChecked,
+				SessionWorkflowInput{SessionID: "sess_close_boundary", StartCursor: 0}, tc.threshold)
+
+			require.True(t, env.IsWorkflowCompleted())
+			err := env.GetWorkflowError()
+			if tc.wantCANErr {
+				var canErr *workflow.ContinueAsNewError
+				require.Error(t, err)
+				require.True(t, errors.As(err, &canErr), "expected Continue-As-New, got %v", err)
+			} else {
+				require.NoError(t, err)
+			}
+			env.AssertExpectations(t)
+		})
+	}
 }
 
 // TestSessionWorkflow_TerminationStopsBatch proves that when a turn terminates
@@ -320,7 +383,7 @@ func TestSessionWorkflow_TerminationStopsBatch(t *testing.T) {
 		mu.Unlock()
 		// The first turn terminates the session; report Terminated so the workflow
 		// must stop before the second message.
-		return RunTurnResult{MaxEventSeq: 1, Terminated: true}, nil
+		return RunTurnResult{Terminated: true}, nil
 	}, activity.RegisterOptions{Name: ActivityRunTurn})
 
 	env.RegisterDelayedCallback(func() {

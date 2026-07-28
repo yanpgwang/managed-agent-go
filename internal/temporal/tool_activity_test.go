@@ -374,16 +374,15 @@ func TestRunTurn_TerminationReportedAndBQueuedUnprocessed(t *testing.T) {
 	}
 }
 
-// cancelAfterCompleteRuntime executes a full tool step (Prepare/Start/Complete)
-// but cancels the Activity context AFTER Complete and BEFORE returning, modelling
-// a Temporal cancellation that arrives once the tool result is already durable.
-// It emits the paired tool_use/tool_result and an agent.message so the turn has
-// authoritative output to commit.
-type cancelAfterCompleteRuntime struct {
+// cancelBeforeCompleteRuntime prepares and starts a tool step, simulates its side
+// effect, then cancels the Activity context BEFORE recording Complete. It proves
+// the completion write itself — not only later turn finalization — is detached
+// from Activity cancellation.
+type cancelBeforeCompleteRuntime struct {
 	cancel context.CancelFunc
 }
 
-func (r *cancelAfterCompleteRuntime) Run(ctx context.Context, req agentruntime.RunRequest, sink agentruntime.EventSink) (agentruntime.RunOutcome, error) {
+func (r *cancelBeforeCompleteRuntime) Run(ctx context.Context, req agentruntime.RunRequest, sink agentruntime.EventSink) (agentruntime.RunOutcome, error) {
 	stepID, err := req.ToolJournal.Prepare(ctx, 0, "tue_cancel", "bash", map[string]any{"command": "echo hi"})
 	if err != nil {
 		return agentruntime.RunOutcome{}, err
@@ -391,6 +390,9 @@ func (r *cancelAfterCompleteRuntime) Run(ctx context.Context, req agentruntime.R
 	if err := req.ToolJournal.Start(ctx, stepID); err != nil {
 		return agentruntime.RunOutcome{}, err
 	}
+	// The tool side effect has happened. Cancel before Complete so this call
+	// exercises activityToolJournal's WithoutCancel context directly.
+	r.cancel()
 	if err := req.ToolJournal.Complete(ctx, stepID, domain.ToolStepResult{
 		Content: []any{map[string]any{"type": "text", "text": "ok"}},
 	}); err != nil {
@@ -404,9 +406,6 @@ func (r *cancelAfterCompleteRuntime) Run(ctx context.Context, req agentruntime.R
 	}); err != nil {
 		return agentruntime.RunOutcome{}, err
 	}
-	// The side effect and its result are now durable. Simulate a Temporal
-	// cancellation arriving before RunTurn's own finalization writes.
-	r.cancel()
 	return agentruntime.RunOutcome{}, nil
 }
 
@@ -423,7 +422,7 @@ func TestRunTurn_DurableWritesSurviveCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(baseCtx)
 	ids := domain.NewRandomIDGen()
-	rt := &cancelAfterCompleteRuntime{cancel: cancel}
+	rt := &cancelBeforeCompleteRuntime{cancel: cancel}
 	src := storeSource{store: store}
 	acts := NewActivities(rt, src, src, sandbox.NewSessionManager(sandbox.NewLocalProvider()), ids)
 
@@ -432,7 +431,7 @@ func TestRunTurn_DurableWritesSurviveCancellation(t *testing.T) {
 		t.Fatalf("run turn: %v", err)
 	}
 	if res.Terminated {
-		t.Fatal("a normal (canceled-after-complete) turn should not be terminated")
+		t.Fatal("a normal (canceled-before-complete) turn should not be terminated")
 	}
 
 	// The tool step is durably completed despite the cancellation.

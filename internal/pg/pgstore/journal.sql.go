@@ -16,6 +16,7 @@ SELECT id
 FROM turn_attempts
 WHERE session_id = $1 AND trigger_event_id = $2 AND state = 'active'
 LIMIT 1
+FOR UPDATE
 `
 
 type ActiveAttemptForTurnParams struct {
@@ -145,6 +146,7 @@ const getTurnAttempt = `-- name: GetTurnAttempt :one
 SELECT id, session_id, trigger_event_id, attempt_no, state, error, created_at, updated_at, finished_at
 FROM turn_attempts
 WHERE id = $1
+FOR UPDATE
 `
 
 func (q *Queries) GetTurnAttempt(ctx context.Context, id string) (TurnAttempt, error) {
@@ -293,9 +295,13 @@ func (q *Queries) PriorToolExecutionForTurn(ctx context.Context, arg PriorToolEx
 }
 
 const startToolStep = `-- name: StartToolStep :execrows
-UPDATE tool_steps
+UPDATE tool_steps AS ts
 SET state = 'started', started_at = $1, updated_at = $2
-WHERE id = $3 AND state = 'prepared'
+FROM turn_attempts AS ta
+WHERE ts.id = $3
+  AND ts.state = 'prepared'
+  AND ta.id = ts.attempt_id
+  AND ta.state = 'active'
 `
 
 type StartToolStepParams struct {
@@ -305,7 +311,9 @@ type StartToolStepParams struct {
 }
 
 // StartToolStep advances prepared -> started, stamping started_at. The from-state
-// guard prevents re-starting; the caller checks rows-affected.
+// guard prevents re-starting, and the parent-attempt guard fences an overlapping
+// stale Activity after recovery has failed its attempt. The caller checks
+// rows-affected.
 func (q *Queries) StartToolStep(ctx context.Context, arg StartToolStepParams) (int64, error) {
 	result, err := q.db.Exec(ctx, startToolStep, arg.StartedAt, arg.UpdatedAt, arg.ID)
 	if err != nil {

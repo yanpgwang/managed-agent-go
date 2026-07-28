@@ -2,7 +2,9 @@ package pg
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
@@ -143,5 +145,97 @@ func TestJournal_OneActiveAttempt(t *testing.T) {
 	}
 	if _, err := store.BeginAttempt(ctx, "sess_journal_active", trigger); err == nil {
 		t.Fatal("second BeginAttempt must be refused while one is active")
+	}
+}
+
+// TestJournal_StalePreparedStepCannotStartAfterRecovery proves recovery fences
+// an overlapping old Activity before the external side-effect boundary. A step
+// that was only prepared is safe to abandon, but the old Activity must not be
+// allowed to advance it to started after its parent attempt was failed.
+func TestJournal_StalePreparedStepCannotStartAfterRecovery(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const sessionID = "sess_journal_stale"
+	trigger := journalTurn(t, store, sessionID)
+
+	oldAttempt, err := store.BeginAttempt(ctx, sessionID, trigger)
+	if err != nil {
+		t.Fatalf("begin old attempt: %v", err)
+	}
+	oldStep, err := store.PrepareToolStep(ctx, oldAttempt.ID, 0, "tue_stale", "bash", map[string]any{"command": "side-effect"})
+	if err != nil {
+		t.Fatalf("prepare old step: %v", err)
+	}
+
+	hasPrior, err := store.RecoverTurn(ctx, sessionID, trigger)
+	if err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	if hasPrior {
+		t.Fatal("a prepared-only step has not crossed the side-effect boundary")
+	}
+	if err := store.StartToolStep(ctx, oldStep); err == nil {
+		t.Fatal("stale Activity must not start a step after recovery failed its attempt")
+	}
+
+	newAttempt, err := store.BeginAttempt(ctx, sessionID, trigger)
+	if err != nil {
+		t.Fatalf("begin replacement attempt: %v", err)
+	}
+	newStep, err := store.PrepareToolStep(ctx, newAttempt.ID, 0, "tue_replacement", "bash", map[string]any{"command": "safe"})
+	if err != nil {
+		t.Fatalf("prepare replacement step: %v", err)
+	}
+	if err := store.StartToolStep(ctx, newStep); err != nil {
+		t.Fatalf("replacement active attempt should proceed: %v", err)
+	}
+}
+
+// TestJournal_StartWaitsForConcurrentAttemptFence proves the active-attempt
+// predicate is protected by a row lock, not only by a snapshot read. It holds an
+// uncommitted recovery-style attempt failure: Start must wait (and time out)
+// rather than observe the old active state and cross the side-effect boundary.
+func TestJournal_StartWaitsForConcurrentAttemptFence(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const sessionID = "sess_journal_fence"
+	trigger := journalTurn(t, store, sessionID)
+
+	attempt, err := store.BeginAttempt(ctx, sessionID, trigger)
+	if err != nil {
+		t.Fatalf("begin attempt: %v", err)
+	}
+	stepID, err := store.PrepareToolStep(ctx, attempt.ID, 0, "tue_fence", "bash", map[string]any{"command": "side-effect"})
+	if err != nil {
+		t.Fatalf("prepare step: %v", err)
+	}
+
+	fenceTx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin fence transaction: %v", err)
+	}
+	if _, err := fenceTx.Exec(ctx, `
+		UPDATE turn_attempts
+		SET state = 'failed', error = 'recovered', updated_at = now(), finished_at = now()
+		WHERE id = $1 AND state = 'active'`, attempt.ID); err != nil {
+		_ = fenceTx.Rollback(ctx)
+		t.Fatalf("stage attempt fence: %v", err)
+	}
+
+	blockedCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
+	err = store.StartToolStep(blockedCtx, stepID)
+	cancel()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		_ = fenceTx.Rollback(ctx)
+		t.Fatalf("StartToolStep should wait for the concurrent attempt fence, got %v", err)
+	}
+
+	// Roll back the simulated recovery. The parent becomes active again and the
+	// still-prepared step can start normally, proving the timeout did not mutate it.
+	if err := fenceTx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback fence: %v", err)
+	}
+	if err := store.StartToolStep(ctx, stepID); err != nil {
+		t.Fatalf("start after rolled-back fence: %v", err)
 	}
 }
