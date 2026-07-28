@@ -34,6 +34,8 @@ const config: Config = {
           path: '../docs',
           routeBasePath: '/',
           sidebarPath: './sidebars.ts',
+          showLastUpdateTime: true,
+          showLastUpdateAuthor: true,
           editUrl: ({docPath}) =>
             `https://github.com/yanpgwang/managed-agent-go/edit/main/docs/${docPath.replace(
               /^(\.\.\/docs\/)+/,
