@@ -70,3 +70,45 @@ func sessionFromRow(row pgstore.Session) (domain.Session, error) {
 	}
 	return session, nil
 }
+
+func turnAttemptFromRow(row pgstore.TurnAttempt) TurnAttempt {
+	return TurnAttempt{
+		ID:             row.ID,
+		SessionID:      row.SessionID,
+		TriggerEventID: row.TriggerEventID,
+		AttemptNo:      int(row.AttemptNo),
+		State:          domain.RunAttemptState(row.State),
+	}
+}
+
+func toolStepFromRow(row pgstore.ToolStep) (domain.ToolStep, error) {
+	var input map[string]any
+	if err := json.Unmarshal(row.Input, &input); err != nil {
+		return domain.ToolStep{}, fmt.Errorf("pg: decode tool step input %s: %w", row.ID, err)
+	}
+	var result *domain.ToolStepResult
+	if len(row.Result) > 0 {
+		var decoded domain.ToolStepResult
+		if err := json.Unmarshal(row.Result, &decoded); err != nil {
+			return domain.ToolStep{}, fmt.Errorf("pg: decode tool step result %s: %w", row.ID, err)
+		}
+		result = &decoded
+	}
+	if row.State == string(domain.ToolStepCompleted) && result == nil {
+		return domain.ToolStep{}, fmt.Errorf("pg: completed tool step %s has no durable result", row.ID)
+	}
+	return domain.ToolStep{
+		ID:             row.ID,
+		AttemptID:      row.AttemptID,
+		Ordinal:        int(row.Ordinal),
+		ToolUseEventID: row.ToolUseEventID,
+		ToolName:       row.ToolName,
+		Input:          input,
+		State:          domain.ToolStepState(row.State),
+		Result:         result,
+		CreatedAt:      row.CreatedAt.Time.UTC(),
+		UpdatedAt:      row.UpdatedAt.Time.UTC(),
+		StartedAt:      timePtr(row.StartedAt),
+		FinishedAt:     timePtr(row.FinishedAt),
+	}, nil
+}

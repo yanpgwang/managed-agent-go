@@ -406,6 +406,53 @@ func (s *Store) CompleteTurn(
 	outputDrafts []domain.EventDraft,
 	status domain.Status,
 ) (TurnCompletion, error) {
+	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil)
+}
+
+// CompleteWorkflowTurn atomically finalizes a Workflow-owned tool attempt (when
+// present) and commits the public turn output. Keeping both mutations in one
+// PostgreSQL transaction closes the crash window between "attempt completed"
+// and "trigger processed"; a retried Activity either applies the whole
+// transition or observes the already-processed trigger.
+func (s *Store) CompleteWorkflowTurn(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	outputDrafts []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+) (TurnCompletion, error) {
+	if attemptID == "" {
+		if attemptState != "" || attemptError != nil {
+			return TurnCompletion{}, domain.Validation("attempt state requires an attempt id")
+		}
+	} else if err := validateAttemptFinish(attemptState, attemptError); err != nil {
+		return TurnCompletion{}, err
+	}
+	return s.completeTurn(
+		ctx,
+		sessionID,
+		triggerEventID,
+		outputDrafts,
+		status,
+		attemptID,
+		attemptState,
+		attemptError,
+	)
+}
+
+func (s *Store) completeTurn(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	outputDrafts []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+) (TurnCompletion, error) {
 	var result TurnCompletion
 	err := s.withTx(ctx, func(q *pgstore.Queries) error {
 		row, err := q.LockSession(ctx, sessionID)
@@ -444,6 +491,20 @@ func (s *Store) CompleteTurn(
 			}
 			result = TurnCompletion{Session: session, Events: prior, Applied: false}
 			return nil
+		}
+
+		if attemptID != "" {
+			if err := s.finishAttemptLocked(
+				ctx,
+				q,
+				attemptID,
+				attemptState,
+				attemptError,
+				sessionID,
+				triggerEventID,
+			); err != nil {
+				return err
+			}
 		}
 
 		maxSeq, err := q.MaxEventSeq(ctx, sessionID)

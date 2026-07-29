@@ -41,6 +41,32 @@ func (s storeSource) CompleteTurn(ctx context.Context, sessionID, triggerEventID
 	return TurnCompletionResult{Events: res.Events, Applied: res.Applied, Status: res.Session.Status}, nil
 }
 
+func (s storeSource) CompleteWorkflowTurn(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	output []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+) (TurnCompletionResult, error) {
+	res, err := s.store.CompleteWorkflowTurn(
+		ctx,
+		sessionID,
+		triggerEventID,
+		output,
+		status,
+		attemptID,
+		attemptState,
+		attemptError,
+	)
+	if err != nil {
+		return TurnCompletionResult{}, err
+	}
+	return TurnCompletionResult{Events: res.Events, Applied: res.Applied, Status: res.Session.Status}, nil
+}
+
 // storeSource also satisfies JournalStore, adapting BeginAttempt's rich return to
 // the bare attempt id the Activity needs. The rest delegate directly.
 
@@ -56,6 +82,11 @@ func (s storeSource) BeginAttempt(ctx context.Context, sessionID, triggerEventID
 	return attempt.ID, nil
 }
 
+func (s storeSource) EnsureAttempt(ctx context.Context, sessionID, triggerEventID, attemptID string) error {
+	_, err := s.store.EnsureAttempt(ctx, sessionID, triggerEventID, attemptID)
+	return err
+}
+
 func (s storeSource) FinishAttempt(ctx context.Context, attemptID string, state domain.RunAttemptState, attemptError *string) error {
 	return s.store.FinishAttempt(ctx, attemptID, state, attemptError)
 }
@@ -64,10 +95,26 @@ func (s storeSource) PrepareToolStep(ctx context.Context, attemptID string, ordi
 	return s.store.PrepareToolStep(ctx, attemptID, ordinal, toolUseEventID, toolName, input)
 }
 
+func (s storeSource) EnsureToolStep(
+	ctx context.Context,
+	attemptID string,
+	stepID string,
+	ordinal int,
+	toolUseEventID string,
+	toolName string,
+	input map[string]any,
+) (domain.ToolStep, error) {
+	return s.store.EnsureToolStep(ctx, attemptID, stepID, ordinal, toolUseEventID, toolName, input)
+}
+
 func (s storeSource) StartToolStep(ctx context.Context, stepID string) error {
 	return s.store.StartToolStep(ctx, stepID)
 }
 
 func (s storeSource) CompleteToolStep(ctx context.Context, stepID string, result domain.ToolStepResult) error {
 	return s.store.CompleteToolStep(ctx, stepID, result)
+}
+
+func (s storeSource) MarkToolStepAmbiguous(ctx context.Context, stepID string) error {
+	return s.store.MarkToolStepAmbiguous(ctx, stepID)
 }

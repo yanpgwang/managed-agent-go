@@ -27,9 +27,10 @@ const loadBatchLimit = 100
 //   - The durable cursor advances monotonically. A duplicate or out-of-order
 //     wakeup whose sequence is at or below the cursor is a harmless no-op
 //     (sequence-based duplicate/gap protection).
-//   - State carried across Continue-As-New is small: just the cursor. Large model
-//     and tool payloads never travel through workflow history — Activities persist
-//     them to PostgreSQL and return references.
+//   - State carried across Continue-As-New is small: just the cursor. Completed
+//     model and tool Activity results do enter Workflow history (that is what
+//     makes exact round replay possible), while PostgreSQL remains authoritative
+//     for the public event ledger and projection.
 func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 	return sessionWorkflow(ctx, in, continueAsNewThreshold)
 }
@@ -50,6 +51,12 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 		},
 	}
 	actx := workflow.WithActivityOptions(ctx, ao)
+	agentLoopVersion := workflow.GetVersion(
+		ctx,
+		workflowAgentLoopChangeID,
+		workflow.DefaultVersion,
+		1,
+	)
 
 	cursor := in.StartCursor
 	highestSignaled := cursor
@@ -102,11 +109,21 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 				}
 				if e.Type == domain.EvUserMessage {
 					var res RunTurnResult
-					if err := workflow.ExecuteActivity(actx, ActivityRunTurn, RunTurnInput{
-						SessionID:      in.SessionID,
-						TriggerEventID: e.ID,
-					}).Get(actx, &res); err != nil {
-						return err
+					if agentLoopVersion == workflow.DefaultVersion {
+						// Replay compatibility for Workflow histories created
+						// before the Workflow-owned loop was introduced.
+						if err := workflow.ExecuteActivity(actx, ActivityRunTurn, RunTurnInput{
+							SessionID:      in.SessionID,
+							TriggerEventID: e.ID,
+						}).Get(actx, &res); err != nil {
+							return err
+						}
+					} else {
+						var err error
+						res, err = runWorkflowTurn(actx, in.SessionID, e.ID)
+						if err != nil {
+							return err
+						}
 					}
 					turnsThisRun++
 					// A turn that terminated the session ends orchestration: stop
@@ -174,8 +191,18 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 		// Continue-As-New with the small cursor once this history run has driven
 		// enough turns. Draining first guarantees we do not strand already-visible
 		// work across the boundary.
-		if turnsThisRun >= canThreshold {
-			logger.Info("continue-as-new", "session_id", in.SessionID, "cursor", cursor)
+		info := workflow.GetInfo(ctx)
+		serverSuggestsContinueAsNew :=
+			agentLoopVersion != workflow.DefaultVersion && info.GetContinueAsNewSuggested()
+		if turnsThisRun >= canThreshold || serverSuggestsContinueAsNew {
+			logger.Info(
+				"continue-as-new",
+				"session_id", in.SessionID,
+				"cursor", cursor,
+				"turns", turnsThisRun,
+				"history_length", info.GetCurrentHistoryLength(),
+				"history_size", info.GetCurrentHistorySize(),
+			)
 			return workflow.NewContinueAsNewError(ctx, SessionWorkflow, SessionWorkflowInput{
 				SessionID:   in.SessionID,
 				StartCursor: cursor,

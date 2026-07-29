@@ -239,3 +239,194 @@ func TestJournal_StartWaitsForConcurrentAttemptFence(t *testing.T) {
 		t.Fatalf("start after rolled-back fence: %v", err)
 	}
 }
+
+func TestJournal_WorkflowEnsureIsIdempotent(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const sessionID = "sess_workflow_ensure"
+	trigger := journalTurn(t, store, sessionID)
+
+	firstAttempt, err := store.EnsureAttempt(ctx, sessionID, trigger, "ratm_workflow_ensure")
+	if err != nil {
+		t.Fatalf("ensure attempt 1: %v", err)
+	}
+	secondAttempt, err := store.EnsureAttempt(ctx, sessionID, trigger, "ratm_workflow_ensure")
+	if err != nil {
+		t.Fatalf("ensure attempt 2: %v", err)
+	}
+	if firstAttempt.ID != secondAttempt.ID {
+		t.Fatalf("Activity retry created a second attempt: %s != %s", firstAttempt.ID, secondAttempt.ID)
+	}
+
+	// The integer exercises JSON normalization: PostgreSQL returns JSON numbers
+	// as float64, but the same logical retry must still match the original input.
+	input := map[string]any{"command": "echo ok", "limit": 1}
+	firstStep, err := store.EnsureToolStep(
+		ctx, firstAttempt.ID, "tstep_workflow_tool", 0, "sevt_workflow_tool", "bash", input,
+	)
+	if err != nil {
+		t.Fatalf("ensure step 1: %v", err)
+	}
+	secondStep, err := store.EnsureToolStep(
+		ctx, firstAttempt.ID, "tstep_workflow_tool", 0, "sevt_workflow_tool", "bash", input,
+	)
+	if err != nil {
+		t.Fatalf("ensure step 2: %v", err)
+	}
+	if firstStep.ID != secondStep.ID || secondStep.State != domain.ToolStepPrepared {
+		t.Fatalf("Activity retry did not recover prepared step: first=%+v second=%+v", firstStep, secondStep)
+	}
+	if _, err := store.EnsureToolStep(
+		ctx,
+		firstAttempt.ID,
+		"tstep_workflow_tool",
+		0,
+		"sevt_workflow_tool",
+		"bash",
+		map[string]any{"command": "different"},
+	); err == nil {
+		t.Fatal("same stable step id with different input must be rejected")
+	}
+}
+
+func TestJournal_WorkflowCompletedStepReturnsDurableResult(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const sessionID = "sess_workflow_completed"
+	trigger := journalTurn(t, store, sessionID)
+
+	attempt, err := store.EnsureAttempt(ctx, sessionID, trigger, "ratm_completed")
+	if err != nil {
+		t.Fatalf("ensure attempt: %v", err)
+	}
+	step, err := store.EnsureToolStep(
+		ctx,
+		attempt.ID,
+		"tstep_completed_tool",
+		0,
+		"sevt_completed_tool",
+		"bash",
+		map[string]any{"command": "echo durable"},
+	)
+	if err != nil {
+		t.Fatalf("ensure step: %v", err)
+	}
+	if err := store.StartToolStep(ctx, step.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	want := domain.ToolStepResult{
+		Content: []any{map[string]any{"type": "text", "text": "durable"}},
+		IsError: false,
+	}
+	if err := store.CompleteToolStep(ctx, step.ID, want); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+
+	recovered, err := store.EnsureToolStep(
+		ctx,
+		attempt.ID,
+		"tstep_completed_tool",
+		0,
+		"sevt_completed_tool",
+		"bash",
+		map[string]any{"command": "echo durable"},
+	)
+	if err != nil {
+		t.Fatalf("recover completed step: %v", err)
+	}
+	if recovered.State != domain.ToolStepCompleted || recovered.Result == nil {
+		t.Fatalf("completed result was not recovered: %+v", recovered)
+	}
+	if got := recovered.Result.Content[0].(map[string]any)["text"]; got != "durable" {
+		t.Fatalf("recovered result text = %v", got)
+	}
+}
+
+func TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const sessionID = "sess_workflow_complete"
+	trigger := journalTurn(t, store, sessionID)
+
+	attempt, err := store.EnsureAttempt(ctx, sessionID, trigger, "ratm_atomic")
+	if err != nil {
+		t.Fatalf("ensure attempt: %v", err)
+	}
+	step, err := store.EnsureToolStep(
+		ctx,
+		attempt.ID,
+		"tstep_atomic_tool",
+		0,
+		"sevt_atomic_tool",
+		"bash",
+		map[string]any{"command": "echo atomic"},
+	)
+	if err != nil {
+		t.Fatalf("ensure step: %v", err)
+	}
+	if err := store.StartToolStep(ctx, step.ID); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if err := store.CompleteToolStep(ctx, step.ID, domain.ToolStepResult{
+		Content: []any{map[string]any{"type": "text", "text": "atomic"}},
+	}); err != nil {
+		t.Fatalf("complete step: %v", err)
+	}
+
+	output := []domain.EventDraft{
+		{Type: domain.EvAgentToolUse, ID: "sevt_atomic_tool", Payload: map[string]any{
+			"name": "bash", "input": map[string]any{"command": "echo atomic"},
+		}},
+		{Type: domain.EvAgentToolResult, Payload: map[string]any{
+			"tool_use_id": "sevt_atomic_tool",
+			"content":     []any{map[string]any{"type": "text", "text": "atomic"}},
+			"is_error":    false,
+		}},
+		{Type: domain.EvSessionStatusIdle, Payload: map[string]any{}},
+	}
+	first, err := store.CompleteWorkflowTurn(
+		ctx,
+		sessionID,
+		trigger,
+		output,
+		domain.StatusIdle,
+		attempt.ID,
+		domain.RunAttemptCompleted,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("complete workflow turn: %v", err)
+	}
+	if !first.Applied {
+		t.Fatal("first completion must apply")
+	}
+	var attemptState string
+	if err := store.pool.QueryRow(ctx,
+		`SELECT state FROM turn_attempts WHERE id = $1`, attempt.ID,
+	).Scan(&attemptState); err != nil {
+		t.Fatalf("read attempt state: %v", err)
+	}
+	if attemptState != string(domain.RunAttemptCompleted) {
+		t.Fatalf("attempt state = %s", attemptState)
+	}
+
+	// A lost Activity acknowledgement retries the same transaction entry point.
+	// It must replay the committed turn without trying to finalize the attempt a
+	// second time.
+	second, err := store.CompleteWorkflowTurn(
+		ctx,
+		sessionID,
+		trigger,
+		output,
+		domain.StatusIdle,
+		attempt.ID,
+		domain.RunAttemptCompleted,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("retry completion: %v", err)
+	}
+	if second.Applied {
+		t.Fatal("retry must replay rather than append")
+	}
+}

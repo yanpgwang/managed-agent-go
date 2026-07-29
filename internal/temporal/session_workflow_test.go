@@ -14,6 +14,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/model"
 )
 
 // fakeSource is an in-memory EventSource for workflow tests. It records how many
@@ -112,6 +113,19 @@ func (f *fakeSource) CompleteTurn(_ context.Context, sessionID, triggerEventID s
 	return TurnCompletionResult{Events: committed, Applied: true, Status: status}, nil
 }
 
+func (f *fakeSource) CompleteWorkflowTurn(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	output []domain.EventDraft,
+	status domain.Status,
+	_ string,
+	_ domain.RunAttemptState,
+	_ *string,
+) (TurnCompletionResult, error) {
+	return f.CompleteTurn(ctx, sessionID, triggerEventID, output, status)
+}
+
 func (f *fakeSource) completions(triggerID string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -149,6 +163,14 @@ func userMsg(id string, seq int64) domain.Event {
 	return domain.Event{ID: id, Sequence: seq, Type: domain.EvUserMessage, Payload: map[string]any{"content": "hi"}}
 }
 
+func useLegacyRunTurnVersion(env *testsuite.TestWorkflowEnvironment) {
+	env.OnGetVersion(
+		workflowAgentLoopChangeID,
+		workflow.DefaultVersion,
+		workflow.Version(1),
+	).Return(workflow.DefaultVersion)
+}
+
 // sessionWorkflowExitChecked turns a buffered wakeup at a close boundary into a
 // test failure. Production relies on Temporal rejecting such a close and
 // replaying; this wrapper lets the unit suite assert that sessionWorkflow
@@ -172,9 +194,10 @@ func sessionWorkflowExitChecked(ctx workflow.Context, in SessionWorkflowInput, t
 func TestSessionWorkflow_ProcessesOneTurn(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	useLegacyRunTurnVersion(env)
 
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
 
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	// RunTurn needs a runtime; use a stub runtime through a wrapper activity that
@@ -194,6 +217,63 @@ func TestSessionWorkflow_ProcessesOneTurn(t *testing.T) {
 	// it will not "complete"; the test env stops at its timeout. What we assert is
 	// that the turn ran exactly once.
 	require.Equal(t, 1, source.completions("evt_1"))
+}
+
+func TestSessionWorkflow_NewExecutionUsesWorkflowOwnedLoop(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+
+	source := newFakeSource([]domain.Event{userMsg("evt_new_loop", 1)})
+	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
+	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
+	env.RegisterActivityWithOptions(
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{Request: model.Request{
+				Model: "fake",
+				Messages: []domain.Message{{
+					Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "hi"}},
+				}},
+			}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, CallModelInput) (CallModelResult, error) {
+			return CallModelResult{
+				MessageEventID: "sevt_new_loop_message",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content:    []domain.ContentBlock{{Type: "text", Text: "ok"}},
+				},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			result, err := source.CompleteWorkflowTurn(
+				ctx,
+				in.SessionID,
+				in.TriggerEventID,
+				in.Output,
+				in.Status,
+				in.AttemptID,
+				in.AttemptState,
+				in.AttemptError,
+			)
+			return RunTurnResult{Terminated: result.Status == domain.StatusTerminated}, err
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+	}, time.Millisecond)
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_new_loop"})
+
+	require.Equal(t, 1, source.completions("evt_new_loop"))
+	env.AssertNotCalled(t, ActivityRunTurn, mock.Anything, mock.Anything)
 }
 
 // runTurnStub returns a RunTurn activity implementation that commits a single
@@ -218,9 +298,10 @@ func runTurnStub(source *fakeSource) func(ctx context.Context, in RunTurnInput) 
 func TestSessionWorkflow_DuplicateWakeupsProcessOnce(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	useLegacyRunTurnVersion(env)
 
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
 
@@ -243,11 +324,12 @@ func TestSessionWorkflow_DuplicateWakeupsProcessOnce(t *testing.T) {
 func TestSessionWorkflow_OrderedConsumption(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	useLegacyRunTurnVersion(env)
 
 	// Two user messages at seq 1 and 2. (Their turns' output events get higher
 	// sequences as the fake source appends them.)
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1), userMsg("evt_2", 2)})
-	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 
 	var order []string
@@ -278,9 +360,10 @@ func TestSessionWorkflow_OrderedConsumption(t *testing.T) {
 func TestSessionWorkflow_ContinueAsNewCarriesCursor(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	useLegacyRunTurnVersion(env)
 
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
 
@@ -327,9 +410,10 @@ func TestSessionWorkflow_DrainsBufferedWakeupBeforeCloseBoundary(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var ts testsuite.WorkflowTestSuite
 			env := ts.NewTestWorkflowEnvironment()
+			useLegacyRunTurnVersion(env)
 
 			source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-			acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+			acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
 			env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 			env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
 			env.OnActivity(ActivityRunTurn, mock.Anything, RunTurnInput{
@@ -370,9 +454,10 @@ func TestSessionWorkflow_DrainsBufferedWakeupBeforeCloseBoundary(t *testing.T) {
 func TestSessionWorkflow_TerminationStopsBatch(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	useLegacyRunTurnVersion(env)
 
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1), userMsg("evt_2", 2)})
-	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 
 	var seen []string

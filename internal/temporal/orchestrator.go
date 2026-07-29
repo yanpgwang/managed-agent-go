@@ -6,6 +6,7 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	"go.temporal.io/sdk/client"
@@ -77,14 +78,25 @@ type Runtime struct {
 }
 
 // NewRuntime wires the full Temporal execution plane against a PostgreSQL store,
-// an agent runtime, and a sandbox provider. The store is used both as the event
-// source and as the durable tool-execution journal; the provider is wrapped in a
-// session-scoped SessionManager so a tool's filesystem state persists across
-// turns. The returned Runtime's Worker and Relay must be started by the caller.
-func NewRuntime(c client.Client, store *pg.Store, rt agentruntime.AgentRuntime, provider sandbox.Provider, ids domain.IDGenerator, relayCfg RelayConfig) *Runtime {
+// a model client, and a sandbox provider. It constructs the legacy AgentCore
+// internally so the replay-compatible RunTurn Activity and the Workflow-owned
+// CallModel Activity cannot accidentally be configured with different model
+// clients. The store is used both as the event source and as the durable
+// tool-execution journal; the provider is wrapped in a session-scoped
+// SessionManager so a tool's filesystem state persists across turns. The
+// returned Runtime's Worker and Relay must be started by the caller.
+func NewRuntime(
+	c client.Client,
+	store *pg.Store,
+	modelClient model.Client,
+	provider sandbox.Provider,
+	ids domain.IDGenerator,
+	relayCfg RelayConfig,
+) *Runtime {
 	sandboxes := sandbox.NewSessionManager(provider)
 	src := storeSource{store: store} // satisfies both EventSource and JournalStore
-	acts := NewActivities(rt, src, src, sandboxes, ids)
+	rt := agentruntime.NewAgentCore(modelClient, ids)
+	acts := NewActivities(rt, modelClient, src, src, sandboxes, ids)
 	w := NewWorker(c, acts)
 	signaler := NewSignaler(c)
 	relay := NewRelay(store, signaler, relayCfg)

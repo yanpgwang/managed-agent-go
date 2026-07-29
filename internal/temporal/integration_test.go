@@ -12,7 +12,6 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
@@ -22,8 +21,8 @@ import (
 // TestVerticalSlice_EndToEnd is the real integration path required by the
 // milestone: a genuine Temporal service + real PostgreSQL. It admits one
 // user.message and asserts the full spine runs — admission writes the outbox,
-// the relay delivers a Signal-With-Start, the SessionWorkflow drives a RunTurn
-// Activity through the real agent runtime (offline fake model), and the turn's
+// the relay delivers a Signal-With-Start, the SessionWorkflow drives the
+// Workflow-owned model loop through granular Activities, and the turn's
 // authoritative agent.message plus terminal idle land in PostgreSQL in receipt
 // order with the session projected back to idle.
 //
@@ -50,9 +49,9 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 	defer c.Close()
 
 	ids := domain.NewRandomIDGen()
-	rt := agentruntime.NewAgentCore(model.NewFake(), ids)
+	modelClient := model.NewFake()
 
-	runtime := temporalpkg.NewRuntime(c, store, rt, sandbox.NewLocalProvider(), ids, temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond})
+	runtime := temporalpkg.NewRuntime(c, store, modelClient, sandbox.NewLocalProvider(), ids, temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond})
 
 	// Start the worker.
 	if err := runtime.Worker.Start(); err != nil {
@@ -136,8 +135,8 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 // TestVerticalSlice_ToolStepEndToEnd is the real integration path for a
 // tool-using turn: a session whose agent enables the built-in toolset admits one
 // user.message, and the fake model requests the first enabled built-in. The turn
-// runs the tool step under the durable journal inside the RunTurn Activity and
-// commits the paired agent.tool_use / agent.tool_result plus a terminal idle to
+// runs the tool step as its own Activity under the durable journal and commits
+// the paired agent.tool_use / agent.tool_result plus a terminal idle to
 // PostgreSQL. Skips unless both the DB and Temporal env vars are set.
 func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
 	runToolStepEndToEnd(t, sandbox.NewLocalProvider(), model.NewFake(), "sess_tool_e2e_", "")
@@ -188,8 +187,7 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	defer c.Close()
 
 	ids := domain.NewRandomIDGen()
-	rt := agentruntime.NewAgentCore(modelClient, ids)
-	runtime := temporalpkg.NewRuntime(c, store, rt, provider, ids, temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond})
+	runtime := temporalpkg.NewRuntime(c, store, modelClient, provider, ids, temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond})
 
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)
