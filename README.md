@@ -102,8 +102,8 @@ implemented by this control plane.
 Requirements: Docker with Compose.
 
 ```bash
-make -C deployments/local up
-make -C deployments/local health
+make local-up
+make local-health
 curl http://localhost:8080/readyz
 ```
 
@@ -122,18 +122,18 @@ an Environment, Agent, and Session and send the first message.
 Stop the stack without deleting PostgreSQL data:
 
 ```bash
-make -C deployments/local down
+make local-down
 ```
 
-Use `make -C deployments/local down VOLUMES=1` only when you intentionally want
-to delete the local database.
+Use `make local-down VOLUMES=1` only when you intentionally want to delete the
+local database.
 
 ## Run from source
 
 Start only the backing services:
 
 ```bash
-docker compose -f deployments/local/docker-compose.yml \
+docker compose -f deployments/local/compose.yaml \
   up -d postgres temporal temporal-ui nats
 
 export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
@@ -161,7 +161,7 @@ If the complete Compose stack is already running, stop its offline worker
 before starting a configured source worker:
 
 ```bash
-docker compose -f deployments/local/docker-compose.yml stop worker
+docker compose -f deployments/local/compose.yaml stop worker
 ```
 
 Then configure and start the worker process:
@@ -210,6 +210,7 @@ removed after those semantics are implemented on Temporal.
 - [Architecture overview](docs/architecture.md)
 - [Session lifecycle](docs/architecture/session-lifecycle.md)
 - [Sandbox backends](docs/sandboxes.md)
+- [Deployment model](docs/deployment.md)
 - [Target platform decision](docs/architecture/target-platform.md)
 - [API reference](docs/api/overview.md)
 - [Roadmap](docs/roadmap.md)
@@ -217,20 +218,19 @@ removed after those semantics are implemented on Temporal.
 ## Development
 
 ```bash
-go test ./...
-go test -race ./...
-go vet ./...
-
-cd website
-npm ci
-npm run typecheck
-npm run build
+make verify
+make docs-check
+make image-smoke
 ```
 
 Default tests run offline. Real PostgreSQL, Temporal, NATS, and Docker paths are
 covered by opt-in integration tests documented in
 [`deployments/local`](deployments/local/README.md). PostgreSQL schema changes
 use embedded, versioned `goose` migrations.
+
+The repository-level `Makefile` is the stable entry point for development and
+local deployment commands. See the [deployment model](docs/deployment.md) for
+the support boundary between the local stack and future release bundles.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change and report
 vulnerabilities through [SECURITY.md](SECURITY.md).

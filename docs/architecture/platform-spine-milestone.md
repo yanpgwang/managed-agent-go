@@ -59,8 +59,8 @@ HTTP API, and the worker with pinned versions and health checks. See
 [the stack README](https://github.com/yanpgwang/managed-agent-go/tree/main/deployments/local).
 
 ```sh
-make -C deployments/local up
-make -C deployments/local health
+make local-up
+make local-health
 ```
 
 | Service    | Image                          | Purpose                                    |
@@ -329,7 +329,7 @@ Failure-boundary coverage:
 To run the integration tests locally:
 
 ```sh
-make -C deployments/local up && make -C deployments/local health
+make local-up && make local-health
 export MANAGED_AGENT_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
 export MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT="localhost:7233"
 export MANAGED_AGENT_TEST_NATS_URL="nats://localhost:4222"

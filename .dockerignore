@@ -1,6 +1,12 @@
 .git
 .github
 .claude
+.superpowers
+assets
+bin
+deployments
+docs
 managed-agent.db
-website/node_modules
-website/build
+*.db-shm
+*.db-wal
+website

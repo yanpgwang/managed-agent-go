@@ -5,6 +5,7 @@ const sidebars: SidebarsConfig = {
     'intro',
     'getting-started',
     'sandboxes',
+    'deployment',
     {
       type: 'category',
       label: 'Architecture',

@@ -18,9 +18,11 @@ The Go module pins the matching client libraries: `go.temporal.io/sdk`,
 
 ## Startup
 
+From the repository root:
+
 ```sh
-make -C deployments/local up       # start everything in the background
-make -C deployments/local health   # block until all services are healthy
+make local-up       # start everything in the background
+make local-health   # block until all services are healthy
 ```
 
 `make health` returns only once Postgres accepts connections, the Temporal
@@ -30,8 +32,8 @@ answers `/readyz`.
 Without `make`:
 
 ```sh
-docker compose -f deployments/local/docker-compose.yml up -d --build
-docker compose -f deployments/local/docker-compose.yml ps
+docker compose -f deployments/local/compose.yaml up -d --build
+docker compose -f deployments/local/compose.yaml ps
 ```
 
 ## Connection strings
@@ -64,8 +66,8 @@ Each service declares a Docker `healthcheck`:
 ## Teardown
 
 ```sh
-make -C deployments/local down            # stop containers, keep data
-make -C deployments/local down VOLUMES=1  # also delete the Postgres volume
+make local-down            # stop containers, keep data
+make local-down VOLUMES=1  # also delete the Postgres volume
 ```
 
 ## Scope
@@ -75,4 +77,5 @@ keeps API and worker process roles separate, but it is not a production
 deployment manifest: authentication, TLS, secrets, rolling worker versioning,
 managed persistence, observability, resource limits, and object storage remain
 deployment work. See
+[the deployment model](../../docs/deployment.md) and
 [target-platform](../../docs/architecture/target-platform.md).

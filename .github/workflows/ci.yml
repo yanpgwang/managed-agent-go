@@ -18,9 +18,17 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: go test ./...
-      - run: go test -race ./...
-      - run: go vet ./...
+      - run: make test
+      - run: make test-race
+      - run: make vet
+
+  container:
+    name: Container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: make local-config
+      - run: make image-smoke IMAGE=managed-agent-go:ci
 
   docs:
     name: Documentation

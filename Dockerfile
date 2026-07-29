@@ -1,16 +1,34 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.26.4-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.4-alpine AS build
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+ARG GOPROXY=https://proxy.golang.org,direct
+RUN --mount=type=cache,target=/go/pkg/mod GOPROXY=$GOPROXY go mod download
 
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" \
-    -o /out/managed-agent ./cmd/managed-agent
+COPY cmd ./cmd
+COPY internal ./internal
+
+ARG TARGETOS
+ARG TARGETARCH
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" \
+        -o /out/managed-agent ./cmd/managed-agent
 
 FROM alpine:3.23
+ARG VERSION=dev
+ARG REVISION=unknown
+
+LABEL org.opencontainers.image.title="Mango" \
+      org.opencontainers.image.description="Self-hosted Managed Agents-compatible runtime" \
+      org.opencontainers.image.source="https://github.com/yanpgwang/managed-agent-go" \
+      org.opencontainers.image.version=$VERSION \
+      org.opencontainers.image.revision=$REVISION \
+      org.opencontainers.image.licenses="Apache-2.0"
+
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/managed-agent /usr/local/bin/managed-agent
 

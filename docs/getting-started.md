@@ -18,8 +18,8 @@ message through the full environment → agent → session → event flow.
 ## Run the server
 
 ```bash
-make -C deployments/local up
-make -C deployments/local health
+make local-up
+make local-health
 ```
 
 This builds and starts separate API and worker containers plus PostgreSQL,
@@ -127,7 +127,7 @@ The quick start already runs an offline worker. Stop it before launching a
 source worker with different model or sandbox configuration:
 
 ```bash
-docker compose -f deployments/local/docker-compose.yml stop worker
+docker compose -f deployments/local/compose.yaml stop worker
 
 export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
 export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
@@ -159,7 +159,7 @@ input or in production.
 ## Clean up
 
 ```bash
-make -C deployments/local down
+make local-down
 ```
 
 This keeps the PostgreSQL volume. Add `VOLUMES=1` only when you intentionally
