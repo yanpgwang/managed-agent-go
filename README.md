@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/mango-logo.png" alt="Mango" width="760">
+  <img src="assets/mango-logo.png" alt="Mango" width="420">
 </p>
 
 <h1 align="center">managed-agent-go</h1>
