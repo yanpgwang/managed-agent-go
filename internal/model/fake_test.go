@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -75,5 +76,19 @@ func TestFake_CreateMessageStream_ChunksThenFinal(t *testing.T) {
 	}
 	if len(resp.Content) != 1 || resp.Content[0].Text != "echo: hello world" || resp.StopReason != "end_turn" {
 		t.Fatalf("final resp = %#v", resp)
+	}
+}
+
+func TestFake_SetError(t *testing.T) {
+	f := NewFake()
+	want := errors.New("provider unavailable")
+	f.SetError(want)
+
+	_, err := f.CreateMessageStream(context.Background(), Request{}, nil)
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+	if got := f.LastRequest(); len(got.Messages) != 0 {
+		t.Fatalf("LastRequest = %#v, want recorded empty request", got)
 	}
 }

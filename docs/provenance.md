@@ -26,10 +26,13 @@ internal design, is secondary and cannot establish a compatibility claim.
 
 ## Official documentation and API Reference
 
-Verified 2026-07-24.
+Verified 2026-07-29.
 
 - [API overview](https://platform.claude.com/docs/en/api/overview) — auth
   headers, pagination, request-size limit, and error envelope.
+- [Claude API errors](https://platform.claude.com/docs/en/api/errors) — Messages
+  API status/error types, request IDs, transient retry classes, and
+  `Retry-After`.
 - [Create Agent](https://platform.claude.com/docs/en/api/beta/agents/create) —
   model configuration, initial `version`, and response shape.
 - [Update Agent](https://platform.claude.com/docs/en/api/beta/agents/update) —

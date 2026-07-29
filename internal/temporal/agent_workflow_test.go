@@ -307,6 +307,64 @@ func TestWorkflowTurn_AmbiguousToolTerminatesHonestly(t *testing.T) {
 	}, draftTypes(completed.Output))
 }
 
+func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{
+			Request: model.Request{
+				Model: "test-model",
+				Messages: []domain.Message{{
+					Role: domain.RoleUser,
+					Content: []domain.ContentBlock{{
+						Type: "text", Text: "invalid request",
+					}},
+				}},
+			},
+		}, nil
+	}
+	client := model.NewFake()
+	client.SetError(&model.APIError{
+		Kind:       model.ErrorInvalidRequest,
+		StatusCode: 400,
+		Type:       "invalid_request_error",
+		Message:    "invalid messages",
+	})
+	activities := NewActivities(
+		nil, client, nil, nil, nil, domain.NewSeqIDGen(),
+	)
+	executions := 0
+	executeTool := func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+		executions++
+		return ExecuteToolResult{}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Terminated: in.Status == domain.StatusTerminated}, nil
+	}
+	registerWorkflowTurnActivities(env, prepare, activities.CallModel, executeTool, complete)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_model_permanent", TriggerEventID: "sevt_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	var result RunTurnResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.True(t, result.Terminated)
+	require.Zero(t, executions, "permanent model failure must not execute a tool")
+	require.Equal(t, domain.StatusTerminated, completed.Status)
+	require.Equal(t, []string{
+		domain.EvSessionError,
+		domain.EvSessionStatusTerminated,
+	}, draftTypes(completed.Output))
+	errorPayload, ok := completed.Output[0].Payload["error"].(map[string]any)
+	require.True(t, ok)
+	require.Contains(t, errorPayload["message"], "invalid_request_error")
+}
+
 func TestWorkflowTurn_RejectsClientActionBatchBeforeSideEffects(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
