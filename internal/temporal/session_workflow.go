@@ -24,13 +24,15 @@ const loadBatchLimit = 100
 //   - PostgreSQL is the event source of truth. Signals are wakeups carrying only
 //     the highest known receipt sequence; the workflow loads authoritative events
 //     after its own durable cursor.
-//   - The durable cursor advances monotonically. A duplicate or out-of-order
-//     wakeup whose sequence is at or below the cursor is a harmless no-op
-//     (sequence-based duplicate/gap protection).
+//   - A pending client-action barrier is selected before ordinary receipt-order
+//     work. Partial resolution remains parked; a full barrier resumes as one
+//     logical model turn before queued messages.
+//   - The durable cursor advances monotonically. Duplicate or out-of-order
+//     wakeups are harmless because authoritative events at or below it are
+//     ignored.
 //   - State carried across Continue-As-New is small: just the cursor. Completed
-//     model and tool Activity results do enter Workflow history (that is what
-//     makes exact round replay possible), while PostgreSQL remains authoritative
-//     for the public event ledger and projection.
+//     model and tool Activity results enter Workflow history, while PostgreSQL
+//     remains authoritative for the public event ledger and projection.
 func SessionWorkflow(ctx workflow.Context, in SessionWorkflowInput) error {
 	return sessionWorkflow(ctx, in, continueAsNewThreshold)
 }
@@ -55,24 +57,15 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 		},
 	}
 	actx := workflow.WithActivityOptions(ctx, ao)
-	agentLoopVersion := workflow.GetVersion(
-		ctx,
-		workflowAgentLoopChangeID,
-		workflow.DefaultVersion,
-		1,
-	)
-
 	cursor := in.StartCursor
-	highestSignaled := cursor
 	turnsThisRun := 0
-
 	wakeupCh := workflow.GetSignalChannel(ctx, WakeupSignalName)
-	// coalesceWakeups deterministically consumes every wakeup currently buffered
-	// in Workflow history and retains only the highest sequence metadata. Temporal
-	// rejects a close/Continue-As-New command when a Signal arrived during the
-	// current Workflow Task. Consuming at both sides of Activity-driven draining
-	// means that rejection replays into this code, consumes the now-visible Signal,
-	// and makes progress instead of proposing the same close forever.
+
+	// Deterministically consume every wakeup currently buffered in Workflow
+	// history. Temporal rejects a close/Continue-As-New command when a Signal
+	// arrived during the current Workflow Task. Consuming at both sides of
+	// Activity-driven draining makes replay consume that now-visible Signal and
+	// progress instead of proposing the same close forever.
 	coalesceWakeups := func() bool {
 		sawSignal := false
 		for {
@@ -81,124 +74,141 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 				return sawSignal
 			}
 			sawSignal = true
-			if sig.MaxEventSeq > highestSignaled {
-				highestSignaled = sig.MaxEventSeq
-			}
 		}
 	}
 
-	// drain applies every currently-available event after the cursor, driving one
-	// turn per user.message and advancing the cursor past each turn's own output.
-	// It sets `terminated` and returns early when a turn ended the session, so the
-	// caller can stop the whole workflow rather than just this drain pass.
 	terminated := false
-	drain := func() error {
+	drain := func() (bool, error) {
 		for {
+			// A durable requires_action barrier always wins over ordinary events.
+			// This prevents a queued message from overtaking a partially or fully
+			// resolved tool round.
+			var pending LoadPendingActionsResult
+			if err := workflow.ExecuteActivity(
+				actx,
+				ActivityLoadPendingActions,
+				LoadPendingActionsInput{SessionID: in.SessionID},
+			).Get(actx, &pending); err != nil {
+				return false, err
+			}
+			if len(pending.Actions) > 0 {
+				fullyClaimed := true
+				trigger := EventRef{}
+				resolutionIDs := make([]string, 0, len(pending.Actions))
+				for _, action := range pending.Actions {
+					if action.ResolutionEventID == "" {
+						fullyClaimed = false
+						break
+					}
+					resolutionIDs = append(resolutionIDs, action.ResolutionEventID)
+					if action.ResolutionEventSeq > trigger.Seq ||
+						(action.ResolutionEventSeq == trigger.Seq &&
+							action.ResolutionEventID > trigger.ID) {
+						trigger = EventRef{
+							ID:  action.ResolutionEventID,
+							Seq: action.ResolutionEventSeq,
+						}
+					}
+				}
+				if !fullyClaimed {
+					return true, nil
+				}
+
+				res, err := runWorkflowTurnWithResolutions(
+					actx,
+					in.SessionID,
+					trigger.ID,
+					resolutionIDs,
+				)
+				if err != nil {
+					return false, err
+				}
+				turnsThisRun++
+				switch res.Disposition {
+				case TurnTerminated:
+					logger.Info(
+						"session terminated by pending-action resume; stopping",
+						"session_id", in.SessionID,
+						"trigger", trigger.ID,
+					)
+					terminated = true
+					return false, nil
+				case TurnParked:
+					// The resumed model installed a fresh barrier atomically with
+					// clearing the old one. Do not let queued ordinary messages
+					// overtake it.
+					return true, nil
+				}
+				// A resolution can have a higher public sequence than ordinary
+				// messages admitted while the barrier was open. Do not advance the
+				// receipt cursor to it; reload the ledger and consume the lower
+				// ordinary work first.
+				continue
+			}
+
 			var loaded LoadEventsResult
 			if err := workflow.ExecuteActivity(actx, ActivityLoadEvents, LoadEventsInput{
 				SessionID: in.SessionID,
 				Cursor:    cursor,
 				Limit:     loadBatchLimit,
 			}).Get(actx, &loaded); err != nil {
-				return err
+				return false, err
 			}
 			if len(loaded.Events) == 0 {
-				return nil
+				return false, nil
 			}
-			for _, e := range loaded.Events {
-				// Sequence-based duplicate protection: never move the cursor
-				// backward, and never reprocess an event at or below it.
-				if e.Seq <= cursor {
+			for _, event := range loaded.Events {
+				if event.Seq <= cursor {
 					continue
 				}
-				if e.Type == domain.EvUserMessage {
-					var res RunTurnResult
-					if agentLoopVersion == workflow.DefaultVersion {
-						// Replay compatibility for Workflow histories created
-						// before the Workflow-owned loop was introduced.
-						if err := workflow.ExecuteActivity(actx, ActivityRunTurn, RunTurnInput{
-							SessionID:      in.SessionID,
-							TriggerEventID: e.ID,
-						}).Get(actx, &res); err != nil {
-							return err
-						}
-					} else {
-						var err error
-						res, err = runWorkflowTurn(actx, in.SessionID, e.ID)
-						if err != nil {
-							return err
-						}
+				if event.Type == domain.EvUserMessage {
+					res, err := runWorkflowTurn(actx, in.SessionID, event.ID)
+					if err != nil {
+						return false, err
 					}
 					turnsThisRun++
-					// A turn that terminated the session ends orchestration: stop
-					// draining the rest of the loaded batch. Later queued user.message
-					// events stay unprocessed and the session stays terminated — the
-					// workflow must never resurrect a terminated session by processing a
-					// message queued behind the terminating one. Signal the caller to
-					// end the whole workflow (a bare return here would only end this
-					// drain pass and the workflow would block on the next wakeup).
-					if res.Terminated {
-						logger.Info("session terminated by turn; stopping",
-							"session_id", in.SessionID, "trigger", e.ID)
+					cursor = event.Seq
+					switch res.Disposition {
+					case TurnTerminated:
+						logger.Info(
+							"session terminated by turn; stopping",
+							"session_id", in.SessionID,
+							"trigger", event.ID,
+						)
 						terminated = true
-						return nil
+						return false, nil
+					case TurnParked:
+						return true, nil
 					}
-					// Advance the cursor only to the trigger's own sequence, NOT to
-					// the turn's output sequence. The turn's agent.message /
-					// session.status_idle events take higher sequences than any input
-					// admitted before the turn ran, so jumping the cursor to the output
-					// would skip a lower-sequence user.message queued behind this one.
-					// Those output events are re-loaded on the next iteration and
-					// skipped there (they are not user.message), so the cursor still
-					// ends up past them without stranding earlier input.
+					continue
 				}
-				cursor = e.Seq
+				cursor = event.Seq
 			}
 		}
 	}
 
+	drainRequested := false
 	for {
-		// On a normal iteration this picks up a burst before any database work. On
-		// replay after Temporal rejected a close/CAN due to a buffered Signal, this
-		// is what consumes that Signal before we propose the boundary again.
-		coalesceWakeups()
-
-		// Process everything already committed up to the highest wakeup we have
-		// seen. Loading from PostgreSQL (not the signal) is what makes a gap — a
-		// signal that names a sequence not yet visible — self-correcting: we apply
-		// what exists and wait for the next wakeup to bring the rest.
-		if highestSignaled > cursor {
-			if err := drain(); err != nil {
+		if coalesceWakeups() {
+			drainRequested = true
+		}
+		if drainRequested {
+			if _, err := drain(); err != nil {
 				return err
 			}
 		}
 
-		// A Signal may have arrived while an Activity was running. Consume it before
-		// either terminal completion or Continue-As-New. If it advances the known
-		// sequence, loop once more so PostgreSQL is drained before CAN. A signal that
-		// races after this check is still safe: Temporal rejects the close command
-		// and replay consumes it at this same deterministic boundary.
 		sawSignalDuringDrain := coalesceWakeups()
-
-		// A turn terminated the session: end the workflow. Any events still queued
-		// behind the terminating message stay unprocessed and the session stays
-		// terminated. Wakeups are consumed above but deliberately do not resurrect
-		// the session or drive the queued events.
 		if terminated {
 			return nil
 		}
-
-		if sawSignalDuringDrain && highestSignaled > cursor {
+		if sawSignalDuringDrain {
+			drainRequested = true
 			continue
 		}
 
-		// Continue-As-New with the small cursor once this history run has driven
-		// enough turns. Draining first guarantees we do not strand already-visible
-		// work across the boundary.
 		info := workflow.GetInfo(ctx)
-		serverSuggestsContinueAsNew :=
-			agentLoopVersion != workflow.DefaultVersion && info.GetContinueAsNewSuggested()
-		if turnsThisRun >= canThreshold || serverSuggestsContinueAsNew {
+		if turnsThisRun >= canThreshold || info.GetContinueAsNewSuggested() {
 			logger.Info(
 				"continue-as-new",
 				"session_id", in.SessionID,
@@ -213,13 +223,8 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 			})
 		}
 
-		// Block for the next wakeup. A wakeup carries only metadata; we track the
-		// highest sequence any signal has named and coalesce a burst by draining
-		// the channel non-blockingly before looping.
 		var sig WakeupSignal
 		wakeupCh.Receive(ctx, &sig)
-		if sig.MaxEventSeq > highestSignaled {
-			highestSignaled = sig.MaxEventSeq
-		}
+		drainRequested = true
 	}
 }

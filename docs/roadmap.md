@@ -13,11 +13,10 @@ not by reproducing Anthropic's internal implementation.
 
 These are the release-blocking capabilities for the managed-agent harness:
 
-1. durable custom-tool and `always_ask` park/resume;
-2. durable cross-process interrupt with deterministic event ordering;
-3. bounded context management and compaction over server-owned history;
-4. restart-resilient sandbox identity and lifecycle;
-5. conformance tests for supported Managed Agents API behavior.
+1. durable cross-process interrupt with deterministic event ordering;
+2. bounded context management and compaction over server-owned history;
+3. restart-resilient sandbox identity and lifecycle;
+4. conformance tests for supported Managed Agents API behavior.
 
 ## Runtime integrations
 

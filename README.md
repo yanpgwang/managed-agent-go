@@ -64,20 +64,19 @@ for the invariants and failure model.
 | Agents | Create, get, list, update, versions, archive |
 | Environments | Create, get, list, archive, delete; `cloud` only for Session execution |
 | Sessions | Create, get, list, update title, archive, delete |
-| Events | Admit and process `user.message`; store `user.define_outcome`; list, cursor pagination, and SSE |
-| Runtime | Multi-round Messages API loop and `always_allow` built-in tools |
+| Events | Process messages, custom-tool results, and tool confirmations; store `user.define_outcome`; list, cursor pagination, and SSE |
+| Runtime | Multi-round Messages API loop, durable client-action park/resume, and built-in tools |
 | Tools | `bash`, `read`, `write`, `edit`, `glob`, and `grep`; web tools currently return not implemented |
 | Sandboxes | Local development provider and optional Docker isolation |
 | Live delivery | Cross-process message previews and persisted-event wakeups over NATS |
 
-The two remaining compatibility gates are:
+The remaining core compatibility gate is durable cross-process
+`user.interrupt` with defined finish/interrupt ordering.
 
-1. durable client-action waits for custom tools and `always_ask`;
-2. durable cross-process `user.interrupt` with defined finish/interrupt ordering.
-
-Until those land, the primary backend returns an explicit `422` for those event
-types. MCP execution, files/skills/memory/vaults, multi-agent orchestration,
-remote self-hosted workers, schedules, and webhooks are also not implemented.
+The primary backend returns an explicit `422` for unsupported interrupt,
+generic tool-result, and system-message inputs. MCP execution,
+files/skills/memory/vaults, multi-agent orchestration, remote self-hosted
+workers, schedules, and webhooks are also not implemented.
 See the [compatibility matrix](docs/compatibility.md) and
 [roadmap](docs/roadmap.md) for details.
 

@@ -21,14 +21,37 @@ func runWorkflowTurn(
 	sessionID string,
 	triggerEventID string,
 ) (RunTurnResult, error) {
+	return runWorkflowTurnInternal(actx, sessionID, triggerEventID, nil)
+}
+
+func runWorkflowTurnWithResolutions(
+	actx workflow.Context,
+	sessionID string,
+	triggerEventID string,
+	resolutionEventIDs []string,
+) (RunTurnResult, error) {
+	return runWorkflowTurnInternal(actx, sessionID, triggerEventID, resolutionEventIDs)
+}
+
+func runWorkflowTurnInternal(
+	actx workflow.Context,
+	sessionID string,
+	triggerEventID string,
+	resolutionEventIDs []string,
+) (RunTurnResult, error) {
 	var prepared PrepareTurnResult
 	if err := workflow.ExecuteActivity(actx, ActivityPrepareTurn, PrepareTurnInput{
-		SessionID: sessionID, TriggerEventID: triggerEventID,
+		SessionID:          sessionID,
+		TriggerEventID:     triggerEventID,
+		ResolutionEventIDs: resolutionEventIDs,
 	}).Get(actx, &prepared); err != nil {
 		return RunTurnResult{}, err
 	}
 	if prepared.AlreadyCompleted {
-		return RunTurnResult{Terminated: prepared.Terminated}, nil
+		if prepared.Terminated {
+			return RunTurnResult{Disposition: TurnTerminated}, nil
+		}
+		return RunTurnResult{Disposition: TurnCompleted}, nil
 	}
 
 	var (
@@ -38,7 +61,8 @@ func runWorkflowTurn(
 	)
 	if prepared.FatalError != "" {
 		return terminateWorkflowTurn(
-			actx, sessionID, triggerEventID, output, attemptID, prepared.FatalError,
+			actx, sessionID, triggerEventID, output, attemptID,
+			resolutionEventIDs, prepared.FatalError,
 		)
 	}
 
@@ -50,6 +74,124 @@ func runWorkflowTurn(
 		if _, exists := toolsByName[tool.Name]; !exists {
 			toolsByName[tool.Name] = tool
 		}
+	}
+
+	// A fully claimed barrier resumes as one logical tool-result round. The
+	// preparation Activity removed the parked action/result events from the base
+	// causal projection and returned their server-owned normalized payloads in
+	// original action order. Reconstruct every tool_use first, then every result,
+	// so a mixed custom/confirmation barrier remains a legal Messages API pair.
+	if len(prepared.ResumeActions) > 0 {
+		actionBlocks := make([]domain.ContentBlock, 0, len(prepared.ResumeActions))
+		resultBlocks := make([]domain.ContentBlock, 0, len(prepared.ResumeActions))
+		for _, action := range prepared.ResumeActions {
+			definition, ok := toolsByName[action.ToolName]
+			if !ok {
+				return terminateWorkflowTurn(
+					actx, sessionID, triggerEventID, output, attemptID,
+					resolutionEventIDs,
+					"pending action names a tool that is not enabled: "+action.ToolName,
+				)
+			}
+			actionBlocks = append(actionBlocks, domain.ContentBlock{
+				Type:      "tool_use",
+				ToolUseID: action.ActionEventID,
+				ToolName:  action.ToolName,
+				Input:     action.Input,
+			})
+
+			content := action.Content
+			isError := action.IsError
+			switch action.Kind {
+			case domain.PendingCustomToolResult:
+				if definition.Kind != TurnToolCustom {
+					return terminateWorkflowTurn(
+						actx, sessionID, triggerEventID, output, attemptID,
+						resolutionEventIDs,
+						"custom tool result does not reference a custom tool",
+					)
+				}
+			case domain.PendingToolConfirmation:
+				if definition.Kind != TurnToolBuiltin ||
+					definition.Permission.Type != "always_ask" {
+					return terminateWorkflowTurn(
+						actx, sessionID, triggerEventID, output, attemptID,
+						resolutionEventIDs,
+						"tool confirmation does not reference an always_ask built-in",
+					)
+				}
+				if action.Confirmation == "deny" {
+					text := "Tool call denied by user."
+					if action.DenyMessage != "" {
+						text += " " + action.DenyMessage
+					}
+					content = []any{map[string]any{"type": "text", "text": text}}
+					isError = true
+				} else {
+					if action.ToolStepID == "" || prepared.AttemptID == "" {
+						return terminateWorkflowTurn(
+							actx, sessionID, triggerEventID, output, attemptID,
+							resolutionEventIDs,
+							"allowed confirmation has no durable operation id",
+						)
+					}
+					attemptID = prepared.AttemptID
+					var executed ExecuteToolResult
+					if err := workflow.ExecuteActivity(actx, ActivityExecuteTool, ExecuteToolInput{
+						SessionID:      sessionID,
+						TriggerEventID: triggerEventID,
+						AttemptID:      attemptID,
+						Ordinal:        ordinal,
+						ToolUseEventID: action.ActionEventID,
+						ToolStepID:     action.ToolStepID,
+						ToolName:       action.ToolName,
+						Input:          action.Input,
+					}).Get(actx, &executed); err != nil {
+						return RunTurnResult{}, err
+					}
+					ordinal++
+					if executed.FatalError != "" {
+						return terminateWorkflowTurn(
+							actx, sessionID, triggerEventID, output, attemptID,
+							resolutionEventIDs, executed.FatalError,
+						)
+					}
+					if executed.Ambiguous {
+						return terminateWorkflowTurn(
+							actx, sessionID, triggerEventID, output, attemptID,
+							resolutionEventIDs,
+							"a confirmed tool began executing but no trustworthy result was recorded; "+
+								"the side effect will not be retried",
+						)
+					}
+					content = executed.Result.Content
+					isError = executed.Result.IsError
+				}
+				output = append(output, domain.EventDraft{
+					Type: domain.EvAgentToolResult,
+					Payload: map[string]any{
+						"tool_use_id": action.ActionEventID,
+						"content":     content,
+						"is_error":    isError,
+					},
+				})
+			default:
+				return terminateWorkflowTurn(
+					actx, sessionID, triggerEventID, output, attemptID,
+					resolutionEventIDs, "unknown pending action kind",
+				)
+			}
+			resultBlocks = append(resultBlocks, domain.ContentBlock{
+				Type:          "tool_result",
+				ToolResultFor: action.ActionEventID,
+				Text:          agentruntime.FlattenResultText(content),
+				IsError:       isError,
+			})
+		}
+		messages = agentruntime.AppendMerging(messages, []domain.Message{
+			{Role: domain.RoleAssistant, Content: actionBlocks},
+			{Role: domain.RoleUser, Content: resultBlocks},
+		})
 	}
 
 	for round := 0; round < maxWorkflowToolRounds; round++ {
@@ -65,7 +207,8 @@ func runWorkflowTurn(
 		}
 		if called.FatalError != "" {
 			return terminateWorkflowTurn(
-				actx, sessionID, triggerEventID, output, attemptID, called.FatalError,
+				actx, sessionID, triggerEventID, output, attemptID,
+				resolutionEventIDs, called.FatalError,
 			)
 		}
 
@@ -77,6 +220,7 @@ func runWorkflowTurn(
 					triggerEventID,
 					output,
 					attemptID,
+					resolutionEventIDs,
 					"model response text has no durable public event id",
 				)
 			}
@@ -96,6 +240,7 @@ func runWorkflowTurn(
 		if len(toolUses) == 0 {
 			return completeWorkflowTurn(
 				actx, sessionID, triggerEventID, output, attemptID,
+				nil, resolutionEventIDs,
 			)
 		}
 		if prepared.AttemptID == "" {
@@ -105,6 +250,7 @@ func runWorkflowTurn(
 				triggerEventID,
 				output,
 				attemptID,
+				resolutionEventIDs,
 				"tool-using turn has no durable attempt id",
 			)
 		}
@@ -114,9 +260,8 @@ func runWorkflowTurn(
 		}
 
 		// Validate the whole model batch before executing its first side effect.
-		// A custom or approval-gated tool is not supported on this first slice;
-		// refusing the batch up front avoids executing an earlier built-in and
-		// only then discovering that the same model response cannot complete.
+		// The classification itself is durable Activity output (prepared.Tools);
+		// Workflow code never consults a mutable registry during replay.
 		for _, use := range toolUses {
 			if stepIDsByEvent[use.ToolUseID] == "" {
 				return terminateWorkflowTurn(
@@ -125,6 +270,7 @@ func runWorkflowTurn(
 					triggerEventID,
 					output,
 					attemptID,
+					resolutionEventIDs,
 					"model tool request has no durable operation id",
 				)
 			}
@@ -136,32 +282,64 @@ func runWorkflowTurn(
 					triggerEventID,
 					output,
 					attemptID,
+					resolutionEventIDs,
 					"model requested a tool that is not enabled: "+use.ToolName,
 				)
 			}
-			if definition.Kind != TurnToolBuiltin || definition.Permission.Type != "always_allow" {
+			if definition.Kind == TurnToolBuiltin &&
+				definition.Permission.Type != "always_allow" &&
+				definition.Permission.Type != "always_ask" {
 				return terminateWorkflowTurn(
 					actx,
 					sessionID,
 					triggerEventID,
 					output,
 					attemptID,
-					"client-action tools are not supported on the Temporal path yet",
+					resolutionEventIDs,
+					"built-in tool has unsupported permission policy: "+
+						definition.Permission.Type,
 				)
 			}
 		}
 
-		resultBlocks := make([]domain.ContentBlock, 0, len(toolUses))
+		// Commit every use before any result, matching the logical assistant
+		// tool-use round. Always-allow built-ins execute now; custom tools and
+		// always_ask built-ins become one durable client-action barrier.
+		type executableUse struct {
+			use domain.ContentBlock
+		}
+		var (
+			executable   []executableUse
+			pendingIDs   []string
+			resultDrafts []domain.EventDraft
+		)
 		for _, use := range toolUses {
-			output = append(output, domain.EventDraft{
-				ID:   use.ToolUseID,
-				Type: domain.EvAgentToolUse,
+			definition := toolsByName[use.ToolName]
+			draft := domain.EventDraft{
+				ID: use.ToolUseID,
 				Payload: map[string]any{
 					"name":  use.ToolName,
 					"input": use.Input,
 				},
-			})
+			}
+			switch {
+			case definition.Kind == TurnToolCustom:
+				draft.Type = domain.EvAgentCustomToolUse
+				pendingIDs = append(pendingIDs, use.ToolUseID)
+			case definition.Permission.Type == "always_ask":
+				draft.Type = domain.EvAgentToolUse
+				draft.Payload["evaluated_permission"] = "ask"
+				pendingIDs = append(pendingIDs, use.ToolUseID)
+			default:
+				draft.Type = domain.EvAgentToolUse
+				executable = append(executable, executableUse{use: use})
+			}
+			output = append(output, draft)
+		}
 
+		resultBlocks := make([]domain.ContentBlock, 0, len(toolUses))
+		for _, executable := range executable {
+			use := executable.use
 			attemptID = prepared.AttemptID
 			var executed ExecuteToolResult
 			if err := workflow.ExecuteActivity(actx, ActivityExecuteTool, ExecuteToolInput{
@@ -179,7 +357,8 @@ func runWorkflowTurn(
 			ordinal++
 			if executed.FatalError != "" {
 				return terminateWorkflowTurn(
-					actx, sessionID, triggerEventID, output, attemptID, executed.FatalError,
+					actx, sessionID, triggerEventID, output, attemptID,
+					resolutionEventIDs, executed.FatalError,
 				)
 			}
 			if executed.Ambiguous {
@@ -189,12 +368,13 @@ func runWorkflowTurn(
 					triggerEventID,
 					output,
 					attemptID,
+					resolutionEventIDs,
 					"a tool began executing but no trustworthy result was recorded; "+
 						"the side effect will not be retried",
 				)
 			}
 
-			output = append(output, domain.EventDraft{
+			resultDrafts = append(resultDrafts, domain.EventDraft{
 				Type: domain.EvAgentToolResult,
 				Payload: map[string]any{
 					"tool_use_id": use.ToolUseID,
@@ -209,6 +389,19 @@ func runWorkflowTurn(
 				IsError:       executed.Result.IsError,
 			})
 		}
+		output = append(output, resultDrafts...)
+
+		if len(pendingIDs) > 0 {
+			return completeWorkflowTurn(
+				actx,
+				sessionID,
+				triggerEventID,
+				output,
+				attemptID,
+				pendingIDs,
+				resolutionEventIDs,
+			)
+		}
 
 		// Preserve the model's exact assistant round, including text emitted
 		// alongside tool_use blocks, then append the paired tool results.
@@ -220,7 +413,9 @@ func runWorkflowTurn(
 
 	// Preserve the legacy bounded-loop behavior: reaching the cap closes the
 	// public turn normally rather than allowing unbounded Workflow history.
-	return completeWorkflowTurn(actx, sessionID, triggerEventID, output, attemptID)
+	return completeWorkflowTurn(
+		actx, sessionID, triggerEventID, output, attemptID, nil, resolutionEventIDs,
+	)
 }
 
 func completeWorkflowTurn(
@@ -229,19 +424,28 @@ func completeWorkflowTurn(
 	triggerEventID string,
 	output []domain.EventDraft,
 	attemptID string,
+	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
 ) (RunTurnResult, error) {
+	stopReason := map[string]any{"type": "end_turn"}
+	if len(pendingActionEventIDs) > 0 {
+		stopReason = map[string]any{
+			"type":      "requires_action",
+			"event_ids": pendingActionEventIDs,
+		}
+	}
 	output = append(output, domain.EventDraft{
-		Type: domain.EvSessionStatusIdle,
-		Payload: map[string]any{
-			"stop_reason": map[string]any{"type": "end_turn"},
-		},
+		Type:    domain.EvSessionStatusIdle,
+		Payload: map[string]any{"stop_reason": stopReason},
 	})
 	input := CompleteWorkflowTurnInput{
-		SessionID:      sessionID,
-		TriggerEventID: triggerEventID,
-		Output:         output,
-		Status:         domain.StatusIdle,
-		AttemptID:      attemptID,
+		SessionID:             sessionID,
+		TriggerEventID:        triggerEventID,
+		Output:                output,
+		Status:                domain.StatusIdle,
+		AttemptID:             attemptID,
+		PendingActionEventIDs: pendingActionEventIDs,
+		ResolutionEventIDs:    resolutionEventIDs,
 	}
 	if attemptID != "" {
 		input.AttemptState = domain.RunAttemptCompleted
@@ -257,6 +461,7 @@ func terminateWorkflowTurn(
 	triggerEventID string,
 	output []domain.EventDraft,
 	attemptID string,
+	resolutionEventIDs []string,
 	message string,
 ) (RunTurnResult, error) {
 	output = append(output,
@@ -266,11 +471,12 @@ func terminateWorkflowTurn(
 		domain.EventDraft{Type: domain.EvSessionStatusTerminated, Payload: map[string]any{}},
 	)
 	input := CompleteWorkflowTurnInput{
-		SessionID:      sessionID,
-		TriggerEventID: triggerEventID,
-		Output:         output,
-		Status:         domain.StatusTerminated,
-		AttemptID:      attemptID,
+		SessionID:          sessionID,
+		TriggerEventID:     triggerEventID,
+		Output:             output,
+		Status:             domain.StatusTerminated,
+		AttemptID:          attemptID,
+		ResolutionEventIDs: resolutionEventIDs,
 	}
 	if attemptID != "" {
 		input.AttemptState = domain.RunAttemptFailed

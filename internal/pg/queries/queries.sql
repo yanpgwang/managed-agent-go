@@ -67,15 +67,15 @@ SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_
 FROM events
 WHERE session_id = @session_id AND id = @id;
 
--- PriorProcessedUserTriggers returns the processed user.message events before a
--- given sequence, in receipt order. These are the prior turns whose causal
--- history (trigger followed by its committed outputs) is replayed into the model
--- for the current turn.
--- name: PriorProcessedUserTriggers :many
+-- PriorProcessedModelTriggers returns processed events that can drive a model
+-- turn before a given sequence, in receipt order. Resolution events are included
+-- because a completed custom-tool/confirmation resume may itself have committed
+-- model output that later turns must replay.
+-- name: PriorProcessedModelTriggers :many
 SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
 FROM events
 WHERE session_id = @session_id
-  AND type = 'user.message'
+  AND type IN ('user.message', 'user.custom_tool_result', 'user.tool_confirmation')
   AND processed_at IS NOT NULL
   AND seq < @before_seq
 ORDER BY seq;

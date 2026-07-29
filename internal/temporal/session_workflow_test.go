@@ -22,13 +22,14 @@ import (
 // asserted (a well-behaved workflow completes each user.message turn exactly
 // once even under duplicate wakeups).
 type fakeSource struct {
-	mu        sync.Mutex
-	events    []domain.Event
-	completes map[string]int            // triggerEventID -> times CompleteTurn appended output
-	byTurn    map[string][]domain.Event // triggerEventID -> committed output events
-	pending   map[string][]string       // triggerEventID -> pending action ids forwarded by Activity
-	resolved  map[string][]string       // triggerEventID -> barrier resolution ids forwarded by Activity
-	maxSeq    int64
+	mu             sync.Mutex
+	events         []domain.Event
+	completes      map[string]int            // triggerEventID -> times CompleteTurn appended output
+	byTurn         map[string][]domain.Event // triggerEventID -> committed output events
+	pending        map[string][]string       // triggerEventID -> pending action ids forwarded by Activity
+	resolved       map[string][]string       // triggerEventID -> barrier resolution ids forwarded by Activity
+	pendingActions []domain.PendingAction
+	maxSeq         int64
 }
 
 func newFakeSource(events []domain.Event) *fakeSource {
@@ -93,6 +94,15 @@ func (f *fakeSource) GetEvent(_ context.Context, _ string, id string) (domain.Ev
 		}
 	}
 	return domain.Event{}, domain.NotFound("event not found")
+}
+
+func (f *fakeSource) UnresolvedPendingActions(
+	_ context.Context,
+	_ string,
+) ([]domain.PendingAction, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.PendingAction(nil), f.pendingActions...), nil
 }
 
 func (f *fakeSource) CompleteTurn(_ context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error) {
@@ -175,19 +185,74 @@ func userMsg(id string, seq int64) domain.Event {
 	return domain.Event{ID: id, Sequence: seq, Type: domain.EvUserMessage, Payload: map[string]any{"content": "hi"}}
 }
 
-func useLegacyRunTurnVersion(env *testsuite.TestWorkflowEnvironment) {
-	env.OnGetVersion(
-		workflowAgentLoopChangeID,
-		workflow.DefaultVersion,
-		workflow.Version(1),
-	).Return(workflow.DefaultVersion)
+type turnRecorder struct {
+	mu    sync.Mutex
+	order []string
+}
+
+func (r *turnRecorder) append(triggerEventID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.order = append(r.order, triggerEventID)
+}
+
+func (r *turnRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.order...)
+}
+
+// registerCurrentTurnActivities wires the granular Workflow-owned turn used in
+// production. Tests can override the disposition returned by the completion
+// Activity to make the long-lived session workflow reach a terminal boundary.
+func registerCurrentTurnActivities(
+	env *testsuite.TestWorkflowEnvironment,
+	source *fakeSource,
+	disposition func(triggerEventID string) TurnDisposition,
+) *turnRecorder {
+	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
+	recorder := &turnRecorder{}
+	env.RegisterActivityWithOptions(
+		acts.LoadEvents,
+		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+	env.RegisterActivityWithOptions(
+		acts.LoadPendingActions,
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+			recorder.append(in.TriggerEventID)
+			return acts.PrepareTurn(ctx, in)
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, CallModelInput) (CallModelResult, error) {
+			return CallModelResult{Response: model.Response{StopReason: "end_turn"}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			result, err := acts.CompleteWorkflowTurn(ctx, in)
+			if err != nil {
+				return RunTurnResult{}, err
+			}
+			if disposition != nil {
+				result.Disposition = disposition(in.TriggerEventID)
+			}
+			return result, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+	return recorder
 }
 
 // sessionWorkflowExitChecked turns a buffered wakeup at a close boundary into a
 // test failure. Production relies on Temporal rejecting such a close and
-// replaying; this wrapper lets the unit suite assert that sessionWorkflow
-// proactively consumed every currently visible wakeup before returning or
-// Continue-As-New.
+// replaying; this wrapper asserts that the workflow proactively consumes every
+// currently visible wakeup before returning or Continue-As-New.
 func sessionWorkflowExitChecked(ctx workflow.Context, in SessionWorkflowInput, threshold int) error {
 	err := sessionWorkflow(ctx, in, threshold)
 	for _, name := range workflow.GetUnhandledSignalNames(ctx) {
@@ -198,261 +263,267 @@ func sessionWorkflowExitChecked(ctx workflow.Context, in SessionWorkflowInput, t
 	return err
 }
 
-// TestSessionWorkflow_ProcessesOneTurn drives one wakeup and asserts the turn's
-// RunTurn Activity ran exactly once. It uses the Temporal test environment,
-// registering the real workflow against activity mocks backed by the fake
-// source, then Continue-As-New's out via a terminating signal is avoided by the
-// env's default timeout — instead we assert through the activity mock.
-func TestSessionWorkflow_ProcessesOneTurn(t *testing.T) {
+func TestSessionWorkflow_UsesWorkflowOwnedLoop(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	useLegacyRunTurnVersion(env)
-
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
-
-	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
-	// RunTurn needs a runtime; use a stub runtime through a wrapper activity that
-	// emits a single agent.message then completes the turn.
-	env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
-
-	// Deliver a wakeup shortly after start, then let the workflow idle until the
-	// test env's deadlock/timeout. We assert RunTurn ran via the fake source.
+	recorder := registerCurrentTurnActivities(
+		env,
+		source,
+		func(string) TurnDisposition { return TurnTerminated },
+	)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
 	}, time.Millisecond)
 
 	env.SetTestTimeout(10 * time.Second)
-	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_1", StartCursor: 0})
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{
+		SessionID: "sess_1", StartCursor: 0,
+	})
 
-	// The workflow blocks on the signal channel forever (long-lived session), so
-	// it will not "complete"; the test env stops at its timeout. What we assert is
-	// that the turn ran exactly once.
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, []string{"evt_1"}, recorder.snapshot())
 	require.Equal(t, 1, source.completions("evt_1"))
 }
 
-func TestSessionWorkflow_NewExecutionUsesWorkflowOwnedLoop(t *testing.T) {
+func TestSessionWorkflow_ParksUntilFullBarrierThenPreservesQueuedMessage(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
 
-	source := newFakeSource([]domain.Event{userMsg("evt_new_loop", 1)})
-	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
-	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
+	events := []EventRef{
+		{ID: "sevt_original", Seq: 1, Type: domain.EvUserMessage},
+		{ID: "sevt_queued", Seq: 2, Type: domain.EvUserMessage},
+	}
 	env.RegisterActivityWithOptions(
-		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
-			return PrepareTurnResult{Request: model.Request{
-				Model: "fake",
-				Messages: []domain.Message{{
-					Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "hi"}},
-				}},
-			}}, nil
+		func(_ context.Context, in LoadEventsInput) (LoadEventsResult, error) {
+			var out []EventRef
+			for _, event := range events {
+				if event.Seq > in.Cursor {
+					out = append(out, event)
+				}
+			}
+			return LoadEventsResult{Events: out}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+
+	var pendingMu sync.Mutex
+	var pending []PendingActionRef
+	env.RegisterActivityWithOptions(
+		func(context.Context, LoadPendingActionsInput) (LoadPendingActionsResult, error) {
+			pendingMu.Lock()
+			defer pendingMu.Unlock()
+			return LoadPendingActionsResult{
+				Actions: append([]PendingActionRef(nil), pending...),
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+
+	var prepareMu sync.Mutex
+	var prepared []PrepareTurnInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+			prepareMu.Lock()
+			prepared = append(prepared, in)
+			prepareMu.Unlock()
+			return PrepareTurnResult{Request: model.Request{Model: "fake"}}, nil
 		},
 		activity.RegisterOptions{Name: ActivityPrepareTurn},
 	)
 	env.RegisterActivityWithOptions(
 		func(context.Context, CallModelInput) (CallModelResult, error) {
-			return CallModelResult{
-				MessageEventID: "sevt_new_loop_message",
-				Response: model.Response{
-					StopReason: "end_turn",
-					Content:    []domain.ContentBlock{{Type: "text", Text: "ok"}},
-				},
-			}, nil
+			return CallModelResult{Response: model.Response{StopReason: "end_turn"}}, nil
 		},
 		activity.RegisterOptions{Name: ActivityCallModel},
 	)
 	env.RegisterActivityWithOptions(
-		func(ctx context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
-			result, err := source.CompleteWorkflowTurn(
-				ctx,
-				in.SessionID,
-				in.TriggerEventID,
-				in.Output,
-				in.Status,
-				in.AttemptID,
-				in.AttemptState,
-				in.AttemptError,
-				in.PendingActionEventIDs,
-				in.ResolutionEventIDs,
-			)
-			return RunTurnResult{Terminated: result.Status == domain.StatusTerminated}, err
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			switch in.TriggerEventID {
+			case "sevt_original":
+				pendingMu.Lock()
+				pending = []PendingActionRef{
+					{
+						ActionEventID: "sevt_action_1", ActionEventSeq: 10,
+						Kind: domain.PendingCustomToolResult,
+					},
+					{
+						ActionEventID: "sevt_action_2", ActionEventSeq: 11,
+						Kind: domain.PendingToolConfirmation,
+					},
+				}
+				pendingMu.Unlock()
+				return RunTurnResult{Disposition: TurnParked}, nil
+			case "sevt_result_2":
+				require.Equal(t, []string{"sevt_result_1", "sevt_result_2"}, in.ResolutionEventIDs)
+				pendingMu.Lock()
+				pending = nil
+				pendingMu.Unlock()
+				return RunTurnResult{Disposition: TurnCompleted}, nil
+			case "sevt_queued":
+				return RunTurnResult{Disposition: TurnTerminated}, nil
+			default:
+				return RunTurnResult{}, errors.New("unexpected trigger: " + in.TriggerEventID)
+			}
 		},
 		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
 	)
 
 	env.RegisterDelayedCallback(func() {
-		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 2})
 	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		pendingMu.Lock()
+		pending[0].ResolutionEventID = "sevt_result_1"
+		pending[0].ResolutionEventSeq = 3
+		pendingMu.Unlock()
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 3})
+	}, time.Minute)
+	env.RegisterDelayedCallback(func() {
+		pendingMu.Lock()
+		pending[1].ResolutionEventID = "sevt_result_2"
+		pending[1].ResolutionEventSeq = 4
+		pendingMu.Unlock()
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 4})
+	}, 2*time.Minute)
+
 	env.SetTestTimeout(10 * time.Second)
-	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_new_loop"})
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_barrier"})
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
 
-	require.Equal(t, 1, source.completions("evt_new_loop"))
-	env.AssertNotCalled(t, ActivityRunTurn, mock.Anything, mock.Anything)
+	prepareMu.Lock()
+	defer prepareMu.Unlock()
+	require.Equal(t, []PrepareTurnInput{
+		{SessionID: "sess_barrier", TriggerEventID: "sevt_original"},
+		{
+			SessionID: "sess_barrier", TriggerEventID: "sevt_result_2",
+			ResolutionEventIDs: []string{"sevt_result_1", "sevt_result_2"},
+		},
+		{SessionID: "sess_barrier", TriggerEventID: "sevt_queued"},
+	}, prepared, "partial resolution must not run and queued work must follow the full resume")
 }
 
-// runTurnStub returns a RunTurn activity implementation that commits a single
-// end_turn output through the fake source, standing in for the real runtime.
-func runTurnStub(source *fakeSource) func(ctx context.Context, in RunTurnInput) (RunTurnResult, error) {
-	return func(ctx context.Context, in RunTurnInput) (RunTurnResult, error) {
-		_, err := source.CompleteTurn(ctx, in.SessionID, in.TriggerEventID, []domain.EventDraft{
-			{Type: domain.EvAgentMessage, Payload: map[string]any{"content": "ok"}},
-			{Type: domain.EvSessionStatusIdle, Payload: map[string]any{"stop_reason": map[string]any{"type": "end_turn"}}},
-		}, domain.StatusIdle)
-		if err != nil {
-			return RunTurnResult{}, err
-		}
-		return RunTurnResult{}, nil
-	}
-}
-
-// TestSessionWorkflow_DuplicateWakeupsProcessOnce proves sequence-based
-// duplicate protection: several wakeups naming the same (or lower) sequence
-// drive the turn exactly once, because the durable cursor advances past the
-// consumed event and never moves backward.
 func TestSessionWorkflow_DuplicateWakeupsProcessOnce(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	useLegacyRunTurnVersion(env)
-
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
-	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
-	env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
+	registerCurrentTurnActivities(env, source, nil)
 
-	for i, delay := range []time.Duration{time.Millisecond, 2 * time.Millisecond, 3 * time.Millisecond} {
-		seq := int64(1)
-		_ = i
-		env.RegisterDelayedCallback(func() {
-			env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: seq})
-		}, delay)
-	}
+	// Coalesce a burst that contains duplicate and out-of-order metadata.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 0})
+	}, time.Millisecond)
 
 	env.SetTestTimeout(10 * time.Second)
-	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_dup", StartCursor: 0})
-
-	require.Equal(t, 1, source.completions("evt_1"), "duplicate wakeups must drive the turn exactly once")
+	env.ExecuteWorkflow(
+		sessionWorkflowExitChecked,
+		SessionWorkflowInput{SessionID: "sess_dup"},
+		1,
+	)
+	var canErr *workflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &canErr)
+	require.Equal(t, 1, source.completions("evt_1"))
 }
 
-// TestSessionWorkflow_OrderedConsumption proves the workflow consumes multiple
-// user messages in receipt order, one turn each.
-func TestSessionWorkflow_OrderedConsumption(t *testing.T) {
+func TestSessionWorkflow_ConsumesMessagesInReceiptOrder(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	useLegacyRunTurnVersion(env)
-
-	// Two user messages at seq 1 and 2. (Their turns' output events get higher
-	// sequences as the fake source appends them.)
-	source := newFakeSource([]domain.Event{userMsg("evt_1", 1), userMsg("evt_2", 2)})
-	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
-	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
-
-	var order []string
-	var orderMu sync.Mutex
-	env.RegisterActivityWithOptions(func(ctx context.Context, in RunTurnInput) (RunTurnResult, error) {
-		orderMu.Lock()
-		order = append(order, in.TriggerEventID)
-		orderMu.Unlock()
-		return runTurnStub(source)(ctx, in)
-	}, activity.RegisterOptions{Name: ActivityRunTurn})
-
+	source := newFakeSource([]domain.Event{
+		userMsg("evt_1", 1),
+		userMsg("evt_2", 2),
+	})
+	recorder := registerCurrentTurnActivities(
+		env,
+		source,
+		func(trigger string) TurnDisposition {
+			if trigger == "evt_2" {
+				return TurnTerminated
+			}
+			return TurnCompleted
+		},
+	)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 2})
 	}, time.Millisecond)
 
 	env.SetTestTimeout(10 * time.Second)
-	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_ord", StartCursor: 0})
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_order"})
 
-	orderMu.Lock()
-	defer orderMu.Unlock()
-	require.Equal(t, []string{"evt_1", "evt_2"}, order, "turns must run in receipt order")
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, []string{"evt_1", "evt_2"}, recorder.snapshot())
 }
 
-// TestSessionWorkflow_ContinueAsNewCarriesCursor proves the workflow performs
-// Continue-As-New after the turn threshold and carries its durable cursor
-// forward, so the fresh history run does not reprocess consumed events. It
-// lowers the threshold to 1 for the test.
 func TestSessionWorkflow_ContinueAsNewCarriesCursor(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	useLegacyRunTurnVersion(env)
-
 	source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
-	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
-	env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
-
+	registerCurrentTurnActivities(env, source, nil)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
 	}, time.Millisecond)
 
 	env.SetTestTimeout(10 * time.Second)
-	env.ExecuteWorkflow(sessionWorkflowExitChecked,
-		SessionWorkflowInput{SessionID: "sess_can", StartCursor: 0}, 1)
+	env.ExecuteWorkflow(
+		sessionWorkflowExitChecked,
+		SessionWorkflowInput{SessionID: "sess_can"},
+		1,
+	)
 
-	require.True(t, env.IsWorkflowCompleted())
-	// Continue-As-New surfaces as a ContinueAsNewError from the test env. Its
-	// presence proves the workflow reached the threshold and re-issued itself
-	// under the same Workflow ID with carried state, rather than growing history
-	// unbounded. (The carried cursor payload is encoded via the data converter;
-	// decoding it is not needed to prove the CAN boundary fired.)
-	err := env.GetWorkflowError()
-	require.Error(t, err)
 	var canErr *workflow.ContinueAsNewError
-	require.True(t, errors.As(err, &canErr), "expected Continue-As-New, got %v", err)
+	require.ErrorAs(t, env.GetWorkflowError(), &canErr)
 	require.Equal(t, SessionWorkflowType, canErr.WorkflowType.Name)
-	// The turn ran exactly once before the boundary.
 	require.Equal(t, 1, source.completions("evt_1"))
 }
 
-// TestSessionWorkflow_DrainsBufferedWakeupBeforeCloseBoundary places a second
-// wakeup into history while RunTurn is in flight. Both terminal completion and
-// Continue-As-New must consume it before proposing their close command; otherwise
-// Temporal rejects the close and replay can propose the same invalid command
-// forever. sessionWorkflowExitChecked makes an unconsumed wakeup fail the test.
 func TestSessionWorkflow_DrainsBufferedWakeupBeforeCloseBoundary(t *testing.T) {
 	tests := []struct {
-		name       string
-		result     RunTurnResult
-		threshold  int
-		wantCANErr bool
+		name        string
+		disposition TurnDisposition
+		threshold   int
+		wantCAN     bool
 	}{
-		{name: "continue-as-new", threshold: 1, wantCANErr: true},
-		{name: "terminal-completion", result: RunTurnResult{Terminated: true}, threshold: continueAsNewThreshold},
+		{name: "continue-as-new", disposition: TurnCompleted, threshold: 1, wantCAN: true},
+		{name: "terminal-completion", disposition: TurnTerminated, threshold: continueAsNewThreshold},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			var ts testsuite.WorkflowTestSuite
 			env := ts.NewTestWorkflowEnvironment()
-			useLegacyRunTurnVersion(env)
-
 			source := newFakeSource([]domain.Event{userMsg("evt_1", 1)})
-			acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
-			env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
-			env.RegisterActivityWithOptions(runTurnStub(source), activity.RegisterOptions{Name: ActivityRunTurn})
-			env.OnActivity(ActivityRunTurn, mock.Anything, RunTurnInput{
+			registerCurrentTurnActivities(
+				env,
+				source,
+				func(string) TurnDisposition { return tc.disposition },
+			)
+			env.OnActivity(ActivityPrepareTurn, mock.Anything, PrepareTurnInput{
 				SessionID: "sess_close_boundary", TriggerEventID: "evt_1",
-			}).After(time.Hour).Return(tc.result, nil).Once()
+			}).After(time.Hour).Return(PrepareTurnResult{
+				Request: model.Request{Model: "fake"},
+			}, nil).Once()
 
 			env.RegisterDelayedCallback(func() {
 				env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
 			}, time.Minute)
 			env.RegisterDelayedCallback(func() {
-				// Arrives while RunTurn is in flight, so it is buffered for the next
-				// Workflow Task and must be consumed at the close boundary.
 				env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
 			}, 30*time.Minute)
 
 			env.SetTestTimeout(10 * time.Second)
-			env.ExecuteWorkflow(sessionWorkflowExitChecked,
-				SessionWorkflowInput{SessionID: "sess_close_boundary", StartCursor: 0}, tc.threshold)
+			env.ExecuteWorkflow(
+				sessionWorkflowExitChecked,
+				SessionWorkflowInput{SessionID: "sess_close_boundary"},
+				tc.threshold,
+			)
 
-			require.True(t, env.IsWorkflowCompleted())
 			err := env.GetWorkflowError()
-			if tc.wantCANErr {
+			if tc.wantCAN {
 				var canErr *workflow.ContinueAsNewError
-				require.Error(t, err)
-				require.True(t, errors.As(err, &canErr), "expected Continue-As-New, got %v", err)
+				require.ErrorAs(t, err, &canErr)
 			} else {
 				require.NoError(t, err)
 			}
@@ -461,43 +532,26 @@ func TestSessionWorkflow_DrainsBufferedWakeupBeforeCloseBoundary(t *testing.T) {
 	}
 }
 
-// TestSessionWorkflow_TerminationStopsBatch proves that when a turn terminates
-// the session (RunTurnResult.Terminated), the workflow stops processing the rest
-// of the loaded batch: a second user.message queued behind the terminating one
-// is never handed to RunTurn. This guards the P0 termination-propagation fix.
-func TestSessionWorkflow_TerminationStopsBatch(t *testing.T) {
+func TestSessionWorkflow_TerminationStopsLoadedBatch(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
-	useLegacyRunTurnVersion(env)
-
-	source := newFakeSource([]domain.Event{userMsg("evt_1", 1), userMsg("evt_2", 2)})
-	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
-	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
-
-	var seen []string
-	var mu sync.Mutex
-	env.RegisterActivityWithOptions(func(ctx context.Context, in RunTurnInput) (RunTurnResult, error) {
-		mu.Lock()
-		seen = append(seen, in.TriggerEventID)
-		mu.Unlock()
-		// The first turn terminates the session; report Terminated so the workflow
-		// must stop before the second message.
-		return RunTurnResult{Terminated: true}, nil
-	}, activity.RegisterOptions{Name: ActivityRunTurn})
-
+	source := newFakeSource([]domain.Event{
+		userMsg("evt_1", 1),
+		userMsg("evt_2", 2),
+	})
+	recorder := registerCurrentTurnActivities(
+		env,
+		source,
+		func(string) TurnDisposition { return TurnTerminated },
+	)
 	env.RegisterDelayedCallback(func() {
 		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 2})
 	}, time.Millisecond)
 
 	env.SetTestTimeout(10 * time.Second)
-	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_term", StartCursor: 0})
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_term"})
 
-	// The workflow returns (completes) after the terminating turn rather than
-	// blocking forever on the signal channel.
 	require.True(t, env.IsWorkflowCompleted())
 	require.NoError(t, env.GetWorkflowError())
-
-	mu.Lock()
-	defer mu.Unlock()
-	require.Equal(t, []string{"evt_1"}, seen, "only the first (terminating) turn should run; evt_2 must stay unprocessed")
+	require.Equal(t, []string{"evt_1"}, recorder.snapshot())
 }

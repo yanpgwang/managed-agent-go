@@ -147,6 +147,120 @@ func TestHistoryThrough_CausalBatchOrdering(t *testing.T) {
 	}
 }
 
+func TestHistoryThrough_IncludesCompletedPendingActionResume(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+
+	sess := newSession("sess_resume_history")
+	if _, err := store.CreateSession(ctx, sess, nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	admission, err := store.AdmitEvents(ctx, sess.ID, []domain.EventDraft{textMsg("inspect")})
+	if err != nil {
+		t.Fatalf("admit original: %v", err)
+	}
+	originalID := admission.Events[0].ID
+	actionID := "sevt_resume_history_action"
+	if _, err := store.CompleteWorkflowTurn(
+		ctx,
+		sess.ID,
+		originalID,
+		[]domain.EventDraft{
+			{
+				ID: actionID, Type: domain.EvAgentCustomToolUse,
+				Payload: map[string]any{
+					"name":  "ask_client",
+					"input": map[string]any{"question": "continue?"},
+				},
+			},
+			{
+				Type: domain.EvSessionStatusIdle,
+				Payload: map[string]any{"stop_reason": map[string]any{
+					"type": "requires_action", "event_ids": []string{actionID},
+				}},
+			},
+		},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		[]string{actionID},
+		nil,
+	); err != nil {
+		t.Fatalf("park original: %v", err)
+	}
+
+	resolutionAdmission, err := store.AdmitEvents(ctx, sess.ID, []domain.EventDraft{{
+		Type: domain.EvUserCustomToolResult,
+		Payload: map[string]any{
+			"custom_tool_use_id": actionID,
+			"content": []any{
+				map[string]any{"type": "text", "text": "client result"},
+			},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("admit result: %v", err)
+	}
+	resolutionID := resolutionAdmission.Events[0].ID
+	if _, err := store.CompleteWorkflowTurn(
+		ctx,
+		sess.ID,
+		resolutionID,
+		[]domain.EventDraft{
+			{
+				Type: domain.EvAgentMessage,
+				Payload: map[string]any{"content": []any{
+					map[string]any{"type": "text", "text": "resumed reply"},
+				}},
+			},
+			{
+				Type:    domain.EvSessionStatusIdle,
+				Payload: map[string]any{"stop_reason": map[string]any{"type": "end_turn"}},
+			},
+		},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		[]string{resolutionID},
+	); err != nil {
+		t.Fatalf("complete resume: %v", err)
+	}
+
+	nextAdmission, err := store.AdmitEvents(ctx, sess.ID, []domain.EventDraft{textMsg("next")})
+	if err != nil {
+		t.Fatalf("admit next: %v", err)
+	}
+	nextID := nextAdmission.Events[0].ID
+	history, err := store.HistoryThrough(ctx, sess.ID, nextID, 100)
+	if err != nil {
+		t.Fatalf("history next: %v", err)
+	}
+	messages := domain.ProjectMessages(history)
+	if len(messages) != 5 {
+		t.Fatalf("expected five causal messages, got %d: %s", len(messages), typeIDs(history))
+	}
+	if messages[1].Role != domain.RoleAssistant ||
+		messages[1].Content[0].ToolUseID != actionID {
+		t.Fatalf("parked custom tool use missing from causal history: %#v", messages)
+	}
+	if messages[2].Role != domain.RoleUser ||
+		messages[2].Content[0].ToolResultFor != actionID ||
+		messages[2].Content[0].Text != "client result" {
+		t.Fatalf("custom result missing from causal history: %#v", messages)
+	}
+	if messages[3].Role != domain.RoleAssistant ||
+		messages[3].Content[0].Text != "resumed reply" {
+		t.Fatalf("resume output missing from causal history: %#v", messages)
+	}
+	if messages[4].Role != domain.RoleUser ||
+		messages[4].Content[0].Text != "next" {
+		t.Fatalf("next trigger missing from causal history: %#v", messages)
+	}
+}
+
 func typeIDs(events []domain.Event) string {
 	s := ""
 	for _, e := range events {

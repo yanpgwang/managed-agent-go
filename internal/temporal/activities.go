@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -19,7 +19,7 @@ import (
 // symbols; named explicitly so a rename cannot silently break replay.
 const (
 	ActivityLoadEvents           = "LoadEvents"
-	ActivityRunTurn              = "RunTurn"
+	ActivityLoadPendingActions   = "LoadPendingActions"
 	ActivityPrepareTurn          = "PrepareTurn"
 	ActivityCallModel            = "CallModel"
 	ActivityExecuteTool          = "ExecuteTool"
@@ -34,7 +34,7 @@ type EventSource interface {
 	HistoryThrough(ctx context.Context, sessionID, triggerEventID string, limit int) ([]domain.Event, error)
 	GetSession(ctx context.Context, id string) (domain.Session, error)
 	GetEvent(ctx context.Context, sessionID, id string) (domain.Event, error)
-	CompleteTurn(ctx context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error)
+	UnresolvedPendingActions(ctx context.Context, sessionID string) ([]domain.PendingAction, error)
 	CompleteWorkflowTurn(
 		ctx context.Context,
 		sessionID string,
@@ -49,19 +49,11 @@ type EventSource interface {
 	) (TurnCompletionResult, error)
 }
 
-// JournalStore is the durable tool-execution journal used by both the granular
-// ExecuteTool Activity and the replay-compatible RunTurn Activity. It preserves
-// the prepared/started/completed/ambiguous boundary across Activity retries.
-// *pg.Store implements it.
+// JournalStore is the durable tool-execution journal used by the granular
+// ExecuteTool Activity. It preserves the prepared/started/completed/ambiguous
+// boundary across Activity retries. *pg.Store implements it.
 type JournalStore interface {
-	// RecoverTurn classifies leftovers from a crashed attempt (started steps ->
-	// ambiguous, active attempt -> failed) and reports whether the turn now
-	// carries prior tool execution and must not be freshly re-run.
-	RecoverTurn(ctx context.Context, sessionID, triggerEventID string) (hasPriorExecution bool, err error)
-	BeginAttempt(ctx context.Context, sessionID, triggerEventID string) (attemptID string, err error)
 	EnsureAttempt(ctx context.Context, sessionID, triggerEventID, attemptID string) error
-	FinishAttempt(ctx context.Context, attemptID string, state domain.RunAttemptState, attemptError *string) error
-	PrepareToolStep(ctx context.Context, attemptID string, ordinal int, toolUseEventID, toolName string, input map[string]any) (stepID string, err error)
 	EnsureToolStep(ctx context.Context, attemptID, stepID string, ordinal int, toolUseEventID, toolName string, input map[string]any) (domain.ToolStep, error)
 	StartToolStep(ctx context.Context, stepID string) error
 	CompleteToolStep(ctx context.Context, stepID string, result domain.ToolStepResult) error
@@ -105,14 +97,12 @@ const sandboxTurnTimeout = 120 * time.Second
 // ambiguous, so this bounded write-only retry belongs before that boundary.
 const toolResultWriteAttempts = 3
 
-// Activities holds the I/O dependencies of the session Activities: the legacy
-// runtime retained for old Workflow histories, the model client used by new
-// histories, the PostgreSQL event source, the durable tool journal, and the
-// session-scoped sandbox lease. All non-deterministic work (SQL, model calls,
-// tool side effects) lives here, never in the workflow. journal and sandboxes
-// may be nil for a deployment that never routes tool-using turns.
+// Activities holds the I/O dependencies of the session Activities: the model
+// client, PostgreSQL event source, durable tool journal, and session-scoped
+// sandbox lease. All non-deterministic work (SQL, model calls, tool side effects)
+// lives here, never in the workflow. journal and sandboxes may be nil for a
+// deployment that never routes tool-using turns.
 type Activities struct {
-	rt          agentruntime.AgentRuntime
 	modelClient model.Client
 	source      EventSource
 	journal     JournalStore
@@ -122,7 +112,6 @@ type Activities struct {
 }
 
 func NewActivities(
-	rt agentruntime.AgentRuntime,
 	modelClient model.Client,
 	source EventSource,
 	journal JournalStore,
@@ -131,7 +120,7 @@ func NewActivities(
 	previewPublisher ...PreviewPublisher,
 ) *Activities {
 	activities := &Activities{
-		rt: rt, modelClient: modelClient, source: source,
+		modelClient: modelClient, source: source,
 		journal: journal, sandboxes: sandboxes, ids: ids,
 	}
 	if len(previewPublisher) > 0 {
@@ -159,6 +148,50 @@ func (a *Activities) LoadEvents(ctx context.Context, in LoadEventsInput) (LoadEv
 	return LoadEventsResult{Events: refs}, nil
 }
 
+// LoadPendingActions returns the durable requires_action barrier as a small
+// selector projection. The Workflow uses only this recorded Activity result to
+// choose between parking, resuming the full barrier, and consuming ordinary
+// messages.
+func (a *Activities) LoadPendingActions(
+	ctx context.Context,
+	in LoadPendingActionsInput,
+) (LoadPendingActionsResult, error) {
+	pending, err := a.source.UnresolvedPendingActions(ctx, in.SessionID)
+	if err != nil {
+		return LoadPendingActionsResult{}, err
+	}
+	result := LoadPendingActionsResult{
+		Actions: make([]PendingActionRef, 0, len(pending)),
+	}
+	for _, action := range pending {
+		actionEvent, err := a.source.GetEvent(ctx, in.SessionID, action.ActionEventID)
+		if err != nil {
+			return LoadPendingActionsResult{}, err
+		}
+		ref := PendingActionRef{
+			ActionEventID:  action.ActionEventID,
+			ActionEventSeq: actionEvent.Sequence,
+			Kind:           action.Kind,
+		}
+		if action.ResolvingEventID != nil {
+			resolution, err := a.source.GetEvent(ctx, in.SessionID, *action.ResolvingEventID)
+			if err != nil {
+				return LoadPendingActionsResult{}, err
+			}
+			ref.ResolutionEventID = resolution.ID
+			ref.ResolutionEventSeq = resolution.Sequence
+		}
+		result.Actions = append(result.Actions, ref)
+	}
+	sort.Slice(result.Actions, func(i, j int) bool {
+		if result.Actions[i].ActionEventSeq == result.Actions[j].ActionEventSeq {
+			return result.Actions[i].ActionEventID < result.Actions[j].ActionEventID
+		}
+		return result.Actions[i].ActionEventSeq < result.Actions[j].ActionEventSeq
+	})
+	return result, nil
+}
+
 // PrepareTurn reads one turn's immutable starting state from PostgreSQL. The
 // result becomes Workflow history; replay never performs these reads in
 // Workflow code.
@@ -171,7 +204,14 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if err != nil {
 		return PrepareTurnResult{}, err
 	}
-	if trigger.ProcessedAt != nil {
+	var pending []domain.PendingAction
+	if len(in.ResolutionEventIDs) > 0 {
+		pending, err = a.source.UnresolvedPendingActions(ctx, in.SessionID)
+		if err != nil {
+			return PrepareTurnResult{}, err
+		}
+	}
+	if trigger.ProcessedAt != nil && !pendingBarrierContainsTrigger(pending, trigger.ID) {
 		return PrepareTurnResult{
 			AlreadyCompleted: true,
 			Terminated:       session.Status == domain.StatusTerminated,
@@ -199,6 +239,27 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			Tools:    agentruntime.EnabledToolSchemas(toolSet),
 		},
 	}
+	if len(in.ResolutionEventIDs) > 0 {
+		resumeActions, err := a.prepareResumeActions(
+			ctx,
+			in.SessionID,
+			trigger.ID,
+			in.ResolutionEventIDs,
+			pending,
+		)
+		if err != nil {
+			var domainErr *domain.DomainError
+			if errors.As(err, &domainErr) {
+				return PrepareTurnResult{
+					FatalError: "invalid pending-action resume: " + err.Error(),
+				}, nil
+			}
+			return PrepareTurnResult{}, err
+		}
+		result.ResumeActions = resumeActions
+		history = withoutResumeEvents(history, resumeActions)
+		result.Request.Messages = domain.ProjectMessages(history)
+	}
 	for _, name := range domain.BuiltinToolNames {
 		enabled, policy := toolSet.BuiltinEnabled(name)
 		if enabled {
@@ -213,6 +274,133 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		})
 	}
 	return result, nil
+}
+
+func pendingBarrierContainsTrigger(pending []domain.PendingAction, triggerEventID string) bool {
+	for _, action := range pending {
+		if action.ResolvingEventID != nil && *action.ResolvingEventID == triggerEventID {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Activities) prepareResumeActions(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	resolutionEventIDs []string,
+	pending []domain.PendingAction,
+) ([]ResumeAction, error) {
+	expected := make(map[string]struct{}, len(resolutionEventIDs))
+	for _, id := range resolutionEventIDs {
+		if id == "" {
+			return nil, domain.Validation("resolution event id is required")
+		}
+		if _, duplicate := expected[id]; duplicate {
+			return nil, domain.Validation("duplicate resolution event id")
+		}
+		expected[id] = struct{}{}
+	}
+	if _, ok := expected[triggerEventID]; !ok {
+		return nil, domain.Validation("resume trigger is not in the pending-action barrier")
+	}
+	if len(pending) != len(expected) {
+		return nil, domain.Validation("resolution events do not match the complete pending-action barrier")
+	}
+
+	type orderedAction struct {
+		seq    int64
+		resume ResumeAction
+	}
+	ordered := make([]orderedAction, 0, len(pending))
+	for _, row := range pending {
+		if row.ResolvingEventID == nil {
+			return nil, domain.Validation("pending-action barrier is not fully claimed")
+		}
+		resolutionID := *row.ResolvingEventID
+		if _, ok := expected[resolutionID]; !ok {
+			return nil, domain.Validation("resolution events do not match the complete pending-action barrier")
+		}
+		action, err := a.source.GetEvent(ctx, sessionID, row.ActionEventID)
+		if err != nil {
+			return nil, err
+		}
+		kind, ok := domain.PendingActionKindForEvent(action.Type, action.Payload)
+		if !ok || kind != row.Kind {
+			return nil, domain.Validation("pending action no longer matches its server event")
+		}
+		name, _ := action.Payload["name"].(string)
+		input, inputOK := action.Payload["input"].(map[string]any)
+		if name == "" || !inputOK {
+			return nil, domain.Validation("pending action has invalid tool name or input")
+		}
+		resolution, err := a.source.GetEvent(ctx, sessionID, resolutionID)
+		if err != nil {
+			return nil, err
+		}
+		refID, refKind, ok := domain.ResolutionReference(resolution.Type, resolution.Payload)
+		if !ok || refID != action.ID || refKind != row.Kind {
+			return nil, domain.Validation("client result does not match its pending action")
+		}
+
+		resume := ResumeAction{
+			ActionEventID:     action.ID,
+			Kind:              row.Kind,
+			ToolName:          name,
+			Input:             input,
+			ResolutionEventID: resolution.ID,
+		}
+		switch row.Kind {
+		case domain.PendingCustomToolResult:
+			if raw, present := resolution.Payload["content"]; present {
+				content, ok := raw.([]any)
+				if !ok {
+					return nil, domain.Validation("custom tool result content must be an array")
+				}
+				resume.Content = content
+			}
+			resume.IsError, _ = resolution.Payload["is_error"].(bool)
+		case domain.PendingToolConfirmation:
+			resume.Confirmation, _ = resolution.Payload["result"].(string)
+			if resume.Confirmation != "allow" && resume.Confirmation != "deny" {
+				return nil, domain.Validation("tool confirmation must be allow or deny")
+			}
+			resume.DenyMessage, _ = resolution.Payload["deny_message"].(string)
+			if resume.Confirmation == "allow" {
+				resume.ToolStepID = a.ids.NewID(domain.PrefixToolStep)
+			}
+		default:
+			return nil, domain.Validation("unknown pending action kind")
+		}
+		ordered = append(ordered, orderedAction{seq: action.Sequence, resume: resume})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].seq == ordered[j].seq {
+			return ordered[i].resume.ActionEventID < ordered[j].resume.ActionEventID
+		}
+		return ordered[i].seq < ordered[j].seq
+	})
+	out := make([]ResumeAction, 0, len(ordered))
+	for _, item := range ordered {
+		out = append(out, item.resume)
+	}
+	return out, nil
+}
+
+func withoutResumeEvents(history []domain.Event, actions []ResumeAction) []domain.Event {
+	excluded := make(map[string]struct{}, len(actions)*2)
+	for _, action := range actions {
+		excluded[action.ActionEventID] = struct{}{}
+		excluded[action.ResolutionEventID] = struct{}{}
+	}
+	filtered := make([]domain.Event, 0, len(history))
+	for _, event := range history {
+		if _, drop := excluded[event.ID]; !drop {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
 }
 
 // CallModel performs exactly one model call. Its full normalized response is
@@ -422,179 +610,15 @@ func (a *Activities) CompleteWorkflowTurn(
 	if err != nil {
 		return RunTurnResult{}, err
 	}
-	return RunTurnResult{Terminated: completion.Status == domain.StatusTerminated}, nil
+	switch {
+	case completion.Status == domain.StatusTerminated:
+		return RunTurnResult{Disposition: TurnTerminated}, nil
+	case len(in.PendingActionEventIDs) > 0:
+		return RunTurnResult{Disposition: TurnParked}, nil
+	default:
+		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
 }
-
-// RunTurn is the legacy opaque turn Activity retained for replay compatibility
-// with Workflow histories created before workflowAgentLoopChangeID. New Workflow
-// executions use PrepareTurn, CallModel, ExecuteTool, and
-// CompleteWorkflowTurn.
-//
-// Because a Temporal Activity may run more than once, correctness rests on two
-// idempotency layers:
-//   - CompleteTurn is idempotent: a retry after a committed turn replays the same
-//     events instead of appending a second copy (handled here by the early
-//     already-processed short-circuit, which also avoids re-invoking the model).
-//   - The tool journal makes a crossed side-effect boundary explicit: a retry
-//     whose prior attempt started a tool step but never recorded a result finds
-//     that step recovered as ambiguous and refuses to re-execute, terminating the
-//     turn honestly rather than silently replaying the side effect.
-func (a *Activities) RunTurn(ctx context.Context, in RunTurnInput) (RunTurnResult, error) {
-	trigger, err := a.source.GetEvent(ctx, in.SessionID, in.TriggerEventID)
-	if err != nil {
-		return RunTurnResult{}, err
-	}
-	session, err := a.source.GetSession(ctx, in.SessionID)
-	if err != nil {
-		return RunTurnResult{}, err
-	}
-	// Idempotent short-circuit: a trigger already stamped processed means this
-	// turn's completion already committed. Do not re-invoke the model or re-run a
-	// tool. Report the session's CURRENT projected status so a turn that
-	// previously terminated the session is not treated as an ordinary completion
-	// on retry — the workflow must still stop draining the batch.
-	if trigger.ProcessedAt != nil {
-		return RunTurnResult{Terminated: session.Status == domain.StatusTerminated}, nil
-	}
-	history, err := a.source.HistoryThrough(ctx, in.SessionID, in.TriggerEventID, historyLimit)
-	if err != nil {
-		return RunTurnResult{}, err
-	}
-
-	toolSet, err := domain.ParseTools(session.AgentSnapshot.Tools)
-	if err != nil {
-		return a.terminate(ctx, in.SessionID, in.TriggerEventID, "invalid toolset: "+err.Error())
-	}
-
-	req := agentruntime.RunRequest{
-		SessionID:     in.SessionID,
-		Trigger:       trigger,
-		Messages:      domain.ProjectMessages(history),
-		AgentSnapshot: session.AgentSnapshot,
-		ToolSet:       toolSet,
-	}
-
-	var attemptID string
-	if toolSetHasTools(toolSet) {
-		if a.journal == nil || a.sandboxes == nil {
-			return a.terminate(ctx, in.SessionID, in.TriggerEventID,
-				"tool-using session requires a journal and sandbox on the Temporal path")
-		}
-		// Recover any leftover tool execution from a crashed prior attempt BEFORE
-		// starting a fresh one. If the turn already crossed the side-effect boundary
-		// (a step left started and now classified ambiguous, or an already
-		// completed/ambiguous step), it must not be freshly re-run: terminate
-		// honestly. This slice does not yet resume the model loop from a durable
-		// completed result — that is deferred — so a completed prior step is treated
-		// as "prior tool execution that cannot be resumed here", NOT as ambiguous.
-		hasPrior, err := a.journal.RecoverTurn(ctx, in.SessionID, in.TriggerEventID)
-		if err != nil {
-			return RunTurnResult{}, err
-		}
-		if hasPrior {
-			log.Printf("temporal: refusing to re-run a turn with prior tool execution session_id=%s trigger=%s",
-				in.SessionID, in.TriggerEventID)
-			return a.terminate(ctx, in.SessionID, in.TriggerEventID,
-				"a prior attempt already executed a tool for this turn; resuming from a durable "+
-					"tool result is not supported yet, so the turn cannot be safely retried")
-		}
-		box, err := a.sandboxes.Acquire(ctx, in.SessionID, sandbox.Spec{Timeout: sandboxTurnTimeout})
-		if err != nil {
-			return RunTurnResult{}, err
-		}
-		attemptID, err = a.journal.BeginAttempt(ctx, in.SessionID, in.TriggerEventID)
-		if err != nil {
-			return RunTurnResult{}, err
-		}
-		req.Sandbox = box
-		req.ToolJournal = activityToolJournal{store: a.journal, attemptID: attemptID}
-	}
-
-	sink := newActivitySink(a.ids)
-	outcome, runErr := a.rt.Run(ctx, req, sink)
-	if runErr != nil {
-		// Best-effort close of the attempt as failed, on a durable context so a
-		// cancellation that surfaced as runErr does not also prevent recording the
-		// classification. If a tool step is still in started state, FinishAttempt
-		// refuses; that is fine — the started step is left for the next attempt's
-		// RecoverTurn to classify ambiguous. We surface the error so Temporal retries.
-		if attemptID != "" {
-			dctx, cancel := durableCtx(ctx)
-			msg := runErr.Error()
-			if ferr := a.journal.FinishAttempt(dctx, attemptID, domain.RunAttemptFailed, &msg); ferr != nil {
-				log.Printf("temporal: finish failed attempt (left for recovery) session_id=%s: %v", in.SessionID, ferr)
-			}
-			cancel()
-		}
-		return RunTurnResult{}, runErr
-	}
-
-	// The legacy path supports always_allow built-ins to end_turn. A park
-	// (custom tool / always_ask) is out of scope on the Temporal path; terminate
-	// honestly rather than inventing a park protocol here.
-	if outcome.RequiresAction {
-		if attemptID != "" {
-			dctx, cancel := durableCtx(ctx)
-			_ = a.journal.FinishAttempt(dctx, attemptID, domain.RunAttemptFailed, strPtr("requires_action not supported on the Temporal path yet"))
-			cancel()
-		}
-		return a.terminate(ctx, in.SessionID, in.TriggerEventID,
-			"client-action tools are not supported on the Temporal path yet")
-	}
-
-	// Finalize the attempt and commit the turn on durable contexts: after the tool
-	// side effect has happened, an Activity-context cancellation must not prevent
-	// recording that the attempt completed and committing the authoritative
-	// output. Each durable write gets its own fresh WithoutCancel+timeout context
-	// (never one created before the long runtime call, which could expire mid-run).
-	if attemptID != "" {
-		dctx, cancel := durableCtx(ctx)
-		err := a.journal.FinishAttempt(dctx, attemptID, domain.RunAttemptCompleted, nil)
-		cancel()
-		if err != nil {
-			return RunTurnResult{}, err
-		}
-	}
-
-	drafts := append(sink.Drafts(), domain.EventDraft{
-		Type:    domain.EvSessionStatusIdle,
-		Payload: map[string]any{"stop_reason": map[string]any{"type": "end_turn"}},
-	})
-	dctx, cancel := durableCtx(ctx)
-	completion, err := a.source.CompleteTurn(dctx, in.SessionID, in.TriggerEventID, drafts, domain.StatusIdle)
-	cancel()
-	if err != nil {
-		return RunTurnResult{}, err
-	}
-	return RunTurnResult{
-		Terminated: completion.Status == domain.StatusTerminated,
-	}, nil
-}
-
-// terminate commits an honest terminal failure for a turn: a session.error and
-// session.status_terminated, with the session projected to terminated. It is the
-// path taken when a turn cannot proceed safely (prior tool execution that cannot
-// be resumed, an out-of-scope park, or a misconfiguration). It returns success
-// to Temporal because the turn is durably resolved — retrying would not help —
-// and reports Terminated so the workflow stops draining the loaded batch. The
-// completion runs on a durable context for the same reason as the success path.
-func (a *Activities) terminate(ctx context.Context, sessionID, triggerEventID, message string) (RunTurnResult, error) {
-	drafts := []domain.EventDraft{
-		{Type: domain.EvSessionError, Payload: map[string]any{"error": map[string]any{
-			"type": "api_error", "message": message,
-		}}},
-		{Type: domain.EvSessionStatusTerminated, Payload: map[string]any{}},
-	}
-	dctx, cancel := durableCtx(ctx)
-	_, err := a.source.CompleteTurn(dctx, sessionID, triggerEventID, drafts, domain.StatusTerminated)
-	cancel()
-	if err != nil {
-		return RunTurnResult{}, err
-	}
-	return RunTurnResult{Terminated: true}, nil
-}
-
-func strPtr(s string) *string { return &s }
 
 // durableWriteTimeout bounds a durable write that must run even after the
 // Activity context is canceled (e.g. a tool side effect already happened and its
@@ -609,10 +633,4 @@ const durableWriteTimeout = 30 * time.Second
 // interrupt reaching a tool executor still commits the result.
 func durableCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), durableWriteTimeout)
-}
-
-// toolSetHasTools reports whether a resolved toolset offers any tool, in which
-// case the turn needs a provisioned sandbox and a durable journal.
-func toolSetHasTools(ts domain.ToolSet) bool {
-	return ts.Builtin != nil || len(ts.Custom) > 0 || len(ts.MCP) > 0
 }

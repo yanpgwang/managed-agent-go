@@ -423,27 +423,27 @@ func (q *Queries) MaxEventSeq(ctx context.Context, sessionID string) (int64, err
 	return max_seq, err
 }
 
-const priorProcessedUserTriggers = `-- name: PriorProcessedUserTriggers :many
+const priorProcessedModelTriggers = `-- name: PriorProcessedModelTriggers :many
 SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
 FROM events
 WHERE session_id = $1
-  AND type = 'user.message'
+  AND type IN ('user.message', 'user.custom_tool_result', 'user.tool_confirmation')
   AND processed_at IS NOT NULL
   AND seq < $2
 ORDER BY seq
 `
 
-type PriorProcessedUserTriggersParams struct {
+type PriorProcessedModelTriggersParams struct {
 	SessionID string
 	BeforeSeq int64
 }
 
-// PriorProcessedUserTriggers returns the processed user.message events before a
-// given sequence, in receipt order. These are the prior turns whose causal
-// history (trigger followed by its committed outputs) is replayed into the model
-// for the current turn.
-func (q *Queries) PriorProcessedUserTriggers(ctx context.Context, arg PriorProcessedUserTriggersParams) ([]Event, error) {
-	rows, err := q.db.Query(ctx, priorProcessedUserTriggers, arg.SessionID, arg.BeforeSeq)
+// PriorProcessedModelTriggers returns processed events that can drive a model
+// turn before a given sequence, in receipt order. Resolution events are included
+// because a completed custom-tool/confirmation resume may itself have committed
+// model output that later turns must replay.
+func (q *Queries) PriorProcessedModelTriggers(ctx context.Context, arg PriorProcessedModelTriggersParams) ([]Event, error) {
+	rows, err := q.db.Query(ctx, priorProcessedModelTriggers, arg.SessionID, arg.BeforeSeq)
 	if err != nil {
 		return nil, err
 	}

@@ -125,22 +125,23 @@ periodically reconcile their durable cursor and never treat a wakeup as data.
 Worker Versioning and provider-backed sandbox leases are still required before
 production rolling deployments.
 
+The pending-action selector adds new Workflow and Activity commands. During a
+manual rolling deployment, upgrade workers before exposing the matching
+client-action API behavior; Worker Versioning should enforce that ordering in a
+production deployment.
+
 ## Current implementation boundaries
 
 The strongest current risks are semantic rather than structural:
 
-1. PostgreSQL now owns the pending-action rows, atomic park transaction,
-   resolution claim, and admission gate. The primary Workflow still has to
-   replace its client-action rejection with a durable park/resume selector
-   before the legacy dispatcher can be removed.
-2. `user.interrupt` still lacks the cross-process durable cancellation and
+1. `user.interrupt` still lacks the cross-process durable cancellation and
    finish-vs-interrupt ordering contract on the primary path.
-3. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
+2. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
    first tool use, reused across its runs, and released on session deletion.
    The manager is in-memory, so a process restart does not restore an idle
    session's workspace, and there is no durable checkpoint, quota, or eviction
    policy yet.
-4. Worker Versioning, observability, authentication, large-payload offload, and
+3. Worker Versioning, observability, authentication, large-payload offload, and
    production manifests remain open.
 
 Current API support is tracked in the [compatibility matrix](compatibility.md);
