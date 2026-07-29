@@ -3,6 +3,7 @@
 GO ?= go
 DOCKER ?= docker
 COMPOSE ?= docker compose
+GOLANGCI_LINT ?= golangci-lint
 
 BIN_DIR ?= bin
 BINARY ?= $(BIN_DIR)/managed-agent
@@ -10,6 +11,7 @@ IMAGE ?= managed-agent-go:local
 VERSION ?= dev
 REVISION ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 GOPROXY ?=
+LINT_BASE ?= origin/main
 
 DOCKER_BUILD_ARGS := --build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION)
 ifneq ($(strip $(GOPROXY)),)
@@ -18,12 +20,13 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test test-race vet verify docs-check image image-smoke \
+.PHONY: help build lint test test-race vet verify docs-check image image-smoke \
 	local-config local-up local-down local-health local-ps local-logs
 
 help:
 	@echo "Development"
 	@echo "  make build          build $(BINARY)"
+	@echo "  make lint           lint changes relative to $(LINT_BASE)"
 	@echo "  make test           run unit tests"
 	@echo "  make test-race      run tests with the race detector"
 	@echo "  make vet            run go vet"
@@ -45,6 +48,9 @@ build:
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -o $(BINARY) ./cmd/managed-agent
 
+lint:
+	$(GOLANGCI_LINT) run --new-from-rev=$(LINT_BASE) ./...
+
 test:
 	$(GO) test ./...
 
@@ -54,7 +60,7 @@ test-race:
 vet:
 	$(GO) vet ./...
 
-verify: test test-race vet
+verify: lint test test-race vet
 
 docs-check:
 	npm --prefix website ci
