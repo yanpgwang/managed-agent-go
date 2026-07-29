@@ -10,12 +10,6 @@ production-ready merely because it can execute a command: its isolation model,
 lifecycle guarantees, operational dependencies, and known limits must also be
 clear.
 
-The production selections are fixed in the
-[target-platform decision](architecture/target-platform.md): Daytona is the
-first managed provider adapter, while Kubernetes SIG Agent Sandbox with
-Kata/gVisor is the first self-hosted production adapter. Checkpoint behavior is
-delegated to provider capabilities.
-
 The current worker does **not** call a separate sandbox HTTP service. Its
 sandbox boundary is an in-process Go interface:
 
@@ -45,9 +39,8 @@ These labels describe project support, not a security certification.
 | Local process | Available; default | Temporary workspace and path checks; no kernel or network isolation | Workspace survives turns while the server process lives | Offline tests and trusted local development only |
 | Docker | Available; opt-in | Container filesystem, namespaces/cgroups, configurable limits, network disabled by default | Container survives turns while the server process lives | Development and controlled single-tenant self-hosting |
 | [Anthropic Sandbox Runtime (SRT)](https://github.com/anthropic-experimental/sandbox-runtime) | Candidate; not implemented | Native OS process restrictions (`sandbox-exec`, Bubblewrap, and platform-specific network controls) | A session workspace could persist, but each command is a new restricted process | Optional safer local execution; SRT is a beta research preview |
-| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Selected managed target; not implemented | Provider-owned isolated compute, filesystem, and network controls | Durable provider identity with pause/archive lifecycle | Managed production |
-| [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) with Kata/gVisor | Selected self-hosted target; not implemented | Kubernetes lifecycle API plus hardened runtime isolation | Stateful sandbox identity, lifecycle, and warm-pool support | Self-hosted production |
-| E2B, Modal, Cloudflare, and other Managed Agents providers | Future adapters | Provider-owned isolation boundary | Provider-specific | Add only for a concrete deployment need |
+| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Candidate; not implemented | Provider-owned isolated compute, filesystem, and network controls | Durable provider identity with pause/archive lifecycle | Managed production |
+| [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) with Kata/gVisor | Candidate; not implemented | Kubernetes lifecycle API plus hardened runtime isolation | Stateful sandbox identity, lifecycle, and warm-pool support | Self-hosted production |
 
 The Docker provider has not been audited for hostile multi-tenant workloads.
 The local provider is not a security boundary. No backend currently carries a
@@ -88,29 +81,12 @@ backend requires them rather than predicted in one universal interface now.
 This matches the intended session ownership model but not durable sandbox
 continuity.
 
-## Evolution path
+## Required production lifecycle
 
-The core sandbox path is ordered by lifecycle value, not by the number of
-backend logos:
-
-1. **Environment-backed resolution and conformance.** Resolve a session's
-   Environment into a provider-neutral sandbox profile instead of selecting one
-   global backend at process startup. Exercise every available provider through
-   the same lifecycle and tool contract tests.
-2. **Durable logical identity and cleanup.** Persist enough provider identity
-   to reattach after restart, make teardown retryable, and reconcile orphaned
-   resources.
-3. **Selected production adapters.** Implement Daytona first for managed
-   execution and Kubernetes SIG Agent Sandbox first for self-hosting. Store
-   provider identity durably and use provider-reported capabilities.
-4. **Checkpoint, quotas, and eviction by capability.** Expose them when the
-   selected provider supports them. Do not create a checkpoint format or
-   emulate provider lifecycle inside the Agent control plane.
-
-SRT is an optional candidate alongside this path, not a prerequisite. It can
-provide a useful local security improvement, but its experimental status and
-process-level lifecycle mean it should not displace the durable execution work
-on the main roadmap.
+A production adapter must add durable provider identity, restart reattachment,
+retryable teardown, orphan reconciliation, and a shared conformance suite.
+Checkpoint, quotas, and eviction should reflect provider capabilities rather
+than a control-plane-specific checkpoint format.
 
 The upstream behavior informing the session/environment distinction is
 documented in Claude's
