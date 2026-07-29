@@ -22,6 +22,8 @@ request.
 Requirements:
 
 - Go 1.26 or newer;
+- [golangci-lint](https://golangci-lint.run/docs/welcome/install/local/)
+  2.12.x for local lint checks;
 - Node.js 20 or newer for the documentation site;
 - Docker only for optional Docker sandbox tests.
 
@@ -30,6 +32,9 @@ Run the core checks:
 ```bash
 make verify
 ```
+
+`make lint` checks changes relative to `origin/main`, matching the incremental
+CI rollout. Set `LINT_BASE` when your comparison branch differs.
 
 Run the documentation checks:
 

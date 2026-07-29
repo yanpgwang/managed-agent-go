@@ -223,6 +223,9 @@ make docs-check
 make image-smoke
 ```
 
+`make verify` requires golangci-lint 2.12.x and checks changed Go code against
+the standard lint set plus `gofmt`.
+
 Default tests run offline. Real PostgreSQL, Temporal, NATS, and Docker paths are
 covered by opt-in integration tests documented in
 [`deployments/local`](deployments/local/README.md). PostgreSQL schema changes
