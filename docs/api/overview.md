@@ -76,7 +76,8 @@ Errors use a Claude-compatible envelope:
 | `422` | `invalid_request_error` |
 | `500` | `api_error` |
 
-The exact upstream error type for every conflict is not yet confirmed.
+These mappings are Mango's public contract for the supported API subset. See
+the [compatibility matrix](../compatibility.md) for parity limits.
 
 ## Pagination
 

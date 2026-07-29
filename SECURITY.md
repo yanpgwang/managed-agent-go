@@ -31,9 +31,11 @@ maintainer contact without disclosing vulnerability details.
   audited for hostile multi-tenant workloads.
 - `-strict` checks that authentication headers are present; it does not
   validate credentials or implement authorization.
-- SQLite, the run dispatcher, and the stream hub are designed for one process.
-- Restart recovery is at-least-once. A tool side effect can repeat after a
-  crash because no durable attempt or idempotency journal exists.
+- The deprecated SQLite backend is single-process and is not a production
+  target.
+- PostgreSQL journals tool attempts, but an external side effect can still be
+  ambiguous if execution succeeds and its durable result is lost. Exactly-once
+  behavior requires idempotency from the external system.
 - Model credentials are read from environment variables. Operators are
   responsible for secret storage, rotation, logging policy, and endpoint trust.
 

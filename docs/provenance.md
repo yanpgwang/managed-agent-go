@@ -106,20 +106,16 @@ The inbound Messages API SSE wire and the outbound Managed Agents preview wire
 are separate contracts. The implementation translates between them rather than
 forwarding upstream frames.
 
-## Notes on scope
+## Compatibility claim boundary
 
-- The current tool slice executes `bash`, `read`, `write`, `edit`, `glob`, and
-  `grep`. `web_fetch` and `web_search` are declared to the model but not
-  executed. MCP toolsets are parsed but not supported. The default local
-  sandbox is a guardrail, not a security boundary. An opt-in Docker provider
-  supplies container isolation, while gVisor/remote isolation remains planned.
+- The implemented tool set is `bash`, `read`, `write`, `edit`, `glob`, and
+  `grep`. `web_fetch`, `web_search`, and MCP execution are not supported. The
+  default local sandbox is a guardrail, not a security boundary; the optional
+  Docker provider supplies container isolation.
 - Opaque multiagent configuration persists with tested replace/null-clear
   behavior. Resolved rosters, reference validation, and multiagent
-  execution/orchestration remain outside the implemented slice.
-- Environments beyond the current placeholder records, self-hosted Environment
-  Work, files, skills, memory, vaults, and scheduled deployments are out of the
-  current batch. Their official pages are not re-listed until the corresponding
-  wire is implemented and tested, to avoid claiming coverage that does not
-  exist.
+  execution/orchestration are not implemented.
+- Unsupported product surfaces are excluded from compatibility claims until
+  their wire behavior is implemented and tested.
 - Only official documentation and official SDKs are normative for the public
   compatibility surface.

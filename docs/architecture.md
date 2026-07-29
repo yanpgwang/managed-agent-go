@@ -11,16 +11,9 @@ orchestration, and NATS Core carries ephemeral wakeups and previews. The local
 Compose stack runs those roles separately; they can also be packaged in one
 deployment for development.
 
-The production direction and current primary path are fixed in
-[Target platform and technology selection](architecture/target-platform.md):
-Temporal orchestration, PostgreSQL, NATS Core, object storage, and managed or
-self-hosted sandbox providers. Object storage and production sandbox leases are
-still future layers.
-
-The
-[Managed Agents orchestration fit review](architecture/orchestration-fit.md)
-contains the API-by-API validation, the PostgreSQL-outbox-to-Temporal admission
-path, and the detailed Temporal versus Restate decision.
+The selected stack is Temporal orchestration, PostgreSQL, NATS Core, and
+replaceable sandbox providers. Object storage and provider-backed sandbox
+leases are not implemented.
 
 ```mermaid
 flowchart LR
@@ -132,7 +125,7 @@ periodically reconcile their durable cursor and never treat a wakeup as data.
 Worker Versioning and provider-backed sandbox leases are still required before
 production rolling deployments.
 
-## Known architectural debt
+## Current implementation boundaries
 
 The strongest current risks are semantic rather than structural:
 
@@ -150,6 +143,5 @@ The strongest current risks are semantic rather than structural:
 4. Worker Versioning, observability, authentication, large-payload offload, and
    production manifests remain open.
 
-These are tracked in the [roadmap](roadmap.md). The current architecture is a
-good foundation for an OSS alpha, but the above invariants should be resolved
-before presenting it as production-ready.
+Current API support is tracked in the [compatibility matrix](compatibility.md);
+planned capability work is kept in the [roadmap](roadmap.md).

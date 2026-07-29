@@ -211,7 +211,6 @@ removed after those semantics are implemented on Temporal.
 - [Session lifecycle](docs/architecture/session-lifecycle.md)
 - [Sandbox backends](docs/sandboxes.md)
 - [Deployment model](docs/deployment.md)
-- [Target platform decision](docs/architecture/target-platform.md)
 - [API reference](docs/api/overview.md)
 - [Roadmap](docs/roadmap.md)
 

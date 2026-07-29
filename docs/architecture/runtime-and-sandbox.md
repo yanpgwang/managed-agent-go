@@ -119,8 +119,8 @@ provisioning failure is not cached, so a later run may retry.
 
 The manager holds sandboxes in memory. Restart does not restore an idle
 session's sandbox: a process restart starts from an empty workspace, and the
-first run after restart provisions a fresh one. Durable checkpoint/restore is
-not implemented in this slice. Quotas and eviction are also out of scope here.
+first run after restart provisions a fresh one. Durable checkpoint/restore,
+quotas, and eviction are not implemented.
 
 This is a process-boundary limitation, not just a persistence gap. Because
 ownership lives only in the in-memory manager, a new process cannot reattach to
@@ -128,9 +128,7 @@ sandboxes an earlier process provisioned. A crash or an ungraceful restart
 therefore leaves those provider resources — Docker containers or local temp
 directories — orphaned, since the only code that would tear them down (`Release`
 on session deletion) died with the process. Nothing reclaims them until an
-external cleanup step or a reaper exists, and neither is built yet. Reclaiming
-in-flight sandboxes on shutdown (a shutdown manager or reaper) is out of scope
-for this slice.
+external cleanup step; there is no built-in reaper.
 
 ## Streaming previews
 

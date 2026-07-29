@@ -77,5 +77,4 @@ keeps API and worker process roles separate, but it is not a production
 deployment manifest: authentication, TLS, secrets, rolling worker versioning,
 managed persistence, observability, resource limits, and object storage remain
 deployment work. See
-[the deployment model](../../docs/deployment.md) and
-[target-platform](../../docs/architecture/target-platform.md).
+[the deployment model](../../docs/deployment.md).
