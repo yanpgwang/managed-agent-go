@@ -10,6 +10,7 @@
 
 # Go
 /vendor/
+/bin/
 /website/node_modules/
 /website/build/
 /website/.docusaurus/
@@ -20,4 +21,5 @@
 *.swp
 
 # Local agent execution artifacts
+/.claude/worktrees/
 /.superpowers/

@@ -28,18 +28,20 @@ Requirements:
 Run the core checks:
 
 ```bash
-go test ./...
-go test -race ./...
-go vet ./...
+make verify
 ```
 
 Run the documentation checks:
 
 ```bash
-cd website
-npm ci
-npm run typecheck
-npm run build
+make docs-check
+```
+
+Validate the deployment configuration and container entrypoint:
+
+```bash
+make local-config
+make image-smoke
 ```
 
 Default tests must stay offline and deterministic. Tests that require a Docker
@@ -97,6 +99,11 @@ Keep each pull request focused. Include:
 
 Use `gofmt` for Go code. Generated and dependency artifacts should not be
 committed except for lockfiles required for reproducible builds.
+
+Keep deployment assets within the support boundaries documented in
+[`deployments/README.md`](deployments/README.md). The local Compose stack may
+build the current checkout; future production bundles must consume versioned
+release images and document their upgrade lifecycle.
 
 By participating, you agree to follow the
 [Code of Conduct](CODE_OF_CONDUCT.md).

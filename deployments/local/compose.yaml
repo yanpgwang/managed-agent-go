@@ -10,9 +10,9 @@
 #
 # Versions are pinned deliberately. Bump them intentionally, not implicitly.
 #
-# Start:   make -C deployments/local up      (or: docker compose -f deployments/local/docker-compose.yml up -d)
-# Health:  make -C deployments/local health
-# Stop:    make -C deployments/local down     (add VOLUMES=1 to also drop data)
+# Start:   make local-up      (or: docker compose -f deployments/local/compose.yaml up -d)
+# Health:  make local-health
+# Stop:    make local-down     (add VOLUMES=1 to also drop data)
 #
 # See deployments/local/README.md for the full workflow and connection strings.
 

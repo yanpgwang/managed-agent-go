@@ -8,15 +8,18 @@
 #   make down VOLUMES=1   also delete the Postgres volume
 
 COMPOSE ?= docker compose
-FILE := $(dir $(lastword $(MAKEFILE_LIST)))docker-compose.yml
+FILE := $(dir $(lastword $(MAKEFILE_LIST)))compose.yaml
 
-.PHONY: up down health ps logs
+.PHONY: up down config health ps logs
 
 up:
 	$(COMPOSE) -f $(FILE) up -d --build
 
 down:
 	$(COMPOSE) -f $(FILE) down $(if $(VOLUMES),--volumes,)
+
+config:
+	$(COMPOSE) -f $(FILE) config --quiet
 
 ps:
 	$(COMPOSE) -f $(FILE) ps
