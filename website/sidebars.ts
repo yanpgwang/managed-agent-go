@@ -11,9 +11,6 @@ const sidebars: SidebarsConfig = {
       label: 'Architecture',
       items: [
         'architecture',
-        'architecture/target-platform',
-        'architecture/orchestration-fit',
-        'architecture/platform-spine-milestone',
         'architecture/domain-model',
         'architecture/session-lifecycle',
         'architecture/runtime-and-sandbox',
