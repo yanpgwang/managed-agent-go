@@ -160,6 +160,10 @@ type CompleteWorkflowTurnInput struct {
 	AttemptID      string                 `json:"attempt_id,omitempty"`
 	AttemptState   domain.RunAttemptState `json:"attempt_state,omitempty"`
 	AttemptError   *string                `json:"attempt_error,omitempty"`
+	// PendingActionEventIDs names action events in Output that park this turn
+	// awaiting client input. The additive field is absent from all existing
+	// Workflow histories and therefore decodes to nil with unchanged behavior.
+	PendingActionEventIDs []string `json:"pending_action_event_ids,omitempty"`
 }
 
 // LoadEventsInput requests the ordered public events after a cursor.

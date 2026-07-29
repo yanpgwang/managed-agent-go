@@ -242,16 +242,47 @@ func (s *Store) admitLocked(
 		return Admission{}, err
 	}
 
+	// Claim matching client-action resolutions in the same transaction that
+	// commits them. The row remains unresolved until the resume turn closes, so
+	// ordinary queued messages cannot overtake an in-flight resolution.
+	admittedResolution, err := s.claimPendingResolutionsLocked(
+		ctx,
+		q,
+		session.ID,
+		events,
+	)
+	if err != nil {
+		return Admission{}, err
+	}
+
 	hasTrigger := false
-	for _, d := range drafts {
-		if d.Type == domain.EvUserMessage {
+	for _, event := range events {
+		if event.Type == domain.EvUserMessage {
 			hasTrigger = true
 			break
 		}
 	}
+	hasTrigger = hasTrigger || admittedResolution
 
 	admission := Admission{Session: session, Events: events, MaxSeq: maxSeq}
 	if !hasTrigger {
+		if err := s.putProjection(ctx, q, session); err != nil {
+			return Admission{}, err
+		}
+		return admission, nil
+	}
+
+	// Ordinary work may be admitted while a requires_action wait is open, but it
+	// is not runnable yet: keep the session idle, emit no status_running, and
+	// write no wakeup for work the Workflow must not consume. A matching
+	// resolution is runnable even though its row remains unresolved until resume
+	// completion.
+	gated, err := q.HasUnresolvedPendingActions(ctx, session.ID)
+	if err != nil {
+		return Admission{}, err
+	}
+	runnable := !gated || admittedResolution
+	if !runnable {
 		if err := s.putProjection(ctx, q, session); err != nil {
 			return Admission{}, err
 		}
@@ -493,14 +524,15 @@ func (s *Store) CompleteTurn(
 	outputDrafts []domain.EventDraft,
 	status domain.Status,
 ) (TurnCompletion, error) {
-	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil)
+	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil, nil)
 }
 
 // CompleteWorkflowTurn atomically finalizes a Workflow-owned tool attempt (when
-// present) and commits the public turn output. Keeping both mutations in one
-// PostgreSQL transaction closes the crash window between "attempt completed"
-// and "trigger processed"; a retried Activity either applies the whole
-// transition or observes the already-processed trigger.
+// present), commits the public turn output, and persists any client-action wait
+// rows. Keeping those mutations in one PostgreSQL transaction closes the crash
+// windows between "attempt completed", "requires_action published", "wait
+// durable", and "trigger processed"; a retried Activity either applies the
+// whole transition or observes the already-processed trigger.
 func (s *Store) CompleteWorkflowTurn(
 	ctx context.Context,
 	sessionID string,
@@ -510,6 +542,7 @@ func (s *Store) CompleteWorkflowTurn(
 	attemptID string,
 	attemptState domain.RunAttemptState,
 	attemptError *string,
+	pendingActionEventIDs []string,
 ) (TurnCompletion, error) {
 	if attemptID == "" {
 		if attemptState != "" || attemptError != nil {
@@ -527,6 +560,7 @@ func (s *Store) CompleteWorkflowTurn(
 		attemptID,
 		attemptState,
 		attemptError,
+		pendingActionEventIDs,
 	)
 }
 
@@ -539,6 +573,7 @@ func (s *Store) completeTurn(
 	attemptID string,
 	attemptState domain.RunAttemptState,
 	attemptError *string,
+	pendingActionEventIDs []string,
 ) (TurnCompletion, error) {
 	var result TurnCompletion
 	err := s.withTx(ctx, func(q *pgstore.Queries) error {
@@ -564,25 +599,47 @@ func (s *Store) completeTurn(
 		if err != nil {
 			return err
 		}
-		// Idempotent replay: a trigger already stamped processed means this turn's
-		// completion already committed. Return the exact events it wrote, by turn id,
-		// so a duplicate Activity execution is harmless.
+		// Idempotent replay: a trigger already stamped processed normally means
+		// this turn's completion committed. A claimed pending-action resolution is
+		// the exception: user.custom_tool_result is processed on receipt by public
+		// contract, while its resume turn still has to close the pending row. That
+		// row remains unresolved until this transaction succeeds and therefore
+		// disambiguates admission processing from turn completion.
 		if trigger.ProcessedAt.Valid {
-			priorRows, err := q.ListEventsByTurn(ctx, pgstore.ListEventsByTurnParams{
-				SessionID:   sessionID,
-				TurnEventID: &triggerEventID,
-			})
+			pendingResume, err := q.IsUnresolvedPendingResolution(
+				ctx,
+				pgstore.IsUnresolvedPendingResolutionParams{
+					SessionID:        sessionID,
+					ResolvingEventID: &triggerEventID,
+				},
+			)
 			if err != nil {
 				return err
 			}
-			prior, err := eventsFromRows(priorRows)
-			if err != nil {
-				return err
+			if !pendingResume {
+				priorRows, err := q.ListEventsByTurn(ctx, pgstore.ListEventsByTurnParams{
+					SessionID:   sessionID,
+					TurnEventID: &triggerEventID,
+				})
+				if err != nil {
+					return err
+				}
+				prior, err := eventsFromRows(priorRows)
+				if err != nil {
+					return err
+				}
+				result = TurnCompletion{Session: session, Events: prior, Applied: false}
+				return nil
 			}
-			result = TurnCompletion{Session: session, Events: prior, Applied: false}
-			return nil
 		}
 
+		if err := validatePendingCompletion(
+			status,
+			outputDrafts,
+			pendingActionEventIDs,
+		); err != nil {
+			return err
+		}
 		if attemptID != "" {
 			if err := s.finishAttemptLocked(
 				ctx,
@@ -596,6 +653,18 @@ func (s *Store) completeTurn(
 				return err
 			}
 		}
+
+		// A resolution keeps its pending row unresolved while its resume turn is
+		// in flight. Clear it only inside this completion transaction; if the
+		// completion rolls back, ordinary queued work remains gated.
+		if err := s.resolvePendingForTriggerLocked(ctx, q, sessionID, triggerEventID); err != nil {
+			return err
+		}
+		hasUnresolved, err := q.HasUnresolvedPendingActions(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		gatedAfterCompletion := hasUnresolved || len(pendingActionEventIDs) > 0
 
 		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
 		if err != nil {
@@ -613,7 +682,7 @@ func (s *Store) completeTurn(
 		// (e.g. still running by the caller's choice) is left as-is.
 		effectiveStatus := status
 		drafts := outputDrafts
-		if status == domain.StatusIdle {
+		if status == domain.StatusIdle && !gatedAfterCompletion {
 			remaining, err := q.CountUnprocessedUserMessages(ctx, pgstore.CountUnprocessedUserMessagesParams{
 				SessionID: sessionID,
 				ExcludeID: triggerEventID,
@@ -629,6 +698,19 @@ func (s *Store) completeTurn(
 
 		events, _, err := s.appendDrafts(ctx, q, sessionID, drafts, maxSeq, &triggerEventID)
 		if err != nil {
+			return err
+		}
+		allowedActions := make(map[string]domain.Event, len(events))
+		for _, event := range events {
+			allowedActions[event.ID] = event
+		}
+		if err := s.insertPendingActionsLocked(
+			ctx,
+			q,
+			sessionID,
+			pendingActionEventIDs,
+			allowedActions,
+		); err != nil {
 			return err
 		}
 		now := s.clock.Now().UTC()

@@ -48,14 +48,17 @@ the `prepared → started → completed` boundary (`ambiguous` branches from
 `started` is refused as ambiguous. Attempt finalization and public completion
 commit atomically. HTTP resource/session/event traffic now uses PostgreSQL;
 NATS carries cross-process SSE wakeups and previews; API/worker Docker
-containers exercise the complete path. Still open: client-action park/resume,
-`user.interrupt`, durable sandbox leases, and large-payload offload.
+containers exercise the complete path. PostgreSQL now persists client-action
+waits atomically with `requires_action`, claims matching resolutions at
+admission, and gates ordinary queued work until resume completion. Still open:
+the Workflow park/resume loop, `user.interrupt`, durable sandbox leases, and
+large-payload offload.
 
 ## Now: close the final infrastructure parity gates
 
-- Model custom tools and `always_ask` confirmations as durable Workflow waits
-  with PostgreSQL pending-action validation and out-of-order resolution
-  selection.
+- Connect custom tools and `always_ask` confirmations to the delivered
+  PostgreSQL pending-action gate, then model their park/resume selection as a
+  durable Workflow wait.
 - Deliver `user.interrupt` as durable cross-process Workflow cancellation,
   including the finish-vs-interrupt ordering contract.
 - Add Worker Versioning/rolling-upgrade tests and production observability.

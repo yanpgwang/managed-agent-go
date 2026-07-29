@@ -48,6 +48,16 @@ type OrchestrationOutbox struct {
 	LastError     *string
 }
 
+type PendingAction struct {
+	ID               string
+	SessionID        string
+	ActionEventID    string
+	Kind             string
+	ResolvingEventID *string
+	CreatedAt        pgtype.Timestamptz
+	ResolvedAt       pgtype.Timestamptz
+}
+
 type Session struct {
 	ID            string
 	Status        string
