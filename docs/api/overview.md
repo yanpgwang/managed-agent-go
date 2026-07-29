@@ -8,7 +8,7 @@ slug: /api
 The server implements a practical subset of the Claude Managed Agents HTTP API
 under `/v1`.
 
-:::info Supported surface
+:::info[Supported surface]
 
 This reference documents repository behavior. [Claude API
 coverage](../compatibility.md) summarizes which integration workflows are
