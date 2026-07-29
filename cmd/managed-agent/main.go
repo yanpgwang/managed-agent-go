@@ -13,11 +13,15 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/controlplane"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
+	"github.com/yanpgwang/managed-agent-go/internal/live"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	"github.com/yanpgwang/managed-agent-go/internal/store"
+	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
 )
 
 // defaultAddr binds to loopback by default so a fresh `serve` never exposes the
@@ -147,10 +151,26 @@ func main() {
 func runServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "listen address (default binds to loopback; use e.g. :8080 to expose on all interfaces)")
-	dbPath := fs.String("db", "managed-agent.db", "sqlite path")
+	backend := fs.String("backend", "postgres", "control-plane backend: postgres (default) or sqlite (deprecated compatibility mode)")
+	dbPath := fs.String("db", "managed-agent.db", "sqlite path (used only with -backend sqlite)")
 	strict := fs.Bool("strict", false, "require Claude API wire headers (auth, version, beta, content-type) to be present and valid; this is header validation, NOT authentication")
 	_ = fs.Parse(os.Args[2:])
 
+	cfg := httpapi.Config{
+		RequireBeta: *strict, RequireAuth: *strict, RequireVersion: *strict, RequireContentType: *strict,
+	}
+	switch *backend {
+	case "postgres":
+		runPostgresAPI(*addr, cfg)
+	case "sqlite":
+		log.Printf("startup: -backend sqlite is deprecated compatibility mode; new deployments should use postgres")
+		runSQLiteAPI(*addr, *dbPath, cfg)
+	default:
+		log.Fatalf("serve: unsupported backend %q (want postgres or sqlite)", *backend)
+	}
+}
+
+func runSQLiteAPI(addr, dbPath string, cfg httpapi.Config) {
 	// resolveRuntime selects the real Messages-API-backed agent core when the
 	// model env is configured, otherwise the offline deterministic fake.
 	rt, realModel, err := resolveRuntime()
@@ -170,22 +190,85 @@ func runServe() {
 		log.Fatalf("startup: %v", err)
 	}
 
-	db, err := store.Open(*dbPath)
+	db, err := store.Open(dbPath)
 	if err != nil {
 		log.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
 
-	handler, sessions := buildHandler(db, httpapi.Config{
-		RequireBeta: *strict, RequireAuth: *strict, RequireVersion: *strict, RequireContentType: *strict,
-	}, rt, sbx)
+	handler, sessions := buildHandler(db, cfg, rt, sbx)
 	if err := sessions.Recover(context.Background()); err != nil {
 		log.Printf("recovery: %v", err)
 	}
+	serveHTTP(addr, handler)
+}
 
-	srv := newHTTPServer(*addr, handler)
+func runPostgresAPI(addr string, cfg httpapi.Config) {
+	databaseURL := os.Getenv(envDatabaseURL)
+	if databaseURL == "" {
+		log.Fatalf(
+			"serve: %s is required for the default PostgreSQL control plane "+
+				"(use -backend sqlite only for deprecated compatibility mode)",
+			envDatabaseURL,
+		)
+	}
+	ctx := context.Background()
+	pool, err := pg.Pool(ctx, databaseURL)
+	if err != nil {
+		log.Fatalf("serve: postgres: %v", err)
+	}
+	defer pool.Close()
+	if err := pg.Migrate(ctx, pool); err != nil {
+		log.Fatalf("serve: migrate: %v", err)
+	}
+
+	ids := domain.NewRandomIDGen()
+	clock := realClock{}
+	pgStore := pg.NewStore(pool, ids, clock)
+	broker, err := live.Connect(os.Getenv(envNATSURL))
+	if err != nil {
+		log.Fatalf("serve: nats: %v", err)
+	}
+	defer broker.Close()
+	pgStore.SetEventNotifier(broker)
+	agentsRepo := pg.NewAgentRepository(pgStore)
+	environmentsRepo := pg.NewEnvironmentRepository(pgStore)
+	agents := app.NewAgentService(agentsRepo, ids, clock)
+	environments := app.NewEnvironmentService(environmentsRepo, ids, clock)
+
+	temporalClient, err := temporalpkg.Dial(temporalpkg.ClientConfig{
+		HostPort:  os.Getenv(envTemporalHostPort),
+		Namespace: os.Getenv(envTemporalNamespace),
+	})
+	if err != nil {
+		log.Fatalf("serve: temporal: %v", err)
+	}
+	defer temporalClient.Close()
+	// Event admission remains correct through a Temporal outage because it
+	// commits the PostgreSQL outbox first and treats the direct signal as a
+	// best-effort latency path. Lifecycle operations such as physical deletion
+	// use the client to stop the Workflow before removing its projection.
+	orchestrator := temporalpkg.NewOrchestrator(
+		pgStore,
+		temporalpkg.NewSignaler(temporalClient),
+	)
+	sessions := controlplane.NewSessionService(
+		pgStore, agentsRepo, environmentsRepo, orchestrator, ids, clock,
+	)
+	events := controlplane.NewEventService(pgStore)
+	stream := live.NewStream(pgStore, broker, ids, clock, 0)
+	handler := httpapi.NewServer(httpapi.Deps{
+		Agents: agents, Envs: environments, Sessions: sessions,
+		Events: events, Stream: stream,
+	}, cfg).Handler()
+	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")
+	serveHTTP(addr, handler)
+}
+
+func serveHTTP(addr string, handler http.Handler) {
+	srv := newHTTPServer(addr, handler)
 	go func() {
-		log.Printf("listening on %s", *addr)
+		log.Printf("listening on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve: %v", err)
 		}

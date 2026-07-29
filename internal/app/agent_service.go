@@ -4,16 +4,15 @@ import (
 	"context"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/store"
 )
 
 type AgentService struct {
-	repo  *store.AgentRepo
+	repo  AgentRepository
 	ids   domain.IDGenerator
 	clock domain.Clock
 }
 
-func NewAgentService(repo *store.AgentRepo, ids domain.IDGenerator, clock domain.Clock) *AgentService {
+func NewAgentService(repo AgentRepository, ids domain.IDGenerator, clock domain.Clock) *AgentService {
 	return &AgentService{repo: repo, ids: ids, clock: clock}
 }
 

@@ -55,6 +55,10 @@ func (s *EventService) CloseSession(sessionID string, terminal domain.Event) {
 }
 
 // Query lists events applying the public List Events filters.
-func (s *EventService) Query(ctx context.Context, sessionID string, q store.EventQuery) ([]domain.Event, error) {
-	return s.es.Query(ctx, sessionID, q)
+func (s *EventService) Query(ctx context.Context, sessionID string, q EventQuery) ([]domain.Event, error) {
+	return s.es.Query(ctx, sessionID, store.EventQuery{
+		AfterSeq: q.AfterSeq, BeforeSeq: q.BeforeSeq, Limit: q.Limit, Desc: q.Desc,
+		Types: q.Types, CreatedAtGt: q.CreatedAtGt, CreatedAtGte: q.CreatedAtGte,
+		CreatedAtLt: q.CreatedAtLt, CreatedAtLte: q.CreatedAtLte,
+	})
 }

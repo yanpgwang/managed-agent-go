@@ -58,7 +58,8 @@ func runWorkflowTurn(
 
 		var called CallModelResult
 		if err := workflow.ExecuteActivity(actx, ActivityCallModel, CallModelInput{
-			Request: request,
+			SessionID: sessionID,
+			Request:   request,
 		}).Get(actx, &called); err != nil {
 			return RunTurnResult{}, err
 		}

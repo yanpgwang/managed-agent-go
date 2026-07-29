@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"sync"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -65,6 +66,18 @@ func (h *Hub) Subscribe(sessionID string, deltaOptIn map[string]bool) (<-chan Fr
 		})
 	}
 	return s.ch, cancel
+}
+
+// SubscribeContext adapts the process-local Hub to the HTTP stream boundary.
+// Subscription has no fallible setup; request cancellation remains owned by
+// the handler and cleanup uses the returned cancel function.
+func (h *Hub) SubscribeContext(
+	_ context.Context,
+	sessionID string,
+	deltaOptIn map[string]bool,
+) (<-chan Frame, func(), error) {
+	ch, cancel := h.Subscribe(sessionID, deltaOptIn)
+	return ch, cancel, nil
 }
 
 func (h *Hub) removeLocked(sessionID string, s *subscriber) {

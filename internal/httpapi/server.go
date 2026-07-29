@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	_ "embed"
 	"net/http"
 	"time"
@@ -14,12 +15,50 @@ var openapiDoc string
 
 const timeFmt = time.RFC3339Nano
 
+type AgentService interface {
+	Create(context.Context, domain.Agent) (domain.Agent, error)
+	Get(context.Context, string) (domain.Agent, error)
+	List(context.Context) ([]domain.Agent, error)
+	Versions(context.Context, string) ([]domain.Agent, error)
+	Update(context.Context, string, domain.AgentPatch) (domain.Agent, error)
+	Archive(context.Context, string) (domain.Agent, error)
+}
+
+type EnvironmentService interface {
+	Create(context.Context, domain.Environment) (domain.Environment, error)
+	Get(context.Context, string) (domain.Environment, error)
+	List(context.Context) ([]domain.Environment, error)
+	Archive(context.Context, string) (domain.Environment, error)
+	Delete(context.Context, string) error
+}
+
+type SessionService interface {
+	Create(context.Context, app.CreateSessionInput) (domain.Session, error)
+	Get(context.Context, string) (domain.Session, error)
+	List(context.Context, app.ListPage) (app.SessionListPage, error)
+	SendEvent(context.Context, string, []domain.EventDraft) ([]domain.Event, error)
+	UpdateTitle(context.Context, string, string) (domain.Session, error)
+	Archive(context.Context, string) (domain.Session, error)
+	Delete(context.Context, string) error
+}
+
+type EventService interface {
+	Query(context.Context, string, app.EventQuery) ([]domain.Event, error)
+}
+
+type EventSubscriber interface {
+	SubscribeContext(context.Context, string, map[string]bool) (<-chan app.Frame, func(), error)
+}
+
 type Deps struct {
-	Agents   *app.AgentService
-	Envs     *app.EnvironmentService
-	Sessions *app.SessionService
-	Events   *app.EventService
-	Hub      *app.Hub
+	Agents   AgentService
+	Envs     EnvironmentService
+	Sessions SessionService
+	Events   EventService
+	Stream   EventSubscriber
+	// Hub is retained only as a source-compatible bridge for the SQLite test
+	// fixture and legacy server. New wiring should set Stream explicitly.
+	Hub *app.Hub
 }
 
 type Server struct {
@@ -29,6 +68,9 @@ type Server struct {
 }
 
 func NewServer(deps Deps, cfg Config) *Server {
+	if deps.Stream == nil {
+		deps.Stream = deps.Hub
+	}
 	s := &Server{deps: deps, cfg: cfg, mux: http.NewServeMux()}
 	s.routes()
 	return s

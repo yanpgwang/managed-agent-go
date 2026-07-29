@@ -2,7 +2,9 @@ package temporal
 
 import (
 	"context"
+	"errors"
 
+	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
 
@@ -15,10 +17,20 @@ import (
 // events by PostgreSQL receipt sequence after its durable cursor and ignores
 // anything already observed.
 type Signaler struct {
-	client client.Client
+	client    client.Client
+	taskQueue string
 }
 
-func NewSignaler(c client.Client) *Signaler { return &Signaler{client: c} }
+func NewSignaler(c client.Client) *Signaler {
+	return NewSignalerOnTaskQueue(c, TaskQueue)
+}
+
+func NewSignalerOnTaskQueue(c client.Client, taskQueue string) *Signaler {
+	if taskQueue == "" {
+		taskQueue = TaskQueue
+	}
+	return &Signaler{client: c, taskQueue: taskQueue}
+}
 
 // Wake starts-or-signals the SessionWorkflow for a session, delivering wakeup
 // metadata (the highest known receipt sequence) only. The workflow's start
@@ -27,7 +39,7 @@ func NewSignaler(c client.Client) *Signaler { return &Signaler{client: c} }
 func (s *Signaler) Wake(ctx context.Context, sessionID string, maxEventSeq int64) error {
 	opts := client.StartWorkflowOptions{
 		ID:        sessionID,
-		TaskQueue: TaskQueue,
+		TaskQueue: s.taskQueue,
 	}
 	_, err := s.client.SignalWithStartWorkflow(
 		ctx,
@@ -38,5 +50,22 @@ func (s *Signaler) Wake(ctx context.Context, sessionID string, maxEventSeq int64
 		SessionWorkflow,
 		SessionWorkflowInput{SessionID: sessionID, StartCursor: 0},
 	)
+	return err
+}
+
+// TerminateSession stops the live Workflow execution for a session before its
+// PostgreSQL projection is physically deleted. A session that never started a
+// Workflow is already stopped, so Temporal NotFound is idempotent success.
+func (s *Signaler) TerminateSession(ctx context.Context, sessionID string) error {
+	err := s.client.TerminateWorkflow(
+		ctx,
+		sessionID,
+		"",
+		"session deleted through the public API",
+	)
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		return nil
+	}
 	return err
 }

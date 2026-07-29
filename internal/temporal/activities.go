@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
@@ -72,6 +73,12 @@ type SandboxLease interface {
 	Acquire(ctx context.Context, sessionID string, spec sandbox.Spec) (sandbox.Sandbox, error)
 }
 
+// PreviewPublisher carries best-effort model deltas to live subscribers. It is
+// never part of turn correctness and may be nil.
+type PreviewPublisher interface {
+	PublishPreview(context.Context, string, domain.PreviewFrame) error
+}
+
 // TurnCompletionResult mirrors pg.TurnCompletion without importing the pg
 // package into the workflow-facing types, keeping the domain boundary intact.
 // Status is the session's projected status after the completion committed, so
@@ -108,6 +115,7 @@ type Activities struct {
 	journal     JournalStore
 	sandboxes   SandboxLease
 	ids         domain.IDGenerator
+	previews    PreviewPublisher
 }
 
 func NewActivities(
@@ -117,11 +125,16 @@ func NewActivities(
 	journal JournalStore,
 	sandboxes SandboxLease,
 	ids domain.IDGenerator,
+	previewPublisher ...PreviewPublisher,
 ) *Activities {
-	return &Activities{
+	activities := &Activities{
 		rt: rt, modelClient: modelClient, source: source,
 		journal: journal, sandboxes: sandboxes, ids: ids,
 	}
+	if len(previewPublisher) > 0 {
+		activities.previews = previewPublisher[0]
+	}
+	return activities
 }
 
 // LoadEvents returns the ordered public event references after a cursor. Only
@@ -205,7 +218,31 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 	if a.modelClient == nil {
 		return CallModelResult{}, fmt.Errorf("temporal: model client is not configured")
 	}
-	response, err := a.modelClient.CreateMessage(ctx, in.Request)
+	messageEventID := a.ids.NewID(domain.PrefixEvent)
+	startedPreview := false
+	var previewMu sync.Mutex
+	response, err := a.modelClient.CreateMessageStream(ctx, in.Request, func(index int, text string) {
+		if a.previews == nil || text == "" {
+			return
+		}
+		previewMu.Lock()
+		defer previewMu.Unlock()
+		if !startedPreview {
+			_ = a.previews.PublishPreview(ctx, in.SessionID, domain.PreviewFrame{
+				Kind:      domain.PreviewEventStart,
+				EventID:   messageEventID,
+				EventType: domain.EvAgentMessage,
+			})
+			startedPreview = true
+		}
+		_ = a.previews.PublishPreview(ctx, in.SessionID, domain.PreviewFrame{
+			Kind:      domain.PreviewEventDelta,
+			EventID:   messageEventID,
+			EventType: domain.EvAgentMessage,
+			Index:     index,
+			Text:      text,
+		})
+	})
 	if err != nil {
 		return CallModelResult{}, err
 	}
@@ -238,7 +275,7 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 	}
 	result.Response.Content = normalized
 	if hasText {
-		result.MessageEventID = a.ids.NewID(domain.PrefixEvent)
+		result.MessageEventID = messageEventID
 	}
 	return result, nil
 }

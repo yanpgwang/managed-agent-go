@@ -32,17 +32,19 @@ do not treat the default local sandbox as a security boundary.
   sessions, events, and internal runs.
 - [API overview](api/overview.md) lists the implemented endpoints and transport
   conventions.
-- [Roadmap](roadmap.md) shows how the project moves from a strong single-node
-  alpha toward durable multi-worker operation.
+- [Roadmap](roadmap.md) tracks the remaining compatibility and production
+  hardening work on the durable multi-process architecture.
 
 ## What works today
 
-The current slice supports versioned agents, environments, sessions, persisted
-event history, cursor pagination, SSE, restartable single-node runs, a
-multi-turn model/tool loop, six executing built-in tools (`bash`, `read`,
-`write`, `edit`, `glob`, `grep`; `web_fetch`/`web_search` are declared but not
-implemented), custom-tool handoff, local and Docker sandboxes, and opt-in live
-previews of assistant text.
+The primary path supports PostgreSQL-backed versioned agents, environments,
+sessions, persisted event history and cursor pagination; a durable Temporal
+model/tool loop; cross-process SSE through NATS wakeups plus PostgreSQL cursor
+reconciliation; six executing `always_allow` built-ins (`bash`, `read`, `write`,
+`edit`, `glob`, `grep`); local and Docker sandboxes; and opt-in live previews of
+assistant text. Custom-tool waits, `always_ask`, and interrupt remain only in
+the deprecated SQLite compatibility backend until their Temporal semantics are
+ported.
 
 The default runtime uses a deterministic offline model. A real
 Anthropic-shaped Messages API endpoint is enabled through environment variables.

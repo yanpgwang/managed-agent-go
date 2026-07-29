@@ -5,16 +5,17 @@ slug: /architecture
 
 # Architecture overview
 
-`managed-agent-go` is a modular monolith: one Go process hosts the compatible
-HTTP API, durable control plane, run dispatcher, agent runtime, and sandbox
-provider. SQLite is the durable store. These are current deployment choices,
-not permanent topology constraints.
+`managed-agent-go` is one codebase with explicit API and worker process roles.
+PostgreSQL owns public resources and events, Temporal owns in-flight
+orchestration, and NATS Core carries ephemeral wakeups and previews. The local
+Compose stack runs those roles separately; they can also be packaged in one
+deployment for development.
 
-The production direction is now fixed in
+The production direction and current primary path are fixed in
 [Target platform and technology selection](architecture/target-platform.md):
 Temporal orchestration, PostgreSQL, NATS Core, object storage, and managed or
-self-hosted sandbox providers. This page documents the **current** alpha so the
-migration can preserve its proven behavior.
+self-hosted sandbox providers. Object storage and production sandbox leases are
+still future layers.
 
 The
 [Managed Agents orchestration fit review](architecture/orchestration-fit.md)
@@ -23,17 +24,18 @@ path, and the detailed Temporal versus Restate decision.
 
 ```mermaid
 flowchart LR
-  Client["Managed Agents client"] --> HTTP["HTTP compatibility layer"]
-  HTTP --> App["Application services"]
-  App --> Store["SQLite repositories"]
-  App --> Queue["Durable session runs"]
-  Queue --> Runtime["Agent runtime"]
-  Runtime --> Model["Messages API client"]
-  Runtime --> Tools["Tool registry"]
-  Tools --> Sandbox["Local or Docker sandbox"]
-  Runtime -. "preview frames" .-> Hub["In-process stream hub"]
-  App --> Hub
-  Hub --> HTTP
+  Client["Managed Agents client"] --> API["HTTP API"]
+  API --> PG[("PostgreSQL resources<br/>events + outbox")]
+  API --> Temporal["Temporal frontend"]
+  API <--> NATS["NATS Core"]
+  Relay["Outbox relay"] --> PG
+  Relay --> Temporal
+  Temporal --> Worker["Temporal worker"]
+  Worker --> PG
+  Worker --> Model["Messages API"]
+  Worker --> Sandbox["Sandbox provider"]
+  Worker --> NATS
+  NATS --> API
 ```
 
 ## Design principles
@@ -45,13 +47,11 @@ are read from it:
 
 - **Public event history** (`GET .../events`, list, and the live SSE stream) is
   the immutable receipt/commit sequence. It never reorders or hides events.
-- **Model-facing conversation order** is reconstructed per turn from run
-  causality, not from raw commit order. For each prior completed run, in
-  admission order, the projection replays that run's trigger event IDs followed
-  by its persisted output event IDs, then appends the current run's trigger. The
-  output association is durable state on the run, so this ordering is rebuilt
-  identically after a restart, and a run never sees a later trigger that was
-  queued while it was still running.
+- **Model-facing conversation order** is reconstructed per turn from causality,
+  not from raw commit order. PostgreSQL tags committed output with the trigger
+  event ID; prior processed triggers are replayed with their exact output before
+  the current trigger. A turn never sees a later message queued while it was
+  still running.
 
 Before each model turn the application reconstructs that causal history and
 projects it into a Messages API conversation. The model endpoint performs
@@ -66,10 +66,10 @@ storage details cannot leak into the compatibility wire.
 
 ### Public history and execution bookkeeping are different things
 
-Session events are the public append-only history. Session runs are private,
-durable work items with `queued`, `running`, `completed`, and `failed` states.
-Keeping these models separate allows the executor to recover and eventually
-retry work without changing the public API.
+Session events are the public append-only history. Temporal Workflow history,
+turn attempts, and tool steps are private execution facts. Keeping those models
+separate lets orchestration recover without leaking Temporal or retry details
+onto the public API.
 
 ### Interfaces sit at expensive boundaries
 
@@ -84,9 +84,13 @@ model vendor, sandbox backend, or worker topology.
 | --- | --- |
 | `cmd/managed-agent` | Composition root, configuration, process lifecycle |
 | `internal/httpapi` | HTTP routes, strict validation, DTO mapping, SSE |
-| `internal/app` | Use cases, admission, run dispatch, event publication |
+| `internal/app` | Shared resource validation and legacy compatibility services |
+| `internal/controlplane` | PostgreSQL-backed public Session/Event use cases |
 | `internal/domain` | Resource, event, message, tool, and run semantics |
-| `internal/store` | SQLite repositories and atomic state transitions |
+| `internal/pg` | PostgreSQL repositories, ledger, outbox, and tool journal |
+| `internal/temporal` | Session Workflow, Activities, worker, and relay |
+| `internal/live` | NATS wakeups/previews plus PostgreSQL cursor reconciliation |
+| `internal/store` | Deprecated SQLite compatibility implementation |
 | `internal/agentruntime` | Model/tool orchestration behind `AgentRuntime` |
 | `internal/model` | Offline and Messages API model clients |
 | `internal/sandbox` | Local and Docker execution providers |
@@ -97,15 +101,23 @@ or sandbox dependencies.
 
 ## Durable write path
 
-Submitting input is not “write an event, then enqueue work.” The store commits
-the client events, `session.status_running`, session projection, and one queued
-run per processable trigger (in admission order) in one transaction. A crash
-therefore cannot leave accepted input without corresponding work.
+Submitting input is not “write an event, then call Temporal.” PostgreSQL commits
+the client events, `session.status_running`, Session projection, and one
+coalescible outbox wakeup in one transaction. A crash therefore cannot leave
+accepted input without a durable path to orchestration. A direct
+Signal-With-Start is only a latency optimization; the relay is the correctness
+path.
 
-Runtime calls happen outside SQL transactions. At run completion, buffered
-authoritative output, trigger `processed_at`, the final session status, and run
-completion are committed together. Persisted events are published to the
-in-process stream hub only after the commit succeeds.
+Model and tool calls happen as Temporal Activities outside SQL transactions. At
+turn completion, authoritative output, trigger `processed_at`, the final Session
+status, and optional attempt finalization commit together. PostgreSQL then emits
+a best-effort NATS wakeup; SSE subscribers read the committed rows by sequence.
+
+Physical session deletion is a small saga: PostgreSQL first marks the row as
+deleting under the admission lock, the API terminates its Temporal Workflow,
+then PostgreSQL removes the projection. The marker blocks concurrent admission
+and remains on an ambiguous termination error so a repeated DELETE can safely
+finish instead of leaving a `running` projection without a Workflow.
 
 Live text deltas are the exception: they are explicitly ephemeral previews,
 delivered only to opted-in SSE subscribers. They are never returned by event
@@ -113,46 +125,30 @@ history.
 
 ## Scaling boundaries
 
-The current process uses an in-memory stream hub and goroutines to drain durable
-runs. It will not be extended into a custom distributed scheduler. The accepted
-target uses Temporal for durable orchestration, PostgreSQL for public state,
-and NATS Core for ephemeral multi-process delivery. The migration and deletion
-gates are defined in the
-[target-platform decision](architecture/target-platform.md#migration-sequence).
-
-Adding worker replicas before that cut-over would still create ambiguous
-ownership and duplicate-side-effect risks.
+API replicas are stateless around PostgreSQL and NATS. Temporal assigns Workflow
+and Activity tasks to workers; the PostgreSQL tool journal records the
+side-effect ambiguity boundary. Core NATS is at-most-once, so streams
+periodically reconcile their durable cursor and never treat a wakeup as data.
+Worker Versioning and provider-backed sandbox leases are still required before
+production rolling deployments.
 
 ## Known architectural debt
 
 The strongest current risks are semantic rather than structural:
 
-1. Runtime output is buffered until completion even though tools may already
-   have performed side effects. A process crash can therefore repeat a side
-   effect without a durable journal of the prior attempt.
-2. Pending client actions are now a first-class durable `pending_actions` model
-   with a claim gate: a parked run persists one pending action per action event
-   (kind derived from the committed event's type AND payload) in the same transaction as the
-   action events, the `requires_action` terminal, the session projection, and
-   the run completion. While unresolved, ordinary queued runs — including runs
-   admitted before the park — are not claimable, and work admitted while the gate
-   is closed stays queued with the session left idle (no `session.status_running`);
-   only a matching resolution
-   trigger bypasses them, and the gate clears atomically when the resume run
-   closes. Admission rejects unknown, already-resolved, duplicate, wrong-session,
-   and wrong-kind references. The single custom-tool park/resume cycle is proven
-   end to end and survives restart. A single `always_ask`
-   `user.tool_confirmation` allow/deny execution resume is also implemented.
-   A park with multiple action events still gates all of them but has no
-   aggregated multi-action resume protocol; each must be resolved individually.
+1. The primary Workflow path has not yet ported the SQLite path's pending-action
+   gate. Custom tools, `always_ask`, and their out-of-order resolution semantics
+   must become durable Workflow waits before the legacy dispatcher can be
+   removed.
+2. `user.interrupt` still lacks the cross-process durable cancellation and
+   finish-vs-interrupt ordering contract on the primary path.
 3. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
    first tool use, reused across its runs, and released on session deletion.
    The manager is in-memory, so a process restart does not restore an idle
    session's workspace, and there is no durable checkpoint, quota, or eviction
    policy yet.
-4. `SessionService` currently combines session CRUD, admission, dispatch, and
-   completion orchestration. These responsibilities should be separated before
-   introducing multiple workers or richer retry behavior.
+4. Worker Versioning, observability, authentication, large-payload offload, and
+   production manifests remain open.
 
 These are tracked in the [roadmap](roadmap.md). The current architecture is a
 good foundation for an OSS alpha, but the above invariants should be resolved

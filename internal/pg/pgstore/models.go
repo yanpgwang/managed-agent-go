@@ -8,6 +8,26 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type Agent struct {
+	ID         string
+	Version    int32
+	Name       string
+	Body       []byte
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	ArchivedAt pgtype.Timestamptz
+}
+
+type Environment struct {
+	ID         string
+	Name       string
+	ConfigType string
+	Body       []byte
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	ArchivedAt pgtype.Timestamptz
+}
+
 type Event struct {
 	ID          string
 	SessionID   string
@@ -29,11 +49,16 @@ type OrchestrationOutbox struct {
 }
 
 type Session struct {
-	ID        string
-	Status    string
-	Body      []byte
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	ID            string
+	Status        string
+	Body          []byte
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	AgentID       *string
+	AgentVersion  *int32
+	EnvironmentID *string
+	ArchivedAt    pgtype.Timestamptz
+	DeletingAt    pgtype.Timestamptz
 }
 
 type ToolStep struct {

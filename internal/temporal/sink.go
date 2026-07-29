@@ -12,8 +12,8 @@ var _ agentruntime.EventSink = (*activitySink)(nil)
 // activitySink buffers the runtime's emitted drafts during one RunTurn Activity.
 // It pre-assigns each draft's committed id from the shared generator so the id
 // the runtime reads back (e.g. for tool_result correlation) matches the id
-// PostgreSQL will persist. Unlike the app's bufferedSink it has no hub/preview
-// side channel: previews over NATS are a later slice.
+// PostgreSQL will persist. This legacy Activity sink buffers authoritative
+// output; previews for the Workflow-owned model path are published separately.
 type activitySink struct {
 	ids    domain.IDGenerator
 	drafts []domain.EventDraft

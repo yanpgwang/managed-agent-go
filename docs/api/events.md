@@ -23,17 +23,17 @@ shape; persisted events receive an `id` and `processed_at`.
 The list must be non-empty. Clients cannot provide `id` or `processed_at`, and
 server-emitted event types are rejected.
 
-Accepted input types are:
+The default PostgreSQL/Temporal backend currently accepts:
 
 | Event | Current behavior |
 | --- | --- |
 | `user.message` | Starts a model turn |
-| `user.custom_tool_result` | Resumes a parked custom tool |
-| `user.tool_confirmation` | Resumes one pending built-in tool confirmation; allow executes it and deny emits an error result |
-| `user.tool_result` | Accepted; self-hosted worker flow is incomplete |
-| `user.interrupt` | Cancels the active run in the current process; multi-agent targeting and cross-process delivery are not supported |
 | `user.define_outcome` | Stored and validated |
-| `system.message` | Stored and admitted as input |
+
+Other valid client event shapes currently return `422 unsupported_error` on
+the primary backend. The deprecated `serve -backend sqlite` compatibility mode
+retains its existing custom-tool, tool-confirmation, interrupt, tool-result, and
+system-message behavior while those semantics move into Temporal.
 
 The response echoes only the submitted events:
 
@@ -85,8 +85,8 @@ event: agent.message
 data: {"id":"sevt_...","type":"agent.message","content":[...],"processed_at":"..."}
 ```
 
-The stream publishes new events only. It does not replay history and does not
-implement `Last-Event-ID`.
+The stream starts after the latest committed event at subscription time. It does
+not replay earlier history and does not implement `Last-Event-ID`.
 
 For reconnect without gaps:
 
@@ -128,6 +128,9 @@ currently emitted.
 
 ## Backpressure
 
-The stream hub is in-process and bounded. A slow subscriber can be disconnected
-and should reconnect using the open-stream-then-list procedure above. A
-distributed fan-out/replay service is not implemented.
+NATS Core carries best-effort wakeups and previews across API/worker processes;
+PostgreSQL remains authoritative. Each subscriber periodically reconciles its
+durable PostgreSQL cursor, so a lost wakeup delays a persisted event but does
+not lose it. The output buffer is bounded: a slow subscriber is disconnected
+and should reconnect using the open-stream-then-list procedure above. Preview
+frames are ephemeral and can be lost.

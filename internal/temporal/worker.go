@@ -14,7 +14,18 @@ import (
 // silently break workflow replay. RunTurn remains registered for histories that
 // predate workflowAgentLoopChangeID.
 func NewWorker(c client.Client, acts *Activities) worker.Worker {
-	w := worker.New(c, TaskQueue, worker.Options{})
+	return NewWorkerOnTaskQueue(c, acts, TaskQueue)
+}
+
+func NewWorkerOnTaskQueue(
+	c client.Client,
+	acts *Activities,
+	taskQueue string,
+) worker.Worker {
+	if taskQueue == "" {
+		taskQueue = TaskQueue
+	}
+	w := worker.New(c, taskQueue, worker.Options{})
 	w.RegisterWorkflow(SessionWorkflow)
 	w.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	w.RegisterActivityWithOptions(acts.RunTurn, activity.RegisterOptions{Name: ActivityRunTurn})

@@ -51,7 +51,15 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 	ids := domain.NewRandomIDGen()
 	modelClient := model.NewFake()
 
-	runtime := temporalpkg.NewRuntime(c, store, modelClient, sandbox.NewLocalProvider(), ids, temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond})
+	runtime := temporalpkg.NewRuntimeOnTaskQueue(
+		c,
+		store,
+		modelClient,
+		sandbox.NewLocalProvider(),
+		ids,
+		temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
+		"managed-agent-test-"+ids.NewID(""),
+	)
 
 	// Start the worker.
 	if err := runtime.Worker.Start(); err != nil {
@@ -187,7 +195,15 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	defer c.Close()
 
 	ids := domain.NewRandomIDGen()
-	runtime := temporalpkg.NewRuntime(c, store, modelClient, provider, ids, temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond})
+	runtime := temporalpkg.NewRuntimeOnTaskQueue(
+		c,
+		store,
+		modelClient,
+		provider,
+		ids,
+		temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
+		"managed-agent-test-"+ids.NewID(""),
+	)
 
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)

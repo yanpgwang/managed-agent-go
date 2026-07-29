@@ -5,18 +5,17 @@ slug: /architecture/platform-spine-milestone
 
 # Platform spine milestone
 
-Status: **Implemented (Workflow-owned agent-loop slice)**
+Status: **Implemented (primary HTTP + Workflow-owned agent-loop slice)**
 Date: **2026-07-29**
 
-This document describes exactly what the first bounded Temporal platform-spine
-slice implements, how to run it, and its explicit limitations. It is the
-concrete counterpart to the [target-platform decision](target-platform.md) and
-the [orchestration fit review](orchestration-fit.md): those fix the architecture;
-this records the first working increment of it.
+This document describes the implemented Temporal platform spine, the HTTP
+cutover built on it, and the remaining compatibility gates. It is the concrete
+counterpart to the [target-platform decision](target-platform.md) and the
+[orchestration fit review](orchestration-fit.md).
 
-The milestone deliberately does **not** cut over all traffic. The SQLite
-dispatcher (`internal/store`, `internal/app`) remains the default and is
-unchanged. The PostgreSQL/Temporal path is additive and feature-gated.
+PostgreSQL/Temporal/NATS is the default `serve` backend. SQLite remains
+available as a deprecated compatibility backend until durable client-action
+waits and interrupt ordering reach parity.
 
 ## Architecture re-review (2026-07-28)
 
@@ -55,8 +54,8 @@ authoritative fact into the orchestrator.
 
 ### Local development stack
 
-`deployments/local/` brings up PostgreSQL, Temporal (with UI), and NATS Core
-with pinned versions and health checks. See
+`deployments/local/` brings up PostgreSQL, Temporal (with UI), NATS Core, the
+HTTP API, and the worker with pinned versions and health checks. See
 [the stack README](https://github.com/yanpgwang/managed-agent-go/tree/main/deployments/local).
 
 ```sh
@@ -69,19 +68,21 @@ make -C deployments/local health
 | PostgreSQL | `postgres:17.5-alpine`         | Event ledger, projections, admission outbox |
 | Temporal   | `temporalio/auto-setup:1.29.7` | Durable session orchestration              |
 | Temporal UI| `temporalio/ui:2.52.1`         | Workflow explorer (`localhost:8233`)       |
-| NATS Core  | `nats:2.11-alpine`             | Previews / SSE wakeups (later slice)       |
+| NATS Core  | `nats:2.11.17-alpine`          | Ephemeral previews / SSE wakeups           |
+| API        | local image                     | PostgreSQL-backed HTTP API (`localhost:8080`) |
+| Worker     | local image                     | Temporal worker and outbox relay           |
 
 ### PostgreSQL plumbing
 
 `internal/pg` adds a `pgx` connection pool, embedded `goose` migrations
 (`internal/pg/migrations`), and `sqlc`-generated typed queries
 (`internal/pg/pgstore`, regenerated with `go generate ./internal/pg`). The
-schema is intentionally minimal: a `sessions` projection, an append-only
-`events` ledger with a durable per-session receipt sequence, and a coalescible
-`orchestration_outbox`.
+schema contains versioned Agents, Environments, a `sessions` projection, an
+append-only `events` ledger with a durable per-session receipt sequence, a
+coalescible `orchestration_outbox`, and the turn/tool journal.
 
-SQLite remains the default compatibility store; nothing here migrates or
-replaces it.
+The HTTP resource services now use these PostgreSQL repositories. SQLite is not
+part of the primary data path.
 
 ### Event-admission transaction
 
@@ -159,6 +160,12 @@ receipt sequence. Correctness depends on the outbox, not on any fast path:
 
 The API/orchestrator may make a best-effort post-commit Signal to reduce latency
 (`Orchestrator.Admit`), but the relay is the source of correctness.
+
+Session deletion uses a two-phase database fence around Temporal termination.
+The first transaction rejects a running Session and marks an idle Session as
+deleting, which blocks later admission. The API then terminates the Workflow and
+physically deletes the fenced projection. An ambiguous termination error leaves
+the fence in place so retrying DELETE is safe.
 
 ### Vertical path for one `user.message`
 
@@ -244,13 +251,17 @@ ambiguous.
 
 A model error is retried at the model Activity boundary and never touches the
 tool journal. Client-action tools (custom tools, `always_ask`) and interrupts are
-still out of scope on this path and terminate the turn honestly if requested.
+still out of scope on this path and are rejected by the primary HTTP backend
+before admission.
 
-Run it with the feature-gated subcommand:
+Run the API and worker as separate processes:
 
 ```sh
 export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
 export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
+export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
+go run ./cmd/managed-agent serve
+# In a second terminal with the same variables:
 go run ./cmd/managed-agent orchestrate
 ```
 
@@ -258,13 +269,16 @@ go run ./cmd/managed-agent orchestrate
 
 | Variable | Used by | Meaning |
 | --- | --- | --- |
-| `MANAGED_AGENT_DATABASE_URL` | `orchestrate` | PostgreSQL connection string (required). |
-| `MANAGED_AGENT_TEMPORAL_HOSTPORT` | `orchestrate` | Temporal frontend (default `localhost:7233`). |
-| `MANAGED_AGENT_TEMPORAL_NAMESPACE` | `orchestrate` | Temporal namespace (default `default`). |
+| `MANAGED_AGENT_DATABASE_URL` | `serve`, `orchestrate` | PostgreSQL connection string (required). |
+| `MANAGED_AGENT_TEMPORAL_HOSTPORT` | `serve`, `orchestrate` | Temporal frontend (default `localhost:7233`). |
+| `MANAGED_AGENT_TEMPORAL_NAMESPACE` | `serve`, `orchestrate` | Temporal namespace (default `default`). |
+| `MANAGED_AGENT_NATS_URL` | `serve`, `orchestrate` | NATS Core URL (default `nats://localhost:4222`). |
 | `MANAGED_AGENT_TEST_DATABASE_URL` | tests | Enables PostgreSQL integration tests; unset skips them. |
 | `MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT` | tests | With the DB var, enables the real end-to-end test. |
+| `MANAGED_AGENT_TEST_NATS_URL` | tests | With the DB var, enables NATS integration tests. |
 
-The default `serve` command (SQLite) reads none of these and is unchanged.
+For temporary compatibility testing, `serve -backend sqlite -db <path>` uses
+none of these services.
 
 ## Tests
 
@@ -277,6 +291,10 @@ Failure-boundary coverage:
 | Property | Test |
 | --- | --- |
 | Atomic event + outbox admission | `pg.TestAdmitEvents_AtomicEventAndOutbox` |
+| Agent/Environment archival cannot cross Session dependency locks | `pg.TestActiveResourceLocksFenceConcurrentArchival` |
+| Session cursor precision cannot duplicate a page boundary | `pg.TestSessionPaginationUsesPostgresTimestampPrecision` |
+| Delete/admission race is fenced before Workflow termination | `pg.TestSessionDeletionFenceBlocksAdmission`, `controlplane.TestDeleteFencesAdmissionBeforeWorkflowTermination` |
+| Ambiguous Workflow termination is safely retryable | `controlplane.TestDeleteTerminationFailureKeepsFenceAndRetryCompletes` |
 | Coalescing outbox (not a queue) | `pg.TestAdmitEvents_CoalescesWakeup` |
 | Ordered event consumption | `pg.TestAdmitEvents_OrderedConsumption`, `temporal.TestSessionWorkflow_OrderedConsumption` |
 | Causal history + one idle per batch (A,B → A,agent(A),B) | `pg.TestHistoryThrough_CausalBatchOrdering` |
@@ -314,21 +332,19 @@ To run the integration tests locally:
 make -C deployments/local up && make -C deployments/local health
 export MANAGED_AGENT_TEST_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
 export MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT="localhost:7233"
-go test ./internal/pg/... ./internal/temporal/...
+export MANAGED_AGENT_TEST_NATS_URL="nats://localhost:4222"
+go test ./internal/pg/... ./internal/controlplane/... ./internal/live/... ./internal/temporal/...
 ```
 
 ## Explicit limitations
 
-This is a foundation, not the migration. The following are deliberately **out of
-scope** and not implemented on the Temporal path:
+The primary traffic cutover is complete, but these limitations remain:
 
-- **No traffic cutover.** The HTTP API still runs entirely on the SQLite
-  dispatcher. The `orchestrate` command runs the execution plane only.
 - **Always-allow built-ins only on the Workflow path.** Completed tool steps
   resume from their durable result, including multi-tool/multi-round message
   structure. Client-action tools (custom tools, `always_ask` confirmations) and
   their park/resume protocol, and `user.interrupt` cancellation, are out of
-  scope and terminate the turn honestly if requested. The
+  scope and receive `422 unsupported_error` before admission. The
   SQLite path's own tool journal (`internal/app/tool_journal.go`,
   `internal/store/execution_store.go`) is preserved and unchanged; the Temporal
   path adds a parallel PostgreSQL journal (`turn_attempts`, `tool_steps`) rather
@@ -345,8 +361,6 @@ scope** and not implemented on the Temporal path:
   acknowledgment. This slice makes that ambiguity explicit (a step left `started`
   becomes `ambiguous` and the turn is refused, never silently replayed); it does
   not eliminate it.
-- **No previews/SSE over NATS.** NATS is in the stack but the workflow path does
-  not yet publish previews or persisted-event wakeups through it.
 - **No multiagent, schedules, webhooks, memory/vault/files, or sandbox
   checkpointing.**
 - **No production deployment manifests.** `deployments/local` is for development
@@ -354,9 +368,9 @@ scope** and not implemented on the Temporal path:
 - **No Worker Versioning rollout yet.** The Continue-As-New path is tested; a
   rolling worker-version deployment is a later slice.
 
-## Next smallest slice
+## Next slices
 
-Two candidates keep the same boundaries and API non-cutover:
+Two parity gates remain before the SQLite backend can be deleted:
 
 - **Client-action tools under Temporal.** Model a park on a custom tool or an
   `always_ask` confirmation as a durable wait in the `SessionWorkflow`: commit
@@ -364,6 +378,10 @@ Two candidates keep the same boundaries and API non-cutover:
   turn when the resolving `user.custom_tool_result` / `user.tool_confirmation` is
   admitted and delivered as a wakeup — reusing the existing pending-action
   semantics rather than inventing a Temporal-specific park protocol.
-- **HTTP/PostgreSQL cutover.** Route the feature-gated HTTP session path through
-  the PostgreSQL admission/orchestration boundary, while keeping the legacy
-  SQLite server available until compatibility and rollback gates pass.
+- **Durable interrupt.** Deliver `user.interrupt` across API/worker processes,
+  cancel the active model/tool Activity, and preserve the documented
+  finish-vs-interrupt event ordering.
+
+Harness work can proceed in parallel because both gates use the established
+PostgreSQL/Temporal boundaries rather than changing the runtime/provider
+contracts.

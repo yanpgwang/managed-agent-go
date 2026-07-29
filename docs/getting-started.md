@@ -11,22 +11,21 @@ message through the full environment → agent → session → event flow.
 
 ## Requirements
 
-- Go 1.26 or newer
+- Docker with Compose
 - `curl`
 - `jq` for the shell examples
 
 ## Run the server
 
 ```bash
-go run ./cmd/managed-agent serve -db managed-agent.db
+make -C deployments/local up
+make -C deployments/local health
 ```
 
-The server binds to `127.0.0.1:8080` (loopback) by default; the examples below
-use `http://localhost:8080`. Pass `-addr` to change it. No model credentials are
-required. The default local server is lenient about Managed Agents headers; add
-`-strict` when testing client compatibility. `-strict` is **header validation,
-not authentication** — it checks that the Claude API wire headers are present
-and valid, not that any credential is genuine.
+This builds and starts separate API and worker containers plus PostgreSQL,
+Temporal, Temporal UI, and NATS. The examples use `http://localhost:8080`; the
+Workflow explorer is at `http://localhost:8233`. No model credentials are
+required because the worker defaults to the deterministic offline model.
 
 In another shell, verify readiness:
 
@@ -37,7 +36,7 @@ curl -i http://localhost:8080/readyz
 ## Create an environment
 
 Environment records identify where a session runs. The implemented `cloud`
-record is sufficient for the in-process runtime:
+record routes work to the Temporal worker:
 
 ```bash
 ENV_ID=$(
@@ -119,7 +118,8 @@ curl -N \
 
 The opt-in adds ephemeral `event_start` and `event_delta` frames while text is
 generated. The final `agent.message` is authoritative and persisted; preview
-frames are not.
+frames are not. NATS carries low-latency wakeups and previews, while every
+persisted event is reconciled from PostgreSQL by sequence.
 
 ## Use a real model endpoint
 
@@ -134,7 +134,7 @@ export MANAGED_AGENT_MODEL_AUTH=x-api-key # or authorization-bearer
 # isolation. The server refuses to start with a real model + local sandbox.
 export MANAGED_AGENT_SANDBOX=docker
 
-go run ./cmd/managed-agent serve
+go run ./cmd/managed-agent orchestrate
 ```
 
 The configured endpoint must expose an Anthropic-shaped `/v1/messages` API.
@@ -148,8 +148,22 @@ input or in production.
 
 ## Clean up
 
-The pre-release project does not maintain schema migrations. Stop the server
-before deleting a disposable local database, then recreate it on the next
-start. This applies to schema additions too: the durable run-output association
-column (`session_runs.output_event_ids`) follows the same rebuild-the-dev-DB
-policy — there is no migration subsystem.
+```bash
+make -C deployments/local down
+```
+
+This keeps the PostgreSQL volume. Add `VOLUMES=1` only when you intentionally
+want to delete local data. PostgreSQL schema changes are applied by embedded,
+versioned `goose` migrations when API or worker processes start.
+
+## Temporary SQLite compatibility mode
+
+The former single-process runtime remains available during the client-action
+and interrupt migration:
+
+```bash
+go run ./cmd/managed-agent serve -backend sqlite -db managed-agent.db
+```
+
+It is a frozen comparison/rollback path, not a production backend. New
+deployments should use the PostgreSQL/Temporal stack above.

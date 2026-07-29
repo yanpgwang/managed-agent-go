@@ -1,10 +1,12 @@
 # Reproducible local development stack for the Temporal platform spine.
 #
-# Brings up exactly the three backing services the first vertical slice needs:
+# Brings up the backing services plus separate API and worker processes:
 #   - PostgreSQL   the event ledger, projections, and admission outbox (and, on a
 #                  separate database, Temporal's own persistence)
 #   - Temporal     durable session orchestration (auto-setup + web UI)
-#   - NATS Core    ephemeral preview / SSE wakeup transport (wired in a later slice)
+#   - NATS Core    ephemeral preview / SSE wakeup transport
+#   - API          PostgreSQL-backed Managed Agents-compatible HTTP surface
+#   - Worker       Temporal worker plus PostgreSQL outbox relay
 #
 # Versions are pinned deliberately. Bump them intentionally, not implicitly.
 #
@@ -74,7 +76,7 @@ services:
       - "8233:8080"               # http://localhost:8233 for the workflow explorer
 
   nats:
-    image: nats:2.11-alpine
+    image: nats:2.11.17-alpine
     container_name: managed-agent-nats
     command:
       - "--http_port=8222"        # monitoring endpoint used by the health check
@@ -86,6 +88,53 @@ services:
       interval: 5s
       timeout: 5s
       retries: 20
+
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: managed-agent-go:local
+    container_name: managed-agent-api
+    command: ["serve", "-addr", ":8080"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    environment:
+      MANAGED_AGENT_DATABASE_URL: postgres://postgres:postgres@postgres:5432/managed_agent?sslmode=disable
+      MANAGED_AGENT_TEMPORAL_HOSTPORT: temporal:7233
+      MANAGED_AGENT_TEMPORAL_NAMESPACE: default
+      MANAGED_AGENT_NATS_URL: nats://nats:4222
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8080/readyz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    image: managed-agent-go:local
+    # The api service builds this shared image before Compose creates either
+    # application container. Never attempt to pull this intentionally local tag.
+    pull_policy: never
+    container_name: managed-agent-worker
+    command: ["orchestrate"]
+    depends_on:
+      api:
+        condition: service_healthy
+      temporal:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    environment:
+      MANAGED_AGENT_DATABASE_URL: postgres://postgres:postgres@postgres:5432/managed_agent?sslmode=disable
+      MANAGED_AGENT_TEMPORAL_HOSTPORT: temporal:7233
+      MANAGED_AGENT_TEMPORAL_NAMESPACE: default
+      MANAGED_AGENT_NATS_URL: nats://nats:4222
 
 volumes:
   postgres-data:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -13,22 +14,48 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
 )
 
-// Store is the PostgreSQL platform-spine store. It owns the event-admission
+// Store is the primary PostgreSQL control-plane store. It owns the event-admission
 // transaction, cursor reads for the SessionWorkflow, idempotent turn
 // completion, and the coalescible orchestration outbox.
 //
-// It is a NEW path used only behind the feature gate; the SQLite store remains
-// the default. PostgreSQL — not Temporal — is the source of truth for public
-// events and the session projection.
+// PostgreSQL — not Temporal — is the source of truth for public events and the
+// session projection.
 type Store struct {
-	pool  *pgxpool.Pool
-	q     *pgstore.Queries
-	ids   domain.IDGenerator
-	clock domain.Clock
+	pool     *pgxpool.Pool
+	q        *pgstore.Queries
+	ids      domain.IDGenerator
+	clock    domain.Clock
+	notifier EventNotifier
 }
 
 func NewStore(pool *pgxpool.Pool, ids domain.IDGenerator, clock domain.Clock) *Store {
 	return &Store{pool: pool, q: pgstore.New(pool), ids: ids, clock: clock}
+}
+
+// EventNotifier wakes live-event subscribers after a PostgreSQL commit. It is a
+// latency optimization only: subscribers always reconcile from the durable
+// event ledger and correctness never depends on notification delivery.
+type EventNotifier interface {
+	NotifySession(context.Context, string) error
+}
+
+// SetEventNotifier installs the process-local live notification publisher
+// during startup, before the Store is shared with request handlers or workers.
+func (s *Store) SetEventNotifier(notifier EventNotifier) {
+	s.notifier = notifier
+}
+
+func (s *Store) notifySession(ctx context.Context, sessionID string) {
+	if s.notifier == nil {
+		return
+	}
+	if err := s.notifier.NotifySession(ctx, sessionID); err != nil {
+		log.Printf(
+			"pg: live event notification failed session_id=%s (ledger remains authoritative): %v",
+			sessionID,
+			err,
+		)
+	}
 }
 
 // Admission is the result of an event-admission transaction: the committed
@@ -64,19 +91,57 @@ func (s *Store) CreateSession(
 	session domain.Session,
 	drafts []domain.EventDraft,
 ) (Admission, error) {
+	return s.createSession(ctx, session, drafts, false)
+}
+
+// CreateAPISession creates a public API session while holding share locks on
+// its exact Agent version and Environment. FOR SHARE conflicts with both
+// archival's non-key UPDATE and Environment deletion, so the dependency checks
+// and session insert linearize with those lifecycle operations.
+func (s *Store) CreateAPISession(
+	ctx context.Context,
+	session domain.Session,
+	drafts []domain.EventDraft,
+) (Admission, error) {
+	return s.createSession(ctx, session, drafts, true)
+}
+
+func (s *Store) createSession(
+	ctx context.Context,
+	session domain.Session,
+	drafts []domain.EventDraft,
+	checkDependencies bool,
+) (Admission, error) {
+	// PostgreSQL timestamptz has microsecond precision. Normalize the JSON
+	// projection to the same value as the relational key so a list cursor never
+	// compares a nanosecond boundary against a truncated database timestamp.
+	session.CreatedAt = session.CreatedAt.UTC().Truncate(time.Microsecond)
+	session.UpdatedAt = session.UpdatedAt.UTC().Truncate(time.Microsecond)
+	if session.ArchivedAt != nil {
+		archivedAt := session.ArchivedAt.UTC().Truncate(time.Microsecond)
+		session.ArchivedAt = &archivedAt
+	}
 	body, err := json.Marshal(session)
 	if err != nil {
 		return Admission{}, err
 	}
 	var admission Admission
 	err = s.withTx(ctx, func(q *pgstore.Queries) error {
-		if err := q.InsertSession(ctx, pgstore.InsertSessionParams{
-			ID:        session.ID,
-			Status:    string(session.Status),
-			Body:      body,
-			CreatedAt: tsUTC(session.CreatedAt),
-			UpdatedAt: tsUTC(session.UpdatedAt),
-		}); err != nil {
+		if checkDependencies {
+			if _, err := q.LockActiveAgentVersion(ctx, pgstore.LockActiveAgentVersionParams{
+				ID: session.AgentID, Version: int32(session.AgentVersion),
+			}); errors.Is(err, pgx.ErrNoRows) {
+				return domain.Validation("agent is missing or archived")
+			} else if err != nil {
+				return err
+			}
+			if _, err := q.LockActiveEnvironment(ctx, session.EnvironmentID); errors.Is(err, pgx.ErrNoRows) {
+				return domain.Validation("environment is missing or archived")
+			} else if err != nil {
+				return err
+			}
+		}
+		if err := q.InsertSession(ctx, insertSessionParams(session, body)); err != nil {
 			return err
 		}
 		var innerErr error
@@ -86,7 +151,22 @@ func (s *Store) CreateSession(
 	if err != nil {
 		return Admission{}, err
 	}
+	s.notifySession(ctx, session.ID)
 	return admission, nil
+}
+
+func insertSessionParams(session domain.Session, body []byte) pgstore.InsertSessionParams {
+	return pgstore.InsertSessionParams{
+		ID:            session.ID,
+		Status:        string(session.Status),
+		Body:          body,
+		CreatedAt:     tsUTC(session.CreatedAt),
+		UpdatedAt:     tsUTC(session.UpdatedAt),
+		AgentID:       stringPtr(session.AgentID),
+		AgentVersion:  int32Ptr(session.AgentVersion),
+		EnvironmentID: stringPtr(session.EnvironmentID),
+		ArchivedAt:    tsPtr(session.ArchivedAt),
+	}
 }
 
 // AdmitEvents is the PostgreSQL event-admission transaction for the Temporal
@@ -112,9 +192,15 @@ func (s *Store) AdmitEvents(
 		if err != nil {
 			return err
 		}
-		session, err := sessionFromRow(row)
+		if row.DeletingAt.Valid {
+			return domain.Conflict("session deletion is in progress")
+		}
+		session, err := sessionFromLockRow(row)
 		if err != nil {
 			return err
+		}
+		if session.ArchivedAt != nil {
+			return domain.Conflict("cannot send events to an archived session")
 		}
 		if session.Status == domain.StatusTerminated {
 			return domain.Conflict("cannot send events to a terminated session")
@@ -126,6 +212,7 @@ func (s *Store) AdmitEvents(
 	if err != nil {
 		return Admission{}, err
 	}
+	s.notifySession(ctx, sessionID)
 	return admission, nil
 }
 
@@ -157,7 +244,7 @@ func (s *Store) admitLocked(
 
 	hasTrigger := false
 	for _, d := range drafts {
-		if domain.IsClientSubmittable(d.Type) {
+		if d.Type == domain.EvUserMessage {
 			hasTrigger = true
 			break
 		}
@@ -308,7 +395,7 @@ func (s *Store) GetSession(ctx context.Context, id string) (domain.Session, erro
 	if err != nil {
 		return domain.Session{}, err
 	}
-	return sessionFromRow(row)
+	return sessionFromGetRow(row)
 }
 
 // GetEvent returns a single public event by id.
@@ -462,7 +549,10 @@ func (s *Store) completeTurn(
 		if err != nil {
 			return err
 		}
-		session, err := sessionFromRow(row)
+		if row.DeletingAt.Valid {
+			return domain.Conflict("session deletion is in progress")
+		}
+		session, err := sessionFromLockRow(row)
 		if err != nil {
 			return err
 		}
@@ -560,6 +650,7 @@ func (s *Store) completeTurn(
 	if err != nil {
 		return TurnCompletion{}, err
 	}
+	s.notifySession(ctx, sessionID)
 	return result, nil
 }
 
