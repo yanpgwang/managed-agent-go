@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -244,6 +245,15 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 		})
 	})
 	if err != nil {
+		var apiErr *model.APIError
+		if errors.As(err, &apiErr) && !apiErr.Retryable() {
+			// Permanent provider failures cannot succeed while the immutable turn
+			// input and worker configuration remain unchanged. Return them through
+			// the existing successful-result terminal channel so the Workflow
+			// commits session.error and status_terminated instead of retrying the
+			// Activity forever.
+			return CallModelResult{FatalError: apiErr.Error()}, nil
+		}
 		return CallModelResult{}, err
 	}
 	result := CallModelResult{Response: response}

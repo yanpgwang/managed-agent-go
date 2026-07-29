@@ -249,10 +249,14 @@ Activity; this absorbs a transient or lost database acknowledgment before a
 later Activity attempt must conservatively classify a still-started step as
 ambiguous.
 
-A model error is retried at the model Activity boundary and never touches the
-tool journal. Client-action tools (custom tools, `always_ask`) and interrupts are
-still out of scope on this path and are rejected by the primary HTTP backend
-before admission.
+Transient model failures (connection errors, timeouts, conflicts, rate limits,
+server errors, and overload) are retried at the model Activity boundary and
+never touch the tool journal. Permanent provider failures are returned through
+the Activity's existing terminal-result channel, so the Workflow commits an
+honest `session.error` plus `session.status_terminated` instead of retrying an
+unchanged request forever. Client-action tools (custom tools, `always_ask`) and
+interrupts are still out of scope on this path and are rejected by the primary
+HTTP backend before admission.
 
 Run the API and worker as separate processes:
 

@@ -16,6 +16,7 @@ var _ Client = (*Fake)(nil)
 type Fake struct {
 	mu   sync.Mutex
 	last Request
+	err  error
 }
 
 func NewFake() *Fake { return &Fake{} }
@@ -23,7 +24,11 @@ func NewFake() *Fake { return &Fake{} }
 func (f *Fake) CreateMessage(_ context.Context, req Request) (Response, error) {
 	f.mu.Lock()
 	f.last = req
+	err := f.err
 	f.mu.Unlock()
+	if err != nil {
+		return Response{}, err
+	}
 
 	if len(req.Tools) > 0 && !hasToolResult(req.Messages) {
 		return Response{
@@ -47,6 +52,14 @@ func (f *Fake) CreateMessage(_ context.Context, req Request) (Response, error) {
 		Content:    []domain.ContentBlock{{Type: "text", Text: "echo: " + lastUser}},
 		StopReason: "end_turn",
 	}, nil
+}
+
+// SetError makes subsequent calls return err after recording their request.
+// It is intended for deterministic model-boundary and orchestration tests.
+func (f *Fake) SetError(err error) {
+	f.mu.Lock()
+	f.err = err
+	f.mu.Unlock()
 }
 
 // CreateMessageStream mirrors CreateMessage but streams the reply text in

@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,59 @@ func TestCallModelPublishesCorrelatedPreviewFrames(t *testing.T) {
 	}
 	if got, want := text.String(), "echo: hello"; got != want {
 		t.Fatalf("preview text = %q, want %q", got, want)
+	}
+}
+
+func TestCallModelPermanentAPIErrorBecomesFatalResult(t *testing.T) {
+	client := model.NewFake()
+	client.SetError(&model.APIError{
+		Kind:       model.ErrorInvalidRequest,
+		StatusCode: 400,
+		Type:       "invalid_request_error",
+		Message:    "invalid messages",
+	})
+	activities := NewActivities(
+		nil, client, nil, nil, nil, domain.NewSeqIDGen(),
+	)
+
+	result, err := activities.CallModel(context.Background(), CallModelInput{
+		SessionID: "sesn_permanent",
+		Request:   model.Request{Model: "test-model"},
+	})
+	if err != nil {
+		t.Fatalf("CallModel returned Activity error for permanent failure: %v", err)
+	}
+	if result.FatalError == "" {
+		t.Fatal("CallModel returned no FatalError for permanent failure")
+	}
+}
+
+func TestCallModelTransientAPIErrorRemainsActivityError(t *testing.T) {
+	client := model.NewFake()
+	want := &model.APIError{
+		Kind:       model.ErrorOverloaded,
+		StatusCode: 529,
+		Type:       "overloaded_error",
+		Message:    "try again",
+	}
+	client.SetError(want)
+	activities := NewActivities(
+		nil, client, nil, nil, nil, domain.NewSeqIDGen(),
+	)
+
+	result, err := activities.CallModel(context.Background(), CallModelInput{
+		SessionID: "sesn_transient",
+		Request:   model.Request{Model: "test-model"},
+	})
+	if err == nil {
+		t.Fatal("CallModel returned nil Activity error for transient failure")
+	}
+	var got *model.APIError
+	if !errors.As(err, &got) || got.Kind != model.ErrorOverloaded {
+		t.Fatalf("Activity error = %#v, want overloaded APIError", err)
+	}
+	if result.FatalError != "" {
+		t.Fatalf("FatalError = %q, want empty for transient failure", result.FatalError)
 	}
 }
 

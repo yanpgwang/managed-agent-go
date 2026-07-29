@@ -175,12 +175,12 @@ func (a *Anthropic) CreateMessage(ctx context.Context, req Request) (Response, e
 
 	resp, err := a.http.Do(httpReq)
 	if err != nil {
-		return Response{}, fmt.Errorf("model: request failed: %w", err)
+		return Response{}, classifyRequestError(err)
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return Response{}, fmt.Errorf("model: unexpected status %d: %s", resp.StatusCode, upstreamErrorText(raw))
+		return Response{}, classifyHTTPError(resp.StatusCode, raw, resp.Header)
 	}
 	var wr wireResponse
 	if err := json.Unmarshal(raw, &wr); err != nil {
@@ -233,12 +233,12 @@ func (a *Anthropic) CreateMessageStream(ctx context.Context, req Request, onDelt
 
 	resp, err := a.http.Do(httpReq)
 	if err != nil {
-		return Response{}, fmt.Errorf("model: request failed: %w", err)
+		return Response{}, classifyRequestError(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-		return Response{}, fmt.Errorf("model: unexpected status %d: %s", resp.StatusCode, upstreamErrorText(raw))
+		return Response{}, classifyHTTPError(resp.StatusCode, raw, resp.Header)
 	}
 	return decodeMessageStream(resp.Body, onDelta)
 }
@@ -410,33 +410,6 @@ func toWireBlock(b domain.ContentBlock) wireBlock {
 }
 
 const maxUpstreamErrorLen = 512
-
-// upstreamErrorText extracts a safe, single-line, length-bounded description of
-// an upstream error body for inclusion in an operator-facing error. It never
-// includes request headers or credentials — only the response body is read. The
-// body may be a JSON {"error":{"message":...}} envelope or plain text; both are
-// sanitized (control characters collapsed to spaces) and truncated.
-func upstreamErrorText(raw []byte) string {
-	var env struct {
-		Error struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &env); err == nil {
-		if msg := strings.TrimSpace(env.Error.Message); msg != "" {
-			if t := strings.TrimSpace(env.Error.Type); t != "" {
-				return sanitizeErrorText(t + ": " + msg)
-			}
-			return sanitizeErrorText(msg)
-		}
-	}
-	text := strings.TrimSpace(string(raw))
-	if text == "" {
-		return "(empty body)"
-	}
-	return sanitizeErrorText(text)
-}
 
 // sanitizeErrorText collapses whitespace/control characters to single spaces and
 // truncates to maxUpstreamErrorLen bytes so a hostile or verbose upstream body

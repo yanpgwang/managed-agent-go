@@ -3,11 +3,13 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -62,8 +64,10 @@ func TestAnthropic_BearerAuthAndErrorStatus(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
 			t.Errorf("Authorization = %q, want Bearer sk-test", got)
 		}
+		w.Header().Set("request-id", "req_rate_limit")
+		w.Header().Set("Retry-After", "3")
 		w.WriteHeader(429)
-		_, _ = w.Write([]byte(`{"error":{"message":"rate limited"}}`))
+		_, _ = w.Write([]byte(`{"error":{"type":"rate_limit_error","message":"rate limited"}}`))
 	}))
 	defer srv.Close()
 	c, _ := NewAnthropic(AnthropicConfig{
@@ -76,6 +80,29 @@ func TestAnthropic_BearerAuthAndErrorStatus(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rate limited") {
 		t.Fatalf("error should include upstream message, got %q", err.Error())
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != ErrorRateLimit ||
+		!apiErr.Retryable() || apiErr.RetryAfter != 3*time.Second ||
+		apiErr.RequestID != "req_rate_limit" {
+		t.Fatalf("typed error = %#v", err)
+	}
+}
+
+func TestAnthropic_StreamErrorStatusIsTyped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusRequestEntityTooLarge)
+		_, _ = w.Write([]byte(`{"error":{"type":"request_too_large","message":"request exceeds limit"}}`))
+	}))
+	defer srv.Close()
+	c, _ := NewAnthropic(AnthropicConfig{
+		BaseURL: srv.URL, APIKey: "sk-test", Model: "m", HTTPClient: srv.Client(),
+	})
+
+	_, err := c.CreateMessageStream(context.Background(), Request{}, nil)
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.Kind != ErrorRequestTooLarge || apiErr.Retryable() {
+		t.Fatalf("typed stream error = %#v", err)
 	}
 }
 
