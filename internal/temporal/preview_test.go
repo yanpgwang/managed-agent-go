@@ -111,7 +111,7 @@ func TestCallModelTransientAPIErrorRemainsActivityError(t *testing.T) {
 	}
 }
 
-func TestCompleteWorkflowTurnForwardsPendingActionIDs(t *testing.T) {
+func TestCompleteWorkflowTurnForwardsPendingBarrierIDs(t *testing.T) {
 	source := newFakeSource(nil)
 	activities := NewActivities(
 		nil,
@@ -121,24 +121,34 @@ func TestCompleteWorkflowTurnForwardsPendingActionIDs(t *testing.T) {
 		nil,
 		domain.NewSeqIDGen(),
 	)
-	want := []string{"sevt_action_1", "sevt_action_2"}
+	wantPending := []string{"sevt_action_1", "sevt_action_2"}
+	wantResolved := []string{"sevt_result_1", "sevt_result_2"}
 	_, err := activities.CompleteWorkflowTurn(
 		context.Background(),
 		CompleteWorkflowTurnInput{
 			SessionID:             "sesn_pending",
 			TriggerEventID:        "sevt_trigger",
 			Status:                domain.StatusIdle,
-			PendingActionEventIDs: want,
+			PendingActionEventIDs: wantPending,
+			ResolutionEventIDs:    wantResolved,
 		},
 	)
 	if err != nil {
 		t.Fatalf("CompleteWorkflowTurn: %v", err)
 	}
 	source.mu.Lock()
-	got := append([]string(nil), source.pending["sevt_trigger"]...)
+	gotPending := append([]string(nil), source.pending["sevt_trigger"]...)
+	gotResolved := append([]string(nil), source.resolved["sevt_trigger"]...)
 	source.mu.Unlock()
-	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
-		t.Fatalf("pending action ids = %v, want %v", got, want)
+	if len(gotPending) != len(wantPending) ||
+		gotPending[0] != wantPending[0] ||
+		gotPending[1] != wantPending[1] {
+		t.Fatalf("pending action ids = %v, want %v", gotPending, wantPending)
+	}
+	if len(gotResolved) != len(wantResolved) ||
+		gotResolved[0] != wantResolved[0] ||
+		gotResolved[1] != wantResolved[1] {
+		t.Fatalf("resolution event ids = %v, want %v", gotResolved, wantResolved)
 	}
 }
 

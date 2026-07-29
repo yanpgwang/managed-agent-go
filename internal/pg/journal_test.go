@@ -402,6 +402,7 @@ func TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically(t *testing.T) {
 		domain.RunAttemptCompleted,
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("complete workflow turn: %v", err)
@@ -430,6 +431,7 @@ func TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically(t *testing.T) {
 		domain.StatusIdle,
 		attempt.ID,
 		domain.RunAttemptCompleted,
+		nil,
 		nil,
 		nil,
 	)

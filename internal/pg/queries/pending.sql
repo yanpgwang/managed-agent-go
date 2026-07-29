@@ -31,12 +31,31 @@ WHERE session_id = @session_id
   AND resolving_event_id = @resolving_event_id
   AND resolved_at IS NULL;
 
+-- ResolvePendingActionsForEvents closes one complete client-action barrier.
+-- The caller validates that the supplied ids exactly match every unresolved
+-- row before executing this update under the session lock.
+-- name: ResolvePendingActionsForEvents :execrows
+UPDATE pending_actions
+SET resolved_at = @resolved_at
+WHERE session_id = @session_id
+  AND resolving_event_id = ANY(@resolving_event_ids::text[])
+  AND resolved_at IS NULL;
+
 -- name: HasUnresolvedPendingActions :one
 SELECT EXISTS(
     SELECT 1
     FROM pending_actions
     WHERE session_id = @session_id AND resolved_at IS NULL
 ) AS unresolved;
+
+-- name: HasUnclaimedPendingActions :one
+SELECT EXISTS(
+    SELECT 1
+    FROM pending_actions
+    WHERE session_id = @session_id
+      AND resolved_at IS NULL
+      AND resolving_event_id IS NULL
+) AS unclaimed;
 
 -- IsUnresolvedPendingResolution distinguishes a processed-on-receipt client
 -- result that still has to drive its resume turn from an already completed

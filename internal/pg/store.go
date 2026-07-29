@@ -255,14 +255,32 @@ func (s *Store) admitLocked(
 		return Admission{}, err
 	}
 
-	hasTrigger := false
+	hasMessage := false
 	for _, event := range events {
 		if event.Type == domain.EvUserMessage {
-			hasTrigger = true
+			hasMessage = true
 			break
 		}
 	}
-	hasTrigger = hasTrigger || admittedResolution
+
+	// Ordinary work may be admitted while a requires_action wait is open, but it
+	// is not runnable yet: keep the session idle, emit no status_running, and
+	// write no wakeup for work the Workflow must not consume. A partial resolution
+	// is also only a durable claim: the official barrier reopens once every
+	// blocking action has a result, not once per result.
+	gated, err := q.HasUnresolvedPendingActions(ctx, session.ID)
+	if err != nil {
+		return Admission{}, err
+	}
+	hasUnclaimed := false
+	if gated {
+		hasUnclaimed, err = q.HasUnclaimedPendingActions(ctx, session.ID)
+		if err != nil {
+			return Admission{}, err
+		}
+	}
+	resolutionBarrierReady := admittedResolution && gated && !hasUnclaimed
+	hasTrigger := hasMessage || resolutionBarrierReady
 
 	admission := Admission{Session: session, Events: events, MaxSeq: maxSeq}
 	if !hasTrigger {
@@ -272,16 +290,7 @@ func (s *Store) admitLocked(
 		return admission, nil
 	}
 
-	// Ordinary work may be admitted while a requires_action wait is open, but it
-	// is not runnable yet: keep the session idle, emit no status_running, and
-	// write no wakeup for work the Workflow must not consume. A matching
-	// resolution is runnable even though its row remains unresolved until resume
-	// completion.
-	gated, err := q.HasUnresolvedPendingActions(ctx, session.ID)
-	if err != nil {
-		return Admission{}, err
-	}
-	runnable := !gated || admittedResolution
+	runnable := !gated || resolutionBarrierReady
 	if !runnable {
 		if err := s.putProjection(ctx, q, session); err != nil {
 			return Admission{}, err
@@ -524,7 +533,7 @@ func (s *Store) CompleteTurn(
 	outputDrafts []domain.EventDraft,
 	status domain.Status,
 ) (TurnCompletion, error) {
-	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil, nil)
+	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil, nil, nil)
 }
 
 // CompleteWorkflowTurn atomically finalizes a Workflow-owned tool attempt (when
@@ -543,6 +552,7 @@ func (s *Store) CompleteWorkflowTurn(
 	attemptState domain.RunAttemptState,
 	attemptError *string,
 	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
 ) (TurnCompletion, error) {
 	if attemptID == "" {
 		if attemptState != "" || attemptError != nil {
@@ -561,6 +571,7 @@ func (s *Store) CompleteWorkflowTurn(
 		attemptState,
 		attemptError,
 		pendingActionEventIDs,
+		resolutionEventIDs,
 	)
 }
 
@@ -574,6 +585,7 @@ func (s *Store) completeTurn(
 	attemptState domain.RunAttemptState,
 	attemptError *string,
 	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
 ) (TurnCompletion, error) {
 	var result TurnCompletion
 	err := s.withTx(ctx, func(q *pgstore.Queries) error {
@@ -654,10 +666,17 @@ func (s *Store) completeTurn(
 			}
 		}
 
-		// A resolution keeps its pending row unresolved while its resume turn is
-		// in flight. Clear it only inside this completion transaction; if the
-		// completion rolls back, ordinary queued work remains gated.
-		if err := s.resolvePendingForTriggerLocked(ctx, q, sessionID, triggerEventID); err != nil {
+		// Resolutions keep their pending rows unresolved while the resume turn is
+		// in flight. Clear the complete barrier only inside this completion
+		// transaction; if it rolls back, ordinary queued work remains gated.
+		resolvedPending, err := s.resolvePendingBarrierLocked(
+			ctx,
+			q,
+			sessionID,
+			triggerEventID,
+			resolutionEventIDs,
+		)
+		if err != nil {
 			return err
 		}
 		hasUnresolved, err := q.HasUnresolvedPendingActions(ctx, sessionID)
@@ -682,8 +701,9 @@ func (s *Store) completeTurn(
 		// (e.g. still running by the caller's choice) is left as-is.
 		effectiveStatus := status
 		drafts := outputDrafts
+		var remaining int32
 		if status == domain.StatusIdle && !gatedAfterCompletion {
-			remaining, err := q.CountUnprocessedUserMessages(ctx, pgstore.CountUnprocessedUserMessagesParams{
+			remaining, err = q.CountUnprocessedUserMessages(ctx, pgstore.CountUnprocessedUserMessagesParams{
 				SessionID: sessionID,
 				ExcludeID: triggerEventID,
 			})
@@ -696,7 +716,14 @@ func (s *Store) completeTurn(
 			}
 		}
 
-		events, _, err := s.appendDrafts(ctx, q, sessionID, drafts, maxSeq, &triggerEventID)
+		events, finalMaxSeq, err := s.appendDrafts(
+			ctx,
+			q,
+			sessionID,
+			drafts,
+			maxSeq,
+			&triggerEventID,
+		)
 		if err != nil {
 			return err
 		}
@@ -714,17 +741,40 @@ func (s *Store) completeTurn(
 			return err
 		}
 		now := s.clock.Now().UTC()
-		if err := q.MarkEventProcessed(ctx, pgstore.MarkEventProcessedParams{
-			ProcessedAt: tsUTC(now),
-			SessionID:   sessionID,
-			ID:          triggerEventID,
-		}); err != nil {
-			return err
+		processedIDs := resolutionEventIDs
+		if len(processedIDs) == 0 {
+			processedIDs = []string{triggerEventID}
+		}
+		for _, eventID := range processedIDs {
+			if err := q.MarkEventProcessed(ctx, pgstore.MarkEventProcessedParams{
+				ProcessedAt: tsUTC(now),
+				SessionID:   sessionID,
+				ID:          eventID,
+			}); err != nil {
+				return err
+			}
 		}
 		session.Status = effectiveStatus
 		session.UpdatedAt = now
 		if err := s.putProjection(ctx, q, session); err != nil {
 			return err
+		}
+		// Messages admitted while the barrier was open intentionally wrote no
+		// wakeup. When this transaction clears the last row and exposes queued
+		// ordinary work, enqueue a fresh durable wakeup in the same commit. Without
+		// it a message racing after the current Workflow drain could leave a
+		// truthful running projection with no future signal.
+		if resolvedPending &&
+			!gatedAfterCompletion &&
+			effectiveStatus == domain.StatusRunning &&
+			remaining > 0 {
+			if err := q.UpsertOutbox(ctx, pgstore.UpsertOutboxParams{
+				SessionID:   sessionID,
+				MaxEventSeq: finalMaxSeq,
+				EnqueuedAt:  tsUTC(now),
+			}); err != nil {
+				return err
+			}
 		}
 		result = TurnCompletion{Session: session, Events: events, Applied: true}
 		return nil

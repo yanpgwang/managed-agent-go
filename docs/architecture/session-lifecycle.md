@@ -91,7 +91,10 @@ and idle status. While any blocker remains unresolved:
 - ordinary input does not enqueue an orchestration wakeup;
 - only a matching `user.custom_tool_result` or
   `user.tool_confirmation` can claim the blocker;
-- all blockers must resolve before ordinary queued work can continue.
+- partial results leave the Session idle and do not wake orchestration;
+- the final result transitions the Session to running and wakes orchestration;
+- resume completion resolves the complete barrier atomically before ordinary
+  queued work can continue.
 
 The storage and admission gate are implemented. The primary Workflow does not
 yet produce and resume this wait, so the public API still rejects those

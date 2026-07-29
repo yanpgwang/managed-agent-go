@@ -213,19 +213,81 @@ func (s *Store) claimPendingResolutionsLocked(
 	return claimed, nil
 }
 
-func (s *Store) resolvePendingForTriggerLocked(
+// resolvePendingBarrierLocked atomically closes an entire requires_action
+// barrier. The caller-supplied resolution ids are accepted only when they
+// exactly match every unresolved row and include the turn trigger. This keeps a
+// Workflow from accidentally clearing a partial or unrelated wait.
+//
+// An empty resolutionEventIDs slice retains the pre-barrier single-trigger
+// behavior for existing Workflow histories.
+func (s *Store) resolvePendingBarrierLocked(
 	ctx context.Context,
 	q *pgstore.Queries,
 	sessionID string,
 	triggerEventID string,
-) error {
-	_, err := q.ResolvePendingActionsForTrigger(
+	resolutionEventIDs []string,
+) (bool, error) {
+	if len(resolutionEventIDs) == 0 {
+		affected, err := q.ResolvePendingActionsForTrigger(
+			ctx,
+			pgstore.ResolvePendingActionsForTriggerParams{
+				ResolvedAt:       tsUTC(s.clock.Now().UTC()),
+				SessionID:        sessionID,
+				ResolvingEventID: &triggerEventID,
+			},
+		)
+		return affected > 0, err
+	}
+
+	expected := make(map[string]struct{}, len(resolutionEventIDs))
+	for _, id := range resolutionEventIDs {
+		if id == "" {
+			return false, domain.Validation("resolution event id is required")
+		}
+		if _, duplicate := expected[id]; duplicate {
+			return false, domain.Validation("duplicate resolution event id")
+		}
+		expected[id] = struct{}{}
+	}
+	if _, ok := expected[triggerEventID]; !ok {
+		return false, domain.Validation("resume trigger must be part of the resolution barrier")
+	}
+
+	rows, err := q.ListUnresolvedPendingActions(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) != len(expected) {
+		return false, domain.Validation(
+			"resolution event ids must match the complete pending-action barrier",
+		)
+	}
+	// The schema's UNIQUE(session_id, resolving_event_id) constraint makes this
+	// membership+cardinality check a bijection between rows and supplied ids.
+	for _, row := range rows {
+		if row.ResolvingEventID == nil {
+			return false, domain.Validation("pending-action barrier is not fully claimed")
+		}
+		if _, ok := expected[*row.ResolvingEventID]; !ok {
+			return false, domain.Validation(
+				"resolution event ids must match the complete pending-action barrier",
+			)
+		}
+	}
+
+	affected, err := q.ResolvePendingActionsForEvents(
 		ctx,
-		pgstore.ResolvePendingActionsForTriggerParams{
-			ResolvedAt:       tsUTC(s.clock.Now().UTC()),
-			SessionID:        sessionID,
-			ResolvingEventID: &triggerEventID,
+		pgstore.ResolvePendingActionsForEventsParams{
+			ResolvedAt:        tsUTC(s.clock.Now().UTC()),
+			SessionID:         sessionID,
+			ResolvingEventIds: resolutionEventIDs,
 		},
 	)
-	return err
+	if err != nil {
+		return false, err
+	}
+	if affected != int64(len(resolutionEventIDs)) {
+		return false, domain.Conflict("pending-action barrier changed during completion")
+	}
+	return true, nil
 }
