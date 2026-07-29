@@ -137,14 +137,17 @@ The first Temporal/PostgreSQL platform-spine slice is implemented alongside the
 default SQLite path — it does **not** replace it. It routes one `user.message`
 end to end through PostgreSQL admission, a coalescible outbox, an at-least-once
 Signal-With-Start relay, and a durable `SessionWorkflow` — including a tool-using
-turn (an always_allow **built-in tool step**) run under a PostgreSQL tool journal
-that preserves the `prepared → started → completed` boundary with `ambiguous`
-branching from `started`. A step left `started` by a crash is classified
-`ambiguous` and the turn is refused rather than silently replayed; a `completed`
-step is honestly reported as prior execution that cannot yet be resumed. A
-recovered/failed attempt is atomically fenced from advancing a stale prepared
-step into tool execution. The real integration suite also runs that tool path
-through a Docker sandbox and verifies a command executed inside the container.
+turn whose plan-act-observe loop lives in Workflow code. Each model call and
+each always_allow built-in tool call is a separate Activity, so Temporal replay
+preserves assistant text, multi-tool round structure, and completed tool results
+without reconstructing conversation state from the journal. The PostgreSQL tool
+journal preserves the `prepared → started → completed` boundary with
+`ambiguous` branching from `started`: a completed step returns its durable result
+without re-execution, while a step left `started` is refused rather than silently
+replayed. Existing Workflow histories retain the previous `RunTurn` path through
+Temporal version markers. The real integration suite also runs the new tool
+Activity path through a Docker sandbox and verifies execution inside the
+container.
 Start the local stack and run the execution plane:
 
 ```bash
