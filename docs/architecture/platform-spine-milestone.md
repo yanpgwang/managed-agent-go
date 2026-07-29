@@ -236,7 +236,11 @@ Durable writes after a side effect — recording the tool result, finalizing the
 attempt, and committing the turn — run on a context detached from the Activity's
 cancellation (`context.WithoutCancel` + a fresh bounded timeout). Attempt
 finalization and public turn completion share one PostgreSQL transaction, so
-there is no new crash window between those facts.
+there is no new crash window between those facts. Recording a known tool result
+is idempotent and receives a small bounded write-only retry inside the same
+Activity; this absorbs a transient or lost database acknowledgment before a
+later Activity attempt must conservatively classify a still-started step as
+ambiguous.
 
 A model error is retried at the model Activity boundary and never touches the
 tool journal. Client-action tools (custom tools, `always_ask`) and interrupts are
@@ -287,12 +291,14 @@ Failure-boundary coverage:
 | New histories use granular Workflow loop; old histories retain RunTurn | `temporal.TestSessionWorkflow_NewExecutionUsesWorkflowOwnedLoop`, legacy-version session workflow tests |
 | Assistant text + several tools retain one coherent model round | `temporal.TestWorkflowTurn_PreservesTextAndMultipleTools` |
 | Tool Activity retry does not repeat the completed model step | `temporal.TestWorkflowTurn_ToolActivityRetryDoesNotRepeatModelStep` |
+| Workflow ambiguity commits an honest terminal error | `temporal.TestWorkflowTurn_AmbiguousToolTerminatesHonestly` |
+| Unsupported client-action batch is rejected before its first side effect | `temporal.TestWorkflowTurn_RejectsClientActionBatchBeforeSideEffects` |
 | Termination stops the batch; queued msg stays unprocessed | `temporal.TestSessionWorkflow_TerminationStopsBatch`, `temporal.TestRunTurn_TerminationReportedAndBQueuedUnprocessed` |
 | Durable writes survive Activity cancellation after a side effect | `temporal.TestRunTurn_DurableWritesSurviveCancellation` |
 | Tool step happy path (prepared→started→completed) | `temporal.TestRunTurn_ToolStepHappyPath`, `pg.TestJournal_HappyPath` |
 | Ambiguous (started, no result) not silently replayed | `temporal.TestRunTurn_AmbiguousToolNotReplayed`, `pg.TestJournal_StartedStepRecoveredAsAmbiguous` |
 | Completed step not replayed, not called ambiguous | `temporal.TestRunTurn_CompletedStepNotReplayedNotCalledAmbiguous` |
-| Completed result + lost Activity acknowledgment resumes without re-execution | `temporal.TestWorkflowTurn_CompletedToolSurvivesActivityRetry`, `temporal.TestExecuteTool_CompletedStepReturnsWithoutReexecution`, `pg.TestJournal_WorkflowCompletedStepReturnsDurableResult` |
+| Completed result + lost database acknowledgment retries the write without re-execution | `temporal.TestWorkflowTurn_ToolResultWriteRetryDoesNotReexecute`, `temporal.TestExecuteTool_CompletedStepReturnsWithoutReexecution`, `pg.TestJournal_WorkflowCompletedStepReturnsDurableResult` |
 | Workflow started step becomes ambiguous without sandbox/executor | `temporal.TestExecuteTool_StartedStepBecomesAmbiguousWithoutReexecution` |
 | Attempt finalization + public completion are one idempotent transaction | `pg.TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically` |
 | Attempt refuses to close with unclassified started step | `pg.TestJournal_FinishRefusesUnclassifiedStartedStep` |

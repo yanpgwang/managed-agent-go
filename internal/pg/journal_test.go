@@ -321,6 +321,14 @@ func TestJournal_WorkflowCompletedStepReturnsDurableResult(t *testing.T) {
 	if err := store.CompleteToolStep(ctx, step.ID, want); err != nil {
 		t.Fatalf("complete: %v", err)
 	}
+	if err := store.CompleteToolStep(ctx, step.ID, want); err != nil {
+		t.Fatalf("repeat same completion: %v", err)
+	}
+	if err := store.CompleteToolStep(ctx, step.ID, domain.ToolStepResult{
+		Content: []any{map[string]any{"type": "text", "text": "different"}},
+	}); err == nil {
+		t.Fatal("reusing a completed step with a different result must fail")
+	}
 
 	recovered, err := store.EnsureToolStep(
 		ctx,

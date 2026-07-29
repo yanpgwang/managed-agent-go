@@ -59,13 +59,13 @@ func (l *forwardingCountingLease) calls() int {
 	return l.count
 }
 
-type failAfterCompleteJournal struct {
+type loseFirstCompletionAckJournal struct {
 	JournalStore
 	mu     sync.Mutex
 	failed bool
 }
 
-func (j *failAfterCompleteJournal) CompleteToolStep(
+func (j *loseFirstCompletionAckJournal) CompleteToolStep(
 	ctx context.Context,
 	stepID string,
 	result domain.ToolStepResult,
@@ -191,14 +191,14 @@ func TestExecuteTool_StartedStepBecomesAmbiguousWithoutReexecution(t *testing.T)
 	}
 }
 
-func TestWorkflowTurn_CompletedToolSurvivesActivityRetry(t *testing.T) {
+func TestWorkflowTurn_ToolResultWriteRetryDoesNotReexecute(t *testing.T) {
 	store := newToolTestStore(t)
 	const sessionID = "sess_workflow_activity_retry"
 	trigger := toolSession(t, store, sessionID)
 
 	ids := domain.NewRandomIDGen()
 	source := storeSource{store: store}
-	journal := &failAfterCompleteJournal{JournalStore: source}
+	journal := &loseFirstCompletionAckJournal{JournalStore: source}
 	manager := sandbox.NewSessionManager(sandbox.NewLocalProvider())
 	lease := &forwardingCountingLease{inner: manager}
 	t.Cleanup(func() {

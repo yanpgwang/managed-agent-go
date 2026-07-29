@@ -47,7 +47,11 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 			InitialInterval:    time.Second,
 			BackoffCoefficient: 2.0,
 			MaximumInterval:    time.Minute,
-			MaximumAttempts:    0, // unbounded; the workflow owns higher-level giving up
+			// Keep infrastructure work durable through an operator-recoverable
+			// outage. Permanent application failures remain visible as a stuck
+			// Activity and require intervention; silently exhausting retries would
+			// strand an admitted turn just as surely.
+			MaximumAttempts: 0,
 		},
 	}
 	actx := workflow.WithActivityOptions(ctx, ao)

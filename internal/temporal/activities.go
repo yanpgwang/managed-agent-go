@@ -89,6 +89,12 @@ const historyLimit = 10000
 // sandboxTurnTimeout bounds a built-in tool execution within a turn.
 const sandboxTurnTimeout = 120 * time.Second
 
+// toolResultWriteAttempts gives a known in-memory tool result a brief chance to
+// cross a transient PostgreSQL outage before the Activity returns an error. A
+// later Activity retry must conservatively classify a still-started step as
+// ambiguous, so this bounded write-only retry belongs before that boundary.
+const toolResultWriteAttempts = 3
+
 // Activities holds the I/O dependencies of the session Activities: the legacy
 // runtime retained for old Workflow histories, the model client used by new
 // histories, the PostgreSQL event source, the durable tool journal, and the
@@ -308,13 +314,40 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 
 	executed := executor(ctx, box, in.Input)
 	out.Result = domain.ToolStepResult{Content: executed.Content, IsError: executed.IsError}
-	dctx, cancel = durableCtx(ctx)
-	err = a.journal.CompleteToolStep(dctx, step.ID, out.Result)
-	cancel()
-	if err != nil {
+	if err := completeToolResultDurably(ctx, a.journal, step.ID, out.Result); err != nil {
 		return ExecuteToolResult{}, err
 	}
 	return out, nil
+}
+
+func completeToolResultDurably(
+	ctx context.Context,
+	journal JournalStore,
+	stepID string,
+	result domain.ToolStepResult,
+) error {
+	dctx, cancel := durableCtx(ctx)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 0; attempt < toolResultWriteAttempts; attempt++ {
+		if err := journal.CompleteToolStep(dctx, stepID, result); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt+1 == toolResultWriteAttempts {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-dctx.Done():
+			timer.Stop()
+			return lastErr
+		}
+	}
+	return lastErr
 }
 
 // CompleteWorkflowTurn commits the Workflow's durable output and optional tool

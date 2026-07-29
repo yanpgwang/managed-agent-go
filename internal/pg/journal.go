@@ -459,10 +459,16 @@ func (s *Store) StartToolStep(ctx context.Context, stepID string) error {
 	})
 }
 
-// CompleteToolStep advances started -> completed with a durable result.
+// CompleteToolStep advances started -> completed with a durable result. Repeating
+// the same completion is idempotent so a caller can retry a lost database
+// acknowledgement without turning a known result into an ambiguous step.
 func (s *Store) CompleteToolStep(ctx context.Context, stepID string, result domain.ToolStepResult) error {
 	resultJSON, err := json.Marshal(result)
 	if err != nil {
+		return err
+	}
+	var normalizedResult domain.ToolStepResult
+	if err := json.Unmarshal(resultJSON, &normalizedResult); err != nil {
 		return err
 	}
 	return s.withTx(ctx, func(q *pgstore.Queries) error {
@@ -473,10 +479,26 @@ func (s *Store) CompleteToolStep(ctx context.Context, stepID string, result doma
 		if err != nil {
 			return err
 		}
-		if affected != 1 {
-			return domain.Conflict("invalid tool step transition")
+		if affected == 1 {
+			return nil
 		}
-		return nil
+		row, err := q.GetToolStep(ctx, stepID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("tool step not found")
+		}
+		if err != nil {
+			return err
+		}
+		existing, err := toolStepFromRow(row)
+		if err != nil {
+			return err
+		}
+		if existing.State == domain.ToolStepCompleted &&
+			existing.Result != nil &&
+			reflect.DeepEqual(*existing.Result, normalizedResult) {
+			return nil
+		}
+		return domain.Conflict("invalid tool step transition")
 	})
 }
 
