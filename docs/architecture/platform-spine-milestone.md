@@ -79,7 +79,8 @@ make local-health
 (`internal/pg/pgstore`, regenerated with `go generate ./internal/pg`). The
 schema contains versioned Agents, Environments, a `sessions` projection, an
 append-only `events` ledger with a durable per-session receipt sequence, a
-coalescible `orchestration_outbox`, and the turn/tool journal.
+coalescible `orchestration_outbox`, the turn/tool journal, and durable
+`pending_actions` client-action gates.
 
 The HTTP resource services now use these PostgreSQL repositories. SQLite is not
 part of the primary data path.
@@ -92,10 +93,18 @@ it:
 1. locks the session row (`SELECT ... FOR UPDATE`);
 2. validates the batch is client-submittable and the session is not terminated;
 3. assigns durable per-session receipt sequences;
-4. appends the public events and, on a client trigger, the synthetic
-   `session.status_running` plus the projection update;
-5. writes a **coalescible** orchestration outbox wakeup carrying the highest
+4. validates and claims a matching pending action when the batch contains a
+   `user.custom_tool_result` or `user.tool_confirmation`;
+5. appends the public events and, when the newly admitted work is claimable,
+   the synthetic `session.status_running` plus the projection update;
+6. writes a **coalescible** orchestration outbox wakeup carrying the highest
    receipt sequence.
+
+Ordinary messages admitted while a pending action is unresolved remain durable
+and ordered, but they do not make the idle Session appear running and do not
+enqueue a wakeup of their own. A matching resolution claims its pending row and
+does enqueue work. The row remains unresolved until the resume turn commits, so
+queued ordinary work cannot overtake an in-flight resolution.
 
 The outbox is a wakeup, not a run queue: a second admission before delivery
 coalesces into the same row and raises its sequence (`UpsertOutbox` uses
@@ -323,6 +332,9 @@ Failure-boundary coverage:
 | Completed result + lost database acknowledgment retries the write without re-execution | `temporal.TestWorkflowTurn_ToolResultWriteRetryDoesNotReexecute`, `temporal.TestExecuteTool_CompletedStepReturnsWithoutReexecution`, `pg.TestJournal_WorkflowCompletedStepReturnsDurableResult` |
 | Workflow started step becomes ambiguous without sandbox/executor | `temporal.TestExecuteTool_StartedStepBecomesAmbiguousWithoutReexecution` |
 | Attempt finalization + public completion are one idempotent transaction | `pg.TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically` |
+| Client-action events + `requires_action` + pending rows commit atomically | `pg.TestCompleteWorkflowTurn_ParksPendingActionsAtomically` |
+| Parked ordinary work stays idle/gated; matching resolution resumes durably | `pg.TestPendingActions_AdmissionGateAndResumeCompletion` |
+| Partial multi-action resolution retains the remaining gates | `pg.TestPendingActions_PartialResolutionKeepsRemainingGate` |
 | Attempt refuses to close with unclassified started step | `pg.TestJournal_FinishRefusesUnclassifiedStartedStep` |
 | One active attempt per turn | `pg.TestJournal_OneActiveAttempt` |
 | Recovered/concurrently fenced stale attempt cannot start a prepared step | `pg.TestJournal_StalePreparedStepCannotStartAfterRecovery`, `pg.TestJournal_StartWaitsForConcurrentAttemptFence` |
@@ -344,15 +356,18 @@ go test ./internal/pg/... ./internal/controlplane/... ./internal/live/... ./inte
 
 The primary traffic cutover is complete, but these limitations remain:
 
-- **Always-allow built-ins only on the Workflow path.** Completed tool steps
+- **Always-allow built-ins only on the Workflow path.** PostgreSQL now has the
+  durable `pending_actions` rows, atomic park-completion boundary, resolution
+  claim, and admission gate needed by client-action waits. The
+  `SessionWorkflow` does not yet produce or resume those waits, so custom tools,
+  `always_ask` confirmations, and `user.interrupt` still receive
+  `422 unsupported_error` before admission. Completed always-allow tool steps
   resume from their durable result, including multi-tool/multi-round message
-  structure. Client-action tools (custom tools, `always_ask` confirmations) and
-  their park/resume protocol, and `user.interrupt` cancellation, are out of
-  scope and receive `422 unsupported_error` before admission. The
+  structure. The
   SQLite path's own tool journal (`internal/app/tool_journal.go`,
   `internal/store/execution_store.go`) is preserved and unchanged; the Temporal
-  path adds a parallel PostgreSQL journal (`turn_attempts`, `tool_steps`) rather
-  than reusing the SQLite store.
+  path uses parallel PostgreSQL `turn_attempts`, `tool_steps`, and
+  `pending_actions` tables rather than reusing the SQLite store.
 - **Sandbox lease is in-process.** The session-scoped sandbox is cached in-memory
   by `sandbox.SessionManager`; a worker restart drops it and it is not shared
   across worker replicas. A durable/provider-backed lease is future work.
@@ -376,12 +391,11 @@ The primary traffic cutover is complete, but these limitations remain:
 
 Two parity gates remain before the SQLite backend can be deleted:
 
-- **Client-action tools under Temporal.** Model a park on a custom tool or an
-  `always_ask` confirmation as a durable wait in the `SessionWorkflow`: commit
-  the pending action + `session.status_idle{requires_action}`, and resume the
-  turn when the resolving `user.custom_tool_result` / `user.tool_confirmation` is
-  admitted and delivered as a wakeup — reusing the existing pending-action
-  semantics rather than inventing a Temporal-specific park protocol.
+- **Client-action tools under Temporal.** Use the delivered PostgreSQL
+  pending-action transaction and admission gate from the `SessionWorkflow`:
+  replace the current client-action rejection with a durable park, then select
+  and resume the wait when the resolving `user.custom_tool_result` /
+  `user.tool_confirmation` is admitted and delivered as a wakeup.
 - **Durable interrupt.** Deliver `user.interrupt` across API/worker processes,
   cancel the active model/tool Activity, and preserve the documented
   finish-vs-interrupt event ordering.

@@ -50,6 +50,7 @@ func (s storeSource) CompleteWorkflowTurn(
 	attemptID string,
 	attemptState domain.RunAttemptState,
 	attemptError *string,
+	pendingActionEventIDs []string,
 ) (TurnCompletionResult, error) {
 	res, err := s.store.CompleteWorkflowTurn(
 		ctx,
@@ -60,6 +61,7 @@ func (s storeSource) CompleteWorkflowTurn(
 		attemptID,
 		attemptState,
 		attemptError,
+		pendingActionEventIDs,
 	)
 	if err != nil {
 		return TurnCompletionResult{}, err

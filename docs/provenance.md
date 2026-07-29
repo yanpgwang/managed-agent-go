@@ -45,6 +45,9 @@ Verified 2026-07-29.
   — statuses, pagination, archive, and delete behavior.
 - [Events and streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming)
   — event unions, content blocks, processing, and reconnect behavior.
+- [Events API Reference](https://platform.claude.com/docs/en/api/beta/sessions/events)
+  — `requires_action.event_ids`, the all-actions resolution boundary, and
+  per-event `processed_at` semantics used by the durable pending-action gate.
 - [List Events API Reference](https://platform.claude.com/docs/en/api/beta/sessions/events/list)
   — filters, pagination envelope, and per-event shapes.
 - [Multiagent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration)

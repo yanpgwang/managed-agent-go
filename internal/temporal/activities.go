@@ -44,6 +44,7 @@ type EventSource interface {
 		attemptID string,
 		attemptState domain.RunAttemptState,
 		attemptError *string,
+		pendingActionEventIDs []string,
 	) (TurnCompletionResult, error)
 }
 
@@ -414,6 +415,7 @@ func (a *Activities) CompleteWorkflowTurn(
 		in.AttemptID,
 		in.AttemptState,
 		in.AttemptError,
+		in.PendingActionEventIDs,
 	)
 	if err != nil {
 		return RunTurnResult{}, err

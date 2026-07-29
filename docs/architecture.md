@@ -136,10 +136,10 @@ production rolling deployments.
 
 The strongest current risks are semantic rather than structural:
 
-1. The primary Workflow path has not yet ported the SQLite path's pending-action
-   gate. Custom tools, `always_ask`, and their out-of-order resolution semantics
-   must become durable Workflow waits before the legacy dispatcher can be
-   removed.
+1. PostgreSQL now owns the pending-action rows, atomic park transaction,
+   resolution claim, and admission gate. The primary Workflow still has to
+   replace its client-action rejection with a durable park/resume selector
+   before the legacy dispatcher can be removed.
 2. `user.interrupt` still lacks the cross-process durable cancellation and
    finish-vs-interrupt ordering contract on the primary path.
 3. Sandboxes are session-scoped: a session's logical sandbox is provisioned on

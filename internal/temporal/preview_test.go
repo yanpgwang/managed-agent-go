@@ -111,6 +111,37 @@ func TestCallModelTransientAPIErrorRemainsActivityError(t *testing.T) {
 	}
 }
 
+func TestCompleteWorkflowTurnForwardsPendingActionIDs(t *testing.T) {
+	source := newFakeSource(nil)
+	activities := NewActivities(
+		nil,
+		nil,
+		source,
+		nil,
+		nil,
+		domain.NewSeqIDGen(),
+	)
+	want := []string{"sevt_action_1", "sevt_action_2"}
+	_, err := activities.CompleteWorkflowTurn(
+		context.Background(),
+		CompleteWorkflowTurnInput{
+			SessionID:             "sesn_pending",
+			TriggerEventID:        "sevt_trigger",
+			Status:                domain.StatusIdle,
+			PendingActionEventIDs: want,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CompleteWorkflowTurn: %v", err)
+	}
+	source.mu.Lock()
+	got := append([]string(nil), source.pending["sevt_trigger"]...)
+	source.mu.Unlock()
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("pending action ids = %v, want %v", got, want)
+	}
+}
+
 type recordedPreview struct {
 	sessionID string
 	frame     domain.PreviewFrame

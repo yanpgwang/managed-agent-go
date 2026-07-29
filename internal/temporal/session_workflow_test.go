@@ -26,6 +26,7 @@ type fakeSource struct {
 	events    []domain.Event
 	completes map[string]int            // triggerEventID -> times CompleteTurn appended output
 	byTurn    map[string][]domain.Event // triggerEventID -> committed output events
+	pending   map[string][]string       // triggerEventID -> pending action ids forwarded by Activity
 	maxSeq    int64
 }
 
@@ -36,7 +37,10 @@ func newFakeSource(events []domain.Event) *fakeSource {
 			max = e.Sequence
 		}
 	}
-	return &fakeSource{events: events, completes: map[string]int{}, byTurn: map[string][]domain.Event{}, maxSeq: max}
+	return &fakeSource{
+		events: events, completes: map[string]int{}, byTurn: map[string][]domain.Event{},
+		pending: map[string][]string{}, maxSeq: max,
+	}
 }
 
 func (f *fakeSource) EventsAfter(_ context.Context, _ string, cursor int64, limit int) ([]domain.Event, error) {
@@ -122,8 +126,13 @@ func (f *fakeSource) CompleteWorkflowTurn(
 	_ string,
 	_ domain.RunAttemptState,
 	_ *string,
+	pendingActionEventIDs []string,
 ) (TurnCompletionResult, error) {
-	return f.CompleteTurn(ctx, sessionID, triggerEventID, output, status)
+	result, err := f.CompleteTurn(ctx, sessionID, triggerEventID, output, status)
+	f.mu.Lock()
+	f.pending[triggerEventID] = append([]string(nil), pendingActionEventIDs...)
+	f.mu.Unlock()
+	return result, err
 }
 
 func (f *fakeSource) completions(triggerID string) int {
@@ -260,6 +269,7 @@ func TestSessionWorkflow_NewExecutionUsesWorkflowOwnedLoop(t *testing.T) {
 				in.AttemptID,
 				in.AttemptState,
 				in.AttemptError,
+				in.PendingActionEventIDs,
 			)
 			return RunTurnResult{Terminated: result.Status == domain.StatusTerminated}, err
 		},
