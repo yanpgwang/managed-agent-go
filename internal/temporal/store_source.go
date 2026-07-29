@@ -33,6 +33,13 @@ func (s storeSource) GetEvent(ctx context.Context, sessionID, id string) (domain
 	return s.store.GetEvent(ctx, sessionID, id)
 }
 
+func (s storeSource) UnresolvedPendingActions(
+	ctx context.Context,
+	sessionID string,
+) ([]domain.PendingAction, error) {
+	return s.store.UnresolvedPendingActions(ctx, sessionID)
+}
+
 func (s storeSource) CompleteTurn(ctx context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error) {
 	res, err := s.store.CompleteTurn(ctx, sessionID, triggerEventID, output, status)
 	if err != nil {

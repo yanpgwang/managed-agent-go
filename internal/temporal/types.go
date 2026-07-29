@@ -35,6 +35,11 @@ const (
 // the granular Activities below. Keep this marker for replay compatibility.
 const workflowAgentLoopChangeID = "workflow-owned-agent-loop-v1"
 
+const (
+	workflowAgentLoopV1 = 1
+	workflowAgentLoopV2 = 2
+)
+
 // WakeupSignal is the wakeup metadata delivered to a SessionWorkflow. It carries
 // only the highest known public receipt sequence, never event payloads. The
 // workflow loads authoritative events from PostgreSQL after its own durable
@@ -65,8 +70,21 @@ type RunTurnInput struct {
 // refusal or a misconfiguration); the workflow then stops processing the rest of
 // the loaded batch and does not resurrect the session.
 type RunTurnResult struct {
-	Terminated bool `json:"terminated"`
+	Terminated  bool            `json:"terminated"`
+	Disposition TurnDisposition `json:"disposition,omitempty"`
 }
+
+// TurnDisposition tells the SessionWorkflow whether a completed turn finished,
+// parked on a newly committed client-action barrier, or terminated the session.
+// Existing Activity histories decode the additive field to empty; the Workflow
+// normalizes that legacy zero value from Terminated.
+type TurnDisposition string
+
+const (
+	TurnCompleted  TurnDisposition = "completed"
+	TurnParked     TurnDisposition = "parked"
+	TurnTerminated TurnDisposition = "terminated"
+)
 
 // TurnToolKind is the execution owner recorded by PrepareTurn. The Workflow
 // consumes this durable Activity result rather than consulting a mutable
@@ -87,20 +105,39 @@ type TurnTool struct {
 
 // PrepareTurnInput identifies one public trigger whose model turn should run.
 type PrepareTurnInput struct {
-	SessionID      string `json:"session_id"`
-	TriggerEventID string `json:"trigger_event_id"`
+	SessionID          string   `json:"session_id"`
+	TriggerEventID     string   `json:"trigger_event_id"`
+	ResolutionEventIDs []string `json:"resolution_event_ids,omitempty"`
 }
 
 // PrepareTurnResult is the immutable starting state for a Workflow-owned turn.
 // The projected messages and tool definitions are Activity output, so Temporal
 // records them in history and deterministic replay never rereads PostgreSQL.
 type PrepareTurnResult struct {
-	AlreadyCompleted bool          `json:"already_completed"`
-	Terminated       bool          `json:"terminated"`
-	FatalError       string        `json:"fatal_error,omitempty"`
-	AttemptID        string        `json:"attempt_id,omitempty"`
-	Request          model.Request `json:"request"`
-	Tools            []TurnTool    `json:"tools,omitempty"`
+	AlreadyCompleted bool           `json:"already_completed"`
+	Terminated       bool           `json:"terminated"`
+	FatalError       string         `json:"fatal_error,omitempty"`
+	AttemptID        string         `json:"attempt_id,omitempty"`
+	Request          model.Request  `json:"request"`
+	Tools            []TurnTool     `json:"tools,omitempty"`
+	ResumeActions    []ResumeAction `json:"resume_actions,omitempty"`
+}
+
+// ResumeAction is the server-owned reconstruction of one parked tool call and
+// its admitted client result. The Activity validates and normalizes the raw
+// event payloads before they enter Workflow history. Confirmations also carry a
+// stable journal step id for an allowed built-in execution.
+type ResumeAction struct {
+	ActionEventID     string                   `json:"action_event_id"`
+	Kind              domain.PendingActionKind `json:"kind"`
+	ToolName          string                   `json:"tool_name"`
+	Input             map[string]any           `json:"input"`
+	ResolutionEventID string                   `json:"resolution_event_id"`
+	Content           []any                    `json:"content,omitempty"`
+	IsError           bool                     `json:"is_error,omitempty"`
+	Confirmation      string                   `json:"confirmation,omitempty"`
+	DenyMessage       string                   `json:"deny_message,omitempty"`
+	ToolStepID        string                   `json:"tool_step_id,omitempty"`
 }
 
 // CallModelInput is one plan/observe step. Each call is its own Activity so its
@@ -189,4 +226,25 @@ type EventRef struct {
 // LoadEventsResult carries the ordered event references after the cursor.
 type LoadEventsResult struct {
 	Events []EventRef `json:"events"`
+}
+
+// LoadPendingActionsInput asks PostgreSQL for the current durable
+// requires_action barrier. The result, rather than mutable database state read
+// directly by Workflow code, drives the v2 selector.
+type LoadPendingActionsInput struct {
+	SessionID string `json:"session_id"`
+}
+
+// PendingActionRef is the minimal deterministic selector projection for one
+// unresolved pending action. Payloads remain behind the Activity boundary.
+type PendingActionRef struct {
+	ActionEventID      string                   `json:"action_event_id"`
+	ActionEventSeq     int64                    `json:"action_event_seq"`
+	Kind               domain.PendingActionKind `json:"kind"`
+	ResolutionEventID  string                   `json:"resolution_event_id,omitempty"`
+	ResolutionEventSeq int64                    `json:"resolution_event_seq,omitempty"`
+}
+
+type LoadPendingActionsResult struct {
+	Actions []PendingActionRef `json:"actions,omitempty"`
 }

@@ -26,7 +26,12 @@ func workflowTurnHarness(ctx workflow.Context, in PrepareTurnInput) (RunTurnResu
 			MaximumInterval:    time.Millisecond,
 		},
 	})
-	return runWorkflowTurn(actx, in.SessionID, in.TriggerEventID)
+	return runWorkflowTurnWithResolutions(
+		actx,
+		in.SessionID,
+		in.TriggerEventID,
+		in.ResolutionEventIDs,
+	)
 }
 
 func registerWorkflowTurnActivities(
@@ -156,8 +161,8 @@ func TestWorkflowTurn_PreservesTextAndMultipleTools(t *testing.T) {
 	require.Equal(t, []string{
 		domain.EvAgentMessage,
 		domain.EvAgentToolUse,
-		domain.EvAgentToolResult,
 		domain.EvAgentToolUse,
+		domain.EvAgentToolResult,
 		domain.EvAgentToolResult,
 		domain.EvAgentMessage,
 		domain.EvSessionStatusIdle,
@@ -365,7 +370,7 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	require.Contains(t, errorPayload["message"], "invalid_request_error")
 }
 
-func TestWorkflowTurn_RejectsClientActionBatchBeforeSideEffects(t *testing.T) {
+func TestWorkflowTurn_MixedBatchExecutesBuiltinAndParksClientAction(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflowTurnHarness)
@@ -416,7 +421,7 @@ func TestWorkflowTurn_RejectsClientActionBatchBeforeSideEffects(t *testing.T) {
 	var completed CompleteWorkflowTurnInput
 	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
 		completed = in
-		return RunTurnResult{Terminated: true}, nil
+		return RunTurnResult{Disposition: TurnParked}, nil
 	}
 	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
 
@@ -424,13 +429,181 @@ func TestWorkflowTurn_RejectsClientActionBatchBeforeSideEffects(t *testing.T) {
 		SessionID: "sess_client_action", TriggerEventID: "sevt_trigger",
 	})
 	require.NoError(t, env.GetWorkflowError())
-	require.Zero(t, executions, "the whole model batch must be validated before its first side effect")
-	require.Equal(t, domain.StatusTerminated, completed.Status)
-	require.Equal(t, domain.RunAttemptState(""), completed.AttemptState)
+	require.Equal(t, 1, executions)
+	require.Equal(t, domain.StatusIdle, completed.Status)
+	require.Equal(t, domain.RunAttemptCompleted, completed.AttemptState)
+	require.Equal(t, []string{"sevt_custom"}, completed.PendingActionEventIDs)
 	require.Equal(t, []string{
-		domain.EvSessionError,
-		domain.EvSessionStatusTerminated,
+		domain.EvAgentToolUse,
+		domain.EvAgentCustomToolUse,
+		domain.EvAgentToolResult,
+		domain.EvSessionStatusIdle,
 	}, draftTypes(completed.Output))
+}
+
+func TestWorkflowTurn_ResumesMixedBarrierAsOneToolResultRound(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	resolutionIDs := []string{"sevt_custom_result", "sevt_confirmation"}
+	prepare := func(_ context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+		require.Equal(t, resolutionIDs, in.ResolutionEventIDs)
+		return PrepareTurnResult{
+			AttemptID: "ratm_resume",
+			Request: model.Request{
+				Model: "test-model",
+				Messages: []domain.Message{
+					{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "inspect"}}},
+					{Role: domain.RoleAssistant, Content: []domain.ContentBlock{{
+						Type: "tool_use", ToolUseID: "sevt_inline", ToolName: "read",
+						Input: map[string]any{"path": "a.txt"},
+					}}},
+					{Role: domain.RoleUser, Content: []domain.ContentBlock{{
+						Type: "tool_result", ToolResultFor: "sevt_inline", Text: "inline result",
+					}}},
+				},
+			},
+			Tools: []TurnTool{
+				{Name: "ask_client", Kind: TurnToolCustom},
+				{
+					Name: "bash", Kind: TurnToolBuiltin,
+					Permission: domain.PermissionPolicy{Type: "always_ask"},
+				},
+			},
+			ResumeActions: []ResumeAction{
+				{
+					ActionEventID:     "sevt_custom",
+					Kind:              domain.PendingCustomToolResult,
+					ToolName:          "ask_client",
+					Input:             map[string]any{"question": "continue?"},
+					ResolutionEventID: "sevt_custom_result",
+					Content: []any{
+						map[string]any{"type": "text", "text": "yes"},
+					},
+				},
+				{
+					ActionEventID:     "sevt_ask",
+					Kind:              domain.PendingToolConfirmation,
+					ToolName:          "bash",
+					Input:             map[string]any{"command": "pwd"},
+					ResolutionEventID: "sevt_confirmation",
+					Confirmation:      "allow",
+					ToolStepID:        "tstep_resume",
+				},
+			},
+		}, nil
+	}
+
+	var modelInput CallModelInput
+	callModel := func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+		modelInput = in
+		return CallModelResult{
+			MessageEventID: "sevt_final",
+			Response: model.Response{
+				StopReason: "end_turn",
+				Content:    []domain.ContentBlock{{Type: "text", Text: "done"}},
+			},
+		}, nil
+	}
+	executeTool := func(_ context.Context, in ExecuteToolInput) (ExecuteToolResult, error) {
+		require.Equal(t, "sevt_ask", in.ToolUseEventID)
+		require.Equal(t, "tstep_resume", in.ToolStepID)
+		require.Equal(t, map[string]any{"command": "pwd"}, in.Input)
+		return ExecuteToolResult{Result: domain.ToolStepResult{
+			Content: []any{map[string]any{"type": "text", "text": "/workspace"}},
+		}}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
+	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID:          "sess_resume",
+		TriggerEventID:     "sevt_confirmation",
+		ResolutionEventIDs: resolutionIDs,
+	})
+	require.NoError(t, env.GetWorkflowError())
+
+	require.Len(t, modelInput.Request.Messages, 5)
+	require.Equal(t, []domain.ContentBlock{
+		{
+			Type: "tool_use", ToolUseID: "sevt_custom", ToolName: "ask_client",
+			Input: map[string]any{"question": "continue?"},
+		},
+		{
+			Type: "tool_use", ToolUseID: "sevt_ask", ToolName: "bash",
+			Input: map[string]any{"command": "pwd"},
+		},
+	}, modelInput.Request.Messages[3].Content)
+	require.Equal(t, []domain.ContentBlock{
+		{Type: "tool_result", ToolResultFor: "sevt_custom", Text: "yes"},
+		{Type: "tool_result", ToolResultFor: "sevt_ask", Text: "/workspace"},
+	}, modelInput.Request.Messages[4].Content)
+	require.Equal(t, resolutionIDs, completed.ResolutionEventIDs)
+	require.Equal(t, []string{
+		domain.EvAgentToolResult,
+		domain.EvAgentMessage,
+		domain.EvSessionStatusIdle,
+	}, draftTypes(completed.Output))
+	require.Equal(t, "sevt_ask", completed.Output[0].Payload["tool_use_id"])
+}
+
+func TestWorkflowTurn_DeniedConfirmationDoesNotExecute(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{
+			Request: model.Request{Model: "test-model"},
+			Tools: []TurnTool{{
+				Name: "bash", Kind: TurnToolBuiltin,
+				Permission: domain.PermissionPolicy{Type: "always_ask"},
+			}},
+			ResumeActions: []ResumeAction{{
+				ActionEventID:     "sevt_ask",
+				Kind:              domain.PendingToolConfirmation,
+				ToolName:          "bash",
+				Input:             map[string]any{"command": "rm file"},
+				ResolutionEventID: "sevt_deny",
+				Confirmation:      "deny",
+				DenyMessage:       "not safe",
+			}},
+		}, nil
+	}
+	var modelInput CallModelInput
+	callModel := func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+		modelInput = in
+		return CallModelResult{Response: model.Response{StopReason: "end_turn"}}, nil
+	}
+	executions := 0
+	executeTool := func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+		executions++
+		return ExecuteToolResult{}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
+	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID:          "sess_deny",
+		TriggerEventID:     "sevt_deny",
+		ResolutionEventIDs: []string{"sevt_deny"},
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Zero(t, executions)
+	require.Len(t, modelInput.Request.Messages, 2)
+	result := modelInput.Request.Messages[1].Content[0]
+	require.True(t, result.IsError)
+	require.Equal(t, "Tool call denied by user. not safe", result.Text)
+	require.Equal(t, true, completed.Output[0].Payload["is_error"])
 }
 
 func draftTypes(drafts []domain.EventDraft) []string {

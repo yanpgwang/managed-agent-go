@@ -134,13 +134,18 @@ func (s *SessionService) SendEvent(
 ) ([]domain.Event, error) {
 	for _, draft := range drafts {
 		switch draft.Type {
-		case domain.EvUserMessage, domain.EvUserDefineOutcome:
-			// Supported by the current Workflow path. define_outcome is stored and
-			// processed on receipt; user.message schedules a model turn.
+		case domain.EvUserMessage,
+			domain.EvUserDefineOutcome,
+			domain.EvUserCustomToolResult,
+			domain.EvUserToolConfirmation:
+			// define_outcome is processed on receipt; messages schedule ordinary
+			// turns; custom results and confirmations claim the durable
+			// pending-action barrier and wake the v2 Workflow only when the full
+			// result set is present.
 		default:
 			return nil, domain.Unsupported(
-				"this event requires Temporal client-action or interrupt support " +
-					"that is not available on the PostgreSQL backend yet",
+				"this event requires Temporal interrupt support that is not " +
+					"available on the PostgreSQL backend yet",
 			)
 		}
 	}

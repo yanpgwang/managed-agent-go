@@ -96,10 +96,12 @@ and idle status. While any blocker remains unresolved:
 - resume completion resolves the complete barrier atomically before ordinary
   queued work can continue.
 
-The storage and admission gate are implemented. The primary Workflow does not
-yet produce and resume this wait, so the public API still rejects those
-resolution event types. See [Claude API coverage](../compatibility.md) for the
-current support boundary.
+The versioned Workflow selector reads this barrier through an Activity before
+ordinary receipt-order work. Once fully claimed, it reconstructs the original
+parked tool-use round and all client results, resumes the model loop, and leaves
+the receipt cursor behind any lower-sequence ordinary messages admitted during
+the wait. A resumed model turn may atomically replace the old barrier with a new
+one.
 
 ## Failure and delivery semantics
 

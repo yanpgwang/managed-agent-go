@@ -59,8 +59,11 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 		ctx,
 		workflowAgentLoopChangeID,
 		workflow.DefaultVersion,
-		1,
+		workflowAgentLoopV2,
 	)
+	if agentLoopVersion >= workflowAgentLoopV2 {
+		return sessionWorkflowV2(ctx, actx, in, canThreshold)
+	}
 
 	cursor := in.StartCursor
 	highestSignaled := cursor
@@ -124,7 +127,7 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 						}
 					} else {
 						var err error
-						res, err = runWorkflowTurn(actx, in.SessionID, e.ID)
+						res, err = runWorkflowTurnV1(actx, in.SessionID, e.ID)
 						if err != nil {
 							return err
 						}
@@ -222,4 +225,200 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 			highestSignaled = sig.MaxEventSeq
 		}
 	}
+}
+
+// sessionWorkflowV2 adds an Activity-backed pending-action selector ahead of
+// ordinary receipt-order consumption. It deliberately lives behind the
+// GetVersion marker above: the extra Activity changes command order, so v1 and
+// DefaultVersion histories must keep replaying the exact legacy drain.
+func sessionWorkflowV2(
+	ctx workflow.Context,
+	actx workflow.Context,
+	in SessionWorkflowInput,
+	canThreshold int,
+) error {
+	logger := workflow.GetLogger(ctx)
+	cursor := in.StartCursor
+	highestSignaled := cursor
+	turnsThisRun := 0
+	wakeupCh := workflow.GetSignalChannel(ctx, WakeupSignalName)
+
+	coalesceWakeups := func() bool {
+		sawSignal := false
+		for {
+			var sig WakeupSignal
+			if ok := wakeupCh.ReceiveAsync(&sig); !ok {
+				return sawSignal
+			}
+			sawSignal = true
+			if sig.MaxEventSeq > highestSignaled {
+				highestSignaled = sig.MaxEventSeq
+			}
+		}
+	}
+
+	terminated := false
+	drain := func() (bool, error) {
+		for {
+			var pending LoadPendingActionsResult
+			if err := workflow.ExecuteActivity(
+				actx,
+				ActivityLoadPendingActions,
+				LoadPendingActionsInput{SessionID: in.SessionID},
+			).Get(actx, &pending); err != nil {
+				return false, err
+			}
+			if len(pending.Actions) > 0 {
+				fullyClaimed := true
+				trigger := EventRef{}
+				resolutionIDs := make([]string, 0, len(pending.Actions))
+				for _, action := range pending.Actions {
+					if action.ResolutionEventID == "" {
+						fullyClaimed = false
+						break
+					}
+					resolutionIDs = append(resolutionIDs, action.ResolutionEventID)
+					if action.ResolutionEventSeq > trigger.Seq ||
+						(action.ResolutionEventSeq == trigger.Seq &&
+							action.ResolutionEventID > trigger.ID) {
+						trigger = EventRef{
+							ID:  action.ResolutionEventID,
+							Seq: action.ResolutionEventSeq,
+						}
+					}
+				}
+				if !fullyClaimed {
+					return true, nil
+				}
+
+				res, err := runWorkflowTurnWithResolutions(
+					actx,
+					in.SessionID,
+					trigger.ID,
+					resolutionIDs,
+				)
+				if err != nil {
+					return false, err
+				}
+				turnsThisRun++
+				switch normalizedDisposition(res) {
+				case TurnTerminated:
+					logger.Info(
+						"session terminated by pending-action resume; stopping",
+						"session_id", in.SessionID,
+						"trigger", trigger.ID,
+					)
+					terminated = true
+					return false, nil
+				case TurnParked:
+					// The resumed model installed a fresh barrier atomically with
+					// clearing the old one. Do not let queued ordinary messages
+					// overtake it.
+					return true, nil
+				}
+				// A resolution can have a higher public sequence than ordinary
+				// messages admitted while the barrier was open. Do not advance the
+				// receipt cursor to it; reload the ledger and consume the lower
+				// ordinary work first.
+				continue
+			}
+
+			var loaded LoadEventsResult
+			if err := workflow.ExecuteActivity(actx, ActivityLoadEvents, LoadEventsInput{
+				SessionID: in.SessionID,
+				Cursor:    cursor,
+				Limit:     loadBatchLimit,
+			}).Get(actx, &loaded); err != nil {
+				return false, err
+			}
+			if len(loaded.Events) == 0 {
+				return false, nil
+			}
+			for _, event := range loaded.Events {
+				if event.Seq <= cursor {
+					continue
+				}
+				if event.Type == domain.EvUserMessage {
+					res, err := runWorkflowTurn(
+						actx,
+						in.SessionID,
+						event.ID,
+					)
+					if err != nil {
+						return false, err
+					}
+					turnsThisRun++
+					cursor = event.Seq
+					switch normalizedDisposition(res) {
+					case TurnTerminated:
+						logger.Info(
+							"session terminated by turn; stopping",
+							"session_id", in.SessionID,
+							"trigger", event.ID,
+						)
+						terminated = true
+						return false, nil
+					case TurnParked:
+						return true, nil
+					}
+					continue
+				}
+				cursor = event.Seq
+			}
+		}
+	}
+
+	drainRequested := false
+	for {
+		if coalesceWakeups() {
+			drainRequested = true
+		}
+		if drainRequested {
+			if _, err := drain(); err != nil {
+				return err
+			}
+		}
+
+		sawSignalDuringDrain := coalesceWakeups()
+		if terminated {
+			return nil
+		}
+		if sawSignalDuringDrain {
+			drainRequested = true
+			continue
+		}
+
+		info := workflow.GetInfo(ctx)
+		if turnsThisRun >= canThreshold || info.GetContinueAsNewSuggested() {
+			logger.Info(
+				"continue-as-new",
+				"session_id", in.SessionID,
+				"cursor", cursor,
+				"turns", turnsThisRun,
+				"history_length", info.GetCurrentHistoryLength(),
+				"history_size", info.GetCurrentHistorySize(),
+			)
+			return workflow.NewContinueAsNewError(ctx, SessionWorkflow, SessionWorkflowInput{
+				SessionID:   in.SessionID,
+				StartCursor: cursor,
+			})
+		}
+
+		var sig WakeupSignal
+		wakeupCh.Receive(ctx, &sig)
+		if sig.MaxEventSeq > highestSignaled {
+			highestSignaled = sig.MaxEventSeq
+		}
+		drainRequested = true
+	}
+}
+
+func normalizedDisposition(result RunTurnResult) TurnDisposition {
+	if result.Disposition != "" {
+		return result.Disposition
+	}
+	if result.Terminated {
+		return TurnTerminated
+	}
+	return TurnCompleted
 }

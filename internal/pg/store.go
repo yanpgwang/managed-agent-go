@@ -457,12 +457,13 @@ func (s *Store) GetEvent(ctx context.Context, sessionID, id string) (domain.Even
 // sequence) before an earlier turn finished must not appear as a peer of the
 // current trigger.
 //
-// The reconstruction walks the prior *processed* user.message triggers in
-// receipt order and, for each, appends that trigger followed by the exact output
-// events it committed (identified by turn_event_id). It then appends the current
-// trigger. This interleaves user turn / agent reply in causal order, so a batch
-// A,B projects as [A, agent(A), B] rather than collapsing A and B into two
-// consecutive user turns.
+// The reconstruction walks prior *processed* model-driving triggers
+// (user.message plus client-action results) in receipt order and, for each,
+// appends that trigger followed by the exact output events it committed
+// (identified by turn_event_id). It then appends the current trigger. This
+// interleaves trigger / agent output in causal order, so a batch A,B projects as
+// [A, agent(A), B] rather than collapsing A and B into two consecutive user
+// turns, and later turns retain output produced by a resumed barrier.
 //
 // The result is bounded to the newest `limit` events, preserving causal order —
 // an over-limit session carries its most recent context, not the oldest. A
@@ -474,7 +475,7 @@ func (s *Store) HistoryThrough(ctx context.Context, sessionID, triggerEventID st
 		return nil, err
 	}
 
-	priorRows, err := s.q.PriorProcessedUserTriggers(ctx, pgstore.PriorProcessedUserTriggersParams{
+	priorRows, err := s.q.PriorProcessedModelTriggers(ctx, pgstore.PriorProcessedModelTriggersParams{
 		SessionID: sessionID,
 		BeforeSeq: trigger.Sequence,
 	})

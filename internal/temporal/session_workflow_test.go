@@ -22,13 +22,14 @@ import (
 // asserted (a well-behaved workflow completes each user.message turn exactly
 // once even under duplicate wakeups).
 type fakeSource struct {
-	mu        sync.Mutex
-	events    []domain.Event
-	completes map[string]int            // triggerEventID -> times CompleteTurn appended output
-	byTurn    map[string][]domain.Event // triggerEventID -> committed output events
-	pending   map[string][]string       // triggerEventID -> pending action ids forwarded by Activity
-	resolved  map[string][]string       // triggerEventID -> barrier resolution ids forwarded by Activity
-	maxSeq    int64
+	mu             sync.Mutex
+	events         []domain.Event
+	completes      map[string]int            // triggerEventID -> times CompleteTurn appended output
+	byTurn         map[string][]domain.Event // triggerEventID -> committed output events
+	pending        map[string][]string       // triggerEventID -> pending action ids forwarded by Activity
+	resolved       map[string][]string       // triggerEventID -> barrier resolution ids forwarded by Activity
+	pendingActions []domain.PendingAction
+	maxSeq         int64
 }
 
 func newFakeSource(events []domain.Event) *fakeSource {
@@ -93,6 +94,15 @@ func (f *fakeSource) GetEvent(_ context.Context, _ string, id string) (domain.Ev
 		}
 	}
 	return domain.Event{}, domain.NotFound("event not found")
+}
+
+func (f *fakeSource) UnresolvedPendingActions(
+	_ context.Context,
+	_ string,
+) ([]domain.PendingAction, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.PendingAction(nil), f.pendingActions...), nil
 }
 
 func (f *fakeSource) CompleteTurn(_ context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error) {
@@ -179,7 +189,7 @@ func useLegacyRunTurnVersion(env *testsuite.TestWorkflowEnvironment) {
 	env.OnGetVersion(
 		workflowAgentLoopChangeID,
 		workflow.DefaultVersion,
-		workflow.Version(1),
+		workflow.Version(workflowAgentLoopV2),
 	).Return(workflow.DefaultVersion)
 }
 
@@ -239,6 +249,10 @@ func TestSessionWorkflow_NewExecutionUsesWorkflowOwnedLoop(t *testing.T) {
 	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
 	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	env.RegisterActivityWithOptions(
+		acts.LoadPendingActions,
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+	env.RegisterActivityWithOptions(
 		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
 			return PrepareTurnResult{Request: model.Request{
 				Model: "fake",
@@ -288,6 +302,239 @@ func TestSessionWorkflow_NewExecutionUsesWorkflowOwnedLoop(t *testing.T) {
 
 	require.Equal(t, 1, source.completions("evt_new_loop"))
 	env.AssertNotCalled(t, ActivityRunTurn, mock.Anything, mock.Anything)
+}
+
+func TestSessionWorkflow_V1HistoryKeepsPreSelectorActivityOrder(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.OnGetVersion(
+		workflowAgentLoopChangeID,
+		workflow.DefaultVersion,
+		workflow.Version(workflowAgentLoopV2),
+	).Return(workflow.Version(workflowAgentLoopV1))
+
+	source := newFakeSource([]domain.Event{userMsg("evt_v1", 1)})
+	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
+	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
+	env.RegisterActivityWithOptions(
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{Request: model.Request{Model: "fake"}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, CallModelInput) (CallModelResult, error) {
+			return CallModelResult{Response: model.Response{StopReason: "end_turn"}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			return RunTurnResult{Terminated: true}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+	// Deliberately do not register LoadPendingActions. A v1 history must never
+	// schedule the v2 selector Activity.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+	}, time.Millisecond)
+
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_v1"})
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+}
+
+func TestSessionWorkflow_V1HistoryCannotInstallUnresumableBarrier(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	env.OnGetVersion(
+		workflowAgentLoopChangeID,
+		workflow.DefaultVersion,
+		workflow.Version(workflowAgentLoopV2),
+	).Return(workflow.Version(workflowAgentLoopV1))
+
+	source := newFakeSource([]domain.Event{userMsg("evt_v1_custom", 1)})
+	acts := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
+	env.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
+	env.RegisterActivityWithOptions(
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{
+				AttemptID: "ratm_v1",
+				Request: model.Request{
+					Model: "fake",
+					Tools: []model.ToolSchema{{Name: "ask_client"}},
+				},
+				Tools: []TurnTool{{Name: "ask_client", Kind: TurnToolCustom}},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, CallModelInput) (CallModelResult, error) {
+			return CallModelResult{
+				ToolSteps: []PlannedToolStep{{
+					ToolUseEventID: "sevt_v1_custom",
+					ToolStepID:     "tstep_v1_custom",
+				}},
+				Response: model.Response{
+					StopReason: "tool_use",
+					Content: []domain.ContentBlock{{
+						Type: "tool_use", ToolUseID: "sevt_v1_custom",
+						ToolName: "ask_client", Input: map[string]any{},
+					}},
+				},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	var completed CompleteWorkflowTurnInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			completed = in
+			return RunTurnResult{
+				Terminated:  in.Status == domain.StatusTerminated,
+				Disposition: TurnTerminated,
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+	// No LoadPendingActions Activity is registered. The v1 cohort must terminate
+	// this unsupported forward turn rather than creating a barrier it cannot
+	// select later.
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+	}, time.Millisecond)
+
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_v1_custom"})
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, domain.StatusTerminated, completed.Status)
+	require.Empty(t, completed.PendingActionEventIDs)
+	require.Equal(t, []string{
+		domain.EvSessionError,
+		domain.EvSessionStatusTerminated,
+	}, draftTypes(completed.Output))
+}
+
+func TestSessionWorkflow_V2ParksUntilFullBarrierThenPreservesQueuedMessage(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+
+	events := []EventRef{
+		{ID: "sevt_original", Seq: 1, Type: domain.EvUserMessage},
+		{ID: "sevt_queued", Seq: 2, Type: domain.EvUserMessage},
+	}
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in LoadEventsInput) (LoadEventsResult, error) {
+			var out []EventRef
+			for _, event := range events {
+				if event.Seq > in.Cursor {
+					out = append(out, event)
+				}
+			}
+			return LoadEventsResult{Events: out}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+
+	var pendingMu sync.Mutex
+	var pending []PendingActionRef
+	env.RegisterActivityWithOptions(
+		func(context.Context, LoadPendingActionsInput) (LoadPendingActionsResult, error) {
+			pendingMu.Lock()
+			defer pendingMu.Unlock()
+			return LoadPendingActionsResult{
+				Actions: append([]PendingActionRef(nil), pending...),
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+
+	var prepareMu sync.Mutex
+	var prepared []PrepareTurnInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+			prepareMu.Lock()
+			prepared = append(prepared, in)
+			prepareMu.Unlock()
+			return PrepareTurnResult{Request: model.Request{Model: "fake"}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, CallModelInput) (CallModelResult, error) {
+			return CallModelResult{Response: model.Response{StopReason: "end_turn"}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			switch in.TriggerEventID {
+			case "sevt_original":
+				pendingMu.Lock()
+				pending = []PendingActionRef{
+					{
+						ActionEventID: "sevt_action_1", ActionEventSeq: 10,
+						Kind: domain.PendingCustomToolResult,
+					},
+					{
+						ActionEventID: "sevt_action_2", ActionEventSeq: 11,
+						Kind: domain.PendingToolConfirmation,
+					},
+				}
+				pendingMu.Unlock()
+				return RunTurnResult{Disposition: TurnParked}, nil
+			case "sevt_result_2":
+				require.Equal(t, []string{"sevt_result_1", "sevt_result_2"}, in.ResolutionEventIDs)
+				pendingMu.Lock()
+				pending = nil
+				pendingMu.Unlock()
+				return RunTurnResult{Disposition: TurnCompleted}, nil
+			case "sevt_queued":
+				return RunTurnResult{Terminated: true, Disposition: TurnTerminated}, nil
+			default:
+				return RunTurnResult{}, errors.New("unexpected trigger: " + in.TriggerEventID)
+			}
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 2})
+	}, time.Millisecond)
+	env.RegisterDelayedCallback(func() {
+		pendingMu.Lock()
+		pending[0].ResolutionEventID = "sevt_result_1"
+		pending[0].ResolutionEventSeq = 3
+		pendingMu.Unlock()
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 3})
+	}, time.Minute)
+	env.RegisterDelayedCallback(func() {
+		pendingMu.Lock()
+		pending[1].ResolutionEventID = "sevt_result_2"
+		pending[1].ResolutionEventSeq = 4
+		pendingMu.Unlock()
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 4})
+	}, 2*time.Minute)
+
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(SessionWorkflow, SessionWorkflowInput{SessionID: "sess_barrier"})
+	require.True(t, env.IsWorkflowCompleted())
+	require.NoError(t, env.GetWorkflowError())
+
+	prepareMu.Lock()
+	defer prepareMu.Unlock()
+	require.Equal(t, []PrepareTurnInput{
+		{SessionID: "sess_barrier", TriggerEventID: "sevt_original"},
+		{
+			SessionID: "sess_barrier", TriggerEventID: "sevt_result_2",
+			ResolutionEventIDs: []string{"sevt_result_1", "sevt_result_2"},
+		},
+		{SessionID: "sess_barrier", TriggerEventID: "sevt_queued"},
+	}, prepared, "partial resolution must not run and queued work must follow the full resume")
 }
 
 // runTurnStub returns a RunTurn activity implementation that commits a single

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sort"
 	"sync"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 // symbols; named explicitly so a rename cannot silently break replay.
 const (
 	ActivityLoadEvents           = "LoadEvents"
+	ActivityLoadPendingActions   = "LoadPendingActions"
 	ActivityRunTurn              = "RunTurn"
 	ActivityPrepareTurn          = "PrepareTurn"
 	ActivityCallModel            = "CallModel"
@@ -34,6 +36,7 @@ type EventSource interface {
 	HistoryThrough(ctx context.Context, sessionID, triggerEventID string, limit int) ([]domain.Event, error)
 	GetSession(ctx context.Context, id string) (domain.Session, error)
 	GetEvent(ctx context.Context, sessionID, id string) (domain.Event, error)
+	UnresolvedPendingActions(ctx context.Context, sessionID string) ([]domain.PendingAction, error)
 	CompleteTurn(ctx context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error)
 	CompleteWorkflowTurn(
 		ctx context.Context,
@@ -159,6 +162,50 @@ func (a *Activities) LoadEvents(ctx context.Context, in LoadEventsInput) (LoadEv
 	return LoadEventsResult{Events: refs}, nil
 }
 
+// LoadPendingActions returns the durable requires_action barrier as a small
+// selector projection. The Workflow uses only this recorded Activity result to
+// choose between parking, resuming the full barrier, and consuming ordinary
+// messages.
+func (a *Activities) LoadPendingActions(
+	ctx context.Context,
+	in LoadPendingActionsInput,
+) (LoadPendingActionsResult, error) {
+	pending, err := a.source.UnresolvedPendingActions(ctx, in.SessionID)
+	if err != nil {
+		return LoadPendingActionsResult{}, err
+	}
+	result := LoadPendingActionsResult{
+		Actions: make([]PendingActionRef, 0, len(pending)),
+	}
+	for _, action := range pending {
+		actionEvent, err := a.source.GetEvent(ctx, in.SessionID, action.ActionEventID)
+		if err != nil {
+			return LoadPendingActionsResult{}, err
+		}
+		ref := PendingActionRef{
+			ActionEventID:  action.ActionEventID,
+			ActionEventSeq: actionEvent.Sequence,
+			Kind:           action.Kind,
+		}
+		if action.ResolvingEventID != nil {
+			resolution, err := a.source.GetEvent(ctx, in.SessionID, *action.ResolvingEventID)
+			if err != nil {
+				return LoadPendingActionsResult{}, err
+			}
+			ref.ResolutionEventID = resolution.ID
+			ref.ResolutionEventSeq = resolution.Sequence
+		}
+		result.Actions = append(result.Actions, ref)
+	}
+	sort.Slice(result.Actions, func(i, j int) bool {
+		if result.Actions[i].ActionEventSeq == result.Actions[j].ActionEventSeq {
+			return result.Actions[i].ActionEventID < result.Actions[j].ActionEventID
+		}
+		return result.Actions[i].ActionEventSeq < result.Actions[j].ActionEventSeq
+	})
+	return result, nil
+}
+
 // PrepareTurn reads one turn's immutable starting state from PostgreSQL. The
 // result becomes Workflow history; replay never performs these reads in
 // Workflow code.
@@ -171,7 +218,14 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if err != nil {
 		return PrepareTurnResult{}, err
 	}
-	if trigger.ProcessedAt != nil {
+	var pending []domain.PendingAction
+	if len(in.ResolutionEventIDs) > 0 {
+		pending, err = a.source.UnresolvedPendingActions(ctx, in.SessionID)
+		if err != nil {
+			return PrepareTurnResult{}, err
+		}
+	}
+	if trigger.ProcessedAt != nil && !pendingBarrierContainsTrigger(pending, trigger.ID) {
 		return PrepareTurnResult{
 			AlreadyCompleted: true,
 			Terminated:       session.Status == domain.StatusTerminated,
@@ -199,6 +253,27 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			Tools:    agentruntime.EnabledToolSchemas(toolSet),
 		},
 	}
+	if len(in.ResolutionEventIDs) > 0 {
+		resumeActions, err := a.prepareResumeActions(
+			ctx,
+			in.SessionID,
+			trigger.ID,
+			in.ResolutionEventIDs,
+			pending,
+		)
+		if err != nil {
+			var domainErr *domain.DomainError
+			if errors.As(err, &domainErr) {
+				return PrepareTurnResult{
+					FatalError: "invalid pending-action resume: " + err.Error(),
+				}, nil
+			}
+			return PrepareTurnResult{}, err
+		}
+		result.ResumeActions = resumeActions
+		history = withoutResumeEvents(history, resumeActions)
+		result.Request.Messages = domain.ProjectMessages(history)
+	}
 	for _, name := range domain.BuiltinToolNames {
 		enabled, policy := toolSet.BuiltinEnabled(name)
 		if enabled {
@@ -213,6 +288,133 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		})
 	}
 	return result, nil
+}
+
+func pendingBarrierContainsTrigger(pending []domain.PendingAction, triggerEventID string) bool {
+	for _, action := range pending {
+		if action.ResolvingEventID != nil && *action.ResolvingEventID == triggerEventID {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Activities) prepareResumeActions(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	resolutionEventIDs []string,
+	pending []domain.PendingAction,
+) ([]ResumeAction, error) {
+	expected := make(map[string]struct{}, len(resolutionEventIDs))
+	for _, id := range resolutionEventIDs {
+		if id == "" {
+			return nil, domain.Validation("resolution event id is required")
+		}
+		if _, duplicate := expected[id]; duplicate {
+			return nil, domain.Validation("duplicate resolution event id")
+		}
+		expected[id] = struct{}{}
+	}
+	if _, ok := expected[triggerEventID]; !ok {
+		return nil, domain.Validation("resume trigger is not in the pending-action barrier")
+	}
+	if len(pending) != len(expected) {
+		return nil, domain.Validation("resolution events do not match the complete pending-action barrier")
+	}
+
+	type orderedAction struct {
+		seq    int64
+		resume ResumeAction
+	}
+	ordered := make([]orderedAction, 0, len(pending))
+	for _, row := range pending {
+		if row.ResolvingEventID == nil {
+			return nil, domain.Validation("pending-action barrier is not fully claimed")
+		}
+		resolutionID := *row.ResolvingEventID
+		if _, ok := expected[resolutionID]; !ok {
+			return nil, domain.Validation("resolution events do not match the complete pending-action barrier")
+		}
+		action, err := a.source.GetEvent(ctx, sessionID, row.ActionEventID)
+		if err != nil {
+			return nil, err
+		}
+		kind, ok := domain.PendingActionKindForEvent(action.Type, action.Payload)
+		if !ok || kind != row.Kind {
+			return nil, domain.Validation("pending action no longer matches its server event")
+		}
+		name, _ := action.Payload["name"].(string)
+		input, inputOK := action.Payload["input"].(map[string]any)
+		if name == "" || !inputOK {
+			return nil, domain.Validation("pending action has invalid tool name or input")
+		}
+		resolution, err := a.source.GetEvent(ctx, sessionID, resolutionID)
+		if err != nil {
+			return nil, err
+		}
+		refID, refKind, ok := domain.ResolutionReference(resolution.Type, resolution.Payload)
+		if !ok || refID != action.ID || refKind != row.Kind {
+			return nil, domain.Validation("client result does not match its pending action")
+		}
+
+		resume := ResumeAction{
+			ActionEventID:     action.ID,
+			Kind:              row.Kind,
+			ToolName:          name,
+			Input:             input,
+			ResolutionEventID: resolution.ID,
+		}
+		switch row.Kind {
+		case domain.PendingCustomToolResult:
+			if raw, present := resolution.Payload["content"]; present {
+				content, ok := raw.([]any)
+				if !ok {
+					return nil, domain.Validation("custom tool result content must be an array")
+				}
+				resume.Content = content
+			}
+			resume.IsError, _ = resolution.Payload["is_error"].(bool)
+		case domain.PendingToolConfirmation:
+			resume.Confirmation, _ = resolution.Payload["result"].(string)
+			if resume.Confirmation != "allow" && resume.Confirmation != "deny" {
+				return nil, domain.Validation("tool confirmation must be allow or deny")
+			}
+			resume.DenyMessage, _ = resolution.Payload["deny_message"].(string)
+			if resume.Confirmation == "allow" {
+				resume.ToolStepID = a.ids.NewID(domain.PrefixToolStep)
+			}
+		default:
+			return nil, domain.Validation("unknown pending action kind")
+		}
+		ordered = append(ordered, orderedAction{seq: action.Sequence, resume: resume})
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].seq == ordered[j].seq {
+			return ordered[i].resume.ActionEventID < ordered[j].resume.ActionEventID
+		}
+		return ordered[i].seq < ordered[j].seq
+	})
+	out := make([]ResumeAction, 0, len(ordered))
+	for _, item := range ordered {
+		out = append(out, item.resume)
+	}
+	return out, nil
+}
+
+func withoutResumeEvents(history []domain.Event, actions []ResumeAction) []domain.Event {
+	excluded := make(map[string]struct{}, len(actions)*2)
+	for _, action := range actions {
+		excluded[action.ActionEventID] = struct{}{}
+		excluded[action.ResolutionEventID] = struct{}{}
+	}
+	filtered := make([]domain.Event, 0, len(history))
+	for _, event := range history {
+		if _, drop := excluded[event.ID]; !drop {
+			filtered = append(filtered, event)
+		}
+	}
+	return filtered
 }
 
 // CallModel performs exactly one model call. Its full normalized response is
@@ -422,7 +624,14 @@ func (a *Activities) CompleteWorkflowTurn(
 	if err != nil {
 		return RunTurnResult{}, err
 	}
-	return RunTurnResult{Terminated: completion.Status == domain.StatusTerminated}, nil
+	switch {
+	case completion.Status == domain.StatusTerminated:
+		return RunTurnResult{Terminated: true, Disposition: TurnTerminated}, nil
+	case len(in.PendingActionEventIDs) > 0:
+		return RunTurnResult{Disposition: TurnParked}, nil
+	default:
+		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
 }
 
 // RunTurn is the legacy opaque turn Activity retained for replay compatibility

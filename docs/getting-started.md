@@ -168,8 +168,8 @@ versioned `goose` migrations when API or worker processes start.
 
 ## Temporary SQLite compatibility mode
 
-The former single-process runtime remains available during the client-action
-and interrupt migration:
+The former single-process runtime remains available during the interrupt
+migration:
 
 ```bash
 go run ./cmd/managed-agent serve -backend sqlite -db managed-agent.db

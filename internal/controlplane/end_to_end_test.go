@@ -17,6 +17,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
 	"github.com/yanpgwang/managed-agent-go/internal/live"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -45,10 +46,11 @@ func TestHTTPPostgresTemporalNATSEndToEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer temporalClient.Close()
+	modelClient := model.NewFake()
 	runtime := temporalpkg.NewRuntimeOnTaskQueue(
 		temporalClient,
 		fixture.store,
-		model.NewFake(),
+		modelClient,
 		sandbox.NewLocalProvider(),
 		fixture.ids,
 		temporalpkg.RelayConfig{PollInterval: 20 * time.Millisecond},
@@ -189,6 +191,165 @@ func TestHTTPPostgresTemporalNATSEndToEnd(t *testing.T) {
 		t.Fatalf("event types = %v", eventTypes(events))
 	}
 
+	customAgentID := createResource(t, handler, "/v1/agents",
+		`{"name":"custom-agent","model":"claude-test","tools":[{`+
+			`"type":"custom","name":"ask_client","description":"ask",`+
+			`"input_schema":{"type":"object"}}]}`)
+	customSessionID := createResource(t, handler, "/v1/sessions",
+		`{"agent":"`+customAgentID+`","environment_id":"`+environmentID+`"}`)
+	defer func() {
+		_ = temporalClient.TerminateWorkflow(
+			context.Background(),
+			customSessionID,
+			"",
+			"integration test cleanup",
+		)
+	}()
+	response = request(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/sessions/"+customSessionID+"/events",
+		`{"events":[{"type":"user.message","content":[{"type":"text","text":"inspect"}]}]}`,
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("send custom session message -> %d: %s", response.Code, response.Body.String())
+	}
+	customEvents := waitForEvents(t, fixture.store, customSessionID, func(events []domain.Event) bool {
+		return containsEventTypes(
+			events,
+			domain.EvAgentCustomToolUse,
+			domain.EvSessionStatusIdle,
+		)
+	})
+	var customActionID string
+	for _, event := range customEvents {
+		if event.Type == domain.EvAgentCustomToolUse {
+			customActionID = event.ID
+			break
+		}
+	}
+	if customActionID == "" {
+		t.Fatalf("custom action missing: %s", eventTypes(customEvents))
+	}
+	response = request(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/sessions/"+customSessionID+"/events",
+		`{"events":[{"type":"user.custom_tool_result","custom_tool_use_id":"`+
+			customActionID+
+			`","content":[{"type":"text","text":"client result"}]}]}`,
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("send custom result -> %d: %s", response.Code, response.Body.String())
+	}
+	waitForEvents(t, fixture.store, customSessionID, func(events []domain.Event) bool {
+		return containsEventTypes(events, domain.EvUserCustomToolResult, domain.EvAgentMessage) &&
+			countEventType(events, domain.EvSessionStatusIdle) >= 2
+	})
+	pending, err := fixture.store.UnresolvedPendingActions(ctx, customSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("pending barrier not cleared: %+v", pending)
+	}
+	lastRequest := modelClient.LastRequest()
+	if !requestHasToolResult(lastRequest, customActionID, "client result") {
+		t.Fatalf("resumed model request lost custom result: %#v", lastRequest.Messages)
+	}
+
+	confirmationAgentID := createResource(t, handler, "/v1/agents",
+		`{"name":"confirmation-agent","model":"claude-test","tools":[{`+
+			`"type":"agent_toolset_20260401",`+
+			`"default_config":{"enabled":false,"permission_policy":{"type":"always_allow"}},`+
+			`"configs":[{"name":"bash","enabled":true,`+
+			`"permission_policy":{"type":"always_ask"}}]}]}`)
+	confirmationSessionID := createResource(t, handler, "/v1/sessions",
+		`{"agent":"`+confirmationAgentID+`","environment_id":"`+environmentID+`"}`)
+	defer func() {
+		_ = temporalClient.TerminateWorkflow(
+			context.Background(),
+			confirmationSessionID,
+			"",
+			"integration test cleanup",
+		)
+	}()
+	response = request(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/sessions/"+confirmationSessionID+"/events",
+		`{"events":[{"type":"user.message","content":[{"type":"text","text":"run"}]}]}`,
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("send confirmation session message -> %d: %s", response.Code, response.Body.String())
+	}
+	confirmationEvents := waitForEvents(
+		t,
+		fixture.store,
+		confirmationSessionID,
+		func(events []domain.Event) bool {
+			return containsEventTypes(
+				events,
+				domain.EvAgentToolUse,
+				domain.EvSessionStatusIdle,
+			)
+		},
+	)
+	var confirmationActionID string
+	for _, event := range confirmationEvents {
+		if event.Type == domain.EvAgentToolUse &&
+			event.Payload["evaluated_permission"] == "ask" {
+			confirmationActionID = event.ID
+			break
+		}
+	}
+	if confirmationActionID == "" {
+		t.Fatalf("confirmation action missing: %s", eventTypes(confirmationEvents))
+	}
+	response = request(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/sessions/"+confirmationSessionID+"/events",
+		`{"events":[{"type":"user.tool_confirmation","tool_use_id":"`+
+			confirmationActionID+
+			`","result":"deny","deny_message":"not safe"}]}`,
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("send tool confirmation -> %d: %s", response.Code, response.Body.String())
+	}
+	waitForEvents(
+		t,
+		fixture.store,
+		confirmationSessionID,
+		func(events []domain.Event) bool {
+			return containsEventTypes(
+				events,
+				domain.EvUserToolConfirmation,
+				domain.EvAgentToolResult,
+				domain.EvAgentMessage,
+			) && countEventType(events, domain.EvSessionStatusIdle) >= 2
+		},
+	)
+	pending, err = fixture.store.UnresolvedPendingActions(ctx, confirmationSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("confirmation barrier not cleared: %+v", pending)
+	}
+	lastRequest = modelClient.LastRequest()
+	if !requestHasToolResult(
+		lastRequest,
+		confirmationActionID,
+		"Tool call denied by user. not safe",
+	) {
+		t.Fatalf("resumed model request lost confirmation result: %#v", lastRequest.Messages)
+	}
+
 	response = request(t, handler, http.MethodDelete, "/v1/sessions/"+sessionID, "")
 	if response.Code != http.StatusOK {
 		t.Fatalf("delete session -> %d: %s", response.Code, response.Body.String())
@@ -233,4 +394,54 @@ func eventTypes(events []domain.Event) string {
 		types[i] = event.Type
 	}
 	return strings.Join(types, ",")
+}
+
+func waitForEvents(
+	t *testing.T,
+	store *pg.Store,
+	sessionID string,
+	ready func([]domain.Event) bool,
+) []domain.Event {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		events, err := store.QueryEvents(
+			context.Background(),
+			sessionID,
+			app.EventQuery{Limit: 100},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ready(events) {
+			return events
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for events: %s", eventTypes(events))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func countEventType(events []domain.Event, eventType string) int {
+	count := 0
+	for _, event := range events {
+		if event.Type == eventType {
+			count++
+		}
+	}
+	return count
+}
+
+func requestHasToolResult(request model.Request, toolUseID, text string) bool {
+	for _, message := range request.Messages {
+		for _, block := range message.Content {
+			if block.Type == "tool_result" &&
+				block.ToolResultFor == toolUseID &&
+				block.Text == text {
+				return true
+			}
+		}
+	}
+	return false
 }

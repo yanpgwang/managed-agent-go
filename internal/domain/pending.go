@@ -15,8 +15,8 @@ const (
 	PendingCustomToolResult PendingActionKind = "custom_tool_result"
 	// PendingToolConfirmation is parked by an always_ask agent.tool_use event and
 	// is resolved by a user.tool_confirmation whose tool_use_id references the
-	// parked event. The durable gate and correlation are implemented; the primary
-	// Workflow does not execute the allow/deny resume yet.
+	// parked event. Allow executes the original server-owned built-in call; deny
+	// produces a correlated error tool result without execution.
 	PendingToolConfirmation PendingActionKind = "tool_confirmation"
 )
 
