@@ -2,8 +2,6 @@
   <img src="assets/mango-logo.png" alt="Mango" width="420">
 </p>
 
-<h1 align="center">managed-agent-go</h1>
-
 <p align="center"><strong>Managed Agents, Native Go, On-demand.</strong></p>
 
 **Mango** is an open-source, self-hosted agent runtime in Go with a
