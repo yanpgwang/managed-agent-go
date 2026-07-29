@@ -4,9 +4,11 @@ An open-source, self-hosted managed agent runtime in Go with a Claude Managed
 Agents-compatible HTTP API.
 
 > [!IMPORTANT]
-> **Alpha.** This project is an early, experimental, **single-node** (SQLite,
-> one process) runtime that implements a documented subset of the Managed
-> Agents API.
+> **Alpha.** The default server is an early, experimental, **single-node**
+> runtime (SQLite, one process) that implements a documented subset of the
+> Managed Agents API. A feature-gated PostgreSQL/Temporal execution plane is
+> available for platform-spine development, but HTTP traffic has not been cut
+> over to it.
 > It is **independent and not an Anthropic product**. It is **not
 > production-ready**: do not use it as a drop-in production service. The default
 > local sandbox is **not a security boundary**. See
@@ -39,9 +41,10 @@ The current implementation provides:
 
 ## Project status
 
-This is a **pre-release single-node implementation**. Its module boundaries and
-durability model are suitable for continued OSS development, while its public
-API intentionally covers only the workflows listed below.
+This is a **pre-release implementation**. The default public server remains
+single-node; an additive PostgreSQL/Temporal path now exercises the production
+orchestration boundary without replacing the SQLite API path. The public API
+intentionally covers only the workflows listed below.
 
 | Area | Current state |
 | --- | --- |
@@ -51,12 +54,14 @@ API intentionally covers only the workflows listed below.
 | Events | Send, list, SSE stream, opt-in message previews |
 | Runtime | Multi-turn Messages API loop and custom-tool handoff |
 | Sandboxes | Local development guardrail and optional Docker isolation; see the [backend matrix](docs/sandboxes.md) |
-| Storage | SQLite; one process; at-least-once restart recovery |
+| Default storage | SQLite; one process; at-least-once restart recovery |
+| Platform spine | Feature-gated PostgreSQL ledger + Temporal Workflow-owned agent loop; not traffic-cut-over |
 
-Important gaps include durable per-step runtime output, durable sandbox
-checkpoint/restore across process restart, retries with side-effect
-idempotency, MCP execution, files/skills/memory, resolved multiagent
-orchestration, and distributed workers.
+Important gaps include HTTP/PostgreSQL cutover, client-action waits and
+interrupts on the Temporal path, durable sandbox leases/checkpoint restore
+across worker restarts, large-payload offload, MCP execution,
+files/skills/memory, multiagent orchestration, and production deployment
+manifests.
 See the [roadmap](docs/roadmap.md).
 
 ## Quick start
