@@ -10,12 +10,17 @@ import (
 // Activities on the session task queue. The caller runs it (worker.Run) and owns
 // the client's lifecycle.
 //
-// Activities are registered under their stable names (ActivityLoadEvents,
-// ActivityRunTurn) so a Go method rename cannot silently break workflow replay.
+// Activities are registered under stable names so a Go method rename cannot
+// silently break workflow replay. RunTurn remains registered for histories that
+// predate workflowAgentLoopChangeID.
 func NewWorker(c client.Client, acts *Activities) worker.Worker {
 	w := worker.New(c, TaskQueue, worker.Options{})
 	w.RegisterWorkflow(SessionWorkflow)
 	w.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
 	w.RegisterActivityWithOptions(acts.RunTurn, activity.RegisterOptions{Name: ActivityRunTurn})
+	w.RegisterActivityWithOptions(acts.PrepareTurn, activity.RegisterOptions{Name: ActivityPrepareTurn})
+	w.RegisterActivityWithOptions(acts.CallModel, activity.RegisterOptions{Name: ActivityCallModel})
+	w.RegisterActivityWithOptions(acts.ExecuteTool, activity.RegisterOptions{Name: ActivityExecuteTool})
+	w.RegisterActivityWithOptions(acts.CompleteWorkflowTurn, activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn})
 	return w
 }

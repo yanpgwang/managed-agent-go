@@ -35,16 +35,23 @@ const unsafeLocalSandboxEnv = "MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX"
 // MANAGED_AGENT_MODEL_BASE_URL and MANAGED_AGENT_MODEL_API_KEY are set,
 // otherwise the offline deterministic fake so the binary runs (and tests stay
 // offline) with no configuration.
-func resolveRuntime() (rt agentruntime.AgentRuntime, realModel bool, err error) {
-	ids := domain.NewRandomIDGen()
+func resolveModelClient() (client model.Client, realModel bool, err error) {
 	if client, ok, err := model.AnthropicFromEnv(); err != nil {
 		return nil, false, err
 	} else if ok {
 		log.Printf("runtime: agent core using real Messages API")
-		return agentruntime.NewAgentCore(client, ids), true, nil
+		return client, true, nil
 	}
 	log.Printf("runtime: agent core using offline fake model")
-	return agentruntime.NewAgentCore(model.NewFake(), ids), false, nil
+	return model.NewFake(), false, nil
+}
+
+func resolveRuntime() (rt agentruntime.AgentRuntime, realModel bool, err error) {
+	client, realModel, err := resolveModelClient()
+	if err != nil {
+		return nil, false, err
+	}
+	return agentruntime.NewAgentCore(client, domain.NewRandomIDGen()), realModel, nil
 }
 
 // resolveSandboxProvider selects the sandbox backend from the environment and

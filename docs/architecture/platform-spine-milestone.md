@@ -5,8 +5,8 @@ slug: /architecture/platform-spine-milestone
 
 # Platform spine milestone
 
-Status: **Implemented (first vertical slice)**
-Date: **2026-07-28**
+Status: **Implemented (Workflow-owned agent-loop slice)**
+Date: **2026-07-29**
 
 This document describes exactly what the first bounded Temporal platform-spine
 slice implements, how to run it, and its explicit limitations. It is the
@@ -111,7 +111,8 @@ last observed receipt sequence — and:
   sequence), never event payloads;
 - loads authoritative events from PostgreSQL after its cursor via the
   `LoadEvents` Activity;
-- drives one `RunTurn` Activity per `user.message`, in receipt order;
+- drives one deterministic plan-act-observe loop per `user.message`, in receipt
+  order, with each model call and each tool call as a separate Activity;
 - advances the cursor monotonically, so a duplicate or out-of-order wakeup at or
   below the cursor is a harmless no-op (sequence-based duplicate/gap protection);
 - stops draining and ends when a turn reports it terminated the session, so a
@@ -121,8 +122,8 @@ last observed receipt sequence — and:
   Continue-As-New, so a Signal that arrived while an Activity was running is
   consumed on the next deterministic replay boundary instead of causing a
   rejected-close replay loop;
-- carries the cursor across **Continue-As-New** so history stays bounded (the
-  production threshold is a compile-time constant).
+- carries the cursor across **Continue-As-New** so history stays bounded (at the
+  compile-time turn threshold or when the Temporal server recommends it).
 
 ### Causal model history and no intermediate idle
 
@@ -162,11 +163,25 @@ The API/orchestrator may make a best-effort post-commit Signal to reduce latency
 ### Vertical path for one `user.message`
 
 `temporal.Runtime` wires the worker, relay, signaler, store, and a session-scoped
-sandbox manager. The `RunTurn` Activity invokes the **existing** agent runtime
-(`agentruntime.AgentCore`) and commits the authoritative output through
-`pg.Store.CompleteTurn`, which is **idempotent**: an already-processed trigger
-short-circuits before the model runs and replays the same committed events
-instead of appending a second copy.
+sandbox manager. New Workflow executions use the standard Temporal AI-agent
+shape:
+
+1. `PrepareTurn` loads the immutable agent snapshot and causal model history.
+2. `CallModel` performs one model call and returns the complete ordered response
+   (including text plus every tool request) into Workflow history.
+3. `ExecuteTool` performs exactly one built-in tool step under the PostgreSQL
+   journal.
+4. Workflow code appends the assistant round and tool results to its local
+   message state and repeats until `end_turn`.
+5. `CompleteWorkflowTurn` atomically finalizes the optional tool attempt and
+   commits every public output event.
+
+This boundary is the recovery mechanism: after a worker crash, Temporal
+deterministically replays completed Activity results and schedules only the next
+unfinished call. It does not reconstruct a conversation from the tool journal.
+The legacy opaque `RunTurn` Activity remains registered behind
+`workflow.GetVersion` solely so Workflow histories created by the previous
+version remain replayable.
 
 Two shapes are currently validated end to end:
 
@@ -175,11 +190,10 @@ Two shapes are currently validated end to end:
 - **A tool-using turn** — a `user.message` whose agent runs an always_allow
   built-in inside the session-scoped sandbox lease, under the durable
   tool-execution journal, and commits the paired `agent.tool_use` /
-  `agent.tool_result` before `end_turn`. The bounded model↔tool loop in
-  `AgentCore` is not artificially capped at one tool call, but the end-to-end
-  path exercised and tested in this slice is a single always_allow built-in step
-  to `end_turn`; a `RunTurn` retry after a tool step has run does not resume the
-  loop (see the ambiguity boundary and *Next smallest slice*).
+  `agent.tool_result` before `end_turn`. Unit coverage also proves one response
+  can carry assistant text plus multiple tool calls without losing their round
+  structure, and that retrying one tool Activity does not rerun the preceding
+  model Activity.
 
 The **sandbox lease** is provided by an in-process `sandbox.SessionManager`
 keyed by session id: within one worker process, later turns reuse the same
@@ -201,41 +215,36 @@ prepared ──▶ started ──▶ completed
 `ambiguous` is a branch out of `started`, not a state after `completed`: a step
 that began (its side effect may have happened) but never recorded a trustworthy
 result is `ambiguous`; a step that recorded a durable result is `completed`. The
-turn is identified by `(session_id, trigger_event_id)`; each `RunTurn` Activity
-execution is an attempt. The runtime calls the journal's `Prepare` / `Start` /
-`Complete` around each built-in execution.
+turn is identified by `(session_id, trigger_event_id)`. Explicit attempt,
+tool-step, and public tool-use event IDs are returned by Activities into
+Workflow history, making `EnsureAttempt` / `EnsureToolStep` idempotent across
+Activity retries without coupling one ID namespace to another.
 
-Because a Temporal Activity runs at least once, `RunTurn` protects the
-side-effect boundary on entry:
+Because a Temporal Activity may run more than once, each `ExecuteTool` attempt
+first reads the durable step:
 
-1. an already-processed trigger short-circuits (no re-execution), reporting the
-   session's current projected status so a prior termination is not mistaken for
-   an ordinary completion;
-2. otherwise, for a tool-using turn, **recovery runs first** — any tool step left
-   in `started` by a crashed prior attempt is classified **ambiguous** and the
-   active attempt is failed;
-3. the `prepared → started` write atomically requires its parent attempt to
-   remain `active`, so an overlapping stale Activity cannot execute a prepared
-   step after recovery fenced its attempt;
-4. if the turn already crossed the side-effect boundary (a `completed` or
-   `ambiguous` step exists), `RunTurn` **refuses to re-run** and terminates the
-   turn honestly (`session.error` + `session.status_terminated`) rather than
-   silently replaying the side effect. The refusal wording distinguishes the two:
-   a `completed` step is reported as prior tool execution that cannot yet be
-   resumed (resuming from a durable result is deferred — see *Next smallest
-   slice*), never as "ambiguous".
+1. `completed` returns the recorded result without acquiring a sandbox or
+   invoking the executor;
+2. `prepared` provisions the sandbox, records `started`, executes, then records
+   `completed`;
+3. `started` with no result becomes `ambiguous` and returns that classification
+   to the Workflow, which commits an honest terminal error instead of replaying
+   the side effect;
+4. `ambiguous` remains terminal and is never executed.
 
 Durable writes after a side effect — recording the tool result, finalizing the
-attempt, and committing the turn — each run on a context detached from the
-Activity's cancellation (`context.WithoutCancel` + a fresh bounded timeout,
-created per write). So a Temporal cancellation arriving after a tool's side
-effect cannot prevent recording that it happened; without this the step would be
-left `started` and recovered as `ambiguous` even though it actually completed.
+attempt, and committing the turn — run on a context detached from the Activity's
+cancellation (`context.WithoutCancel` + a fresh bounded timeout). Attempt
+finalization and public turn completion share one PostgreSQL transaction, so
+there is no new crash window between those facts. Recording a known tool result
+is idempotent and receives a small bounded write-only retry inside the same
+Activity; this absorbs a transient or lost database acknowledgment before a
+later Activity attempt must conservatively classify a still-started step as
+ambiguous.
 
-A model error *before* any tool step leaves no started step, so it is safely
-retried as a fresh attempt. Client-action tools (custom tools, `always_ask`) and
-interrupts are still out of scope on this path and terminate the turn honestly if
-requested.
+A model error is retried at the model Activity boundary and never touches the
+tool journal. Client-action tools (custom tools, `always_ask`) and interrupts are
+still out of scope on this path and terminate the turn honestly if requested.
 
 Run it with the feature-gated subcommand:
 
@@ -279,11 +288,19 @@ Failure-boundary coverage:
 | Relay crash after signal, before delete | `temporal.TestRelay_CrashAfterSignalBeforeDeleteRedelivers` |
 | Worker temporarily unavailable | `temporal.TestRelay_WorkerUnavailableLeavesWakeup` |
 | Continue-As-New carries cursor | `temporal.TestSessionWorkflow_ContinueAsNewCarriesCursor` |
+| New histories use granular Workflow loop; old histories retain RunTurn | `temporal.TestSessionWorkflow_NewExecutionUsesWorkflowOwnedLoop`, legacy-version session workflow tests |
+| Assistant text + several tools retain one coherent model round | `temporal.TestWorkflowTurn_PreservesTextAndMultipleTools` |
+| Tool Activity retry does not repeat the completed model step | `temporal.TestWorkflowTurn_ToolActivityRetryDoesNotRepeatModelStep` |
+| Workflow ambiguity commits an honest terminal error | `temporal.TestWorkflowTurn_AmbiguousToolTerminatesHonestly` |
+| Unsupported client-action batch is rejected before its first side effect | `temporal.TestWorkflowTurn_RejectsClientActionBatchBeforeSideEffects` |
 | Termination stops the batch; queued msg stays unprocessed | `temporal.TestSessionWorkflow_TerminationStopsBatch`, `temporal.TestRunTurn_TerminationReportedAndBQueuedUnprocessed` |
 | Durable writes survive Activity cancellation after a side effect | `temporal.TestRunTurn_DurableWritesSurviveCancellation` |
 | Tool step happy path (prepared→started→completed) | `temporal.TestRunTurn_ToolStepHappyPath`, `pg.TestJournal_HappyPath` |
 | Ambiguous (started, no result) not silently replayed | `temporal.TestRunTurn_AmbiguousToolNotReplayed`, `pg.TestJournal_StartedStepRecoveredAsAmbiguous` |
 | Completed step not replayed, not called ambiguous | `temporal.TestRunTurn_CompletedStepNotReplayedNotCalledAmbiguous` |
+| Completed result + lost database acknowledgment retries the write without re-execution | `temporal.TestWorkflowTurn_ToolResultWriteRetryDoesNotReexecute`, `temporal.TestExecuteTool_CompletedStepReturnsWithoutReexecution`, `pg.TestJournal_WorkflowCompletedStepReturnsDurableResult` |
+| Workflow started step becomes ambiguous without sandbox/executor | `temporal.TestExecuteTool_StartedStepBecomesAmbiguousWithoutReexecution` |
+| Attempt finalization + public completion are one idempotent transaction | `pg.TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically` |
 | Attempt refuses to close with unclassified started step | `pg.TestJournal_FinishRefusesUnclassifiedStartedStep` |
 | One active attempt per turn | `pg.TestJournal_OneActiveAttempt` |
 | Recovered/concurrently fenced stale attempt cannot start a prepared step | `pg.TestJournal_StalePreparedStepCannotStartAfterRecovery`, `pg.TestJournal_StartWaitsForConcurrentAttemptFence` |
@@ -307,12 +324,11 @@ scope** and not implemented on the Temporal path:
 
 - **No traffic cutover.** The HTTP API still runs entirely on the SQLite
   dispatcher. The `orchestrate` command runs the execution plane only.
-- **One tool-using turn validated; no resume across a tool step.** The path
-  exercised and tested end to end is an always_allow built-in step to `end_turn`.
-  A `RunTurn` retry after a tool step has run does not resume the model loop from
-  the durable result — it terminates honestly. Client-action tools (custom tools,
-  `always_ask` confirmations) and their park/resume protocol, and `user.interrupt`
-  cancellation, are out of scope and terminate the turn honestly if requested. The
+- **Always-allow built-ins only on the Workflow path.** Completed tool steps
+  resume from their durable result, including multi-tool/multi-round message
+  structure. Client-action tools (custom tools, `always_ask` confirmations) and
+  their park/resume protocol, and `user.interrupt` cancellation, are out of
+  scope and terminate the turn honestly if requested. The
   SQLite path's own tool journal (`internal/app/tool_journal.go`,
   `internal/store/execution_store.go`) is preserved and unchanged; the Temporal
   path adds a parallel PostgreSQL journal (`turn_attempts`, `tool_steps`) rather
@@ -320,6 +336,10 @@ scope** and not implemented on the Temporal path:
 - **Sandbox lease is in-process.** The session-scoped sandbox is cached in-memory
   by `sandbox.SessionManager`; a worker restart drops it and it is not shared
   across worker replicas. A durable/provider-backed lease is future work.
+- **No large-payload offload yet.** Model responses and tool results enter
+  Temporal history so replay preserves exact round structure. Sandbox command
+  output is bounded, but object-store/payload-codec offload for unusually large
+  file and model content is still a production hardening item.
 - **No exactly-once tool execution.** As documented in the fit review, no
   component removes the ambiguity between an external side effect and its
   acknowledgment. This slice makes that ambiguity explicit (a step left `started`
@@ -344,8 +364,6 @@ Two candidates keep the same boundaries and API non-cutover:
   turn when the resolving `user.custom_tool_result` / `user.tool_confirmation` is
   admitted and delivered as a wakeup — reusing the existing pending-action
   semantics rather than inventing a Temporal-specific park protocol.
-- **Resume from a durable tool result.** Instead of terminating a turn whose
-  prior attempt has a `completed` (not ambiguous) tool step, re-project that
-  durable result and continue the model loop — turning the current honest refusal
-  into a genuine recovery for the unambiguous case, while still refusing the
-  ambiguous one.
+- **HTTP/PostgreSQL cutover.** Route the feature-gated HTTP session path through
+  the PostgreSQL admission/orchestration boundary, while keeping the legacy
+  SQLite server available until compatibility and rollback gates pass.

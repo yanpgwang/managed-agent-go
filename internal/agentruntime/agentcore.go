@@ -77,7 +77,7 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 	if req.AgentSnapshot.System != nil {
 		system = *req.AgentSnapshot.System
 	}
-	toolSchemas := enabledToolSchemas(req.ToolSet)
+	toolSchemas := EnabledToolSchemas(req.ToolSet)
 
 	// messages is the local running conversation, seeded from the projected
 	// history and grown with assistant tool_use / user tool_result blocks so the
@@ -105,7 +105,7 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 		// which the Messages API rejects. Merging folds the recovered tool_use into
 		// that trailing assistant message (text then tool_use), preserving strict
 		// role alternation before the model loop runs.
-		messages = appendMerging(messages, seeded)
+		messages = AppendMerging(messages, seeded)
 	}
 
 	for turn := 0; turn < maxToolTurns; turn++ {
@@ -142,7 +142,7 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 			if err != nil {
 				return RunOutcome{}, err
 			}
-			if content := textBlocksToContent(resp.Content); len(content) > 0 {
+			if content := TextBlocksToContent(resp.Content); len(content) > 0 {
 				// A text turn that produced no deltas (e.g. a client that never
 				// streams) still needs a PreviewStart so the preview id is announced
 				// before the persisted agent.message carrying it.
@@ -168,7 +168,7 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 				return RunOutcome{}, err
 			}
 			// Emit any assistant text as an agent.message (S1 behavior).
-			if content := textBlocksToContent(resp.Content); len(content) > 0 {
+			if content := TextBlocksToContent(resp.Content); len(content) > 0 {
 				if _, err := sink.Emit(ctx, []domain.EventDraft{{
 					Type:    domain.EvAgentMessage,
 					Payload: map[string]any{"content": content},
@@ -245,7 +245,7 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 				resultBlocks = append(resultBlocks, domain.ContentBlock{
 					Type:          "tool_result",
 					ToolResultFor: id,
-					Text:          flattenResultText(result.Content),
+					Text:          FlattenResultText(result.Content),
 					IsError:       result.IsError,
 				})
 
@@ -454,7 +454,7 @@ func (a *AgentCore) seedConfirmation(
 			Type: "tool_use", ToolUseID: orig.ID, ToolName: name, Input: input,
 		}}},
 		{Role: domain.RoleUser, Content: []domain.ContentBlock{{
-			Type: "tool_result", ToolResultFor: orig.ID, Text: flattenResultText(content), IsError: isError,
+			Type: "tool_result", ToolResultFor: orig.ID, Text: FlattenResultText(content), IsError: isError,
 		}}},
 	}, nil
 }
@@ -502,13 +502,16 @@ func (a *AgentCore) executePreparedBuiltin(
 	return result, nil
 }
 
-// appendMerging appends added messages to base, folding an added message into
+// AppendMerging appends added messages to base, folding an added message into
 // the previous message when their roles match — the same role-collapsing rule
 // ProjectMessages applies to committed events. This keeps the running
 // conversation strictly role-alternating even when the seeded confirmation pair
 // begins with the same role as base's final message (e.g. base ends with
 // assistant text and the recovered tool_use is also assistant).
-func appendMerging(base, added []domain.Message) []domain.Message {
+//
+// It is exported for the Temporal workflow loop, which must apply the identical
+// pure message projection without invoking AgentCore's legacy in-process loop.
+func AppendMerging(base, added []domain.Message) []domain.Message {
 	out := base
 	for _, m := range added {
 		if n := len(out); n > 0 && out[n-1].Role == m.Role {
@@ -528,11 +531,14 @@ func appendMerging(base, added []domain.Message) []domain.Message {
 	return out
 }
 
-// enabledToolSchemas returns the model-facing tool schemas the session offers:
+// EnabledToolSchemas returns the model-facing tool schemas the session offers:
 // every enabled built-in in canonical order, followed by the session's custom
 // tools. Offering custom tools lets the model request them; the core parks the
 // run when it does, since only the app/client can resolve a custom tool.
-func enabledToolSchemas(ts domain.ToolSet) []model.ToolSchema {
+//
+// It is deterministic and side-effect free so both AgentCore and the Temporal
+// preparation Activity can share one schema projection.
+func EnabledToolSchemas(ts domain.ToolSet) []model.ToolSchema {
 	schemas := enabledBuiltinSchemas(ts)
 	for _, ct := range ts.Custom {
 		schemas = append(schemas, model.ToolSchema{
@@ -566,7 +572,7 @@ func enabledBuiltinSchemas(ts domain.ToolSet) []model.ToolSchema {
 
 // textContent projects the non-empty text blocks of a model response into the
 // agent.message wire content array.
-func textBlocksToContent(blocks []domain.ContentBlock) []any {
+func TextBlocksToContent(blocks []domain.ContentBlock) []any {
 	content := make([]any, 0, len(blocks))
 	for _, b := range blocks {
 		if b.Type != "text" || b.Text == "" {
@@ -577,9 +583,9 @@ func textBlocksToContent(blocks []domain.ContentBlock) []any {
 	return content
 }
 
-// flattenResultText extracts the concatenated text of a tool result's content
+// FlattenResultText extracts the concatenated text of a tool result's content
 // block array for threading into the local tool_result message block.
-func flattenResultText(content []any) string {
+func FlattenResultText(content []any) string {
 	var s string
 	for _, item := range content {
 		m, ok := item.(map[string]any)

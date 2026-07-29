@@ -108,7 +108,7 @@ func TestRunTurn_ToolStepHappyPath(t *testing.T) {
 	rt := agentruntime.NewAgentCore(model.NewFake(), ids)
 	sandboxes := sandbox.NewSessionManager(sandbox.NewLocalProvider())
 	src := storeSource{store: store}
-	acts := NewActivities(rt, src, src, sandboxes, ids)
+	acts := NewActivities(rt, nil, src, src, sandboxes, ids)
 
 	if _, err := acts.RunTurn(ctx, RunTurnInput{SessionID: "sess_tool_ok", TriggerEventID: trigger}); err != nil {
 		t.Fatalf("run turn: %v", err)
@@ -193,7 +193,7 @@ func TestRunTurn_AmbiguousToolNotReplayed(t *testing.T) {
 	crash := &crashAfterStartRuntime{}
 	sandboxes := sandbox.NewSessionManager(sandbox.NewLocalProvider())
 	src := storeSource{store: store}
-	acts := NewActivities(crash, src, src, sandboxes, ids)
+	acts := NewActivities(crash, nil, src, src, sandboxes, ids)
 
 	// Attempt 1: the runtime starts the tool then "crashes"; RunTurn surfaces the
 	// error (Temporal would retry).
@@ -247,7 +247,7 @@ func TestRunTurn_IdempotentAfterProcessed(t *testing.T) {
 	counting := &countingRuntime{inner: agentruntime.NewAgentCore(model.NewFake(), ids)}
 	sandboxes := sandbox.NewSessionManager(sandbox.NewLocalProvider())
 	src := storeSource{store: store}
-	acts := NewActivities(counting, src, src, sandboxes, ids)
+	acts := NewActivities(counting, nil, src, src, sandboxes, ids)
 
 	if _, err := acts.RunTurn(ctx, RunTurnInput{SessionID: "sess_tool_idem", TriggerEventID: trigger}); err != nil {
 		t.Fatalf("run 1: %v", err)
@@ -335,7 +335,7 @@ func TestRunTurn_TerminationReportedAndBQueuedUnprocessed(t *testing.T) {
 
 	ids := domain.NewRandomIDGen()
 	src := storeSource{store: store}
-	acts := NewActivities(agentruntime.NewAgentCore(model.NewFake(), ids), src, src, sandbox.NewSessionManager(sandbox.NewLocalProvider()), ids)
+	acts := NewActivities(agentruntime.NewAgentCore(model.NewFake(), ids), nil, src, src, sandbox.NewSessionManager(sandbox.NewLocalProvider()), ids)
 
 	// A terminates the session.
 	resA, err := acts.RunTurn(ctx, RunTurnInput{SessionID: sess.ID, TriggerEventID: idA})
@@ -424,7 +424,7 @@ func TestRunTurn_DurableWritesSurviveCancellation(t *testing.T) {
 	ids := domain.NewRandomIDGen()
 	rt := &cancelBeforeCompleteRuntime{cancel: cancel}
 	src := storeSource{store: store}
-	acts := NewActivities(rt, src, src, sandbox.NewSessionManager(sandbox.NewLocalProvider()), ids)
+	acts := NewActivities(rt, nil, src, src, sandbox.NewSessionManager(sandbox.NewLocalProvider()), ids)
 
 	res, err := acts.RunTurn(ctx, RunTurnInput{SessionID: "sess_cancel_durable", TriggerEventID: trigger})
 	if err != nil {
@@ -513,7 +513,7 @@ func TestRunTurn_CompletedStepNotReplayedNotCalledAmbiguous(t *testing.T) {
 	ids := domain.NewRandomIDGen()
 	rt := &completeThenCrashRuntime{}
 	src := storeSource{store: store}
-	acts := NewActivities(rt, src, src, sandbox.NewSessionManager(sandbox.NewLocalProvider()), ids)
+	acts := NewActivities(rt, nil, src, src, sandbox.NewSessionManager(sandbox.NewLocalProvider()), ids)
 
 	// Attempt 1: completes the step, then crashes before commit.
 	if _, err := acts.RunTurn(ctx, RunTurnInput{SessionID: "sess_completed_boundary", TriggerEventID: trigger}); err == nil {

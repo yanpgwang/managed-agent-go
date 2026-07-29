@@ -33,21 +33,20 @@ This still does not promise exactly-once execution for arbitrary shell
 commands. Temporal owns orchestration recovery; the tool journal records the
 irreducible uncertainty between an external side effect and its acknowledgment.
 
-**Status (2026-07-28):** the spine is landing incrementally and is documented in
+**Status (2026-07-29):** the spine is landing incrementally and is documented in
 the [platform-spine milestone](architecture/platform-spine-milestone.md).
 Delivered: PostgreSQL (`pgx` + `goose` + `sqlc`), transactional admission with a
 coalescible outbox, an at-least-once Signal-With-Start relay, a `SessionWorkflow`
 with a durable cursor, causal model history, one public idle per batch, and
-Continue-As-New, and one `user.message` — including a tool-using turn (an
-always_allow **built-in tool step**) run under a PostgreSQL tool journal with a
-`prepared → started → completed` boundary (`ambiguous` branches from `started`):
-a step left `started` by a crash is refused as `ambiguous`, and a `completed`
-step is reported as prior execution that cannot yet be resumed. Durable writes
-after a side effect survive Activity cancellation; recovery also fences a stale
-attempt before it can start a merely prepared tool step. The real tool path is
-validated with both local and Docker sandbox providers. Still open on this path:
-resuming the model loop from a durable tool result, client-action park/resume,
-`user.interrupt`, and cutting the HTTP API over from the SQLite dispatcher.
+Continue-As-New. The plan-act-observe loop now lives in Workflow code with one
+Activity per model call and tool call; replay preserves assistant text,
+multi-tool rounds, and completed tool results. The PostgreSQL journal retains
+the `prepared → started → completed` boundary (`ambiguous` branches from
+`started`): completed steps resume without re-execution, while a step left
+`started` is refused as ambiguous. Attempt finalization and public completion
+commit atomically. The real path is validated with local and Docker sandbox
+providers. Still open on this path: client-action park/resume, `user.interrupt`,
+large-payload offload, and cutting the HTTP API over from SQLite.
 
 ## Now: replace infrastructure, preserve semantics
 

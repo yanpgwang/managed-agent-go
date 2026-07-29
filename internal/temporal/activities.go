@@ -2,19 +2,26 @@ package temporal
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
+	"github.com/yanpgwang/managed-agent-go/internal/agentruntime/tools"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 )
 
 // Registered activity names. Referenced by the workflow through the exported
 // symbols; named explicitly so a rename cannot silently break replay.
 const (
-	ActivityLoadEvents = "LoadEvents"
-	ActivityRunTurn    = "RunTurn"
+	ActivityLoadEvents           = "LoadEvents"
+	ActivityRunTurn              = "RunTurn"
+	ActivityPrepareTurn          = "PrepareTurn"
+	ActivityCallModel            = "CallModel"
+	ActivityExecuteTool          = "ExecuteTool"
+	ActivityCompleteWorkflowTurn = "CompleteWorkflowTurn"
 )
 
 // EventSource is the read side of the PostgreSQL ledger the Activities depend
@@ -26,22 +33,35 @@ type EventSource interface {
 	GetSession(ctx context.Context, id string) (domain.Session, error)
 	GetEvent(ctx context.Context, sessionID, id string) (domain.Event, error)
 	CompleteTurn(ctx context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error)
+	CompleteWorkflowTurn(
+		ctx context.Context,
+		sessionID string,
+		triggerEventID string,
+		output []domain.EventDraft,
+		status domain.Status,
+		attemptID string,
+		attemptState domain.RunAttemptState,
+		attemptError *string,
+	) (TurnCompletionResult, error)
 }
 
-// JournalStore is the durable tool-execution journal the RunTurn Activity uses to
-// preserve the prepared/started/completed/ambiguous boundary across Activity
-// retries. *pg.Store implements it. It is separate from EventSource so a turn
-// with no tools needs no journal.
+// JournalStore is the durable tool-execution journal used by both the granular
+// ExecuteTool Activity and the replay-compatible RunTurn Activity. It preserves
+// the prepared/started/completed/ambiguous boundary across Activity retries.
+// *pg.Store implements it.
 type JournalStore interface {
 	// RecoverTurn classifies leftovers from a crashed attempt (started steps ->
 	// ambiguous, active attempt -> failed) and reports whether the turn now
 	// carries prior tool execution and must not be freshly re-run.
 	RecoverTurn(ctx context.Context, sessionID, triggerEventID string) (hasPriorExecution bool, err error)
 	BeginAttempt(ctx context.Context, sessionID, triggerEventID string) (attemptID string, err error)
+	EnsureAttempt(ctx context.Context, sessionID, triggerEventID, attemptID string) error
 	FinishAttempt(ctx context.Context, attemptID string, state domain.RunAttemptState, attemptError *string) error
 	PrepareToolStep(ctx context.Context, attemptID string, ordinal int, toolUseEventID, toolName string, input map[string]any) (stepID string, err error)
+	EnsureToolStep(ctx context.Context, attemptID, stepID string, ordinal int, toolUseEventID, toolName string, input map[string]any) (domain.ToolStep, error)
 	StartToolStep(ctx context.Context, stepID string) error
 	CompleteToolStep(ctx context.Context, stepID string, result domain.ToolStepResult) error
+	MarkToolStepAmbiguous(ctx context.Context, stepID string) error
 }
 
 // SandboxLease provisions the session-scoped sandbox a built-in tool executes
@@ -69,21 +89,39 @@ const historyLimit = 10000
 // sandboxTurnTimeout bounds a built-in tool execution within a turn.
 const sandboxTurnTimeout = 120 * time.Second
 
-// Activities holds the I/O dependencies of the session Activities: the runtime
-// that calls the model, the PostgreSQL event source, the durable tool journal,
-// and the session-scoped sandbox lease. All non-deterministic work (SQL, model
-// calls, tool side effects) lives here, never in the workflow. journal and
-// sandboxes may be nil for a deployment that never routes tool-using turns.
+// toolResultWriteAttempts gives a known in-memory tool result a brief chance to
+// cross a transient PostgreSQL outage before the Activity returns an error. A
+// later Activity retry must conservatively classify a still-started step as
+// ambiguous, so this bounded write-only retry belongs before that boundary.
+const toolResultWriteAttempts = 3
+
+// Activities holds the I/O dependencies of the session Activities: the legacy
+// runtime retained for old Workflow histories, the model client used by new
+// histories, the PostgreSQL event source, the durable tool journal, and the
+// session-scoped sandbox lease. All non-deterministic work (SQL, model calls,
+// tool side effects) lives here, never in the workflow. journal and sandboxes
+// may be nil for a deployment that never routes tool-using turns.
 type Activities struct {
-	rt        agentruntime.AgentRuntime
-	source    EventSource
-	journal   JournalStore
-	sandboxes SandboxLease
-	ids       domain.IDGenerator
+	rt          agentruntime.AgentRuntime
+	modelClient model.Client
+	source      EventSource
+	journal     JournalStore
+	sandboxes   SandboxLease
+	ids         domain.IDGenerator
 }
 
-func NewActivities(rt agentruntime.AgentRuntime, source EventSource, journal JournalStore, sandboxes SandboxLease, ids domain.IDGenerator) *Activities {
-	return &Activities{rt: rt, source: source, journal: journal, sandboxes: sandboxes, ids: ids}
+func NewActivities(
+	rt agentruntime.AgentRuntime,
+	modelClient model.Client,
+	source EventSource,
+	journal JournalStore,
+	sandboxes SandboxLease,
+	ids domain.IDGenerator,
+) *Activities {
+	return &Activities{
+		rt: rt, modelClient: modelClient, source: source,
+		journal: journal, sandboxes: sandboxes, ids: ids,
+	}
 }
 
 // LoadEvents returns the ordered public event references after a cursor. Only
@@ -105,10 +143,241 @@ func (a *Activities) LoadEvents(ctx context.Context, in LoadEventsInput) (LoadEv
 	return LoadEventsResult{Events: refs}, nil
 }
 
-// RunTurn executes one model turn for a trigger event and commits its
-// authoritative output through the idempotent PostgreSQL completion. It handles
-// both the plain (no-tool) path and a single built-in tool step under the durable
-// journal.
+// PrepareTurn reads one turn's immutable starting state from PostgreSQL. The
+// result becomes Workflow history; replay never performs these reads in
+// Workflow code.
+func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+	trigger, err := a.source.GetEvent(ctx, in.SessionID, in.TriggerEventID)
+	if err != nil {
+		return PrepareTurnResult{}, err
+	}
+	session, err := a.source.GetSession(ctx, in.SessionID)
+	if err != nil {
+		return PrepareTurnResult{}, err
+	}
+	if trigger.ProcessedAt != nil {
+		return PrepareTurnResult{
+			AlreadyCompleted: true,
+			Terminated:       session.Status == domain.StatusTerminated,
+		}, nil
+	}
+	history, err := a.source.HistoryThrough(ctx, in.SessionID, in.TriggerEventID, historyLimit)
+	if err != nil {
+		return PrepareTurnResult{}, err
+	}
+	toolSet, err := domain.ParseTools(session.AgentSnapshot.Tools)
+	if err != nil {
+		return PrepareTurnResult{FatalError: "invalid toolset: " + err.Error()}, nil
+	}
+
+	system := ""
+	if session.AgentSnapshot.System != nil {
+		system = *session.AgentSnapshot.System
+	}
+	result := PrepareTurnResult{
+		AttemptID: a.ids.NewID(domain.PrefixRunAttempt),
+		Request: model.Request{
+			Model:    session.AgentSnapshot.Model.ID,
+			System:   system,
+			Messages: domain.ProjectMessages(history),
+			Tools:    agentruntime.EnabledToolSchemas(toolSet),
+		},
+	}
+	for _, name := range domain.BuiltinToolNames {
+		enabled, policy := toolSet.BuiltinEnabled(name)
+		if enabled {
+			result.Tools = append(result.Tools, TurnTool{
+				Name: name, Kind: TurnToolBuiltin, Permission: policy,
+			})
+		}
+	}
+	for _, custom := range toolSet.Custom {
+		result.Tools = append(result.Tools, TurnTool{
+			Name: custom.Name, Kind: TurnToolCustom,
+		})
+	}
+	return result, nil
+}
+
+// CallModel performs exactly one model call. Its full normalized response is
+// returned to Temporal, which durably records the text/tool round structure.
+func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallModelResult, error) {
+	if a.modelClient == nil {
+		return CallModelResult{}, fmt.Errorf("temporal: model client is not configured")
+	}
+	response, err := a.modelClient.CreateMessage(ctx, in.Request)
+	if err != nil {
+		return CallModelResult{}, err
+	}
+	result := CallModelResult{Response: response}
+	normalized := append([]domain.ContentBlock(nil), response.Content...)
+	hasText := false
+	for i := range normalized {
+		switch normalized[i].Type {
+		case "text":
+			if normalized[i].Text != "" {
+				hasText = true
+			}
+		case "tool_use":
+			if normalized[i].ToolName == "" {
+				result.FatalError = "model returned a tool_use without a name"
+				return result, nil
+			}
+			if normalized[i].Input == nil {
+				result.FatalError = "model returned a tool_use without an input object"
+				return result, nil
+			}
+			// The provider's transient tool id is replaced with the public
+			// server-owned event id used by the journal and event ledger.
+			normalized[i].ToolUseID = a.ids.NewID(domain.PrefixEvent)
+			result.ToolSteps = append(result.ToolSteps, PlannedToolStep{
+				ToolUseEventID: normalized[i].ToolUseID,
+				ToolStepID:     a.ids.NewID(domain.PrefixToolStep),
+			})
+		}
+	}
+	result.Response.Content = normalized
+	if hasText {
+		result.MessageEventID = a.ids.NewID(domain.PrefixEvent)
+	}
+	return result, nil
+}
+
+// ExecuteTool runs one always-allow built-in behind the durable per-step
+// journal. A completed step is returned without re-execution; a started step
+// without a result is classified ambiguous and reported as a successful result
+// so the Workflow terminates rather than retrying the side effect.
+func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (ExecuteToolResult, error) {
+	if a.journal == nil || a.sandboxes == nil {
+		return ExecuteToolResult{}, fmt.Errorf("temporal: tool execution requires a journal and sandbox")
+	}
+	if err := a.journal.EnsureAttempt(
+		ctx, in.SessionID, in.TriggerEventID, in.AttemptID,
+	); err != nil {
+		return ExecuteToolResult{}, err
+	}
+	step, err := a.journal.EnsureToolStep(
+		ctx,
+		in.AttemptID,
+		in.ToolStepID,
+		in.Ordinal,
+		in.ToolUseEventID,
+		in.ToolName,
+		in.Input,
+	)
+	if err != nil {
+		return ExecuteToolResult{}, err
+	}
+	out := ExecuteToolResult{}
+	switch step.State {
+	case domain.ToolStepCompleted:
+		if step.Result == nil {
+			return ExecuteToolResult{}, fmt.Errorf("temporal: completed tool step %s has no result", step.ID)
+		}
+		out.Result = *step.Result
+		return out, nil
+	case domain.ToolStepAmbiguous:
+		out.Ambiguous = true
+		return out, nil
+	case domain.ToolStepStarted:
+		dctx, cancel := durableCtx(ctx)
+		err := a.journal.MarkToolStepAmbiguous(dctx, step.ID)
+		cancel()
+		if err != nil {
+			return ExecuteToolResult{}, err
+		}
+		out.Ambiguous = true
+		return out, nil
+	case domain.ToolStepPrepared:
+		// Continue below.
+	default:
+		return ExecuteToolResult{}, fmt.Errorf("temporal: invalid tool step state %q", step.State)
+	}
+
+	executor, ok := tools.Registry()[in.ToolName]
+	if !ok {
+		out.FatalError = "built-in tool is not registered: " + in.ToolName
+		return out, nil
+	}
+	// Provisioning happens before Start: a transient sandbox failure cannot turn
+	// a never-executed tool into an ambiguous side effect.
+	box, err := a.sandboxes.Acquire(ctx, in.SessionID, sandbox.Spec{Timeout: sandboxTurnTimeout})
+	if err != nil {
+		return ExecuteToolResult{}, err
+	}
+	dctx, cancel := durableCtx(ctx)
+	err = a.journal.StartToolStep(dctx, step.ID)
+	cancel()
+	if err != nil {
+		return ExecuteToolResult{}, err
+	}
+
+	executed := executor(ctx, box, in.Input)
+	out.Result = domain.ToolStepResult{Content: executed.Content, IsError: executed.IsError}
+	if err := completeToolResultDurably(ctx, a.journal, step.ID, out.Result); err != nil {
+		return ExecuteToolResult{}, err
+	}
+	return out, nil
+}
+
+func completeToolResultDurably(
+	ctx context.Context,
+	journal JournalStore,
+	stepID string,
+	result domain.ToolStepResult,
+) error {
+	dctx, cancel := durableCtx(ctx)
+	defer cancel()
+
+	var lastErr error
+	for attempt := 0; attempt < toolResultWriteAttempts; attempt++ {
+		if err := journal.CompleteToolStep(dctx, stepID, result); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt+1 == toolResultWriteAttempts {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-dctx.Done():
+			timer.Stop()
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+// CompleteWorkflowTurn commits the Workflow's durable output and optional tool
+// attempt through one idempotent PostgreSQL transaction.
+func (a *Activities) CompleteWorkflowTurn(
+	ctx context.Context,
+	in CompleteWorkflowTurnInput,
+) (RunTurnResult, error) {
+	dctx, cancel := durableCtx(ctx)
+	defer cancel()
+	completion, err := a.source.CompleteWorkflowTurn(
+		dctx,
+		in.SessionID,
+		in.TriggerEventID,
+		in.Output,
+		in.Status,
+		in.AttemptID,
+		in.AttemptState,
+		in.AttemptError,
+	)
+	if err != nil {
+		return RunTurnResult{}, err
+	}
+	return RunTurnResult{Terminated: completion.Status == domain.StatusTerminated}, nil
+}
+
+// RunTurn is the legacy opaque turn Activity retained for replay compatibility
+// with Workflow histories created before workflowAgentLoopChangeID. New Workflow
+// executions use PrepareTurn, CallModel, ExecuteTool, and
+// CompleteWorkflowTurn.
 //
 // Because a Temporal Activity may run more than once, correctness rests on two
 // idempotency layers:
@@ -209,7 +478,7 @@ func (a *Activities) RunTurn(ctx context.Context, in RunTurnInput) (RunTurnResul
 		return RunTurnResult{}, runErr
 	}
 
-	// This slice supports a single always_allow built-in step to end_turn. A park
+	// The legacy path supports always_allow built-ins to end_turn. A park
 	// (custom tool / always_ask) is out of scope on the Temporal path; terminate
 	// honestly rather than inventing a park protocol here.
 	if outcome.RequiresAction {
