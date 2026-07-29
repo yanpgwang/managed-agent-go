@@ -1,7 +1,13 @@
-# managed-agent-go
+<p align="center">
+  <img src="assets/mango-logo.png" alt="Mango" width="760">
+</p>
 
-An open-source, self-hosted managed agent runtime in Go with a Claude Managed
-Agents-compatible HTTP API.
+<h1 align="center">managed-agent-go</h1>
+
+<p align="center"><strong>Managed Agents, Native Go, On-demand.</strong></p>
+
+**Mango** is an open-source, self-hosted managed agent runtime in Go with a
+Claude Managed Agents-compatible HTTP API.
 
 > [!IMPORTANT]
 > **Alpha.** The default server is an early, experimental, **single-node**

@@ -3,8 +3,9 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'managed-agent-go',
+  title: 'Mango',
   tagline: 'A self-hosted implementation of the Claude Managed Agents API',
+  favicon: 'img/mango-mark.png',
 
   future: {
     v4: true,
@@ -55,7 +56,11 @@ const config: Config = {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'managed-agent-go',
+      title: 'Mango',
+      logo: {
+        alt: 'Mango',
+        src: 'img/mango-mark.png',
+      },
       items: [
         {
           type: 'docSidebar',
