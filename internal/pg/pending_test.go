@@ -107,6 +107,7 @@ func TestCompleteWorkflowTurn_ParksPendingActionsAtomically(t *testing.T) {
 		"",
 		nil,
 		actionIDs,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("park: %v", err)
@@ -148,6 +149,7 @@ func TestCompleteWorkflowTurn_ParksPendingActionsAtomically(t *testing.T) {
 		"",
 		nil,
 		actionIDs,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("retry park: %v", err)
@@ -188,6 +190,7 @@ func TestCompleteWorkflowTurn_InvalidPendingActionRollsBack(t *testing.T) {
 		"",
 		nil,
 		[]string{actionID},
+		nil,
 	)
 	requireDomainKind(t, err, domain.KindValidation)
 
@@ -306,6 +309,20 @@ func TestPendingActions_AdmissionGateAndResumeCompletion(t *testing.T) {
 	if pending[0].ResolvedAt != nil {
 		t.Fatal("pending action resolved before the resume turn completed")
 	}
+	// Model the relay delivering the resolution wakeup before the resume
+	// completion. The queued ordinary message had no wakeup of its own, so
+	// completion must enqueue a fresh one when it clears the gate.
+	deliveredWakeup, ok, err := store.PendingWakeup(ctx, session.ID)
+	if err != nil || !ok {
+		t.Fatalf("resolution wakeup = %+v ok=%v err=%v", deliveredWakeup, ok, err)
+	}
+	if removed, err := store.DeleteWakeupIfUnchanged(
+		ctx,
+		session.ID,
+		deliveredWakeup.MaxEventSeq,
+	); err != nil || !removed {
+		t.Fatalf("consume resolution wakeup: removed=%v err=%v", removed, err)
+	}
 
 	// A second resolution cannot claim the same still-in-flight wait.
 	_, err = store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
@@ -342,6 +359,7 @@ func TestPendingActions_AdmissionGateAndResumeCompletion(t *testing.T) {
 		"",
 		nil,
 		nil,
+		[]string{resolutionID},
 	)
 	if err != nil {
 		t.Fatalf("complete resume: %v", err)
@@ -360,6 +378,17 @@ func TestPendingActions_AdmissionGateAndResumeCompletion(t *testing.T) {
 	if ordinaryEvent.ProcessedAt != nil {
 		t.Fatal("queued ordinary message was processed before its own turn")
 	}
+	requeued, ok, err := store.PendingWakeup(ctx, session.ID)
+	if err != nil || !ok {
+		t.Fatalf("un-gate wakeup = %+v ok=%v err=%v", requeued, ok, err)
+	}
+	if requeued.MaxEventSeq <= deliveredWakeup.MaxEventSeq {
+		t.Fatalf(
+			"un-gate wakeup seq = %d, want newer than delivered %d",
+			requeued.MaxEventSeq,
+			deliveredWakeup.MaxEventSeq,
+		)
+	}
 
 	retry, err := store.CompleteWorkflowTurn(
 		ctx,
@@ -376,6 +405,7 @@ func TestPendingActions_AdmissionGateAndResumeCompletion(t *testing.T) {
 		"",
 		nil,
 		nil,
+		[]string{resolutionID},
 	)
 	if err != nil {
 		t.Fatalf("retry resume completion: %v", err)
@@ -390,7 +420,50 @@ func TestPendingActions_PartialResolutionKeepsRemainingGate(t *testing.T) {
 	ctx := context.Background()
 	session, triggerID := pendingTurn(t, store, "sess_pending_partial")
 	actionIDs := []string{"sevt_partial_a", "sevt_partial_b"}
-	parkCustomActions(t, store, session.ID, triggerID, actionIDs)
+	if _, err := store.CompleteWorkflowTurn(
+		ctx,
+		session.ID,
+		triggerID,
+		[]domain.EventDraft{
+			{
+				ID:   actionIDs[0],
+				Type: domain.EvAgentCustomToolUse,
+				Payload: map[string]any{
+					"name": "client_tool", "input": map[string]any{},
+				},
+			},
+			{
+				ID:   actionIDs[1],
+				Type: domain.EvAgentToolUse,
+				Payload: map[string]any{
+					"name": "bash", "input": map[string]any{"command": "echo ready"},
+					"evaluated_permission": "ask",
+				},
+			},
+			requiresActionDraft(actionIDs),
+		},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		actionIDs,
+		nil,
+	); err != nil {
+		t.Fatalf("park actions: %v", err)
+	}
+	// The initial user.message wakeup has already been delivered by the time the
+	// turn parks. Remove it so this test can distinguish a new resolution wakeup.
+	wakeup, ok, err := store.PendingWakeup(ctx, session.ID)
+	if err != nil || !ok {
+		t.Fatalf("initial wakeup = %+v ok=%v err=%v", wakeup, ok, err)
+	}
+	if removed, err := store.DeleteWakeupIfUnchanged(
+		ctx,
+		session.ID,
+		wakeup.MaxEventSeq,
+	); err != nil || !removed {
+		t.Fatalf("consume initial wakeup: removed=%v err=%v", removed, err)
+	}
 
 	firstResolution, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
 		Type: domain.EvUserCustomToolResult,
@@ -401,44 +474,57 @@ func TestPendingActions_PartialResolutionKeepsRemainingGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("admit first resolution: %v", err)
 	}
-	done, err := store.CompleteWorkflowTurn(
-		ctx,
-		session.ID,
-		firstResolution.Events[0].ID,
-		[]domain.EventDraft{requiresActionDraft([]string{actionIDs[1]})},
-		domain.StatusIdle,
-		"",
-		"",
-		nil,
-		nil,
-	)
-	if err != nil {
-		t.Fatalf("complete partial resolution: %v", err)
+	if firstResolution.Session.Status != domain.StatusIdle || firstResolution.Enqueued {
+		t.Fatalf(
+			"partial resolution = status:%s enqueued:%v, want idle false",
+			firstResolution.Session.Status,
+			firstResolution.Enqueued,
+		)
 	}
-	if done.Session.Status != domain.StatusIdle {
-		t.Fatalf("partial resolution status = %s, want idle", done.Session.Status)
+	if _, ok, err := store.PendingWakeup(ctx, session.ID); err != nil || ok {
+		t.Fatalf("partial resolution wakeup: ok=%v err=%v", ok, err)
 	}
 	pending, err := store.UnresolvedPendingActions(ctx, session.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(pending) != 1 || pending[0].ActionEventID != actionIDs[1] {
-		t.Fatalf("remaining pending = %+v, want %s", pending, actionIDs[1])
+	if len(pending) != 2 ||
+		pending[0].ResolvingEventID == nil ||
+		*pending[0].ResolvingEventID != firstResolution.Events[0].ID ||
+		pending[1].ResolvingEventID != nil {
+		t.Fatalf("partial barrier = %+v", pending)
 	}
 
 	secondResolution, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
-		Type: domain.EvUserCustomToolResult,
+		Type: domain.EvUserToolConfirmation,
 		Payload: map[string]any{
-			"custom_tool_use_id": actionIDs[1], "content": []any{},
+			"tool_use_id": actionIDs[1], "result": "allow",
 		},
 	}})
 	if err != nil {
 		t.Fatalf("admit second resolution: %v", err)
 	}
-	done, err = store.CompleteWorkflowTurn(
+	if secondResolution.Session.Status != domain.StatusRunning || !secondResolution.Enqueued {
+		t.Fatalf(
+			"complete barrier admission = status:%s enqueued:%v, want running true",
+			secondResolution.Session.Status,
+			secondResolution.Enqueued,
+		)
+	}
+	secondResolutionID := secondResolution.Events[0].ID
+	secondEvent, err := store.GetEvent(ctx, session.ID, secondResolutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondEvent.ProcessedAt != nil {
+		t.Fatal("tool confirmation processed before the barrier resume completed")
+	}
+
+	resolutionIDs := []string{firstResolution.Events[0].ID, secondResolutionID}
+	_, err = store.CompleteWorkflowTurn(
 		ctx,
 		session.ID,
-		secondResolution.Events[0].ID,
+		secondResolutionID,
 		[]domain.EventDraft{{
 			Type: domain.EvSessionStatusIdle,
 			Payload: map[string]any{
@@ -450,16 +536,68 @@ func TestPendingActions_PartialResolutionKeepsRemainingGate(t *testing.T) {
 		"",
 		nil,
 		nil,
+		[]string{secondResolutionID},
+	)
+	requireDomainKind(t, err, domain.KindValidation)
+
+	// The exact complete set closes the whole barrier and stamps every
+	// resolution trigger in the same transaction.
+	done, err := store.CompleteWorkflowTurn(
+		ctx,
+		session.ID,
+		secondResolutionID,
+		[]domain.EventDraft{{
+			Type: domain.EvSessionStatusIdle,
+			Payload: map[string]any{
+				"stop_reason": map[string]any{"type": "end_turn"},
+			},
+		}},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		resolutionIDs,
 	)
 	if err != nil {
-		t.Fatalf("complete second resolution: %v", err)
+		t.Fatalf("complete resolution barrier: %v", err)
 	}
 	if done.Session.Status != domain.StatusIdle {
-		t.Fatalf("final resolution status = %s, want idle", done.Session.Status)
+		t.Fatalf("barrier completion status = %s, want idle", done.Session.Status)
 	}
 	pending, err = store.UnresolvedPendingActions(ctx, session.ID)
 	if err != nil || len(pending) != 0 {
 		t.Fatalf("pending after all resolutions = %+v err=%v", pending, err)
+	}
+	secondEvent, err = store.GetEvent(ctx, session.ID, secondResolutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondEvent.ProcessedAt == nil {
+		t.Fatal("barrier completion did not process the tool confirmation")
+	}
+	retry, err := store.CompleteWorkflowTurn(
+		ctx,
+		session.ID,
+		secondResolutionID,
+		[]domain.EventDraft{{
+			Type: domain.EvSessionStatusIdle,
+			Payload: map[string]any{
+				"stop_reason": map[string]any{"type": "end_turn"},
+			},
+		}},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		resolutionIDs,
+	)
+	if err != nil {
+		t.Fatalf("retry barrier completion: %v", err)
+	}
+	if retry.Applied {
+		t.Fatal("barrier completion retry must replay")
 	}
 }
 
@@ -511,6 +649,7 @@ func parkCustomActions(
 		"",
 		nil,
 		actionIDs,
+		nil,
 	); err != nil {
 		t.Fatalf("park actions: %v", err)
 	}

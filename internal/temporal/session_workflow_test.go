@@ -27,6 +27,7 @@ type fakeSource struct {
 	completes map[string]int            // triggerEventID -> times CompleteTurn appended output
 	byTurn    map[string][]domain.Event // triggerEventID -> committed output events
 	pending   map[string][]string       // triggerEventID -> pending action ids forwarded by Activity
+	resolved  map[string][]string       // triggerEventID -> barrier resolution ids forwarded by Activity
 	maxSeq    int64
 }
 
@@ -39,7 +40,7 @@ func newFakeSource(events []domain.Event) *fakeSource {
 	}
 	return &fakeSource{
 		events: events, completes: map[string]int{}, byTurn: map[string][]domain.Event{},
-		pending: map[string][]string{}, maxSeq: max,
+		pending: map[string][]string{}, resolved: map[string][]string{}, maxSeq: max,
 	}
 }
 
@@ -127,10 +128,12 @@ func (f *fakeSource) CompleteWorkflowTurn(
 	_ domain.RunAttemptState,
 	_ *string,
 	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
 ) (TurnCompletionResult, error) {
 	result, err := f.CompleteTurn(ctx, sessionID, triggerEventID, output, status)
 	f.mu.Lock()
 	f.pending[triggerEventID] = append([]string(nil), pendingActionEventIDs...)
+	f.resolved[triggerEventID] = append([]string(nil), resolutionEventIDs...)
 	f.mu.Unlock()
 	return result, err
 }
@@ -270,6 +273,7 @@ func TestSessionWorkflow_NewExecutionUsesWorkflowOwnedLoop(t *testing.T) {
 				in.AttemptState,
 				in.AttemptError,
 				in.PendingActionEventIDs,
+				in.ResolutionEventIDs,
 			)
 			return RunTurnResult{Terminated: result.Status == domain.StatusTerminated}, err
 		},

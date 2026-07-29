@@ -61,6 +61,23 @@ func (q *Queries) GetPendingActionForUpdate(ctx context.Context, arg GetPendingA
 	return i, err
 }
 
+const hasUnclaimedPendingActions = `-- name: HasUnclaimedPendingActions :one
+SELECT EXISTS(
+    SELECT 1
+    FROM pending_actions
+    WHERE session_id = $1
+      AND resolved_at IS NULL
+      AND resolving_event_id IS NULL
+) AS unclaimed
+`
+
+func (q *Queries) HasUnclaimedPendingActions(ctx context.Context, sessionID string) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnclaimedPendingActions, sessionID)
+	var unclaimed bool
+	err := row.Scan(&unclaimed)
+	return unclaimed, err
+}
+
 const hasUnresolvedPendingActions = `-- name: HasUnresolvedPendingActions :one
 SELECT EXISTS(
     SELECT 1
@@ -167,6 +184,31 @@ func (q *Queries) ListUnresolvedPendingActions(ctx context.Context, sessionID st
 		return nil, err
 	}
 	return items, nil
+}
+
+const resolvePendingActionsForEvents = `-- name: ResolvePendingActionsForEvents :execrows
+UPDATE pending_actions
+SET resolved_at = $1
+WHERE session_id = $2
+  AND resolving_event_id = ANY($3::text[])
+  AND resolved_at IS NULL
+`
+
+type ResolvePendingActionsForEventsParams struct {
+	ResolvedAt        pgtype.Timestamptz
+	SessionID         string
+	ResolvingEventIds []string
+}
+
+// ResolvePendingActionsForEvents closes one complete client-action barrier.
+// The caller validates that the supplied ids exactly match every unresolved
+// row before executing this update under the session lock.
+func (q *Queries) ResolvePendingActionsForEvents(ctx context.Context, arg ResolvePendingActionsForEventsParams) (int64, error) {
+	result, err := q.db.Exec(ctx, resolvePendingActionsForEvents, arg.ResolvedAt, arg.SessionID, arg.ResolvingEventIds)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const resolvePendingActionsForTrigger = `-- name: ResolvePendingActionsForTrigger :execrows

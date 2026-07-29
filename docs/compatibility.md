@@ -36,7 +36,7 @@ compatibility.
 | Live message previews | Limited | Opt-in `agent.message` start/delta frames cross NATS and are never persisted. Thinking and span previews are not implemented. |
 | Built-in tool loop | Limited | `always_allow` `bash`, `read`, `write`, `edit`, `glob`, and `grep` execute as durable Temporal Activities. `web_fetch` and `web_search` return a not-implemented result. |
 | Sandbox execution | Limited | Session-scoped local and Docker providers execute built-ins. Provider selection is process-global; Environment config does not yet choose a backend, and restart cannot reattach or restore a sandbox. See the [backend matrix](sandboxes.md). |
-| Custom tools | Not supported on primary path | PostgreSQL has the durable pending-action transaction and admission gate, but the Temporal Workflow does not yet park/resume client actions. The primary API rejects these events explicitly. |
+| Custom tools | Not supported on primary path | PostgreSQL has an atomic multi-action barrier: partial results remain idle, the final result wakes orchestration, and resume completion clears the full barrier before queued messages continue. The Temporal Workflow does not yet execute that resume, so the primary API rejects these events explicitly. |
 | Tool confirmations | Not supported on primary path | The legacy SQLite mode supports one `always_ask` allow/deny cycle. The primary path currently supports `always_allow` only. |
 | User interrupt | Not supported on primary path | The legacy SQLite mode cancels a same-process active run. Durable cross-process Workflow cancellation is still open. |
 | MCP execution | Not supported | MCP toolset references parse and persist but are not resolved or executed. |

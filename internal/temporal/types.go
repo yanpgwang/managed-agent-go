@@ -164,6 +164,10 @@ type CompleteWorkflowTurnInput struct {
 	// awaiting client input. The additive field is absent from all existing
 	// Workflow histories and therefore decodes to nil with unchanged behavior.
 	PendingActionEventIDs []string `json:"pending_action_event_ids,omitempty"`
+	// ResolutionEventIDs names every client event that closes the current
+	// pending-action barrier. The set is validated atomically by PostgreSQL and
+	// is additive for replay compatibility with existing histories.
+	ResolutionEventIDs []string `json:"resolution_event_ids,omitempty"`
 }
 
 // LoadEventsInput requests the ordered public events after a cursor.
