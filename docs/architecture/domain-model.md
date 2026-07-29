@@ -30,9 +30,9 @@ makes the agent read-only.
 ## Environment
 
 An environment is a named configuration record selected when creating a
-session. The current `cloud` record routes to the in-process runtime.
-`self_hosted` records can be stored but sessions against them are explicitly
-unsupported.
+session. The current `cloud` record routes to the Temporal worker and its
+configured sandbox provider. `self_hosted` records can be stored but sessions
+against them are explicitly unsupported.
 
 An environment cannot be deleted while a session references it. Archiving
 prevents it from being selected by new sessions without invalidating existing
@@ -57,8 +57,9 @@ The public session status is a projection:
 - `rescheduling` — reserved for automatic retry behavior;
 - `terminated` — terminal failure or completion.
 
-The current implementation does not retry, so runtime failures project directly
-to `terminated`.
+Temporal may retry failed Activities internally without changing the public
+status. The public `rescheduling` transition is not implemented; an exhausted
+or terminal turn failure projects directly to `terminated`.
 
 ## Event
 
@@ -81,23 +82,24 @@ Client input, agent output, status changes, errors, and session updates all use
 the same log. This gives clients one replayable history rather than separate
 message, tool-call, and execution-status stores.
 
-## Session run
+## Workflow turn
 
-A session run is internal execution bookkeeping, not a public Managed Agents
-resource. It records a logical admitted unit of work and its trigger event IDs.
+A Workflow turn is internal execution bookkeeping, not a public Managed Agents
+resource. PostgreSQL records the trigger and committed output; Temporal records
+the durable orchestration history and Activity results.
 
 ```text
-queued → running → completed
-                 ↘ failed
+admitted → executing → completed
+                     ↘ failed
 ```
 
-Runs allow accepted input to survive process restart. Startup requeues a run
-that was interrupted while `running`, which gives at-least-once recovery.
-Attempts, leases, fencing, and side-effect journals are not implemented yet.
+The admission outbox lets accepted input survive API, relay, and worker
+restarts. Temporal resumes the Workflow from recorded Activity results.
+PostgreSQL turn attempts and tool steps journal the external-side-effect
+ambiguity boundary.
 
 ## Why events are not runs
 
-Events describe observable session history; runs describe how this server
-attempts to produce that history. A future distributed executor may make
-several attempts for one logical run without exposing each attempt as a new
-public API concept.
+Events describe observable session history; Workflow and Activity attempts
+describe how the server tries to produce that history. Retries therefore remain
+private and do not become public API events.

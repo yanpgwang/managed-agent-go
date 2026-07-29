@@ -111,9 +111,17 @@ FROM sessions
 WHERE id = $1
 `
 
-func (q *Queries) GetSession(ctx context.Context, id string) (Session, error) {
+type GetSessionRow struct {
+	ID        string
+	Status    string
+	Body      []byte
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
+func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, error) {
 	row := q.db.QueryRow(ctx, getSession, id)
-	var i Session
+	var i GetSessionRow
 	err := row.Scan(
 		&i.ID,
 		&i.Status,
@@ -156,16 +164,26 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 
 const insertSession = `-- name: InsertSession :exec
 
-INSERT INTO sessions (id, status, body, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5)
+INSERT INTO sessions (
+    id, status, body, created_at, updated_at,
+    agent_id, agent_version, environment_id, archived_at
+)
+VALUES (
+    $1, $2, $3, $4, $5,
+    $6, $7, $8, $9
+)
 `
 
 type InsertSessionParams struct {
-	ID        string
-	Status    string
-	Body      []byte
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	ID            string
+	Status        string
+	Body          []byte
+	CreatedAt     pgtype.Timestamptz
+	UpdatedAt     pgtype.Timestamptz
+	AgentID       *string
+	AgentVersion  *int32
+	EnvironmentID *string
+	ArchivedAt    pgtype.Timestamptz
 }
 
 // Typed queries for the Temporal/PostgreSQL session path, compiled by sqlc into
@@ -179,6 +197,10 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.Body,
 		arg.CreatedAt,
 		arg.UpdatedAt,
+		arg.AgentID,
+		arg.AgentVersion,
+		arg.EnvironmentID,
+		arg.ArchivedAt,
 	)
 	return err
 }
@@ -315,24 +337,34 @@ func (q *Queries) ListOutboxBatch(ctx context.Context, rowLimit int32) ([]Orches
 }
 
 const lockSession = `-- name: LockSession :one
-SELECT id, status, body, created_at, updated_at
+SELECT id, status, body, created_at, updated_at, deleting_at
 FROM sessions
 WHERE id = $1
 FOR UPDATE
 `
 
+type LockSessionRow struct {
+	ID         string
+	Status     string
+	Body       []byte
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	DeletingAt pgtype.Timestamptz
+}
+
 // LockSession takes the per-session admission lock. Every admission and
 // completion for a session serializes on this row, which is what makes receipt
 // sequence assignment and the coalescing outbox upsert race-free.
-func (q *Queries) LockSession(ctx context.Context, id string) (Session, error) {
+func (q *Queries) LockSession(ctx context.Context, id string) (LockSessionRow, error) {
 	row := q.db.QueryRow(ctx, lockSession, id)
-	var i Session
+	var i LockSessionRow
 	err := row.Scan(
 		&i.ID,
 		&i.Status,
 		&i.Body,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.DeletingAt,
 	)
 	return i, err
 }

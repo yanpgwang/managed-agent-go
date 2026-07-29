@@ -16,11 +16,11 @@ first managed provider adapter, while Kubernetes SIG Agent Sandbox with
 Kata/gVisor is the first self-hosted production adapter. Checkpoint behavior is
 delegated to provider capabilities.
 
-The current server does **not** call a separate sandbox HTTP service. It is a
-modular monolith with an in-process Go provider boundary:
+The current worker does **not** call a separate sandbox HTTP service. Its
+sandbox boundary is an in-process Go interface:
 
 ```text
-SessionService -> SessionManager -> sandbox.Provider -> sandbox.Sandbox
+Temporal Activity -> SessionManager -> sandbox.Provider -> sandbox.Sandbox
 ```
 
 `SessionManager` gives each session one logical sandbox. `Provider` decides how

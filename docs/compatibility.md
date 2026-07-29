@@ -31,18 +31,26 @@ compatibility.
 | Environment lifecycle | Limited | Create, get, list, archive, and delete work for local `cloud` records. Environment pagination and a remote self-hosted worker protocol are not implemented. |
 | Session lifecycle | Supported | Create from latest or pinned agent versions, preserve an immutable resolved snapshot, get, list, update title, archive, and delete. Several upstream response fields remain empty placeholders. |
 | Session listing | Limited | Bidirectional cursor pagination and core agent, status, archive, and time filters work. Deployment and memory matching are not implemented. |
-| Event send and list | Supported | Implemented event variants use one persisted tagged-union shape and durable per-trigger processing. The complete upstream event union is not implemented. |
-| SSE event stream | Supported | Streams new persisted events and supports open-stream-then-list reconciliation. It does not replay history or support `Last-Event-ID`; fan-out is process-local. |
-| Live message previews | Limited | Opt-in `agent.message` start/delta frames are ephemeral and never persisted. Thinking and span previews are not implemented. |
-| Built-in tool loop | Limited | `bash`, `read`, `write`, `edit`, `glob`, and `grep` execute. `web_fetch` and `web_search` return a not-implemented result. |
+| Event send and list | Limited | The PostgreSQL path durably processes `user.message` and stores `user.define_outcome`; client-action, tool-result, system-message, and interrupt inputs return an explicit `422` until their Workflow behavior lands. The complete upstream event union is not implemented. |
+| SSE event stream | Supported | Streams new persisted events across API/worker processes. NATS wakes subscribers and PostgreSQL sequence reads repair missed notifications. It does not replay history or support `Last-Event-ID`. |
+| Live message previews | Limited | Opt-in `agent.message` start/delta frames cross NATS and are never persisted. Thinking and span previews are not implemented. |
+| Built-in tool loop | Limited | `always_allow` `bash`, `read`, `write`, `edit`, `glob`, and `grep` execute as durable Temporal Activities. `web_fetch` and `web_search` return a not-implemented result. |
 | Sandbox execution | Limited | Session-scoped local and Docker providers execute built-ins. Provider selection is process-global; Environment config does not yet choose a backend, and restart cannot reattach or restore a sandbox. See the [backend matrix](sandboxes.md). |
-| Custom tools | Supported | A custom tool can park a run, persist a pending action, accept the matching result, and resume. Aggregate resolution of several pending actions is not implemented. |
-| Tool confirmations | Supported | One `always_ask` built-in can park and resume through allow or deny. Crash replay after an allowed side effect remains possible without a durable side-effect journal. |
-| User interrupt | Limited | Cancels the active run in a single process and single-agent session. Parked-session abort, `session_thread_id` targeting, durable cancellation, and cross-process delivery are not supported. |
+| Custom tools | Not supported on primary path | The legacy SQLite mode can park/resume one custom tool. Durable Temporal client-action waits and pending-action gates are the next infrastructure slice. |
+| Tool confirmations | Not supported on primary path | The legacy SQLite mode supports one `always_ask` allow/deny cycle. The primary path currently supports `always_allow` only. |
+| User interrupt | Not supported on primary path | The legacy SQLite mode cancels a same-process active run. Durable cross-process Workflow cancellation is still open. |
 | MCP execution | Not supported | MCP toolset references parse and persist but are not resolved or executed. |
 | Files, skills, memory, and vaults | Not supported | These product surfaces are outside the current runtime slice. |
 | Multi-agent orchestration | Not supported | `multiagent` configuration can be stored, but rosters, threads, delegation, and orchestration are not executed. |
-| Distributed workers | Not supported | The current topology is one process with SQLite, an in-memory stream hub, and at-least-once restart recovery. |
+| Distributed workers | Limited | API and Temporal worker roles are separate and can be replicated around PostgreSQL/NATS. Worker Versioning, durable sandbox leases, production manifests, and rollout tests remain open. |
+
+## Backend transition
+
+`serve` defaults to the PostgreSQL control plane. `serve -backend sqlite`
+temporarily retains the former single-process behavior for compatibility
+comparison while client-action waits and interrupts move to Temporal. This is
+not a commitment to maintain two backends: SQLite is frozen and will be removed
+after those parity gates pass.
 
 ## Integration contract
 

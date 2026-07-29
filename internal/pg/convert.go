@@ -32,6 +32,21 @@ func timePtr(ts pgtype.Timestamptz) *time.Time {
 	return &t
 }
 
+func stringPtr(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
+}
+
+func int32Ptr(value int) *int32 {
+	if value == 0 {
+		return nil
+	}
+	converted := int32(value)
+	return &converted
+}
+
 // eventFromRow converts a generated pgstore.Event into the domain type,
 // decoding the JSON payload.
 func eventFromRow(row pgstore.Event) (domain.Event, error) {
@@ -62,13 +77,20 @@ func eventsFromRows(rows []pgstore.Event) ([]domain.Event, error) {
 	return out, nil
 }
 
-// sessionFromRow decodes the stored session body snapshot.
-func sessionFromRow(row pgstore.Session) (domain.Session, error) {
+func sessionFromBody(id string, body []byte) (domain.Session, error) {
 	var session domain.Session
-	if err := json.Unmarshal(row.Body, &session); err != nil {
-		return domain.Session{}, fmt.Errorf("pg: decode session body %s: %w", row.ID, err)
+	if err := json.Unmarshal(body, &session); err != nil {
+		return domain.Session{}, fmt.Errorf("pg: decode session body %s: %w", id, err)
 	}
 	return session, nil
+}
+
+func sessionFromGetRow(row pgstore.GetSessionRow) (domain.Session, error) {
+	return sessionFromBody(row.ID, row.Body)
+}
+
+func sessionFromLockRow(row pgstore.LockSessionRow) (domain.Session, error) {
+	return sessionFromBody(row.ID, row.Body)
 }
 
 func turnAttemptFromRow(row pgstore.TurnAttempt) TurnAttempt {

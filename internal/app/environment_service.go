@@ -4,16 +4,15 @@ import (
 	"context"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/store"
 )
 
 type EnvironmentService struct {
-	env   *store.EnvironmentRepo
+	env   EnvironmentRepository
 	ids   domain.IDGenerator
 	clock domain.Clock
 }
 
-func NewEnvironmentService(env *store.EnvironmentRepo, ids domain.IDGenerator, clock domain.Clock) *EnvironmentService {
+func NewEnvironmentService(env EnvironmentRepository, ids domain.IDGenerator, clock domain.Clock) *EnvironmentService {
 	return &EnvironmentService{env: env, ids: ids, clock: clock}
 }
 

@@ -24,3 +24,9 @@ func validateMetadata(metadata map[string]any) error {
 	}
 	return nil
 }
+
+// ValidateMetadata exposes the shared public-resource metadata contract to
+// alternate control-plane service wiring.
+func ValidateMetadata(metadata map[string]any) error {
+	return validateMetadata(metadata)
+}

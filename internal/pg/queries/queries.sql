@@ -4,8 +4,14 @@
 -- compose under a single tx.
 
 -- name: InsertSession :exec
-INSERT INTO sessions (id, status, body, created_at, updated_at)
-VALUES (@id, @status, @body, @created_at, @updated_at);
+INSERT INTO sessions (
+    id, status, body, created_at, updated_at,
+    agent_id, agent_version, environment_id, archived_at
+)
+VALUES (
+    @id, @status, @body, @created_at, @updated_at,
+    @agent_id, @agent_version, @environment_id, @archived_at
+);
 
 -- name: GetSession :one
 SELECT id, status, body, created_at, updated_at
@@ -16,7 +22,7 @@ WHERE id = @id;
 -- completion for a session serializes on this row, which is what makes receipt
 -- sequence assignment and the coalescing outbox upsert race-free.
 -- name: LockSession :one
-SELECT id, status, body, created_at, updated_at
+SELECT id, status, body, created_at, updated_at, deleting_at
 FROM sessions
 WHERE id = @id
 FOR UPDATE;

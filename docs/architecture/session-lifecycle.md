@@ -18,37 +18,41 @@ stateDiagram-v2
 ```
 
 `rescheduling` is part of the public status model but is not currently emitted:
-the implementation has no automatic retry policy and avoids promising one.
+Temporal Activity retries remain internal and do not promise a public
+rescheduling policy.
 
 ## Input-to-output sequence
 
 ```mermaid
 sequenceDiagram
   participant C as Client
-  participant A as HTTP/Application
-  participant DB as SQLite
-  participant R as Agent runtime
+  participant A as HTTP API
+  participant DB as PostgreSQL
+  participant T as Temporal
+  participant W as Worker
   participant M as Messages API
   participant S as Sandbox
 
   C->>A: POST user.message (batch)
-  A->>DB: input + status_running + one queued run per trigger
+  A->>DB: input + status_running + outbox wakeup
   DB-->>A: commit
   A-->>C: accepted input events
-  A->>DB: claim next queued run (admission order)
-  A->>DB: reconstruct causal run history
-  A->>R: Run(snapshot, projected messages)
-  R->>M: create streamed message
-  M-->>R: text and/or tool_use
+  A-->>T: best-effort Signal-With-Start
+  DB-->>T: relay durable outbox wakeup
+  T->>W: resume SessionWorkflow
+  W->>DB: load triggers + causal history
+  W->>M: model Activity
+  M-->>W: text and/or tool_use
   opt built-in tool
-    R->>S: execute
-    S-->>R: tool result
-    R->>M: continue with tool_result
+    W->>DB: prepare/start journal step
+    W->>S: tool Activity
+    S-->>W: tool result
+    W->>DB: record completed step
+    W->>M: continue with tool_result
   end
-  R-->>A: buffered authoritative events
-  A->>DB: output + processed_at + final status + completion
-  DB-->>A: commit
-  Note over A,DB: next run is claimed only after this commit,<br/>so it projects the previous run's committed output
+  W->>DB: output + processed_at + final status
+  DB-->>W: commit
+  Note over W,DB: next trigger is prepared only after this commit,<br/>so it projects the preceding committed output
 ```
 
 ## Admission invariant
@@ -58,17 +62,12 @@ The server commits all of the following atomically, in submitted input order:
 - submitted client events;
 - a `session.status_running` event when the session was not already running;
 - the mutable session status;
-- one queued internal run **per processable trigger event**, in admission
-  order. A run references exactly one trigger; multiple triggers are never
-  grouped into a single run.
+- one coalescible orchestration outbox wakeup carrying the highest committed
+  receipt sequence.
 
-The client is never told that input was accepted unless the corresponding work
-item is durable.
-
-When an admitted event is a resolution (`user.custom_tool_result` /
-`user.tool_confirmation`), the same admission transaction validates it against an
-open pending action and records the resolving event id, so a bad reference fails
-atomically before any run is enqueued.
+The client is never told that input was accepted unless PostgreSQL has a durable
+path to execution. A direct Temporal signal is a latency optimization; the
+outbox relay is the correctness path.
 
 ## Two orderings of the event log
 
@@ -76,60 +75,52 @@ The event log is read in two distinct orders:
 
 - **Public event history** — `GET .../events`, list, and the live SSE stream —
   is the immutable receipt/commit sequence. It is never reordered.
-- **Model-facing conversation order** is reconstructed per turn from run
-  causality. For each prior completed (or failed) run, in admission order, the
-  projection replays that run's trigger event IDs followed by its persisted
-  output event IDs, then appends the current run's trigger. The run's output
-  event IDs are durable state committed in the same transaction that closes the
-  run, so this ordering survives a restart and a run never sees a later trigger
-  queued while it was still running. Tested by
-  `TestRunStore_ModelHistorySurvivesReopenInCausalOrder` (file-backed reopen)
-  and `TestSessionService_BatchedTriplePerRunCausalProjection` (three batched
-  triggers project as three causal turns).
+- **Model-facing conversation order** is reconstructed per turn from trigger
+  causality. Each prior processed `user.message` is replayed immediately before
+  its committed output (correlated by `turn_event_id`), followed by the current
+  trigger. This ordering survives worker restart and prevents a later queued
+  message from appearing before the earlier reply.
 
-## Per-run boundary
+## Per-turn boundary
 
-Runs drain one at a time in admission order. A run commits its buffered
-authoritative output and stamps its trigger processed *before* the next run is
-claimed, so each run's causal history already includes the previous run's
-committed output — a later user event in the same batch sees the earlier agent
-reply (`TestRunStore_CompletionBeforeNextClaimObservesOutput`,
-`TestSessionService_SecondUserEventObservesFirstAgentOutput`). A terminated
-session is final: its leftover queued runs are never claimed, and it is never
-flipped back to `running`.
+The SessionWorkflow drains triggers one at a time in receipt order. A turn
+commits authoritative output and stamps its trigger processed before preparing
+the next turn, so a later user event in the same batch sees the earlier agent
+reply. A terminated session is final and is never flipped back to `running`.
 
 ## Per-session ordering
 
-A partial unique database index permits at most one `running` item per session.
-Additional input can be committed while a run executes, but it becomes later
-queued work. Different sessions may run concurrently.
-
-The process also uses sharded in-memory locks to serialize short state-changing
-operations. Runtime and sandbox work happens outside both those locks and SQL
-transactions.
+One Workflow ID is derived from each session ID. Additional input can commit
+while a turn executes and is observed through a later wakeup/cursor read.
+Different sessions and worker replicas may run concurrently; Temporal
+serializes Workflow decisions for one execution.
 
 ## Completion invariant
 
 On success or failure, one transaction:
 
 - appends buffered authoritative runtime events;
-- stamps the run's trigger events as processed;
+- stamps the turn's trigger event as processed;
 - updates the session projection;
-- marks the run completed or failed.
+- finalizes the optional PostgreSQL turn attempt.
 
-Events are published to active SSE subscribers only after the commit.
+Only after commit does PostgreSQL publish a best-effort NATS wakeup. SSE
+subscribers read authoritative events from PostgreSQL by sequence.
 
 ## Restart recovery
 
-At startup, interrupted `running` runs are returned to `queued` and drained
-again. This prevents silent loss, but it is at-least-once execution. A crash
-after a tool side effect and before completion commit can repeat that side
-effect.
+Temporal replays completed Activity results and schedules the next unfinished
+step after a worker restart. Tool Activities may still execute more than once,
+so PostgreSQL journals `prepared → started → completed` and classifies a
+recovered `started` step without a recorded result as `ambiguous` rather than
+silently repeating it. No orchestrator can provide exactly-once external side
+effects without an idempotency contract from the side-effecting system.
 
-Production-grade retries therefore require an attempt model, durable tool
-journal, and idempotency contract before multiple workers are introduced.
+## Client-required actions (SQLite compatibility backend)
 
-## Client-required actions
+The following behavior remains implemented by `serve -backend sqlite`. Porting
+the same durable gate to Workflow waits is the first remaining parity gate for
+the primary PostgreSQL/Temporal backend.
 
 A custom tool or `always_ask` built-in can park a run:
 
@@ -226,13 +217,17 @@ closed until every one is resolved. This limitation is explicit and tested at th
 store/gate level (`TestPending_MultiActionParkGatesAllButNoAggregateResume`); the
 single-action flow is not regressed.
 
-## User interrupt
+## User interrupt (SQLite compatibility backend)
 
 `user.interrupt` stops the agent mid-execution. The common flow is one events
 request carrying `user.interrupt` followed by a redirecting `user.message`; the
 interrupted turn ends with an ordinary `session.status_idle{stop_reason:end_turn}`
 (there is **no** interrupt-specific stop reason), and the follow-up message then
 runs normally.
+
+This is the legacy in-process contract. The PostgreSQL backend returns
+`422 unsupported_error` until the same ordering is expressed with a durable
+Temporal signal/cancellation protocol.
 
 ### In-process cancellation contract
 

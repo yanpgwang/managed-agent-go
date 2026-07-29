@@ -5,10 +5,9 @@
 // Signal-With-Start. The prior opaque RunTurn Activity remains registered only
 // for replay compatibility with existing Workflow histories.
 //
-// This is the first bounded vertical slice. It routes one user.message end to
-// end and does not cut over all traffic. PostgreSQL remains the source of truth
-// for public events; Temporal owns only in-flight orchestration. Signals carry
-// wakeup metadata only — never event payloads.
+// PostgreSQL remains the source of truth for public events; Temporal owns only
+// in-flight orchestration. Signals carry wakeup metadata only — never event
+// payloads.
 package temporal
 
 import (
@@ -107,7 +106,8 @@ type PrepareTurnResult struct {
 // CallModelInput is one plan/observe step. Each call is its own Activity so its
 // completed response is recorded independently in Workflow history.
 type CallModelInput struct {
-	Request model.Request `json:"request"`
+	SessionID string        `json:"session_id"`
+	Request   model.Request `json:"request"`
 }
 
 // PlannedToolStep binds one public tool-use event to its internal journal step.

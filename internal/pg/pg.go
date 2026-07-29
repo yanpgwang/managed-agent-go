@@ -1,10 +1,6 @@
-// Package pg provides the PostgreSQL platform-spine plumbing: a pgx pool,
-// embedded goose migrations, and a thin store built on the sqlc-generated
-// pgstore package.
-//
-// This is a NEW path added alongside the SQLite store (internal/store), which
-// remains the default compatibility path. Nothing here replaces SQLite; the two
-// coexist behind the feature gate described in cmd/managed-agent.
+// Package pg provides the primary control-plane persistence: a pgx pool,
+// embedded goose migrations, and stores built on sqlc-generated queries.
+// SQLite remains available only through the deprecated compatibility backend.
 package pg
 
 import (

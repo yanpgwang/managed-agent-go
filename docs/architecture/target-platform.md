@@ -328,24 +328,25 @@ These are infrastructure and must not be rebuilt:
 The migration is a series of vertical cuts, but the target stack is not
 optional or exploratory:
 
-1. **Contract and platform foundation**
+1. **Contract and platform foundation — implemented**
    - establish an OpenAPI source of truth and generated server types;
    - add PostgreSQL, `sqlc`, and embedded `goose` migrations;
    - add transactional admission outbox rows and a retrying Signal relay;
    - add a local stack with Temporal, PostgreSQL, NATS, and file-backed blobs.
-2. **One complete Temporal session**
+2. **One complete Temporal session — implemented for messages and
+   always-allow built-ins**
    - implement `SessionWorkflow`, model and tool Activities, Signals,
      cancellation, and continue-as-new;
    - preserve the current public event order and pending-action behavior;
    - reuse the existing tool journal as Activity idempotency/ambiguity state.
-3. **Cut over execution**
-   - route all new sessions through Temporal;
+3. **Cut over execution — default path implemented, compatibility gates open**
+   - route new sessions through Temporal by default;
    - run black-box compatibility and restart/fault-injection tests;
    - delete the SQLite run dispatcher and in-process recovery scheduler after
-     parity is proven.
-4. **Split processes and live delivery**
+     client-action and interrupt parity is proven.
+4. **Split processes and live delivery — implemented except telemetry**
    - run stateless API replicas and Temporal workers independently;
-   - replace the in-process hub with PostgreSQL cursor reads plus NATS Core;
+   - use PostgreSQL cursor reads plus NATS Core instead of the in-process hub;
    - add OpenTelemetry across API, Workflow, model, MCP, and sandbox spans.
 5. **Production execution plane**
    - add the Daytona adapter and provider conformance suite;

@@ -1,0 +1,6 @@
+.git
+.github
+.claude
+managed-agent.db
+website/node_modules
+website/build

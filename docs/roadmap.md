@@ -15,25 +15,27 @@ parity. Detailed design constraints and completed mechanics live in the
 open question; it is fixed by the
 [target-platform decision](architecture/target-platform.md).
 
-## Next implementation slice: the platform spine
+## Platform spine: delivered primary path
 
-The highest-value next step is one end-to-end Temporal-backed session path,
-rather than adding more behavior to the SQLite dispatcher. It establishes:
+The PostgreSQL/Temporal/NATS spine now serves the default HTTP backend:
 
 - PostgreSQL with versioned `goose` migrations and `sqlc` queries;
-- a local Temporal service and Go worker;
+- PostgreSQL-backed Agent, Environment, Session, and Event API resources;
+- separate API and Temporal worker process roles;
 - transactional event admission plus an outbox-to-Temporal Signal relay;
-- a `SessionWorkflow` that accepts input, calls the model, executes one tool
-  step, parks/resumes, and commits authoritative events;
+- a `SessionWorkflow` that accepts `user.message`, calls the model, executes
+  `always_allow` built-ins, and commits authoritative events;
 - stable operation IDs and the existing tool journal at the Activity boundary;
-- fault-injection tests for API retry, worker restart, and ambiguous tool
-  completion.
+- NATS Core persisted-event wakeups and model previews, reconciled from
+  PostgreSQL sequence cursors;
+- Docker Compose API/worker/Temporal/PostgreSQL/NATS startup and end-to-end
+  tests.
 
 This still does not promise exactly-once execution for arbitrary shell
 commands. Temporal owns orchestration recovery; the tool journal records the
 irreducible uncertainty between an external side effect and its acknowledgment.
 
-**Status (2026-07-29):** the spine is landing incrementally and is documented in
+**Status (2026-07-29):** the spine is the primary path and is documented in
 the [platform-spine milestone](architecture/platform-spine-milestone.md).
 Delivered: PostgreSQL (`pgx` + `goose` + `sqlc`), transactional admission with a
 coalescible outbox, an at-least-once Signal-With-Start relay, a `SessionWorkflow`
@@ -44,23 +46,27 @@ multi-tool rounds, and completed tool results. The PostgreSQL journal retains
 the `prepared → started → completed` boundary (`ambiguous` branches from
 `started`): completed steps resume without re-execution, while a step left
 `started` is refused as ambiguous. Attempt finalization and public completion
-commit atomically. The real path is validated with local and Docker sandbox
-providers. Still open on this path: client-action park/resume, `user.interrupt`,
-large-payload offload, and cutting the HTTP API over from SQLite.
+commit atomically. HTTP resource/session/event traffic now uses PostgreSQL;
+NATS carries cross-process SSE wakeups and previews; API/worker Docker
+containers exercise the complete path. Still open: client-action park/resume,
+`user.interrupt`, durable sandbox leases, and large-payload offload.
 
-## Now: replace infrastructure, preserve semantics
+## Now: close the final infrastructure parity gates
 
-- Establish OpenAPI-generated wire types and PostgreSQL migrations.
-- Move session orchestration, retries, cancellation, client-action waits, and
-  timers to Temporal.
+- Model custom tools and `always_ask` confirmations as durable Workflow waits
+  with PostgreSQL pending-action validation and out-of-order resolution
+  selection.
+- Deliver `user.interrupt` as durable cross-process Workflow cancellation,
+  including the finish-vs-interrupt ordering contract.
+- Add Worker Versioning/rolling-upgrade tests and production observability.
+- Define durable provider-backed sandbox leases; checkpoint/restore remains a
+  sandbox-provider capability, not a home-grown scheduler feature.
 - Keep the outbox limited to coalescible Workflow wakeups; it must not become
   another run scheduler.
 - Preserve current causal history, pending-action gates, and event ordering with
   black-box compatibility tests.
 - Delete the SQLite run queue and in-process recovery scheduler once the new
-  path passes the target architecture's acceptance gates.
-- Replace the in-process stream hub with PostgreSQL cursor replay plus NATS Core
-  previews/wakeups, then split API and worker processes.
+  path passes the client-action and interrupt gates.
 
 ## Next: complete the practical integration surface
 
@@ -91,15 +97,13 @@ The repository already provides:
 
 - server-owned multi-turn history projected into stateless model requests;
 - versioned agents and immutable per-session snapshots;
-- atomic event admission and one durable run per processable trigger;
-- single-node restart recovery and causal reconstruction of prior run output;
-- a multi-step model and built-in tool loop;
+- atomic PostgreSQL event admission and a coalescible Temporal outbox;
+- Workflow-owned restart recovery and causal reconstruction of prior output;
+- a multi-step model and durable built-in tool loop;
 - session-scoped local and Docker sandboxes;
-- custom-tool and `always_ask` confirmation park/resume flows;
-- single-process active-run interruption;
-- persisted events, cursor pagination, SSE, and opt-in message previews;
+- PostgreSQL cursor pagination, cross-process SSE, and NATS message previews;
 - official Go SDK coverage for the supported API subset.
 
-The immediate release threshold is the Temporal/PostgreSQL vertical slice with
-the current behavior preserved. Production topology follows by splitting the
-same API and worker boundaries, not by evolving a second orchestration system.
+Harness work can now proceed in parallel because the main orchestration spine
+is fixed. Removing the legacy path still depends on the two compatibility gates
+above; it does not depend on sandbox checkpoint support.

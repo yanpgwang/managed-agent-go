@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/store"
 )
 
 const defaultEventLimit = 100
@@ -132,7 +132,7 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		limit = n
 	}
 
-	eq := store.EventQuery{Limit: limit, Desc: desc}
+	eq := app.EventQuery{Limit: limit, Desc: desc}
 	if types, ok := q["types[]"]; ok {
 		eq.Types = types
 	}
@@ -377,7 +377,11 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	// Subscribe before the existence check. Once Get succeeds, a concurrent
 	// delete cannot slip between the check and subscription without delivering
 	// the terminal session.deleted event to this stream.
-	ch, cancel := s.deps.Hub.Subscribe(sessionID, deltaOptIn)
+	ch, cancel, err := s.deps.Stream.SubscribeContext(r.Context(), sessionID, deltaOptIn)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	defer cancel()
 	if _, err := s.deps.Sessions.Get(r.Context(), sessionID); err != nil {
 		writeError(w, err)

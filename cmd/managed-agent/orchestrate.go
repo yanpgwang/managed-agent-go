@@ -8,30 +8,28 @@ import (
 	"syscall"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/live"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
 )
 
-// Environment variables for the feature-gated PostgreSQL/Temporal orchestration
-// path. The default `serve` command (SQLite dispatcher) does not read them.
+// Environment variables shared by the PostgreSQL HTTP control plane and the
+// Temporal execution worker.
 const (
 	envDatabaseURL       = "MANAGED_AGENT_DATABASE_URL"
 	envTemporalHostPort  = "MANAGED_AGENT_TEMPORAL_HOSTPORT"
 	envTemporalNamespace = "MANAGED_AGENT_TEMPORAL_NAMESPACE"
+	envNATSURL           = "MANAGED_AGENT_NATS_URL"
 )
 
-// runOrchestrate boots the feature-gated Temporal execution plane: it runs
-// PostgreSQL migrations, starts the SessionWorkflow worker, and runs the outbox
-// relay. This is the first vertical slice's runnable entry point; it does NOT
-// serve the HTTP API or cut over the SQLite dispatcher. The two paths coexist by
-// design until parity is proven.
-//
-// It is intentionally a separate subcommand so the default `serve` path is never
-// changed by this milestone and cannot regress.
+// runOrchestrate boots the Temporal execution role: it runs PostgreSQL
+// migrations, starts the SessionWorkflow worker, and runs the outbox relay.
+// HTTP is served by a separate `serve` process so API and worker capacity can be
+// scaled independently.
 func runOrchestrate() {
 	databaseURL := os.Getenv(envDatabaseURL)
 	if databaseURL == "" {
-		log.Fatalf("orchestrate: %s is required (feature-gated PostgreSQL/Temporal path)", envDatabaseURL)
+		log.Fatalf("orchestrate: %s is required", envDatabaseURL)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -48,6 +46,13 @@ func runOrchestrate() {
 
 	ids := domain.NewRandomIDGen()
 	store := pg.NewStore(pool, ids, realClock{})
+	broker, err := live.Connect(os.Getenv(envNATSURL))
+	if err != nil {
+		log.Fatalf("orchestrate: nats: %v", err)
+	}
+	defer broker.Close()
+	store.SetEventNotifier(broker)
+	log.Printf("orchestrate: NATS live channel connected")
 
 	// The execution plane uses the same model selection as the SQLite path. New
 	// Workflow executions call it through granular model/tool Activities; the
@@ -82,6 +87,7 @@ func runOrchestrate() {
 		provider,
 		ids,
 		temporalpkg.RelayConfig{},
+		broker,
 	)
 
 	if err := runtime.Worker.Start(); err != nil {
