@@ -6,10 +6,10 @@ sidebar_position: 1
 
 # managed-agent-go
 
-`managed-agent-go` is an independent, Apache-2.0-licensed, self-hosted managed
-agent runtime written in Go. It owns conversation history and tool execution,
-delegates inference to a Messages API endpoint, and exposes a Claude Managed
-Agents-compatible HTTP surface for common workflows.
+`managed-agent-go` is an independent, Apache-2.0-licensed agent runtime written
+in Go. It persists server-owned sessions, delegates inference to a Messages API
+endpoint, executes tools in replaceable sandboxes, and exposes a Claude Managed
+Agents-compatible HTTP surface.
 
 :::caution[Experimental project]
 
@@ -22,42 +22,48 @@ do not treat the default local sandbox as a security boundary.
 
 ## Start here
 
-- [Getting started](getting-started.md) runs the server and completes a first
-  session turn.
+- [Getting started](getting-started.md) starts the complete Docker stack and
+  completes a first Session turn.
+- [Claude API coverage](compatibility.md) is the exact supported/unsupported
+  behavior matrix.
+- [Architecture overview](architecture.md) explains why PostgreSQL owns public
+  state, Temporal owns in-flight execution, and NATS carries only ephemeral
+  delivery.
 - [Sandbox backends](sandboxes.md) shows what is available today, the security
   boundary of each backend, and the ordered path toward remote execution.
-- [Architecture overview](architecture.md) explains boundaries, data flow, and
-  current architectural debt.
 - [Domain model](architecture/domain-model.md) describes agents, environments,
-  sessions, events, and internal runs.
+  Sessions, events, and Workflow turns.
 - [API overview](api/overview.md) lists the implemented endpoints and transport
   conventions.
 - [Roadmap](roadmap.md) tracks the remaining compatibility and production
   hardening work on the durable multi-process architecture.
 
-## What works today
+## Current architecture
 
-The primary path supports PostgreSQL-backed versioned agents, environments,
-sessions, persisted event history and cursor pagination; a durable Temporal
-model/tool loop; cross-process SSE through NATS wakeups plus PostgreSQL cursor
-reconciliation; six executing `always_allow` built-ins (`bash`, `read`, `write`,
-`edit`, `glob`, `grep`); local and Docker sandboxes; and opt-in live previews of
-assistant text. Custom-tool waits, `always_ask`, and interrupt remain only in
-the deprecated SQLite compatibility backend until their Temporal semantics are
-ported.
+The default deployment has separate API and worker roles:
 
-The default runtime uses a deterministic offline model. A real
-Anthropic-shaped Messages API endpoint is enabled through environment variables.
+- PostgreSQL is authoritative for resources, public events, projections,
+  admission, and the tool journal.
+- Temporal durably runs one Session Workflow and replay-safe model/tool
+  Activities.
+- NATS Core carries best-effort previews and persisted-event wakeups; streams
+  repair missed wakeups from PostgreSQL sequence cursors.
 
-## Project direction
+The local Compose stack runs the complete architecture with a deterministic
+offline model and needs no credentials.
+
+## Current capability boundary
+
+The primary path supports Agent, Environment, Session, and Event resources;
+`user.message`; cursor pagination and SSE; a multi-round model loop; six
+`always_allow` built-ins; local and Docker sandboxes; and opt-in assistant text
+previews.
+
+Durable custom-tool/`always_ask` waits and cross-process interrupt are the two
+remaining gates before the deprecated SQLite comparison backend can be removed.
+MCP execution, files/skills/memory/vaults, multi-agent orchestration, remote
+self-hosted workers, schedules, and webhooks remain future product work.
 
 The runtime is the product; Claude API compatibility is an integration surface.
-The project prioritizes reliable server-owned sessions, durable execution, safe
-tool handoffs, and replaceable model and sandbox backends. It supports a useful
-documented subset of the Managed Agents API so existing clients can integrate
-with low friction.
-
-It does not aim to reproduce every upstream field, product feature, edge case,
-or internal execution detail one-for-one. Public behavior is derived from
-official documentation and exercised through raw HTTP tests and black-box use
-of the official Go SDK; internal code and topology are original.
+Public behavior is derived from official documentation and tested through raw
+HTTP plus the official Go SDK, while the internal implementation is original.

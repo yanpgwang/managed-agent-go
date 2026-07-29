@@ -123,7 +123,16 @@ persisted event is reconciled from PostgreSQL by sequence.
 
 ## Use a real model endpoint
 
+The quick start already runs an offline worker. Stop it before launching a
+source worker with different model or sandbox configuration:
+
 ```bash
+docker compose -f deployments/local/docker-compose.yml stop worker
+
+export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
+export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
+export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
+
 export MANAGED_AGENT_MODEL_BASE_URL=https://api.example.com
 export MANAGED_AGENT_MODEL_API_KEY=replace-me
 export MANAGED_AGENT_MODEL_ID=claude-model-id
@@ -138,7 +147,8 @@ go run ./cmd/managed-agent orchestrate
 ```
 
 The configured endpoint must expose an Anthropic-shaped `/v1/messages` API.
-Keep credentials in the environment and never commit them.
+Do not run workers with different model or sandbox configuration on the same
+Temporal Task Queue. Keep credentials in the environment and never commit them.
 
 If you understand the risk and deliberately want a real model against the local
 sandbox during development, set `MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1` to

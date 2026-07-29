@@ -1,70 +1,95 @@
 # managed-agent-go
 
-An open-source, self-hosted managed agent runtime in Go with a Claude Managed
+An open-source, self-hosted agent runtime in Go with a Claude Managed
 Agents-compatible HTTP API.
 
 > [!IMPORTANT]
-> **Alpha.** The primary runtime now uses PostgreSQL, Temporal, and NATS with
-> separate API and worker processes. It implements a documented subset of the
-> Managed Agents API and is still **not production-ready**.
-> It is **independent and not an Anthropic product**. It is **not
-> a drop-in production service. The default local sandbox is **not a security
-> boundary**. See
-> [Claude API coverage](docs/compatibility.md) for the supported integration
-> surface and known differences.
+> **Alpha.** This project implements a documented subset of the Managed Agents
+> API. It is independent, is not an Anthropic product, and is not yet a drop-in
+> production service. The default local sandbox is not a security boundary.
+> Check the [compatibility matrix](docs/compatibility.md) before depending on a
+> capability.
 
-## Why this project?
+## What it is
 
-`managed-agent-go` explores a server-owned agent runtime: the service persists
-session history, projects that history into stateless model requests, executes
-tools in a replaceable sandbox, and exposes the result through a familiar
-Managed Agents-compatible HTTP surface.
+`managed-agent-go` owns durable agent sessions: it stores conversation history,
+turns that history into stateless model requests, executes tools in a
+replaceable sandbox, and streams results through a familiar HTTP API.
 
 The runtime is the product; Claude API compatibility is an integration surface.
-The project aims to support common Managed Agents workflows and the official Go
-SDK for that documented subset. It does not aim to reproduce every upstream
-field, feature, edge case, or internal execution detail one-for-one.
+The implementation follows public wire behavior where useful without trying to
+reproduce Anthropic's internal architecture.
 
-The current implementation provides:
+## Architecture
 
-- versioned agents and immutable per-session agent snapshots;
-- environments, sessions, cursor pagination, and append-only session events;
-- PostgreSQL event admission with a transactional outbox;
-- one durable Temporal Workflow per Session, with the model/tool loop split
-  into replay-safe Activities;
-- NATS Core wakeups and previews reconciled against PostgreSQL cursors;
-- a self-hosted model/tool loop with an offline deterministic model for tests;
-- `bash`, `read`, `write`, `edit`, `glob`, and `grep` in local or Docker
-  sandboxes (`web_fetch` and `web_search` are declared to the model but return a
-  not-implemented tool result);
-- live `agent.message` previews over cross-process SSE;
-- black-box compatibility tests using the official Anthropic Go SDK.
+The default path is a multi-process PostgreSQL, Temporal, and NATS architecture:
 
-## Project status
+```mermaid
+flowchart LR
+  Client --> API["HTTP API"]
+  API --> PG[("PostgreSQL")]
+  API -. "fast-path signal" .-> Temporal
+  PG -- "durable outbox" --> Worker
+  Worker <--> Temporal
+  Worker --> PG
+  Worker --> Model["Messages API"]
+  Worker --> Sandbox
+  Worker -. "previews + wakeups" .-> NATS
+  NATS -.-> API
+```
 
-This is a **pre-release implementation**. PostgreSQL/Temporal/NATS is the
-primary architecture and the default `serve` backend. The former SQLite
-dispatcher remains only as a deprecated compatibility mode while the last
-client-action and interrupt behaviors move to Temporal.
+| Component | Responsibility |
+| --- | --- |
+| PostgreSQL | Source of truth for Agents, Environments, Sessions, events, admission outbox, and tool journal |
+| Temporal | Durable in-flight Session Workflow and replay-safe model/tool Activities |
+| NATS Core | Ephemeral SSE wakeups and previews; never authoritative data |
+| API process | Managed Agents-compatible HTTP resources and PostgreSQL cursor reads |
+| Worker process | Temporal worker, outbox relay, model calls, and sandbox tools |
 
-| Area | Current state |
+The boundaries are deliberate: a NATS outage cannot lose persisted events, and
+a failed direct Temporal signal cannot lose admitted work because PostgreSQL's
+outbox is the recovery path. See the [architecture overview](docs/architecture.md)
+for the invariants and failure model.
+
+## Current scope
+
+| Area | Primary PostgreSQL/Temporal path |
 | --- | --- |
 | Agents | Create, get, list, update, versions, archive |
-| Environments | Create, get, list, archive, delete |
+| Environments | Create, get, list, archive, delete; `cloud` only for Session execution |
 | Sessions | Create, get, list, update title, archive, delete |
-| Events | Send, list, SSE stream, opt-in message previews |
-| Runtime | Temporal-owned multi-turn Messages API loop; `always_allow` built-ins |
-| Sandboxes | Local development guardrail and optional Docker isolation; see the [backend matrix](docs/sandboxes.md) |
-| Default storage | PostgreSQL (`pgx`, `sqlc`, embedded `goose` migrations) |
-| Orchestration | Temporal Session Workflow + PostgreSQL admission outbox |
-| Live delivery | NATS Core wakeups/previews + PostgreSQL cursor reconciliation |
-| Legacy mode | `serve -backend sqlite`; frozen migration bridge, not a production target |
+| Events | Admit and process `user.message`; store `user.define_outcome`; list, cursor pagination, and SSE |
+| Runtime | Multi-round Messages API loop and `always_allow` built-in tools |
+| Tools | `bash`, `read`, `write`, `edit`, `glob`, and `grep`; web tools currently return not implemented |
+| Sandboxes | Local development provider and optional Docker isolation |
+| Live delivery | Cross-process message previews and persisted-event wakeups over NATS |
 
-Important gaps include client-action waits and interrupts on the Temporal path,
-durable sandbox leases/checkpoint restore across worker restarts, large-payload
-offload, MCP execution, files/skills/memory, multiagent orchestration, worker
-versioning, observability, and production deployment manifests.
-See the [roadmap](docs/roadmap.md).
+The two remaining compatibility gates are:
+
+1. durable client-action waits for custom tools and `always_ask`;
+2. durable cross-process `user.interrupt` with defined finish/interrupt ordering.
+
+Until those land, the primary backend returns an explicit `422` for those event
+types. MCP execution, files/skills/memory/vaults, multi-agent orchestration,
+remote self-hosted workers, schedules, and webhooks are also not implemented.
+See the [compatibility matrix](docs/compatibility.md) and
+[roadmap](docs/roadmap.md) for details.
+
+## Production readiness
+
+The core data and orchestration boundaries are now the intended production
+direction, so harness work can proceed without redesigning the scheduler.
+Operating this as a production service still requires:
+
+- authentication, tenant isolation, TLS, and secret management;
+- Temporal Worker Versioning, rollout tests, dependency-aware readiness, and
+  observability;
+- provider-backed durable sandbox identity and orphan reconciliation;
+- large-payload/object-storage offload, resource policies, and production
+  deployment manifests.
+
+Sandbox checkpoint/restore remains a provider capability rather than a format
+implemented by this control plane.
 
 ## Quick start
 
@@ -76,33 +101,70 @@ make -C deployments/local health
 curl http://localhost:8080/readyz
 ```
 
-This starts the API on `localhost:8080`, the Temporal UI on
-`localhost:8233`, and the API's PostgreSQL, Temporal, NATS, and worker
-dependencies. With no model configuration the worker uses an offline
-deterministic model, so the complete path runs without credentials.
+This builds and starts:
 
-For source development, start the backing stack, then run the two process roles
-in separate shells:
+- API: <http://localhost:8080>
+- Temporal UI: <http://localhost:8233>
+- PostgreSQL, Temporal, NATS, and the worker
+
+No credentials are required. The worker uses a deterministic offline model, so
+the complete HTTP → PostgreSQL → Temporal → worker → SSE path works locally.
+
+Continue with the [five-minute walkthrough](docs/getting-started.md) to create
+an Environment, Agent, and Session and send the first message.
+
+Stop the stack without deleting PostgreSQL data:
+
+```bash
+make -C deployments/local down
+```
+
+Use `make -C deployments/local down VOLUMES=1` only when you intentionally want
+to delete the local database.
+
+## Run from source
+
+Start only the backing services:
+
+```bash
+docker compose -f deployments/local/docker-compose.yml \
+  up -d postgres temporal temporal-ui nats
+
+export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
+export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
+export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
+```
+
+Then run the two application roles in separate shells with the same variables:
+
+```bash
+go run ./cmd/managed-agent serve
+```
+
+```bash
+go run ./cmd/managed-agent orchestrate
+```
+
+The source API binds to `127.0.0.1:8080` by default. Pass `-addr` deliberately
+to expose another interface. `-strict` validates required Claude wire headers;
+it is not authentication.
+
+## Use a real model
+
+If the complete Compose stack is already running, stop its offline worker
+before starting a configured source worker:
+
+```bash
+docker compose -f deployments/local/docker-compose.yml stop worker
+```
+
+Then configure and start the worker process:
 
 ```bash
 export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
 export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
 export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
 
-go run ./cmd/managed-agent serve
-# second shell, with the same environment:
-go run ./cmd/managed-agent orchestrate
-```
-
-Follow the [getting started guide](docs/getting-started.md) to create an
-environment, agent, and session.
-
-`serve` binds to `127.0.0.1:8080` by default when run directly. `-strict` turns
-on Claude wire-header validation; it is not authentication.
-
-## Real model configuration
-
-```bash
 export MANAGED_AGENT_MODEL_BASE_URL=https://api.example.com
 export MANAGED_AGENT_MODEL_API_KEY=replace-me
 export MANAGED_AGENT_MODEL_ID=claude-model-id
@@ -112,90 +174,39 @@ export MANAGED_AGENT_SANDBOX=docker
 go run ./cmd/managed-agent orchestrate
 ```
 
-Credentials are read only from the environment. Never commit them.
+Do not run workers with different model or sandbox configuration on the same
+Temporal Task Queue.
 
-## Sandbox configuration
+The worker refuses to pair a real model with the local sandbox because local
+tool commands run on the host. Docker provides stronger isolation and disables
+sandbox networking by default, but it is not certified for hostile multi-tenant
+workloads. Read [Sandbox backends](docs/sandboxes.md) before using tools with
+untrusted input. Keep model credentials in the environment and never commit
+them.
 
-The default local sandbox confines paths to a temporary work directory, clears
-the environment, applies a timeout, and caps output. It is a development
-guardrail, **not a security boundary**, and must not run untrusted code.
+## SQLite compatibility backend
 
-Because of this, the server **refuses to start when a real model is configured
-and the local sandbox is selected** — a real model can be steered into running
-tool commands on the host with no isolation. Either select the Docker sandbox
-(`MANAGED_AGENT_SANDBOX=docker`) or, at your own risk, set
-`MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1` to override the check. The
-zero-config offline fake model plus local sandbox always starts.
-
-Docker provides stronger process and filesystem isolation:
+The former single-process implementation remains available temporarily:
 
 ```bash
-export MANAGED_AGENT_SANDBOX=docker
-export MANAGED_AGENT_SANDBOX_IMAGE=alpine:latest
-go run ./cmd/managed-agent orchestrate
+go run ./cmd/managed-agent serve -backend sqlite -db managed-agent.db
 ```
 
-Docker sandboxes use `--network none` by default, but containers still share
-the host kernel and this path has not been audited for hostile multi-tenant
-workloads. Sandboxes are scoped to the session: the first run needing tools
-provisions one and later runs in the same session reuse it, so filesystem state
-persists across turns; the sandbox is released when the session is deleted. The
-manager is in-memory, so a process restart does not restore an idle session's
-sandbox.
-
-## PostgreSQL/Temporal platform spine
-
-The primary path routes HTTP resources and `user.message` events through
-PostgreSQL admission, a coalescible outbox, an at-least-once Signal-With-Start
-relay, and a durable `SessionWorkflow`. The plan-act-observe loop lives in
-Workflow code. Each model call and
-each always_allow built-in tool call is a separate Activity, so Temporal replay
-preserves assistant text, multi-tool round structure, and completed tool results
-without reconstructing conversation state from the journal. The PostgreSQL tool
-journal preserves the `prepared → started → completed` boundary with
-`ambiguous` branching from `started`: a completed step returns its durable result
-without re-execution, while a step left `started` is refused rather than silently
-replayed. Existing Workflow histories retain the previous `RunTurn` path through
-Temporal version markers. The real integration suite also runs the new tool
-Activity path through a Docker sandbox and verifies execution inside the
-container.
-The API and worker are separate roles but share one image. The local Compose
-stack starts both:
-
-```bash
-make -C deployments/local up
-make -C deployments/local health
-
-curl http://localhost:8080/readyz
-```
-
-`serve -backend sqlite -db managed-agent.db` temporarily exposes the former
-single-process compatibility path for client-action/interrupt comparison. New
-infrastructure work must target PostgreSQL/Temporal; SQLite is removed after
-those behaviors reach parity. See the
-[platform spine milestone](docs/architecture/platform-spine-milestone.md).
+It preserves the client-action and in-process interrupt behavior used for
+compatibility comparison. It is frozen, is not a production target, and will be
+removed after those semantics are implemented on Temporal.
 
 ## Documentation
 
 - [Hosted documentation](https://yanpgwang.github.io/managed-agent-go/)
 - [Getting started](docs/getting-started.md)
+- [Compatibility matrix](docs/compatibility.md)
+- [Architecture overview](docs/architecture.md)
+- [Session lifecycle](docs/architecture/session-lifecycle.md)
 - [Sandbox backends](docs/sandboxes.md)
-- [Architecture](docs/architecture.md)
-- [Target platform and technology selection](docs/architecture/target-platform.md)
-- [Managed Agents orchestration fit review](docs/architecture/orchestration-fit.md)
-- [Domain model](docs/architecture/domain-model.md)
+- [Target platform decision](docs/architecture/target-platform.md)
 - [API reference](docs/api/overview.md)
-- [Claude API coverage](docs/compatibility.md)
 - [Roadmap](docs/roadmap.md)
-- [Compatibility provenance](docs/provenance.md)
-
-The documentation site uses Docusaurus Classic in docs-only mode:
-
-```bash
-cd website
-npm install
-npm start
-```
 
 ## Development
 
@@ -210,10 +221,10 @@ npm run typecheck
 npm run build
 ```
 
-Default Go tests are offline. PostgreSQL integration tests opt in through the
-documented test environment variables; the full suite also exercises real
-Temporal, NATS, and Docker sandbox paths. PostgreSQL schema changes use embedded
-versioned `goose` migrations.
+Default tests run offline. Real PostgreSQL, Temporal, NATS, and Docker paths are
+covered by opt-in integration tests documented in
+[`deployments/local`](deployments/local/README.md). PostgreSQL schema changes
+use embedded, versioned `goose` migrations.
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a change and report
 vulnerabilities through [SECURITY.md](SECURITY.md).
