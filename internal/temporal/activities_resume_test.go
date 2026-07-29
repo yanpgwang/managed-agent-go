@@ -46,7 +46,7 @@ func TestPrepareTurn_ProcessedOnReceiptCustomResultStillResumesPendingBarrier(t 
 		Kind:             domain.PendingCustomToolResult,
 		ResolvingEventID: &resolutionID,
 	}}
-	activities := NewActivities(nil, nil, source, nil, nil, &testIDGen{})
+	activities := NewActivities(nil, source, nil, nil, &testIDGen{})
 
 	selector, err := activities.LoadPendingActions(context.Background(), LoadPendingActionsInput{
 		SessionID: "sess_resume",

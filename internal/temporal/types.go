@@ -2,8 +2,7 @@
 // orchestration: a SessionWorkflow keyed by the public session ID, granular
 // model/tool Activities behind a Workflow-owned agent loop, idempotent
 // PostgreSQL completion, and the outbox relay that wakes the workflow with
-// Signal-With-Start. The prior opaque RunTurn Activity remains registered only
-// for replay compatibility with existing Workflow histories.
+// Signal-With-Start.
 //
 // PostgreSQL remains the source of truth for public events; Temporal owns only
 // in-flight orchestration. Signals carry wakeup metadata only — never event
@@ -29,17 +28,6 @@ const (
 	SessionWorkflowType = "SessionWorkflow"
 )
 
-// workflowAgentLoopChangeID versions the replacement of the legacy opaque
-// RunTurn Activity with a Workflow-owned model/tool loop. Existing Workflow
-// histories that predate the marker keep scheduling RunTurn; new executions use
-// the granular Activities below. Keep this marker for replay compatibility.
-const workflowAgentLoopChangeID = "workflow-owned-agent-loop-v1"
-
-const (
-	workflowAgentLoopV1 = 1
-	workflowAgentLoopV2 = 2
-)
-
 // WakeupSignal is the wakeup metadata delivered to a SessionWorkflow. It carries
 // only the highest known public receipt sequence, never event payloads. The
 // workflow loads authoritative events from PostgreSQL after its own durable
@@ -58,26 +46,14 @@ type SessionWorkflowInput struct {
 	StartCursor int64  `json:"start_cursor"`
 }
 
-// RunTurnInput asks the RunTurn Activity to execute one model turn for a trigger
-// event and commit its authoritative output idempotently.
-type RunTurnInput struct {
-	SessionID      string `json:"session_id"`
-	TriggerEventID string `json:"trigger_event_id"`
-}
-
-// RunTurnResult reports the outcome of a turn to the workflow. Terminated is true
-// when the turn ended the session (an honest termination: ambiguous tool replay
-// refusal or a misconfiguration); the workflow then stops processing the rest of
-// the loaded batch and does not resurrect the session.
+// RunTurnResult reports whether the workflow-owned turn completed, parked on a
+// client-action barrier, or terminated the session.
 type RunTurnResult struct {
-	Terminated  bool            `json:"terminated"`
-	Disposition TurnDisposition `json:"disposition,omitempty"`
+	Disposition TurnDisposition `json:"disposition"`
 }
 
 // TurnDisposition tells the SessionWorkflow whether a completed turn finished,
 // parked on a newly committed client-action barrier, or terminated the session.
-// Existing Activity histories decode the additive field to empty; the Workflow
-// normalizes that legacy zero value from Terminated.
 type TurnDisposition string
 
 const (
@@ -198,12 +174,10 @@ type CompleteWorkflowTurnInput struct {
 	AttemptState   domain.RunAttemptState `json:"attempt_state,omitempty"`
 	AttemptError   *string                `json:"attempt_error,omitempty"`
 	// PendingActionEventIDs names action events in Output that park this turn
-	// awaiting client input. The additive field is absent from all existing
-	// Workflow histories and therefore decodes to nil with unchanged behavior.
+	// awaiting client input.
 	PendingActionEventIDs []string `json:"pending_action_event_ids,omitempty"`
 	// ResolutionEventIDs names every client event that closes the current
-	// pending-action barrier. The set is validated atomically by PostgreSQL and
-	// is additive for replay compatibility with existing histories.
+	// pending-action barrier. PostgreSQL validates the set atomically.
 	ResolutionEventIDs []string `json:"resolution_event_ids,omitempty"`
 }
 
@@ -230,7 +204,7 @@ type LoadEventsResult struct {
 
 // LoadPendingActionsInput asks PostgreSQL for the current durable
 // requires_action barrier. The result, rather than mutable database state read
-// directly by Workflow code, drives the v2 selector.
+// directly by Workflow code, drives the Workflow selector.
 type LoadPendingActionsInput struct {
 	SessionID string `json:"session_id"`
 }

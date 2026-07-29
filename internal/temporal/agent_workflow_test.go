@@ -291,7 +291,7 @@ func TestWorkflowTurn_AmbiguousToolTerminatesHonestly(t *testing.T) {
 	var completed CompleteWorkflowTurnInput
 	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
 		completed = in
-		return RunTurnResult{Terminated: in.Status == domain.StatusTerminated}, nil
+		return RunTurnResult{Disposition: TurnTerminated}, nil
 	}
 	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
 
@@ -301,7 +301,7 @@ func TestWorkflowTurn_AmbiguousToolTerminatesHonestly(t *testing.T) {
 	require.NoError(t, env.GetWorkflowError())
 	var result RunTurnResult
 	require.NoError(t, env.GetWorkflowResult(&result))
-	require.True(t, result.Terminated)
+	require.Equal(t, TurnTerminated, result.Disposition)
 	require.Equal(t, domain.StatusTerminated, completed.Status)
 	require.Equal(t, domain.RunAttemptFailed, completed.AttemptState)
 	require.NotNil(t, completed.AttemptError)
@@ -338,7 +338,7 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 		Message:    "invalid messages",
 	})
 	activities := NewActivities(
-		nil, client, nil, nil, nil, domain.NewSeqIDGen(),
+		client, nil, nil, nil, domain.NewSeqIDGen(),
 	)
 	executions := 0
 	executeTool := func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
@@ -348,7 +348,7 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	var completed CompleteWorkflowTurnInput
 	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
 		completed = in
-		return RunTurnResult{Terminated: in.Status == domain.StatusTerminated}, nil
+		return RunTurnResult{Disposition: TurnTerminated}, nil
 	}
 	registerWorkflowTurnActivities(env, prepare, activities.CallModel, executeTool, complete)
 
@@ -358,7 +358,7 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	require.NoError(t, env.GetWorkflowError())
 	var result RunTurnResult
 	require.NoError(t, env.GetWorkflowResult(&result))
-	require.True(t, result.Terminated)
+	require.Equal(t, TurnTerminated, result.Disposition)
 	require.Zero(t, executions, "permanent model failure must not execute a tool")
 	require.Equal(t, domain.StatusTerminated, completed.Status)
 	require.Equal(t, []string{

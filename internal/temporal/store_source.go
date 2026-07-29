@@ -40,14 +40,6 @@ func (s storeSource) UnresolvedPendingActions(
 	return s.store.UnresolvedPendingActions(ctx, sessionID)
 }
 
-func (s storeSource) CompleteTurn(ctx context.Context, sessionID, triggerEventID string, output []domain.EventDraft, status domain.Status) (TurnCompletionResult, error) {
-	res, err := s.store.CompleteTurn(ctx, sessionID, triggerEventID, output, status)
-	if err != nil {
-		return TurnCompletionResult{}, err
-	}
-	return TurnCompletionResult{Events: res.Events, Applied: res.Applied, Status: res.Session.Status}, nil
-}
-
 func (s storeSource) CompleteWorkflowTurn(
 	ctx context.Context,
 	sessionID string,
@@ -78,32 +70,11 @@ func (s storeSource) CompleteWorkflowTurn(
 	return TurnCompletionResult{Events: res.Events, Applied: res.Applied, Status: res.Session.Status}, nil
 }
 
-// storeSource also satisfies JournalStore, adapting BeginAttempt's rich return to
-// the bare attempt id the Activity needs. The rest delegate directly.
-
-func (s storeSource) RecoverTurn(ctx context.Context, sessionID, triggerEventID string) (bool, error) {
-	return s.store.RecoverTurn(ctx, sessionID, triggerEventID)
-}
-
-func (s storeSource) BeginAttempt(ctx context.Context, sessionID, triggerEventID string) (string, error) {
-	attempt, err := s.store.BeginAttempt(ctx, sessionID, triggerEventID)
-	if err != nil {
-		return "", err
-	}
-	return attempt.ID, nil
-}
+// storeSource also satisfies JournalStore; the methods below delegate directly.
 
 func (s storeSource) EnsureAttempt(ctx context.Context, sessionID, triggerEventID, attemptID string) error {
 	_, err := s.store.EnsureAttempt(ctx, sessionID, triggerEventID, attemptID)
 	return err
-}
-
-func (s storeSource) FinishAttempt(ctx context.Context, attemptID string, state domain.RunAttemptState, attemptError *string) error {
-	return s.store.FinishAttempt(ctx, attemptID, state, attemptError)
-}
-
-func (s storeSource) PrepareToolStep(ctx context.Context, attemptID string, ordinal int, toolUseEventID, toolName string, input map[string]any) (string, error) {
-	return s.store.PrepareToolStep(ctx, attemptID, ordinal, toolUseEventID, toolName, input)
 }
 
 func (s storeSource) EnsureToolStep(

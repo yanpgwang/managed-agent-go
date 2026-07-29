@@ -96,7 +96,7 @@ and idle status. While any blocker remains unresolved:
 - resume completion resolves the complete barrier atomically before ordinary
   queued work can continue.
 
-The versioned Workflow selector reads this barrier through an Activity before
+The Workflow selector reads this barrier through an Activity before
 ordinary receipt-order work. Once fully claimed, it reconstructs the original
 parked tool-use round and all client results, resumes the model loop, and leaves
 the receipt cursor behind any lower-sequence ordinary messages admitted during

@@ -21,19 +21,7 @@ func runWorkflowTurn(
 	sessionID string,
 	triggerEventID string,
 ) (RunTurnResult, error) {
-	return runWorkflowTurnVersioned(actx, sessionID, triggerEventID, nil, true)
-}
-
-// runWorkflowTurnV1 freezes the forward behavior of Workflow histories that
-// recorded workflowAgentLoopV1. Those histories have no pending-action selector,
-// so they must continue rejecting client-action tool batches instead of
-// installing a barrier they could never resume.
-func runWorkflowTurnV1(
-	actx workflow.Context,
-	sessionID string,
-	triggerEventID string,
-) (RunTurnResult, error) {
-	return runWorkflowTurnVersioned(actx, sessionID, triggerEventID, nil, false)
+	return runWorkflowTurnInternal(actx, sessionID, triggerEventID, nil)
 }
 
 func runWorkflowTurnWithResolutions(
@@ -42,21 +30,14 @@ func runWorkflowTurnWithResolutions(
 	triggerEventID string,
 	resolutionEventIDs []string,
 ) (RunTurnResult, error) {
-	return runWorkflowTurnVersioned(
-		actx,
-		sessionID,
-		triggerEventID,
-		resolutionEventIDs,
-		true,
-	)
+	return runWorkflowTurnInternal(actx, sessionID, triggerEventID, resolutionEventIDs)
 }
 
-func runWorkflowTurnVersioned(
+func runWorkflowTurnInternal(
 	actx workflow.Context,
 	sessionID string,
 	triggerEventID string,
 	resolutionEventIDs []string,
-	clientActions bool,
 ) (RunTurnResult, error) {
 	var prepared PrepareTurnResult
 	if err := workflow.ExecuteActivity(actx, ActivityPrepareTurn, PrepareTurnInput{
@@ -68,7 +49,7 @@ func runWorkflowTurnVersioned(
 	}
 	if prepared.AlreadyCompleted {
 		if prepared.Terminated {
-			return RunTurnResult{Terminated: true, Disposition: TurnTerminated}, nil
+			return RunTurnResult{Disposition: TurnTerminated}, nil
 		}
 		return RunTurnResult{Disposition: TurnCompleted}, nil
 	}
@@ -305,19 +286,6 @@ func runWorkflowTurnVersioned(
 					"model requested a tool that is not enabled: "+use.ToolName,
 				)
 			}
-			if !clientActions &&
-				(definition.Kind != TurnToolBuiltin ||
-					definition.Permission.Type != "always_allow") {
-				return terminateWorkflowTurn(
-					actx,
-					sessionID,
-					triggerEventID,
-					output,
-					attemptID,
-					resolutionEventIDs,
-					"client-action tools are not supported on the Temporal path yet",
-				)
-			}
 			if definition.Kind == TurnToolBuiltin &&
 				definition.Permission.Type != "always_allow" &&
 				definition.Permission.Type != "always_ask" {
@@ -332,77 +300,6 @@ func runWorkflowTurnVersioned(
 						definition.Permission.Type,
 				)
 			}
-		}
-
-		if !clientActions {
-			// Freeze v1 output construction as well as its rejection behavior.
-			// Existing v1 histories emitted each always-allow use/result pair
-			// interleaved, and their CompleteWorkflowTurn Activity input must stay
-			// byte-for-byte compatible when replayed.
-			resultBlocks := make([]domain.ContentBlock, 0, len(toolUses))
-			for _, use := range toolUses {
-				output = append(output, domain.EventDraft{
-					ID:   use.ToolUseID,
-					Type: domain.EvAgentToolUse,
-					Payload: map[string]any{
-						"name":  use.ToolName,
-						"input": use.Input,
-					},
-				})
-
-				attemptID = prepared.AttemptID
-				var executed ExecuteToolResult
-				if err := workflow.ExecuteActivity(actx, ActivityExecuteTool, ExecuteToolInput{
-					SessionID:      sessionID,
-					TriggerEventID: triggerEventID,
-					AttemptID:      attemptID,
-					Ordinal:        ordinal,
-					ToolUseEventID: use.ToolUseID,
-					ToolStepID:     stepIDsByEvent[use.ToolUseID],
-					ToolName:       use.ToolName,
-					Input:          use.Input,
-				}).Get(actx, &executed); err != nil {
-					return RunTurnResult{}, err
-				}
-				ordinal++
-				if executed.FatalError != "" {
-					return terminateWorkflowTurn(
-						actx, sessionID, triggerEventID, output, attemptID,
-						resolutionEventIDs, executed.FatalError,
-					)
-				}
-				if executed.Ambiguous {
-					return terminateWorkflowTurn(
-						actx,
-						sessionID,
-						triggerEventID,
-						output,
-						attemptID,
-						resolutionEventIDs,
-						"a tool began executing but no trustworthy result was recorded; "+
-							"the side effect will not be retried",
-					)
-				}
-				output = append(output, domain.EventDraft{
-					Type: domain.EvAgentToolResult,
-					Payload: map[string]any{
-						"tool_use_id": use.ToolUseID,
-						"content":     executed.Result.Content,
-						"is_error":    executed.Result.IsError,
-					},
-				})
-				resultBlocks = append(resultBlocks, domain.ContentBlock{
-					Type:          "tool_result",
-					ToolResultFor: use.ToolUseID,
-					Text:          agentruntime.FlattenResultText(executed.Result.Content),
-					IsError:       executed.Result.IsError,
-				})
-			}
-			messages = agentruntime.AppendMerging(messages, []domain.Message{
-				{Role: domain.RoleAssistant, Content: called.Response.Content},
-				{Role: domain.RoleUser, Content: resultBlocks},
-			})
-			continue
 		}
 
 		// Commit every use before any result, matching the logical assistant

@@ -14,7 +14,6 @@ import (
 func TestCallModelPublishesCorrelatedPreviewFrames(t *testing.T) {
 	publisher := &previewRecorder{}
 	activities := NewActivities(
-		nil,
 		model.NewFake(),
 		nil,
 		nil,
@@ -67,7 +66,7 @@ func TestCallModelPermanentAPIErrorBecomesFatalResult(t *testing.T) {
 		Message:    "invalid messages",
 	})
 	activities := NewActivities(
-		nil, client, nil, nil, nil, domain.NewSeqIDGen(),
+		client, nil, nil, nil, domain.NewSeqIDGen(),
 	)
 
 	result, err := activities.CallModel(context.Background(), CallModelInput{
@@ -92,7 +91,7 @@ func TestCallModelTransientAPIErrorRemainsActivityError(t *testing.T) {
 	}
 	client.SetError(want)
 	activities := NewActivities(
-		nil, client, nil, nil, nil, domain.NewSeqIDGen(),
+		client, nil, nil, nil, domain.NewSeqIDGen(),
 	)
 
 	result, err := activities.CallModel(context.Background(), CallModelInput{
@@ -114,7 +113,6 @@ func TestCallModelTransientAPIErrorRemainsActivityError(t *testing.T) {
 func TestCompleteWorkflowTurnForwardsPendingBarrierIDs(t *testing.T) {
 	source := newFakeSource(nil)
 	activities := NewActivities(
-		nil,
 		nil,
 		source,
 		nil,
