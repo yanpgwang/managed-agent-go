@@ -57,6 +57,12 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 		},
 	}
 	actx := workflow.WithActivityOptions(ctx, ao)
+	interruptsEnabled := workflow.GetVersion(
+		ctx,
+		durableInterruptChangeID,
+		workflow.DefaultVersion,
+		durableInterruptVersion,
+	) == durableInterruptVersion
 	cursor := in.StartCursor
 	turnsThisRun := 0
 	wakeupCh := workflow.GetSignalChannel(ctx, WakeupSignalName)
@@ -110,15 +116,45 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 						}
 					}
 				}
+				if interruptsEnabled {
+					pendingInterrupt, err := loadInterruptAfter(
+						actx,
+						in.SessionID,
+						cursor,
+					)
+					if err != nil {
+						return false, err
+					}
+					if pendingInterrupt.Interrupt != nil &&
+						(!fullyClaimed ||
+							pendingInterrupt.Interrupt.Seq < trigger.Seq) {
+						if _, err := acknowledgeIdleInterrupt(
+							actx,
+							in.SessionID,
+							pendingInterrupt.Interrupt.ID,
+						); err != nil {
+							return false, err
+						}
+						// Do not advance cursor across a pending-action barrier:
+						// lower-sequence ordinary messages may still be gated.
+						continue
+					}
+				}
 				if !fullyClaimed {
 					return true, nil
 				}
 
-				res, err := runWorkflowTurnWithResolutions(
-					actx,
-					in.SessionID,
-					trigger.ID,
-					resolutionIDs,
+				var interrupts *turnInterruptWatcher
+				if interruptsEnabled {
+					interrupts = newTurnInterruptWatcher(
+						actx,
+						wakeupCh,
+						in.SessionID,
+						trigger.Seq,
+					)
+				}
+				res, err := runWorkflowTurnInternal(
+					actx, in.SessionID, trigger.ID, resolutionIDs, interrupts,
 				)
 				if err != nil {
 					return false, err
@@ -162,7 +198,22 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 					continue
 				}
 				if event.Type == domain.EvUserMessage {
-					res, err := runWorkflowTurn(actx, in.SessionID, event.ID)
+					var interrupts *turnInterruptWatcher
+					if interruptsEnabled {
+						interrupts = newTurnInterruptWatcher(
+							actx,
+							wakeupCh,
+							in.SessionID,
+							event.Seq,
+						)
+					}
+					res, err := runWorkflowTurnInternal(
+						actx,
+						in.SessionID,
+						event.ID,
+						nil,
+						interrupts,
+					)
 					if err != nil {
 						return false, err
 					}
@@ -180,6 +231,17 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 					case TurnParked:
 						return true, nil
 					}
+					continue
+				}
+				if event.Type == domain.EvUserInterrupt {
+					if _, err := acknowledgeIdleInterrupt(
+						actx,
+						in.SessionID,
+						event.ID,
+					); err != nil {
+						return false, err
+					}
+					cursor = event.Seq
 					continue
 				}
 				cursor = event.Seq

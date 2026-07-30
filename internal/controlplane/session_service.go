@@ -140,12 +140,17 @@ func (s *SessionService) SendEvent(
 			domain.EvUserToolConfirmation:
 			// define_outcome is processed on receipt; messages schedule ordinary
 			// turns; custom results and confirmations claim the durable
-			// pending-action barrier and wake the v2 Workflow only when the full
+			// pending-action barrier and wake the SessionWorkflow only when the full
 			// result set is present.
+		case domain.EvUserInterrupt:
+			if _, targeted := draft.Payload["session_thread_id"]; targeted {
+				return nil, domain.Unsupported(
+					"targeted multi-agent interrupts are not supported",
+				)
+			}
 		default:
 			return nil, domain.Unsupported(
-				"this event requires Temporal interrupt support that is not " +
-					"available on the PostgreSQL backend yet",
+				"this client event is not supported on the PostgreSQL backend",
 			)
 		}
 	}

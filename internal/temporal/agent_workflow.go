@@ -21,7 +21,13 @@ func runWorkflowTurn(
 	sessionID string,
 	triggerEventID string,
 ) (RunTurnResult, error) {
-	return runWorkflowTurnInternal(actx, sessionID, triggerEventID, nil)
+	return runWorkflowTurnInternal(
+		actx,
+		sessionID,
+		triggerEventID,
+		nil,
+		nil,
+	)
 }
 
 func runWorkflowTurnWithResolutions(
@@ -30,7 +36,13 @@ func runWorkflowTurnWithResolutions(
 	triggerEventID string,
 	resolutionEventIDs []string,
 ) (RunTurnResult, error) {
-	return runWorkflowTurnInternal(actx, sessionID, triggerEventID, resolutionEventIDs)
+	return runWorkflowTurnInternal(
+		actx,
+		sessionID,
+		triggerEventID,
+		resolutionEventIDs,
+		nil,
+	)
 }
 
 func runWorkflowTurnInternal(
@@ -38,6 +50,7 @@ func runWorkflowTurnInternal(
 	sessionID string,
 	triggerEventID string,
 	resolutionEventIDs []string,
+	interrupts *turnInterruptWatcher,
 ) (RunTurnResult, error) {
 	var prepared PrepareTurnResult
 	if err := workflow.ExecuteActivity(actx, ActivityPrepareTurn, PrepareTurnInput{
@@ -59,13 +72,14 @@ func runWorkflowTurnInternal(
 		sessionID:          sessionID,
 		triggerEventID:     triggerEventID,
 		resolutionEventIDs: resolutionEventIDs,
+		interrupts:         interrupts,
 	}
 	if prepared.FatalError != "" {
 		return turn.terminate(failTurn(prepared.FatalError))
 	}
 
 	toolsByName := indexTurnTools(prepared.Tools)
-	messages, failure, err := resumeWorkflowTurn(
+	messages, interrupted, failure, err := resumeWorkflowTurn(
 		turn,
 		prepared,
 		toolsByName,
@@ -73,6 +87,9 @@ func runWorkflowTurnInternal(
 	)
 	if err != nil {
 		return RunTurnResult{}, err
+	}
+	if interrupted {
+		return turn.complete(nil)
 	}
 	if failure != "" {
 		return turn.terminate(failure)
@@ -82,19 +99,28 @@ func runWorkflowTurnInternal(
 		request := prepared.Request
 		request.Messages = messages
 
-		var called CallModelResult
-		if err := workflow.ExecuteActivity(actx, ActivityCallModel, CallModelInput{
+		called, activityOutcome, err := turn.callModel(CallModelInput{
 			SessionID: sessionID,
 			Request:   request,
-		}).Get(actx, &called); err != nil {
+		})
+		if err != nil {
 			return RunTurnResult{}, err
 		}
+		if activityOutcome.Interrupted && !activityOutcome.Completed {
+			return turn.complete(nil)
+		}
 		if called.FatalError != "" {
+			if activityOutcome.Interrupted {
+				return turn.complete(nil)
+			}
 			return turn.terminate(failTurn(called.FatalError))
 		}
 
 		if content := agentruntime.TextBlocksToContent(called.Response.Content); len(content) > 0 {
 			if called.MessageEventID == "" {
+				if activityOutcome.Interrupted {
+					return turn.complete(nil)
+				}
 				return turn.terminate(failTurn(
 					"model response text has no durable public event id",
 				))
@@ -116,6 +142,9 @@ func runWorkflowTurnInternal(
 			return turn.complete(nil)
 		}
 		if prepared.AttemptID == "" {
+			if activityOutcome.Interrupted {
+				return turn.complete(nil)
+			}
 			return turn.terminate(failTurn("tool-using turn has no durable attempt id"))
 		}
 
@@ -125,18 +154,31 @@ func runWorkflowTurnInternal(
 		}
 		plan, failure := planToolBatch(toolUses, toolsByName, stepIDsByEvent)
 		if failure != "" {
+			if activityOutcome.Interrupted {
+				return turn.complete(nil)
+			}
 			return turn.terminate(failure)
 		}
 		turn.output = append(turn.output, plan.actionDrafts...)
+		if activityOutcome.Interrupted {
+			return turn.complete(nil)
+		}
 
-		executed, failure, err := executeToolBatch(turn, prepared.AttemptID, plan)
+		executed, interrupted, failure, err := executeToolBatch(
+			turn,
+			prepared.AttemptID,
+			plan,
+		)
 		if err != nil {
 			return RunTurnResult{}, err
+		}
+		turn.output = append(turn.output, executed.resultDrafts...)
+		if interrupted {
+			return turn.complete(nil)
 		}
 		if failure != "" {
 			return turn.terminate(failure)
 		}
-		turn.output = append(turn.output, executed.resultDrafts...)
 
 		if len(plan.pendingActionEventIDs) > 0 {
 			return turn.complete(plan.pendingActionEventIDs)

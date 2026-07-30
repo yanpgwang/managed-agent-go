@@ -64,19 +64,17 @@ for the invariants and failure model.
 | Agents | Create, get, list, update, versions, archive |
 | Environments | Create, get, list, archive, delete; `cloud` only for Session execution |
 | Sessions | Create, get, list, update title, archive, delete |
-| Events | Process messages, custom-tool results, and tool confirmations; store `user.define_outcome`; list, cursor pagination, and SSE |
-| Runtime | Multi-round Messages API loop, durable client-action park/resume, and built-in tools |
+| Events | Process messages, interrupts, custom-tool results, and tool confirmations; store `user.define_outcome`; list, cursor pagination, and SSE |
+| Runtime | Multi-round Messages API loop, durable interrupt and client-action park/resume, and built-in tools |
 | Tools | `bash`, `read`, `write`, `edit`, `glob`, and `grep`; web tools currently return not implemented |
 | Sandboxes | Local development provider and optional Docker isolation |
 | Live delivery | Cross-process message previews and persisted-event wakeups over NATS |
 
-The remaining core compatibility gate is durable cross-process
-`user.interrupt` with defined finish/interrupt ordering.
-
-The primary backend returns an explicit `422` for unsupported interrupt,
-generic tool-result, and system-message inputs. MCP execution,
+Untargeted `user.interrupt` durably cancels an active model or tool Activity
+across API and worker processes. Targeted multi-agent interrupts, generic
+tool-result, and system-message inputs return an explicit `422`. MCP execution,
 files/skills/memory/vaults, multi-agent orchestration, remote self-hosted
-workers, schedules, and webhooks are also not implemented.
+workers, schedules, and webhooks are not implemented.
 See the [compatibility matrix](docs/compatibility.md) and
 [roadmap](docs/roadmap.md) for details.
 
@@ -197,9 +195,8 @@ The former single-process implementation remains available temporarily:
 go run ./cmd/managed-agent serve -backend sqlite -db managed-agent.db
 ```
 
-It preserves the client-action and in-process interrupt behavior used for
-compatibility comparison. It is frozen, is not a production target, and will be
-removed after those semantics are implemented on Temporal.
+It is frozen, is not a production target, and remains only for transition
+comparison until the PostgreSQL/Temporal conformance gate is complete.
 
 ## Documentation
 

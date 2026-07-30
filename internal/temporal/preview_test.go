@@ -121,7 +121,7 @@ func TestCompleteWorkflowTurnForwardsPendingBarrierIDs(t *testing.T) {
 	)
 	wantPending := []string{"sevt_action_1", "sevt_action_2"}
 	wantResolved := []string{"sevt_result_1", "sevt_result_2"}
-	_, err := activities.CompleteWorkflowTurn(
+	result, err := activities.CompleteWorkflowTurn(
 		context.Background(),
 		CompleteWorkflowTurnInput{
 			SessionID:             "sesn_pending",
@@ -133,6 +133,13 @@ func TestCompleteWorkflowTurnForwardsPendingBarrierIDs(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("CompleteWorkflowTurn: %v", err)
+	}
+	if result.Disposition != TurnParked {
+		t.Fatalf(
+			"legacy completion disposition = %s, want %s",
+			result.Disposition,
+			TurnParked,
+		)
 	}
 	source.mu.Lock()
 	gotPending := append([]string(nil), source.pending["sevt_trigger"]...)
@@ -147,6 +154,39 @@ func TestCompleteWorkflowTurnForwardsPendingBarrierIDs(t *testing.T) {
 		gotResolved[0] != wantResolved[0] ||
 		gotResolved[1] != wantResolved[1] {
 		t.Fatalf("resolution event ids = %v, want %v", gotResolved, wantResolved)
+	}
+
+	// New PostgreSQL results explicitly override the requested barrier. This is
+	// the interrupt-wins case: the Workflow asked to park, but the completion
+	// transaction observed an earlier interrupt and committed idle/end_turn.
+	notParked := false
+	source = newFakeSource(nil)
+	source.completionParked = &notParked
+	activities = NewActivities(
+		nil,
+		source,
+		nil,
+		nil,
+		domain.NewSeqIDGen(),
+	)
+	result, err = activities.CompleteWorkflowTurn(
+		context.Background(),
+		CompleteWorkflowTurnInput{
+			SessionID:             "sesn_interrupted_park",
+			TriggerEventID:        "sevt_trigger",
+			Status:                domain.StatusIdle,
+			PendingActionEventIDs: wantPending,
+		},
+	)
+	if err != nil {
+		t.Fatalf("CompleteWorkflowTurn interrupted park: %v", err)
+	}
+	if result.Disposition != TurnCompleted {
+		t.Fatalf(
+			"authoritative completion disposition = %s, want %s",
+			result.Disposition,
+			TurnCompleted,
+		)
 	}
 }
 

@@ -55,14 +55,14 @@ offline model and needs no credentials.
 ## Current capability boundary
 
 The primary path supports Agent, Environment, Session, and Event resources;
-`user.message`; cursor pagination and SSE; a multi-round model loop; six
-`always_allow` built-ins; local and Docker sandboxes; and opt-in assistant text
-previews.
+messages and untargeted interrupts; cursor pagination and SSE; a multi-round
+model loop; durable custom-tool and `always_ask` waits; six `always_allow`
+built-ins; local and Docker sandboxes; and opt-in assistant text previews.
 
-Durable custom-tool/`always_ask` waits and cross-process interrupt are the two
-remaining gates before the deprecated SQLite comparison backend can be removed.
-MCP execution, files/skills/memory/vaults, multi-agent orchestration, remote
-self-hosted workers, schedules, and webhooks remain future product work.
+The remaining transition gate before removing the deprecated SQLite comparison
+backend is black-box conformance coverage for the supported PostgreSQL/Temporal
+surface. MCP execution, files/skills/memory/vaults, multi-agent orchestration,
+remote self-hosted workers, schedules, and webhooks remain future product work.
 
 The runtime is the product; Claude API compatibility is an integration surface.
 Public behavior is derived from official documentation and tested through raw

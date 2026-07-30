@@ -202,6 +202,18 @@ type LoadEventsResult struct {
 	Events []EventRef `json:"events"`
 }
 
+// LoadInterruptInput asks the Activity read side for the first still-unprocessed
+// interrupt after a turn's trigger sequence. Wakeup Signals remain metadata
+// only; PostgreSQL decides whether an interrupt was durably admitted.
+type LoadInterruptInput struct {
+	SessionID string `json:"session_id"`
+	AfterSeq  int64  `json:"after_seq"`
+}
+
+type LoadInterruptResult struct {
+	Interrupt *EventRef `json:"interrupt,omitempty"`
+}
+
 // LoadPendingActionsInput asks PostgreSQL for the current durable
 // requires_action barrier. The result, rather than mutable database state read
 // directly by Workflow code, drives the Workflow selector.

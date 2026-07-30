@@ -77,6 +77,15 @@ UPDATE tool_steps
 SET state = 'ambiguous', finished_at = @finished_at, updated_at = @updated_at
 WHERE id = @id AND state = 'started';
 
+-- MarkStartedStepsAmbiguousForAttempt fences an interrupted attempt after its
+-- canceled Activity has acknowledged cancellation. A step that crossed started
+-- may have changed the outside world; recording ambiguous is the only honest
+-- terminal classification when no durable result exists.
+-- name: MarkStartedStepsAmbiguousForAttempt :execrows
+UPDATE tool_steps
+SET state = 'ambiguous', finished_at = @finished_at, updated_at = @updated_at
+WHERE attempt_id = @attempt_id AND state = 'started';
+
 -- CountStartedStepsForAttempt counts steps still in the started (unclassified)
 -- state for an attempt — a terminal attempt must have none.
 -- name: CountStartedStepsForAttempt :one

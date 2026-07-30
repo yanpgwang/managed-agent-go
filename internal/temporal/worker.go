@@ -27,6 +27,7 @@ func NewWorkerOnTaskQueue(
 	w := worker.New(c, taskQueue, worker.Options{})
 	w.RegisterWorkflow(SessionWorkflow)
 	w.RegisterActivityWithOptions(acts.LoadEvents, activity.RegisterOptions{Name: ActivityLoadEvents})
+	w.RegisterActivityWithOptions(acts.LoadInterrupt, activity.RegisterOptions{Name: ActivityLoadInterrupt})
 	w.RegisterActivityWithOptions(acts.LoadPendingActions, activity.RegisterOptions{Name: ActivityLoadPendingActions})
 	w.RegisterActivityWithOptions(acts.PrepareTurn, activity.RegisterOptions{Name: ActivityPrepareTurn})
 	w.RegisterActivityWithOptions(acts.CallModel, activity.RegisterOptions{Name: ActivityCallModel})

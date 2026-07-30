@@ -103,6 +103,30 @@ the receipt cursor behind any lower-sequence ordinary messages admitted during
 the wait. A resumed model turn may atomically replace the old barrier with a new
 one.
 
+## Interrupts
+
+`user.interrupt` is a durable control event, not a process-local cancel flag.
+Admission always writes the PostgreSQL outbox wakeup, including while the
+Session is parked on required client actions. The Workflow treats the Temporal
+Signal as metadata and rereads PostgreSQL before canceling an Activity.
+
+Model and tool Activities heartbeat so Temporal can deliver cancellation.
+PostgreSQL session-row locking defines the finish race:
+
+- if interrupt admission commits before turn completion, the interrupt wins;
+- if turn completion commits first, the later interrupt is an idle no-op;
+- an interrupted turn publishes exactly one idle `end_turn`;
+- completed text and tool-result pairs may be retained, but unstarted tool
+  calls and competing error, terminated, and `requires_action` terminals are
+  removed;
+- a started tool step without a durable result is recorded as ambiguous and is
+  never silently retried;
+- a message batched after the interrupt starts only after the idle boundary.
+
+An interrupt received while a client-action barrier is parked is acknowledged
+without opening or resolving that barrier. Targeted multi-agent interrupts are
+not supported.
+
 ## Failure and delivery semantics
 
 - Permanent model failures commit `session.error` and

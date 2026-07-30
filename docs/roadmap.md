@@ -13,10 +13,13 @@ not by reproducing Anthropic's internal implementation.
 
 These are the release-blocking capabilities for the managed-agent harness:
 
-1. durable cross-process interrupt with deterministic event ordering;
+1. conformance tests for supported Managed Agents API behavior and removal of
+   the frozen SQLite comparison backend;
 2. bounded context management and compaction over server-owned history;
-3. restart-resilient sandbox identity and lifecycle;
-4. conformance tests for supported Managed Agents API behavior.
+3. restart-resilient sandbox identity and lifecycle.
+
+Durable cross-process interrupt, deterministic finish-vs-interrupt ordering,
+and durable client-action resume are implemented on the primary path.
 
 ## Runtime integrations
 

@@ -58,6 +58,41 @@ func (q *Queries) DeleteOutboxIfSeq(ctx context.Context, arg DeleteOutboxIfSeqPa
 	return result.RowsAffected(), nil
 }
 
+const firstUnprocessedInterruptAfter = `-- name: FirstUnprocessedInterruptAfter :one
+SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+FROM events
+WHERE session_id = $1
+  AND seq > $2
+  AND type = 'user.interrupt'
+  AND processed_at IS NULL
+ORDER BY seq
+LIMIT 1
+`
+
+type FirstUnprocessedInterruptAfterParams struct {
+	SessionID string
+	AfterSeq  int64
+}
+
+// FirstUnprocessedInterruptAfter finds the earliest durable interrupt that can
+// race the named turn. The caller holds the session row lock, so an empty result
+// means turn completion linearized before any later interrupt admission.
+func (q *Queries) FirstUnprocessedInterruptAfter(ctx context.Context, arg FirstUnprocessedInterruptAfterParams) (Event, error) {
+	row := q.db.QueryRow(ctx, firstUnprocessedInterruptAfter, arg.SessionID, arg.AfterSeq)
+	var i Event
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.Seq,
+		&i.Type,
+		&i.Payload,
+		&i.TurnEventID,
+		&i.CreatedAt,
+		&i.ProcessedAt,
+	)
+	return i, err
+}
+
 const getEvent = `-- name: GetEvent :one
 SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
 FROM events

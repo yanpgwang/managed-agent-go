@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -137,6 +138,152 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 	// The outbox wakeup was consumed by the relay.
 	if _, ok, err := store.PendingWakeup(ctx, sess.ID); err != nil || ok {
 		t.Fatalf("expected no pending wakeup after processing: ok=%v err=%v", ok, err)
+	}
+}
+
+// TestVerticalSlice_InterruptCancelsModelActivity proves the cross-process
+// cancellation path against real Temporal and PostgreSQL. The public interrupt
+// is first committed to PostgreSQL, its metadata-only wakeup reaches the
+// Workflow, the Workflow rereads the durable ledger, and only then requests
+// cancellation of the heartbeat-enabled model Activity.
+func TestVerticalSlice_InterruptCancelsModelActivity(t *testing.T) {
+	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
+	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
+	if dbURL == "" || hostPort == "" {
+		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the interrupt end-to-end slice")
+	}
+	ctx := context.Background()
+
+	store, cleanup := integrationStore(t, dbURL)
+	defer cleanup()
+
+	c, err := client.Dial(client.Options{HostPort: hostPort})
+	if err != nil {
+		t.Skipf("temporal unreachable at %s: %v", hostPort, err)
+	}
+	defer c.Close()
+
+	ids := domain.NewRandomIDGen()
+	blockingModel := newInterruptBlockingModel()
+	runtime := temporalpkg.NewRuntimeOnTaskQueue(
+		c,
+		store,
+		blockingModel,
+		sandbox.NewLocalProvider(),
+		ids,
+		temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
+		"managed-agent-test-"+ids.NewID(""),
+	)
+	if err := runtime.Worker.Start(); err != nil {
+		t.Fatalf("worker start: %v", err)
+	}
+	defer runtime.Worker.Stop()
+	relayCtx, stopRelay := context.WithCancel(ctx)
+	defer stopRelay()
+	go func() { _ = runtime.Relay.Run(relayCtx) }()
+
+	orch := runtime.Orchestrator()
+	sess := domain.Session{
+		ID:            "sess_interrupt_e2e_" + ids.NewID(""),
+		AgentID:       "agent_1",
+		AgentVersion:  1,
+		EnvironmentID: "env_1",
+		Status:        domain.StatusIdle,
+		Metadata:      map[string]any{},
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if _, _, err := orch.CreateSession(ctx, sess, nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, err := orch.Admit(ctx, sess.ID, []domain.EventDraft{{
+		Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "block until interrupted"},
+		}},
+	}}); err != nil {
+		t.Fatalf("admit message: %v", err)
+	}
+	defer terminateIntegrationWorkflow(t, c, sess.ID)
+
+	select {
+	case <-blockingModel.started:
+	case <-time.After(15 * time.Second):
+		t.Fatal("model Activity never started")
+	}
+
+	admitted, err := orch.Admit(ctx, sess.ID, []domain.EventDraft{{
+		Type:    domain.EvUserInterrupt,
+		Payload: map[string]any{},
+	}})
+	if err != nil {
+		t.Fatalf("admit interrupt: %v", err)
+	}
+	if len(admitted) != 1 {
+		t.Fatalf("interrupt events = %d, want 1", len(admitted))
+	}
+	interruptID := admitted[0].ID
+
+	select {
+	case <-blockingModel.canceled:
+	case <-time.After(15 * time.Second):
+		t.Fatal("durable interrupt did not cancel the model Activity context")
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	var events []domain.Event
+	for time.Now().Before(deadline) {
+		events, err = store.EventsAfter(ctx, sess.ID, 0, 100)
+		if err != nil {
+			t.Fatalf("events after: %v", err)
+		}
+		interrupt, getErr := store.GetEvent(ctx, sess.ID, interruptID)
+		if getErr != nil {
+			t.Fatalf("get interrupt: %v", getErr)
+		}
+		if interrupt.ProcessedAt != nil && hasType(events, domain.EvSessionStatusIdle) {
+			break
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+
+	assertOrder(t, events,
+		domain.EvUserMessage,
+		domain.EvSessionStatusRunning,
+		domain.EvUserInterrupt,
+		domain.EvSessionStatusIdle,
+	)
+	idleCount := 0
+	for _, event := range events {
+		switch event.Type {
+		case domain.EvSessionStatusIdle:
+			idleCount++
+			stopReason, _ := event.Payload["stop_reason"].(map[string]any)
+			if stopReason["type"] != "end_turn" {
+				t.Fatalf("interrupt stop reason = %#v, want end_turn", stopReason)
+			}
+		case domain.EvSessionError, domain.EvSessionStatusTerminated:
+			t.Fatalf("interrupt published failure event %s", event.Type)
+		case domain.EvAgentMessage:
+			t.Fatal("canceled blocking model unexpectedly published agent.message")
+		}
+	}
+	if idleCount != 1 {
+		t.Fatalf("idle events = %d, want exactly 1; got %s", idleCount, typeList(events))
+	}
+	interrupt, err := store.GetEvent(ctx, sess.ID, interruptID)
+	if err != nil {
+		t.Fatalf("get final interrupt: %v", err)
+	}
+	if interrupt.ProcessedAt == nil {
+		t.Fatal("interrupt was not marked processed with turn completion")
+	}
+	final, err := store.GetSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("get session: %v", err)
+	}
+	if final.Status != domain.StatusIdle {
+		t.Fatalf("final status = %s, want idle", final.Status)
 	}
 }
 
@@ -334,6 +481,39 @@ func (m dockerProbeModel) CreateMessageStream(ctx context.Context, req model.Req
 		onDelta(0, resp.Content[0].Text)
 	}
 	return resp, err
+}
+
+type interruptBlockingModel struct {
+	started  chan struct{}
+	canceled chan struct{}
+
+	startOnce  sync.Once
+	cancelOnce sync.Once
+}
+
+func newInterruptBlockingModel() *interruptBlockingModel {
+	return &interruptBlockingModel{
+		started:  make(chan struct{}),
+		canceled: make(chan struct{}),
+	}
+}
+
+func (m *interruptBlockingModel) CreateMessage(
+	ctx context.Context,
+	req model.Request,
+) (model.Response, error) {
+	return m.CreateMessageStream(ctx, req, nil)
+}
+
+func (m *interruptBlockingModel) CreateMessageStream(
+	ctx context.Context,
+	_ model.Request,
+	_ func(index int, text string),
+) (model.Response, error) {
+	m.startOnce.Do(func() { close(m.started) })
+	<-ctx.Done()
+	m.cancelOnce.Do(func() { close(m.canceled) })
+	return model.Response{}, ctx.Err()
 }
 
 func hasType(events []domain.Event, t string) bool {

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"time"
 
+	"go.temporal.io/sdk/activity"
+
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime/tools"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -19,6 +21,7 @@ import (
 // symbols; named explicitly so a rename cannot silently break replay.
 const (
 	ActivityLoadEvents           = "LoadEvents"
+	ActivityLoadInterrupt        = "LoadInterrupt"
 	ActivityLoadPendingActions   = "LoadPendingActions"
 	ActivityPrepareTurn          = "PrepareTurn"
 	ActivityCallModel            = "CallModel"
@@ -31,6 +34,11 @@ const (
 // Activities testable with an in-memory fake.
 type EventSource interface {
 	EventsAfter(ctx context.Context, sessionID string, cursor int64, limit int) ([]domain.Event, error)
+	FirstUnprocessedInterruptAfter(
+		ctx context.Context,
+		sessionID string,
+		afterSeq int64,
+	) (*domain.Event, error)
 	HistoryThrough(ctx context.Context, sessionID, triggerEventID string, limit int) ([]domain.Event, error)
 	GetSession(ctx context.Context, id string) (domain.Session, error)
 	GetEvent(ctx context.Context, sessionID, id string) (domain.Event, error)
@@ -82,6 +90,11 @@ type TurnCompletionResult struct {
 	Events  []domain.Event
 	Applied bool
 	Status  domain.Status
+	// Parked is a pointer for Workflow-history compatibility. Activity results
+	// recorded before durable interrupt support have no field; nil tells
+	// CompleteWorkflowTurn to use the legacy input-derived disposition. New
+	// results always carry an explicit true/false from PostgreSQL.
+	Parked *bool
 }
 
 // historyLimit bounds how many prior events a turn projects into the model. It
@@ -146,6 +159,31 @@ func (a *Activities) LoadEvents(ctx context.Context, in LoadEventsInput) (LoadEv
 		refs = append(refs, EventRef{ID: e.ID, Seq: e.Sequence, Type: e.Type})
 	}
 	return LoadEventsResult{Events: refs}, nil
+}
+
+// LoadInterrupt scans authoritative history after one active trigger for the
+// first unprocessed interrupt. It runs once before a turn's first interruptible
+// Activity, after later wakeups, or while a durable pending-action barrier is
+// parked. Signals remain metadata and ordinary model/tool progress does not poll
+// PostgreSQL continuously.
+func (a *Activities) LoadInterrupt(
+	ctx context.Context,
+	in LoadInterruptInput,
+) (LoadInterruptResult, error) {
+	event, err := a.source.FirstUnprocessedInterruptAfter(
+		ctx,
+		in.SessionID,
+		in.AfterSeq,
+	)
+	if err != nil {
+		return LoadInterruptResult{}, err
+	}
+	if event == nil {
+		return LoadInterruptResult{}, nil
+	}
+	return LoadInterruptResult{Interrupt: &EventRef{
+		ID: event.ID, Seq: event.Sequence, Type: event.Type,
+	}}, nil
 }
 
 // LoadPendingActions returns the durable requires_action barrier as a small
@@ -409,6 +447,8 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 	if a.modelClient == nil {
 		return CallModelResult{}, fmt.Errorf("temporal: model client is not configured")
 	}
+	stopHeartbeat := heartbeatActivity(ctx)
+	defer stopHeartbeat()
 	messageEventID := a.ids.NewID(domain.PrefixEvent)
 	startedPreview := false
 	var previewMu sync.Mutex
@@ -488,6 +528,8 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	if a.journal == nil || a.sandboxes == nil {
 		return ExecuteToolResult{}, fmt.Errorf("temporal: tool execution requires a journal and sandbox")
 	}
+	stopHeartbeat := heartbeatActivity(ctx)
+	defer stopHeartbeat()
 	if err := a.journal.EnsureAttempt(
 		ctx, in.SessionID, in.TriggerEventID, in.AttemptID,
 	); err != nil {
@@ -613,10 +655,47 @@ func (a *Activities) CompleteWorkflowTurn(
 	switch {
 	case completion.Status == domain.StatusTerminated:
 		return RunTurnResult{Disposition: TurnTerminated}, nil
-	case len(in.PendingActionEventIDs) > 0:
+	case completion.Parked != nil && *completion.Parked:
+		return RunTurnResult{Disposition: TurnParked}, nil
+	case completion.Parked == nil && len(in.PendingActionEventIDs) > 0:
+		// Replay of a pre-interrupt Activity result. At that time the requested
+		// pending set was the disposition source because PG could not override a
+		// park with an interrupt.
 		return RunTurnResult{Disposition: TurnParked}, nil
 	default:
 		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
+}
+
+const activityHeartbeatInterval = 500 * time.Millisecond
+
+// heartbeatActivity makes long model/tool Activities promptly observe a
+// Workflow cancellation request. Temporal delivers remote Activity
+// cancellation through heartbeat responses; without this loop, an interrupt
+// could remain buffered until a long provider or sandbox call returned.
+func heartbeatActivity(ctx context.Context) func() {
+	if !activity.IsActivity(ctx) {
+		return func() {}
+	}
+	done := make(chan struct{})
+	activity.RecordHeartbeat(ctx)
+	go func() {
+		ticker := time.NewTicker(activityHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				activity.RecordHeartbeat(ctx)
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(done) })
 	}
 }
 

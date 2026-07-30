@@ -216,6 +216,24 @@ func (s *Store) finishAttemptLocked(
 	if attempt.State != string(domain.RunAttemptActive) {
 		return domain.Conflict("attempt is not active")
 	}
+	now := s.clock.Now().UTC()
+	if state == domain.RunAttemptInterrupted {
+		// WaitForCancellation guarantees the Activity has acknowledged the
+		// Workflow's cancellation before this transaction runs. Locking the
+		// attempt serializes this fence with StartToolStep: either Start won and
+		// its result-less step becomes ambiguous, or this interrupt wins and the
+		// stale prepared step can never cross the side-effect boundary.
+		if _, err := q.MarkStartedStepsAmbiguousForAttempt(
+			ctx,
+			pgstore.MarkStartedStepsAmbiguousForAttemptParams{
+				FinishedAt: tsUTC(now),
+				UpdatedAt:  tsUTC(now),
+				AttemptID:  attemptID,
+			},
+		); err != nil {
+			return err
+		}
+	}
 	started, err := q.CountStartedStepsForAttempt(ctx, attemptID)
 	if err != nil {
 		return err
@@ -232,7 +250,6 @@ func (s *Store) finishAttemptLocked(
 			return domain.Conflict("completed attempt has non-completed tool steps")
 		}
 	}
-	now := s.clock.Now().UTC()
 	affected, err := q.FinishTurnAttempt(ctx, pgstore.FinishTurnAttemptParams{
 		State:      string(state),
 		Error:      attemptError,
