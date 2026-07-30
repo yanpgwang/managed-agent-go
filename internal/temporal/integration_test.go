@@ -439,10 +439,26 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	if final.Status != domain.StatusIdle {
 		t.Fatalf("expected idle, got %s", final.Status)
 	}
+	binding, found, err := store.GetSandboxBinding(ctx, sessID)
+	if err != nil {
+		t.Fatalf("get sandbox binding: %v", err)
+	}
+	if !found || binding.Ref.Provider != provider.Name() || binding.Ref.ID == "" {
+		t.Fatalf("sandbox binding = %+v, found=%v", binding, found)
+	}
+	if err := store.PrepareSessionDeletion(ctx, sessID); err != nil {
+		t.Fatalf("prepare session deletion: %v", err)
+	}
 	releaseCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	if err := runtime.Sandbox.Release(releaseCtx, sessID); err != nil {
-		t.Fatalf("release session sandbox: %v", err)
+	if err := orch.TerminateSession(releaseCtx, sessID); err != nil {
+		t.Fatalf("terminate session and release sandbox: %v", err)
+	}
+	if _, found, err := store.GetSandboxBinding(ctx, sessID); err != nil || found {
+		t.Fatalf("sandbox binding survived cleanup: found=%v err=%v", found, err)
+	}
+	if err := store.FinalizeSessionDeletion(releaseCtx, sessID); err != nil {
+		t.Fatalf("finalize session deletion: %v", err)
 	}
 }
 

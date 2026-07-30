@@ -15,11 +15,11 @@ These are the release-blocking capabilities for the managed-agent harness:
 
 1. conformance tests for supported Managed Agents API behavior and removal of
    the frozen SQLite comparison backend;
-2. bounded context management and compaction over server-owned history;
-3. restart-resilient sandbox identity and lifecycle.
+2. bounded context management and compaction over server-owned history.
 
 Durable cross-process interrupt, deterministic finish-vs-interrupt ordering,
-and durable client-action resume are implemented on the primary path.
+Sandbox identity, worker-restart reattachment, and deletion cleanup are durable
+for the local and Docker providers.
 
 ## Runtime integrations
 

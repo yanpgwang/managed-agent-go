@@ -71,6 +71,15 @@ type Session struct {
 	DeletingAt    pgtype.Timestamptz
 }
 
+type SessionSandbox struct {
+	SessionID  string
+	Provider   string
+	ExternalID string
+	SpecHash   string
+	CreatedAt  pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+}
+
 type ToolStep struct {
 	ID             string
 	AttemptID      string

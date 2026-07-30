@@ -142,9 +142,12 @@ not supported.
 
 ## Session deletion
 
-Deletion first fences the Session against new admission, then terminates its
-Workflow, then removes the PostgreSQL projection. Repeating deletion can finish
-an interrupted attempt safely.
+Deletion first fences the Session against new admission, terminates its
+long-lived Workflow, and starts a short Temporal cleanup Workflow on the
+execution worker. Cleanup destroys the provider resource and removes its
+persisted binding before the Session projection can be deleted. Repeating the
+operation safely joins or repeats idempotent cleanup.
 
-The sandbox is released as part of Session teardown. Current local and Docker
-sandbox identity is process-local, so restart continuity is not yet provided.
+Local workspaces can reattach on the same host and Docker containers can
+reattach through the same daemon. Cross-host workers require a remote provider
+or shared execution substrate.

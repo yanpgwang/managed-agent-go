@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.temporal.io/sdk/activity"
+	temporalsdk "go.temporal.io/sdk/temporal"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime/tools"
@@ -27,6 +28,9 @@ const (
 	ActivityCallModel            = "CallModel"
 	ActivityExecuteTool          = "ExecuteTool"
 	ActivityCompleteWorkflowTurn = "CompleteWorkflowTurn"
+	ActivityReleaseSandbox       = "ReleaseSandbox"
+
+	sandboxPermanentErrorType = "SandboxPermanentError"
 )
 
 // EventSource is the read side of the PostgreSQL ledger the Activities depend
@@ -74,6 +78,7 @@ type JournalStore interface {
 // left behind.
 type SandboxLease interface {
 	Acquire(ctx context.Context, sessionID string, spec sandbox.Spec) (sandbox.Sandbox, error)
+	Release(ctx context.Context, sessionID string) error
 }
 
 // PreviewPublisher carries best-effort model deltas to live subscribers. It is
@@ -597,6 +602,30 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		return ExecuteToolResult{}, err
 	}
 	return out, nil
+}
+
+// ReleaseSandbox completes the provider side of session deletion. It is a
+// standalone Activity so Temporal durably retries provider or PostgreSQL
+// outages without making the HTTP control plane own sandbox credentials.
+func (a *Activities) ReleaseSandbox(ctx context.Context, in ReleaseSandboxInput) error {
+	if a.sandboxes == nil {
+		return temporalsdk.NewNonRetryableApplicationError(
+			"temporal: sandbox manager is not configured",
+			sandboxPermanentErrorType,
+			nil,
+		)
+	}
+	stopHeartbeat := heartbeatActivity(ctx)
+	defer stopHeartbeat()
+	err := a.sandboxes.Release(ctx, in.SessionID)
+	if sandbox.IsPermanent(err) {
+		return temporalsdk.NewNonRetryableApplicationError(
+			err.Error(),
+			sandboxPermanentErrorType,
+			err,
+		)
+	}
+	return err
 }
 
 func completeToolResultDurably(

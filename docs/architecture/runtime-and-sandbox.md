@@ -109,26 +109,21 @@ and never share a sandbox, so they stay isolated even when they use the same
 agent and environment.
 
 Ownership lives in a session-scoped manager that wraps the provider inside the
-`internal/sandbox` package: acquisition provisions on first use and returns the
-cached instance afterwards; release destroys it. The `AgentRuntime` is unaware
-of this — the application resolves the sandbox and passes it in the run request.
+`internal/sandbox` package. PostgreSQL stores the provider name, opaque external
+ID, and spec hash; the in-memory map is only a live client cache. The
+`AgentRuntime` is unaware of this — the application resolves the sandbox and
+passes it in the run request.
 
-Entering idle does not tear the sandbox down; it stays live between turns.
-Deleting the session releases it, running the provider teardown exactly once. A
-provisioning failure is not cached, so a later run may retry.
+Entering idle does not tear the sandbox down. After a worker restart, `Attach`
+reconstructs the client from the persisted reference; if the resource has
+disappeared, acquisition fails instead of silently replacing session state.
 
-The manager holds sandboxes in memory. Restart does not restore an idle
-session's sandbox: a process restart starts from an empty workspace, and the
-first run after restart provisions a fresh one. Durable checkpoint/restore,
-quotas, and eviction are not implemented.
-
-This is a process-boundary limitation, not just a persistence gap. Because
-ownership lives only in the in-memory manager, a new process cannot reattach to
-sandboxes an earlier process provisioned. A crash or an ungraceful restart
-therefore leaves those provider resources — Docker containers or local temp
-directories — orphaned, since the only code that would tear them down (`Release`
-on session deletion) died with the process. Nothing reclaims them until an
-external cleanup step; there is no built-in reaper.
+Session deletion runs provider teardown as a retryable Temporal Activity and
+removes the binding before PostgreSQL permits the Session row to be deleted.
+Local references require the same host filesystem and Docker references require
+the same daemon. Remote multi-worker execution therefore needs a service-backed
+provider. Checkpoint/restore, quotas, eviction, and orphan reconciliation are
+not implemented.
 
 ## Streaming previews
 

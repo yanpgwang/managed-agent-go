@@ -28,7 +28,7 @@ func newDockerSB(t *testing.T, spec Spec) Sandbox {
 	if spec.Timeout == 0 {
 		spec.Timeout = 30 * time.Second
 	}
-	sb, err := p.Provision(context.Background(), spec)
+	_, sb, err := p.Create(context.Background(), t.Name(), spec)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,5 +131,61 @@ func TestDocker_ExecAfterTimeoutReturnsError(t *testing.T) {
 	res2, err := sb.Exec(context.Background(), Command{Path: "sh", Args: []string{"-c", "echo hi"}})
 	if err == nil {
 		t.Fatalf("exec after timeout: expected error, got res=%+v err=nil", res2)
+	}
+}
+
+func TestDocker_CreateIsIdempotentAndAttachPreservesWorkspace(t *testing.T) {
+	dockerAvailable(t)
+	ctx := context.Background()
+	firstProvider, err := NewDockerProvider(DockerConfig{DefaultImage: "alpine:latest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, first, err := firstProvider.Create(ctx, t.Name(), Spec{Timeout: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Destroy(context.Background()) })
+	if err := first.WriteFile(ctx, "state.txt", []byte("durable")); err != nil {
+		t.Fatal(err)
+	}
+
+	secondProvider, err := NewDockerProvider(DockerConfig{DefaultImage: "alpine:latest"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sameRef, same, err := secondProvider.Create(
+		ctx,
+		t.Name(),
+		Spec{Timeout: 30 * time.Second},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sameRef != ref {
+		t.Fatalf("idempotent Create ref = %+v, want %+v", sameRef, ref)
+	}
+	attached, err := secondProvider.Attach(
+		ctx,
+		t.Name(),
+		ref,
+		Spec{Timeout: 30 * time.Second},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, box := range map[string]Sandbox{"same": same, "attached": attached} {
+		data, err := box.ReadFile(ctx, "state.txt")
+		if err != nil || string(data) != "durable" {
+			t.Fatalf("%s workspace data = %q, err=%v", name, data, err)
+		}
+	}
+	if _, err := secondProvider.Attach(
+		ctx,
+		"another-session",
+		ref,
+		Spec{Timeout: 30 * time.Second},
+	); err == nil || !IsPermanent(err) {
+		t.Fatalf("cross-session Attach = %v, want permanent ownership error", err)
 	}
 }

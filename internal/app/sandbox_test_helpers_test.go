@@ -7,17 +7,32 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 )
 
-// provisionCountingProvider wraps a Provider and counts Provision calls so a
-// test can assert a session provisions its logical sandbox exactly once across
+// provisionCountingProvider wraps a Provider and counts Create calls so a test
+// can assert a session creates its logical sandbox exactly once across
 // repeated runs.
 type provisionCountingProvider struct {
 	inner      sandbox.Provider
 	provisions atomic.Int64
 }
 
-func (p *provisionCountingProvider) Provision(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error) {
+func (p *provisionCountingProvider) Name() string { return p.inner.Name() }
+
+func (p *provisionCountingProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec sandbox.Spec,
+) (sandbox.Ref, sandbox.Sandbox, error) {
 	p.provisions.Add(1)
-	return p.inner.Provision(ctx, spec)
+	return p.inner.Create(ctx, sessionKey, spec)
+}
+
+func (p *provisionCountingProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref sandbox.Ref,
+	spec sandbox.Spec,
+) (sandbox.Sandbox, error) {
+	return p.inner.Attach(ctx, sessionKey, ref, spec)
 }
 
 func (p *provisionCountingProvider) count() int64 { return p.provisions.Load() }
@@ -29,8 +44,27 @@ type destroyCountingProvider struct {
 	destroys atomic.Int64
 }
 
-func (p *destroyCountingProvider) Provision(ctx context.Context, spec sandbox.Spec) (sandbox.Sandbox, error) {
-	box, err := p.inner.Provision(ctx, spec)
+func (p *destroyCountingProvider) Name() string { return p.inner.Name() }
+
+func (p *destroyCountingProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec sandbox.Spec,
+) (sandbox.Ref, sandbox.Sandbox, error) {
+	ref, box, err := p.inner.Create(ctx, sessionKey, spec)
+	if err != nil {
+		return sandbox.Ref{}, nil, err
+	}
+	return ref, &destroyCountingSandbox{inner: box, provider: p}, nil
+}
+
+func (p *destroyCountingProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref sandbox.Ref,
+	spec sandbox.Spec,
+) (sandbox.Sandbox, error) {
+	box, err := p.inner.Attach(ctx, sessionKey, ref, spec)
 	if err != nil {
 		return nil, err
 	}

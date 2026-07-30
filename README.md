@@ -87,7 +87,7 @@ Operating this as a production service still requires:
 - authentication, tenant isolation, TLS, and secret management;
 - Temporal Worker Versioning, rollout tests, dependency-aware readiness, and
   observability;
-- provider-backed durable sandbox identity and orphan reconciliation;
+- remote sandbox provider adapters and orphan reconciliation;
 - large-payload/object-storage offload, resource policies, and production
   deployment manifests.
 

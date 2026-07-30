@@ -10,7 +10,11 @@ import (
 )
 
 func newSB(t *testing.T) sandbox.Sandbox {
-	sb, err := sandbox.NewLocalProvider().Provision(context.Background(), sandbox.Spec{Timeout: 5 * time.Second})
+	_, sb, err := sandbox.NewLocalProvider().Create(
+		context.Background(),
+		t.Name(),
+		sandbox.Spec{Timeout: 5 * time.Second},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

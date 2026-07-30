@@ -8,7 +8,11 @@ import (
 )
 
 func TestLocal_ExecEcho(t *testing.T) {
-	sb, err := NewLocalProvider().Provision(context.Background(), Spec{Timeout: 5 * time.Second})
+	_, sb, err := NewLocalProvider().Create(
+		context.Background(),
+		t.Name(),
+		Spec{Timeout: 5 * time.Second},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -23,7 +27,11 @@ func TestLocal_ExecEcho(t *testing.T) {
 }
 
 func TestLocal_FileRoundTripAndConfinement(t *testing.T) {
-	sb, _ := NewLocalProvider().Provision(context.Background(), Spec{Timeout: 5 * time.Second})
+	_, sb, _ := NewLocalProvider().Create(
+		context.Background(),
+		t.Name(),
+		Spec{Timeout: 5 * time.Second},
+	)
 	defer sb.Destroy(context.Background())
 	if err := sb.WriteFile(context.Background(), "sub/a.txt", []byte("data")); err != nil {
 		t.Fatal(err)
@@ -38,7 +46,7 @@ func TestLocal_FileRoundTripAndConfinement(t *testing.T) {
 }
 
 func TestLocal_IgnoresDockerSpecFields(t *testing.T) {
-	sb, err := NewLocalProvider().Provision(context.Background(), Spec{
+	_, sb, err := NewLocalProvider().Create(context.Background(), t.Name(), Spec{
 		Timeout: 5 * time.Second,
 		Image:   "alpine:latest", Memory: "256m", CPUs: "1.0", Network: "none", PidsLimit: 128,
 	})
@@ -53,7 +61,11 @@ func TestLocal_IgnoresDockerSpecFields(t *testing.T) {
 }
 
 func TestLocal_Timeout(t *testing.T) {
-	sb, _ := NewLocalProvider().Provision(context.Background(), Spec{Timeout: 200 * time.Millisecond})
+	_, sb, _ := NewLocalProvider().Create(
+		context.Background(),
+		t.Name(),
+		Spec{Timeout: 200 * time.Millisecond},
+	)
 	defer sb.Destroy(context.Background())
 	res, err := sb.Exec(context.Background(), Command{Path: "/bin/sh", Args: []string{"-c", "sleep 5"}})
 	if err != nil {
@@ -61,5 +73,28 @@ func TestLocal_Timeout(t *testing.T) {
 	}
 	if !res.TimedOut {
 		t.Fatalf("expected TimedOut, got %+v", res)
+	}
+}
+
+func TestLocal_AttachPreservesWorkspace(t *testing.T) {
+	ctx := context.Background()
+	firstProvider := NewLocalProvider()
+	ref, first, err := firstProvider.Create(ctx, t.Name(), Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Destroy(context.Background()) })
+	if err := first.WriteFile(ctx, "state.txt", []byte("durable")); err != nil {
+		t.Fatal(err)
+	}
+
+	secondProvider := NewLocalProvider()
+	second, err := secondProvider.Attach(ctx, t.Name(), ref, Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := second.ReadFile(ctx, "state.txt")
+	if err != nil || string(data) != "durable" {
+		t.Fatalf("attached data = %q, err=%v", data, err)
 	}
 }

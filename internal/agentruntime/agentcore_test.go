@@ -276,7 +276,11 @@ func TestEnabledBuiltinSchemas_AllOfferedSchemasAreObjects(t *testing.T) {
 }
 
 func TestAgentCore_ExecutesBuiltinToolLoop(t *testing.T) {
-	sb, err := sandbox.NewLocalProvider().Provision(context.Background(), sandbox.Spec{Timeout: 5 * time.Second})
+	_, sb, err := sandbox.NewLocalProvider().Create(
+		context.Background(),
+		t.Name(),
+		sandbox.Spec{Timeout: 5 * time.Second},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

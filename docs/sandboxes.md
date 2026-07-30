@@ -10,25 +10,23 @@ production-ready merely because it can execute a command: its isolation model,
 lifecycle guarantees, operational dependencies, and known limits must also be
 clear.
 
-The current worker does **not** call a separate sandbox HTTP service. Its
-sandbox boundary is an in-process Go interface:
+Local and Docker execution do not add another HTTP service. The worker uses the
+same in-process Go boundary that remote service adapters will implement:
 
 ```text
 Temporal Activity -> SessionManager -> sandbox.Provider -> sandbox.Sandbox
 ```
 
-`SessionManager` gives each session one logical sandbox. `Provider` decides how
-that sandbox is provisioned, while `Sandbox` exposes command execution, confined
-file access, a workspace root, and teardown. This is enough for the current
-local and Docker backends and is the extension point for future backends.
+`SessionManager` gives each session one logical sandbox. PostgreSQL persists the
+provider name and opaque external ID; a restarted worker calls `Attach` instead
+of creating an empty replacement. `Sandbox` exposes command execution, confined
+file access, a workspace root, and teardown.
 
 ## Support levels
 
 - **Available**: implemented, documented, and exercised by repository tests.
-- **Candidate**: technically compatible with the provider model, but not
-  implemented or committed to a release.
-- **Direction**: an intended capability that needs additional lifecycle or
-  control-plane work before a backend alone would be useful.
+- **Planned**: selected for a dedicated adapter, but not implemented.
+- **Evaluating**: useful integration shape, without a committed adapter.
 
 These labels describe project support, not a security certification.
 
@@ -36,11 +34,16 @@ These labels describe project support, not a security certification.
 
 | Backend | Status | Isolation model | Session state | Intended use |
 |---|---|---|---|---|
-| Local process | Available; default | Temporary workspace and path checks; no kernel or network isolation | Workspace survives turns while the server process lives | Offline tests and trusted local development only |
-| Docker | Available; opt-in | Container filesystem, namespaces/cgroups, configurable limits, network disabled by default | Container survives turns while the server process lives | Development and controlled single-tenant self-hosting |
-| [Anthropic Sandbox Runtime (SRT)](https://github.com/anthropic-experimental/sandbox-runtime) | Candidate; not implemented | Native OS process restrictions (`sandbox-exec`, Bubblewrap, and platform-specific network controls) | A session workspace could persist, but each command is a new restricted process | Optional safer local execution; SRT is a beta research preview |
-| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Candidate; not implemented | Provider-owned isolated compute, filesystem, and network controls | Durable provider identity with pause/archive lifecycle | Managed production |
-| [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) with Kata/gVisor | Candidate; not implemented | Kubernetes lifecycle API plus hardened runtime isolation | Stateful sandbox identity, lifecycle, and warm-pool support | Self-hosted production |
+| Local process | Available; default | Host process plus confined workspace; not an isolation boundary | Reattaches by durable workspace path on the same host | Offline tests and trusted local development only |
+| Docker | Available; opt-in | Container filesystem, namespaces/cgroups, configurable limits, network disabled by default | Reattaches by container ID on the same Docker daemon | Controlled single-host self-hosting |
+| [E2B](https://github.com/e2b-dev/E2B) | Planned | Remote sandbox service | Provider-owned durable sandbox ID | Managed production |
+| [Tencent CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | Planned | E2B-compatible microVM service | Provider-owned durable sandbox ID | Self-hosted production |
+| [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | Planned | Docker or Kubernetes-backed sandbox service | Provider-owned durable sandbox ID | Self-hosted production |
+| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Planned | Managed sandbox service | Durable identity and lifecycle API | Managed production |
+| [Modal](https://modal.com/docs/guide/sandboxes) | Planned | Managed sandbox service | Provider-owned durable sandbox ID | Managed production |
+| [Runloop](https://docs.runloop.ai/docs/devboxes/overview) | Planned | Managed devbox service | Suspend, resume, and snapshot lifecycle | Managed production |
+| [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) | Planned | Kubernetes CRD, controller, and routing layer | Stateful sandbox resource | Kubernetes deployments |
+| Anthropic Sandbox Runtime, Vercel Sandbox, and Cloudflare Sandbox | Evaluating | Backend-specific | Backend-specific | Later adapters |
 
 The Docker provider has not been audited for hostile multi-tenant workloads.
 The local provider is not a security boundary. No backend currently carries a
@@ -48,45 +51,40 @@ production security claim.
 
 ## Compatibility contract
 
-A backend can implement today's execution contract when it can:
+A backend implements the core lifecycle contract when it can:
 
-1. provision a workspace and execution environment with a documented isolation
-   boundary;
-2. execute a command with cancellation and bounded output;
-3. read and write paths relative to that workspace;
-4. preserve workspace state across runs in one session;
-5. destroy the workspace idempotently.
+1. expose a stable provider name;
+2. idempotently create one resource for a session key;
+3. attach to a persisted opaque reference after restart;
+4. execute a command with cancellation and bounded output;
+5. read and write paths relative to the workspace;
+6. destroy the resource idempotently.
 
 The built-in toolset currently assumes a POSIX-like environment with
 `/bin/sh`, `find`, and `grep`. A backend that does not provide those commands is
 not compatible with all executing built-ins yet.
 
-This basic contract should not be confused with the future managed-sandbox
-contract. A remote or restart-resilient backend also needs a durable sandbox
-identity, reattachment, health/state reporting, orphan reconciliation, and
-checkpoint/restore semantics. Those capabilities should be added when a real
-backend requires them rather than predicted in one universal interface now.
-
 ## Lifecycle today
 
-- The first tool-using run in a session provisions the sandbox.
-- Later runs in that session reuse it.
+- The first tool-using run idempotently creates the provider resource and
+  persists `{provider, external_id, spec_hash}` in PostgreSQL.
+- Later turns reuse the cached client; a restarted worker attaches through the
+  persisted reference.
 - Different sessions never share a logical sandbox.
 - Becoming idle retains it.
-- Deleting the session destroys it.
-- Restarting the server loses the in-memory association. The next tool-using
-  run receives a fresh workspace, and resources from an ungraceful prior
-  process may be orphaned.
-
-This matches the intended session ownership model but not durable sandbox
-continuity.
+- Deleting the session fences admission, stops its Session Workflow, durably
+  retries provider teardown on the worker, removes the binding, and only then
+  deletes the session row.
+- A persisted reference that no longer exists fails explicitly; Mango does not
+  silently replace lost workspace state with an empty sandbox.
 
 ## Required production lifecycle
 
-A production adapter must add durable provider identity, restart reattachment,
-retryable teardown, orphan reconciliation, and a shared conformance suite.
-Checkpoint, quotas, and eviction should reflect provider capabilities rather
-than a control-plane-specific checkpoint format.
+Remote adapters must use the same lifecycle tests. Production deployments still
+need orphan reconciliation for the create-before-binding crash window, provider
+health reporting, and a provider registry suitable for heterogeneous workers.
+Pause, snapshot, fork, quotas, and eviction remain optional capabilities rather
+than requirements of the core interface.
 
 The upstream behavior informing the session/environment distinction is
 documented in Claude's

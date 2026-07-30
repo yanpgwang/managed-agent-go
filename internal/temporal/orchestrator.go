@@ -145,7 +145,7 @@ func NewRuntimeOnTaskQueue(
 	taskQueue string,
 	previewPublisher ...PreviewPublisher,
 ) *Runtime {
-	sandboxes := sandbox.NewSessionManager(provider)
+	sandboxes := sandbox.NewSessionManager(provider, store)
 	src := storeSource{store: store} // satisfies both EventSource and JournalStore
 	acts := NewActivities(modelClient, src, src, sandboxes, ids, previewPublisher...)
 	w := NewWorkerOnTaskQueue(c, acts, taskQueue)

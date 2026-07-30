@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,12 @@ import (
 	"strings"
 	"sync"
 	"time"
+)
+
+const (
+	dockerProviderName    = "docker"
+	dockerManagedLabel    = "io.mango.managed"
+	dockerSessionKeyLabel = "io.mango.session_key"
 )
 
 // Docker provider notes on isolation:
@@ -67,6 +74,8 @@ func NewDockerProvider(cfg DockerConfig) (Provider, error) {
 	return &dockerProvider{dockerPath: path, defaultImage: image}, nil
 }
 
+func (p *dockerProvider) Name() string { return dockerProviderName }
+
 // runDocker invokes the docker CLI with the given args, capturing stdout/stderr
 // (capped) and the process exit code. The passed ctx bounds the whole call.
 func (p *dockerProvider) runDocker(ctx context.Context, stdin []byte, args ...string) (stdout, stderr []byte, exitCode int, err error) {
@@ -93,7 +102,21 @@ func (p *dockerProvider) runDocker(ctx context.Context, stdin []byte, args ...st
 	return stdout, stderr, 0, nil
 }
 
-func (p *dockerProvider) Provision(ctx context.Context, spec Spec) (Sandbox, error) {
+func (p *dockerProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec Spec,
+) (Ref, Sandbox, error) {
+	if sessionKey == "" {
+		return Ref{}, nil, errors.New("sandbox: session key is required")
+	}
+	name := dockerContainerName(sessionKey)
+	if box, err := p.attachTarget(ctx, name, sessionKey, spec); err == nil {
+		return Ref{Provider: p.Name(), ID: box.cid}, box, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return Ref{}, nil, err
+	}
+
 	image := spec.Image
 	if image == "" {
 		image = p.defaultImage
@@ -103,7 +126,14 @@ func (p *dockerProvider) Provision(ctx context.Context, spec Spec) (Sandbox, err
 		network = "none"
 	}
 
-	args := []string{"create", "--network", network, "-w", dockerRoot}
+	args := []string{
+		"create",
+		"--name", name,
+		"--label", dockerManagedLabel + "=true",
+		"--label", dockerSessionKeyLabel + "=" + sessionKey,
+		"--network", network,
+		"-w", dockerRoot,
+	}
 	if spec.Memory != "" {
 		args = append(args, "-m", spec.Memory)
 	}
@@ -122,14 +152,20 @@ func (p *dockerProvider) Provision(ctx context.Context, spec Spec) (Sandbox, err
 	// and is rare; a container-lifecycle audit/reaper would be the general fix.
 	stdout, stderr, code, err := p.runDocker(ctx, nil, args...)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox: docker create: %w", err)
+		return Ref{}, nil, fmt.Errorf("sandbox: docker create: %w", err)
 	}
 	if code != 0 {
-		return nil, fmt.Errorf("sandbox: docker create failed (exit %d): %s", code, strings.TrimSpace(string(stderr)))
+		// Two workers may race after both observe no persisted binding. Docker's
+		// unique container name is the provider-side idempotency key: the loser
+		// attaches to the winner rather than creating a second resource.
+		if box, attachErr := p.attachTarget(ctx, name, sessionKey, spec); attachErr == nil {
+			return Ref{Provider: p.Name(), ID: box.cid}, box, nil
+		}
+		return Ref{}, nil, fmt.Errorf("sandbox: docker create failed (exit %d): %s", code, strings.TrimSpace(string(stderr)))
 	}
 	cid := strings.TrimSpace(string(stdout))
 	if cid == "" {
-		return nil, errors.New("sandbox: docker create returned empty container id")
+		return Ref{}, nil, errors.New("sandbox: docker create returned empty container id")
 	}
 
 	// From here on, any failure must remove the created container so we never
@@ -137,12 +173,105 @@ func (p *dockerProvider) Provision(ctx context.Context, spec Spec) (Sandbox, err
 	if _, startErr, startCode, rerr := p.runDocker(ctx, nil, "start", cid); rerr != nil || startCode != 0 {
 		p.forceRemove(cid)
 		if rerr != nil {
-			return nil, fmt.Errorf("sandbox: docker start: %w", rerr)
+			return Ref{}, nil, fmt.Errorf("sandbox: docker start: %w", rerr)
 		}
-		return nil, fmt.Errorf("sandbox: docker start failed (exit %d): %s", startCode, strings.TrimSpace(string(startErr)))
+		return Ref{}, nil, fmt.Errorf("sandbox: docker start failed (exit %d): %s", startCode, strings.TrimSpace(string(startErr)))
 	}
 
-	return &dockerSandbox{provider: p, cid: cid, timeout: spec.Timeout}, nil
+	ref := Ref{Provider: p.Name(), ID: cid}
+	return ref, &dockerSandbox{
+		provider: p,
+		cid:      cid,
+		timeout:  spec.Timeout,
+	}, nil
+}
+
+func (p *dockerProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref Ref,
+	spec Spec,
+) (Sandbox, error) {
+	if sessionKey == "" {
+		return nil, Permanent(errors.New("sandbox: session key is required"))
+	}
+	if err := ref.validate(); err != nil {
+		return nil, Permanent(err)
+	}
+	if ref.Provider != p.Name() {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: docker provider cannot attach reference for %q",
+			ref.Provider,
+		))
+	}
+	return p.attachTarget(ctx, ref.ID, sessionKey, spec)
+}
+
+func dockerContainerName(sessionKey string) string {
+	sum := sha256.Sum256([]byte(sessionKey))
+	return fmt.Sprintf("mango-%x", sum[:16])
+}
+
+func (p *dockerProvider) attachTarget(
+	ctx context.Context,
+	target string,
+	expectedSessionKey string,
+	spec Spec,
+) (*dockerSandbox, error) {
+	format := "{{.Id}}\t{{index .Config.Labels \"" + dockerManagedLabel +
+		"\"}}\t{{index .Config.Labels \"" + dockerSessionKeyLabel +
+		"\"}}\t{{.State.Running}}"
+	stdout, stderr, code, err := p.runDocker(ctx, nil, "inspect", "--format", format, target)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: docker inspect: %w", err)
+	}
+	if code != 0 {
+		message := strings.TrimSpace(string(stderr))
+		lowerMessage := strings.ToLower(message)
+		if strings.Contains(lowerMessage, "no such object") ||
+			strings.Contains(lowerMessage, "no such container") {
+			return nil, fmt.Errorf("%w: docker container %q", ErrNotFound, target)
+		}
+		return nil, fmt.Errorf(
+			"sandbox: docker inspect failed (exit %d): %s",
+			code,
+			message,
+		)
+	}
+	fields := strings.Split(strings.TrimSpace(string(stdout)), "\t")
+	if len(fields) != 4 || fields[0] == "" {
+		return nil, fmt.Errorf("sandbox: invalid docker inspect result for %q", target)
+	}
+	if fields[1] != "true" {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: refusing to attach unmanaged docker container %q",
+			target,
+		))
+	}
+	if expectedSessionKey != "" && fields[2] != expectedSessionKey {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: docker container %q belongs to another session",
+			target,
+		))
+	}
+	if fields[3] != "true" {
+		_, startErr, startCode, startRunErr := p.runDocker(ctx, nil, "start", fields[0])
+		if startRunErr != nil {
+			return nil, fmt.Errorf("sandbox: docker start attached container: %w", startRunErr)
+		}
+		if startCode != 0 {
+			return nil, fmt.Errorf(
+				"sandbox: docker start attached container failed (exit %d): %s",
+				startCode,
+				strings.TrimSpace(string(startErr)),
+			)
+		}
+	}
+	return &dockerSandbox{
+		provider: p,
+		cid:      fields[0],
+		timeout:  spec.Timeout,
+	}, nil
 }
 
 // bestEffortDocker runs a docker CLI command with a fresh, bounded context so it

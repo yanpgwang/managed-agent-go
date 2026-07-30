@@ -3,26 +3,44 @@ package sandbox
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// countingProvider wraps a Provider and counts Provision calls so tests can
-// assert a session provisions its logical sandbox exactly once.
+// countingProvider wraps a Provider and counts Create calls so tests can assert
+// a session creates its logical sandbox exactly once.
 type countingProvider struct {
 	inner        Provider
 	provisions   atomic.Int64
+	attachments  atomic.Int64
 	provisionErr error
 }
 
-func (p *countingProvider) Provision(ctx context.Context, spec Spec) (Sandbox, error) {
+func (p *countingProvider) Name() string { return p.inner.Name() }
+
+func (p *countingProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec Spec,
+) (Ref, Sandbox, error) {
 	p.provisions.Add(1)
 	if p.provisionErr != nil {
-		return nil, p.provisionErr
+		return Ref{}, nil, p.provisionErr
 	}
-	return p.inner.Provision(ctx, spec)
+	return p.inner.Create(ctx, sessionKey, spec)
+}
+
+func (p *countingProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref Ref,
+	spec Spec,
+) (Sandbox, error) {
+	p.attachments.Add(1)
+	return p.inner.Attach(ctx, sessionKey, ref, spec)
 }
 
 // countingSandbox wraps a Sandbox and counts Destroy calls so tests can assert
@@ -55,16 +73,35 @@ type destroyCountingProvider struct {
 	last  *countingSandbox
 }
 
-func (p *destroyCountingProvider) Provision(ctx context.Context, spec Spec) (Sandbox, error) {
-	box, err := p.inner.Provision(ctx, spec)
+func (p *destroyCountingProvider) Name() string { return p.inner.Name() }
+
+func (p *destroyCountingProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec Spec,
+) (Ref, Sandbox, error) {
+	ref, box, err := p.inner.Create(ctx, sessionKey, spec)
 	if err != nil {
-		return nil, err
+		return Ref{}, nil, err
 	}
 	cs := &countingSandbox{inner: box}
 	p.mu.Lock()
 	p.last = cs
 	p.mu.Unlock()
-	return cs, nil
+	return ref, cs, nil
+}
+
+func (p *destroyCountingProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref Ref,
+	spec Spec,
+) (Sandbox, error) {
+	box, err := p.inner.Attach(ctx, sessionKey, ref, spec)
+	if err != nil {
+		return nil, err
+	}
+	return &countingSandbox{inner: box}, nil
 }
 
 func TestSessionManager_ReusesSandboxPerSession(t *testing.T) {
@@ -195,7 +232,65 @@ func TestSessionManager_ProvisionFailureIsNotCached(t *testing.T) {
 	_ = m.Release(ctx, "sesn_a")
 }
 
-// blockingProvider makes Provision block until proceed is closed, so a test can
+func TestSessionManager_ReattachesPersistedBindingAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	bindings := newMemoryBindingStore()
+	provider := &countingProvider{inner: NewLocalProvider()}
+
+	firstManager := NewSessionManager(provider, bindings)
+	first, err := firstManager.Acquire(ctx, "sesn_restart", Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.WriteFile(ctx, "state.txt", []byte("survived")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate a worker restart by abandoning the process-local client cache
+	// while retaining the provider resource and durable binding.
+	secondManager := NewSessionManager(provider, bindings)
+	second, err := secondManager.Acquire(ctx, "sesn_restart", Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := second.ReadFile(ctx, "state.txt")
+	if err != nil || string(data) != "survived" {
+		t.Fatalf("reattached workspace data = %q, err=%v", data, err)
+	}
+	if got := provider.provisions.Load(); got != 1 {
+		t.Fatalf("Create calls = %d, want 1", got)
+	}
+	if got := provider.attachments.Load(); got != 1 {
+		t.Fatalf("Attach calls = %d, want 1", got)
+	}
+	if err := secondManager.Release(ctx, "sesn_restart"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionManager_MissingPersistedResourceFailsWithoutReplacement(t *testing.T) {
+	ctx := context.Background()
+	bindings := newMemoryBindingStore()
+	provider := &countingProvider{inner: NewLocalProvider()}
+	firstManager := NewSessionManager(provider, bindings)
+	box, err := firstManager.Acquire(ctx, "sesn_missing", Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := box.Destroy(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	secondManager := NewSessionManager(provider, bindings)
+	if _, err := secondManager.Acquire(ctx, "sesn_missing", Spec{}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Acquire after resource loss = %v, want ErrNotFound", err)
+	}
+	if got := provider.provisions.Load(); got != 1 {
+		t.Fatalf("resource loss triggered %d Create calls, want no replacement", got)
+	}
+}
+
+// blockingProvider makes Create block until proceed is closed, so a test can
 // drive Release into the exact window where a provision is still in flight. It
 // signals entry on entered and records the countingSandbox it eventually hands
 // out so the test can assert the real instance is destroyed.
@@ -207,18 +302,33 @@ type blockingProvider struct {
 	last    *countingSandbox
 }
 
-func (p *blockingProvider) Provision(ctx context.Context, spec Spec) (Sandbox, error) {
+func (p *blockingProvider) Name() string { return p.inner.Name() }
+
+func (p *blockingProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec Spec,
+) (Ref, Sandbox, error) {
 	close(p.entered)
 	<-p.proceed
-	box, err := p.inner.Provision(ctx, spec)
+	ref, box, err := p.inner.Create(ctx, sessionKey, spec)
 	if err != nil {
-		return nil, err
+		return Ref{}, nil, err
 	}
 	cs := &countingSandbox{inner: box}
 	p.mu.Lock()
 	p.last = cs
 	p.mu.Unlock()
-	return cs, nil
+	return ref, cs, nil
+}
+
+func (p *blockingProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref Ref,
+	spec Spec,
+) (Sandbox, error) {
+	return p.inner.Attach(ctx, sessionKey, ref, spec)
 }
 
 // TestSessionManager_ReleaseWaitsForInflightProvision guards the narrow window
@@ -285,5 +395,164 @@ func TestSessionManager_ReleaseWaitsForInflightProvision(t *testing.T) {
 	}
 	if got := box.destroys.Load(); got != 1 {
 		t.Fatalf("destroys = %d, want exactly 1", got)
+	}
+}
+
+type authoritativeBindingStore struct {
+	winner Binding
+}
+
+func (*authoritativeBindingStore) GetSandboxBinding(
+	context.Context,
+	string,
+) (Binding, bool, error) {
+	return Binding{}, false, nil
+}
+
+func (s *authoritativeBindingStore) PutSandboxBinding(
+	context.Context,
+	Binding,
+) (Binding, error) {
+	return s.winner, nil
+}
+
+func (*authoritativeBindingStore) DeleteSandboxBinding(context.Context, Binding) error {
+	return nil
+}
+
+type createTrackingProvider struct {
+	inner       Provider
+	createdRoot string
+	attachments atomic.Int64
+}
+
+func (p *createTrackingProvider) Name() string { return p.inner.Name() }
+
+func (p *createTrackingProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec Spec,
+) (Ref, Sandbox, error) {
+	ref, box, err := p.inner.Create(ctx, sessionKey, spec)
+	if box != nil {
+		p.createdRoot = box.Root()
+	}
+	return ref, box, err
+}
+
+func (p *createTrackingProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref Ref,
+	spec Spec,
+) (Sandbox, error) {
+	p.attachments.Add(1)
+	return p.inner.Attach(ctx, sessionKey, ref, spec)
+}
+
+func TestSessionManager_DestroysLosingCreateAndAttachesBindingWinner(t *testing.T) {
+	ctx := context.Background()
+	inner := NewLocalProvider()
+	winnerRef, winnerBox, err := inner.Create(ctx, "winner-resource", Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = winnerBox.Destroy(context.Background()) })
+	if err := winnerBox.WriteFile(ctx, "winner.txt", []byte("winner")); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &createTrackingProvider{inner: inner}
+	bindings := &authoritativeBindingStore{winner: Binding{
+		SessionID: "sesn_election",
+		Ref:       winnerRef,
+		SpecHash:  specHash(Spec{}),
+	}}
+	manager := NewSessionManager(provider, bindings)
+	box, err := manager.Acquire(ctx, "sesn_election", Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider.createdRoot == "" {
+		t.Fatal("provider did not create a losing resource")
+	}
+	if _, err := os.Stat(provider.createdRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("losing workspace still exists: %q err=%v", provider.createdRoot, err)
+	}
+	data, err := box.ReadFile(ctx, "winner.txt")
+	if err != nil || string(data) != "winner" {
+		t.Fatalf("attached winner data = %q, err=%v", data, err)
+	}
+	if got := provider.attachments.Load(); got != 1 {
+		t.Fatalf("Attach calls = %d, want 1", got)
+	}
+}
+
+type destroyFailingProvider struct {
+	inner Provider
+	err   error
+}
+
+func (p *destroyFailingProvider) Name() string { return p.inner.Name() }
+
+func (p *destroyFailingProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec Spec,
+) (Ref, Sandbox, error) {
+	ref, box, err := p.inner.Create(ctx, sessionKey, spec)
+	if err != nil {
+		return Ref{}, nil, err
+	}
+	return ref, &destroyFailingSandbox{Sandbox: box, err: p.err}, nil
+}
+
+func (p *destroyFailingProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref Ref,
+	spec Spec,
+) (Sandbox, error) {
+	box, err := p.inner.Attach(ctx, sessionKey, ref, spec)
+	if err != nil {
+		return nil, err
+	}
+	return &destroyFailingSandbox{Sandbox: box, err: p.err}, nil
+}
+
+type destroyFailingSandbox struct {
+	Sandbox
+	err error
+}
+
+func (s *destroyFailingSandbox) Destroy(context.Context) error { return s.err }
+
+func TestSessionManager_DestroyFailureRetainsBindingForRetry(t *testing.T) {
+	ctx := context.Background()
+	bindings := newMemoryBindingStore()
+	inner := NewLocalProvider()
+	provider := &destroyFailingProvider{
+		inner: inner,
+		err:   errors.New("provider unavailable"),
+	}
+	manager := NewSessionManager(provider, bindings)
+	if _, err := manager.Acquire(ctx, "sesn_destroy_retry", Spec{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.Release(ctx, "sesn_destroy_retry"); err == nil {
+		t.Fatal("Release succeeded despite provider destroy failure")
+	}
+	binding, found, err := bindings.GetSandboxBinding(ctx, "sesn_destroy_retry")
+	if err != nil || !found {
+		t.Fatalf("binding after destroy failure = %+v, found=%v, err=%v", binding, found, err)
+	}
+
+	// Bypass the failing wrapper for test cleanup.
+	box, err := inner.Attach(ctx, binding.SessionID, binding.Ref, Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := box.Destroy(ctx); err != nil {
+		t.Fatal(err)
 	}
 }
