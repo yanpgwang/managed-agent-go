@@ -146,9 +146,11 @@ export MANAGED_AGENT_SANDBOX=docker
 go run ./cmd/managed-agent orchestrate
 ```
 
-The provider name is validated strictly. The compiled choices are currently
-`local` and `docker`; an unknown value fails worker startup and never silently
-falls back to local host execution.
+The provider name is validated strictly. The compiled choices are `local`,
+`docker`, `e2b`, `cube`, `opensandbox`, and `daytona`; an unknown value fails
+worker startup and never silently falls back to local host execution. Remote
+provider variables and live-test commands are listed in
+[Sandbox backends](sandboxes.md).
 
 The configured endpoint must expose an Anthropic-shaped `/v1/messages` API.
 Do not run workers with different model or sandbox configuration on the same
@@ -159,6 +161,25 @@ sandbox during development, set `MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1` to
 override the startup guard. This is a dev-only escape hatch — the local sandbox
 runs tool commands on the host with no isolation, so never use it with untrusted
 input or in production.
+
+## Reusable local credentials
+
+Development secrets should not be committed or copied between worktrees.
+Create a user-local file once, then edit the values you actually use:
+
+```bash
+make dev-env-init
+$EDITOR ~/.config/mango/dev.env
+```
+
+Run a command with that environment explicitly:
+
+```bash
+scripts/with-dev-env go run ./cmd/managed-agent orchestrate
+```
+
+The wrapper requires the file to have no group or other permissions. Set
+`MANGO_ENV_FILE` only when a different repository-external path is needed.
 
 ## Clean up
 

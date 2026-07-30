@@ -7,6 +7,10 @@
 *.db-shm
 *.db-wal
 /data/
+/.env
+/.env.*
+!/.env.example
+!/.env.*.example
 
 # Go
 /vendor/

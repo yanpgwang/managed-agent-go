@@ -29,7 +29,7 @@ After the core loop is complete:
 - supported server tools such as web search and fetch;
 - token usage and model/tool execution spans;
 - additional preview event types;
-- provider-backed sandbox adapters.
+- promotion of preview sandbox adapters after recorded live conformance.
 
 ## Production hardening
 

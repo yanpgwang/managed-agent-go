@@ -3,8 +3,8 @@
 // The local provider is a DEV-GRADE GUARDRAIL, NOT A SECURITY BOUNDARY: it
 // confines file paths to a working directory, clears the environment, applies a
 // timeout, and caps output — but it shares the host kernel and filesystem
-// namespace. Do NOT run untrusted code with it. Real isolation (Docker/gVisor)
-// is a later slice behind the same interface.
+// namespace. Do NOT run untrusted code with it. Use an isolated Docker or remote
+// provider for untrusted workloads.
 package sandbox
 
 import (
@@ -110,13 +110,14 @@ type Sandbox interface {
 	Destroy(ctx context.Context) error
 }
 
-// Provider owns sandbox resources outside the agent loop. Create must be
-// idempotent for one sessionKey: after a lost response, repeating Create with
-// the same key must resolve the same logical resource rather than leak a second
-// sandbox. Attach reconstructs a client from a persisted Ref after a worker
-// restart and must verify that the provider resource still belongs to the given
-// sessionKey. Destroy remains on Sandbox so execution and teardown use the same
-// authenticated provider client.
+// Provider owns sandbox resources outside the agent loop. Create must expose a
+// stable provider-side lookup key so a retry after a lost response resolves the
+// same logical resource. When a provider cannot atomically create-if-absent,
+// SessionManager's durable binding election destroys the losing resource from
+// concurrent successful creates. Attach reconstructs a client from a persisted
+// Ref after a worker restart and must verify that the provider resource still
+// belongs to the given sessionKey. Destroy remains on Sandbox so execution and
+// teardown use the same authenticated provider client.
 type Provider interface {
 	Name() string
 	Create(ctx context.Context, sessionKey string, spec Spec) (Ref, Sandbox, error)
