@@ -61,7 +61,10 @@ func TestResolveSandboxProvider_RejectsUnknownSelection(t *testing.T) {
 		t.Fatal("resolveSandboxProvider accepted an unknown provider")
 	}
 	if !strings.Contains(err.Error(), `unsupported provider "dockre"`) ||
-		!strings.Contains(err.Error(), "available: docker, local") {
+		!strings.Contains(
+			err.Error(),
+			"available: cube, daytona, docker, e2b, local, opensandbox",
+		) {
 		t.Fatalf("resolveSandboxProvider error = %q", err)
 	}
 }
@@ -79,6 +82,43 @@ func TestSandboxProviderRegistry_IsLazy(t *testing.T) {
 	}
 	if provider.Name() != sandbox.LocalProviderName {
 		t.Fatalf("provider name = %q", provider.Name())
+	}
+}
+
+func TestResolveSandboxProvider_RejectsInvalidSelectedProviderConfig(t *testing.T) {
+	t.Setenv(sandboxProviderEnv, sandbox.E2BProviderName)
+	t.Setenv(e2bAPIKeyEnv, "test-key")
+	t.Setenv(e2bIdleTimeoutEnv, "eventually")
+
+	_, _, err := resolveSandboxProvider()
+	if err == nil || !strings.Contains(err.Error(), e2bIdleTimeoutEnv) {
+		t.Fatalf("resolveSandboxProvider error = %v, want invalid %s", err, e2bIdleTimeoutEnv)
+	}
+}
+
+func TestSandboxProviderRegistry_DoesNotValidateUnusedProviderConfig(t *testing.T) {
+	t.Setenv(sandboxProviderEnv, sandbox.LocalProviderName)
+	t.Setenv(e2bIdleTimeoutEnv, "eventually")
+	t.Setenv(openSandboxUseProxyEnv, "sometimes")
+
+	provider, _, err := resolveSandboxProvider()
+	if err != nil {
+		t.Fatalf("unused provider configuration affected local: %v", err)
+	}
+	if provider.Name() != sandbox.LocalProviderName {
+		t.Fatalf("provider = %q, want local", provider.Name())
+	}
+}
+
+func TestSandboxEnvironmentParsersRejectInvalidValues(t *testing.T) {
+	t.Setenv(cubeProxyPortEnv, "many")
+	if _, err := envPositiveInt(cubeProxyPortEnv); err == nil {
+		t.Fatalf("envPositiveInt accepted invalid %s", cubeProxyPortEnv)
+	}
+
+	t.Setenv(openSandboxUseProxyEnv, "sometimes")
+	if _, err := envBool(openSandboxUseProxyEnv); err == nil {
+		t.Fatalf("envBool accepted invalid %s", openSandboxUseProxyEnv)
 	}
 }
 

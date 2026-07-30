@@ -93,11 +93,17 @@ Containers share the host kernel. This provider has not been audited for
 hostile multi-tenant use; stronger isolation such as gVisor or a remote sandbox
 can be added behind the same provider interface.
 
-Anthropic Sandbox Runtime (SRT) is a technically compatible candidate for a
-future local process provider, but it is not implemented. SRT is an
-experimental command wrapper rather than a persistent container service, so it
-would preserve a session workspace without providing a durable container root
-filesystem or remote sandbox identity.
+### Remote providers
+
+E2B, CubeSandbox, OpenSandbox, and Daytona are selected through the same
+deployment-level registry. The worker remains the lifecycle owner: it maps one
+session to one external sandbox, persists only the provider name and opaque ID,
+reattaches after restart, and deletes the resource through a durable Temporal
+Activity. The external service owns isolation and workspace storage.
+
+Provider credentials, endpoint routing, templates, images, and auto-pause
+settings stay in worker environment variables. They do not change the Managed
+Agents Environment or Session wire models.
 
 ## Session-scoped ownership
 

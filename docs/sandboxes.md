@@ -10,8 +10,9 @@ production-ready merely because it can execute a command: its isolation model,
 lifecycle guarantees, operational dependencies, and known limits must also be
 clear.
 
-Local and Docker execution do not add another HTTP service. The worker uses the
-same in-process Go boundary that remote service adapters will implement:
+Local and Docker execution do not add another HTTP service. Remote adapters
+call an independently deployed sandbox service through the same in-process Go
+boundary:
 
 ```text
 Temporal Activity -> SessionManager -> sandbox.Provider -> sandbox.Sandbox
@@ -22,13 +23,16 @@ provider name and opaque external ID; a restarted worker calls `Attach` instead
 of creating an empty replacement. `Sandbox` exposes command execution, confined
 file access, a workspace root, and teardown. The execution worker selects one
 compiled adapter through an internal registry. `MANAGED_AGENT_SANDBOX` accepts
-`local` (the default) or `docker`; an unknown name fails startup instead of
-falling back to host execution. Provider selection does not add fields to the
-Managed Agents Environment or Session APIs.
+`local` (the default), `docker`, `e2b`, `cube`, `opensandbox`, or `daytona`; an
+unknown name fails startup instead of falling back to host execution. Provider
+selection does not add fields to the Managed Agents Environment or Session
+APIs.
 
 ## Support levels
 
 - **Available**: implemented, documented, and exercised by repository tests.
+- **Preview**: implemented with offline and opt-in live conformance, but still
+  awaiting promotion based on repeatable service-level validation.
 - **Planned**: selected for a dedicated adapter, but not implemented.
 - **Evaluating**: useful integration shape, without a committed adapter.
 
@@ -40,10 +44,10 @@ These labels describe project support, not a security certification.
 |---|---|---|---|---|
 | Local process | Available; default | Host process plus confined workspace; not an isolation boundary | Reattaches by durable workspace path on the same host | Offline tests and trusted local development only |
 | Docker | Available; opt-in | Container filesystem, namespaces/cgroups, configurable limits, network disabled by default | Reattaches by container ID on the same Docker daemon | Controlled single-host self-hosting |
-| [E2B](https://github.com/e2b-dev/E2B) | Planned | Remote sandbox service | Provider-owned durable sandbox ID | Managed production |
-| [Tencent CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | Planned | E2B-compatible microVM service | Provider-owned durable sandbox ID | Self-hosted production |
-| [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | Planned | Docker or Kubernetes-backed sandbox service | Provider-owned durable sandbox ID | Self-hosted production |
-| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Planned | Managed sandbox service | Durable identity and lifecycle API | Managed production |
+| [E2B](https://github.com/e2b-dev/E2B) | Preview | Managed microVM service | E2B ID plus auto-pause filesystem persistence | Managed production |
+| [Tencent CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | Preview | E2B-compatible microVM service | Provider-owned durable sandbox ID | Self-hosted production on Linux/KVM |
+| [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | Preview; Docker runtime manually live-verified | Docker or Kubernetes-backed sandbox service | Provider-owned durable sandbox ID | Self-hosted production |
+| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Preview | Managed or self-hosted sandbox service | Deterministic name, durable ID, and auto-pause | Managed production |
 | [Modal](https://modal.com/docs/guide/sandboxes) | Planned | Managed sandbox service | Provider-owned durable sandbox ID | Managed production |
 | [Runloop](https://docs.runloop.ai/docs/devboxes/overview) | Planned | Managed devbox service | Suspend, resume, and snapshot lifecycle | Managed production |
 | [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) | Planned | Kubernetes CRD, controller, and routing layer | Stateful sandbox resource | Kubernetes deployments |
@@ -64,11 +68,12 @@ A backend implements the core lifecycle contract when it can:
 5. read and write paths relative to the workspace;
 6. destroy the resource idempotently.
 
-These requirements are executable in
-`internal/sandbox/sandboxtest`. Both built-in providers run the same suite,
+These requirements are executable in `internal/sandbox/sandboxtest`. Local,
+Docker, and every remote provider's opt-in live test run the same suite,
 including cross-client Create/Attach, workspace preservation, ownership
-rejection, cancellation, and post-delete missing-reference behavior.
-Provider-specific tests cover isolation and resource controls separately.
+rejection, cancellation, and post-delete missing-reference behavior. Offline
+adapter tests cover the same contract without credentials. Provider-specific
+tests cover protocol translation, isolation, and resource controls separately.
 
 The built-in toolset currently assumes a POSIX-like environment with
 `/bin/sh`, `find`, and `grep`. A backend that does not provide those commands is
@@ -78,6 +83,9 @@ not compatible with all executing built-ins yet.
 
 - The first tool-using run idempotently creates the provider resource and
   persists `{provider, external_id, spec_hash}` in PostgreSQL.
+- Remote services receive a fixed-length hash of the session key as their
+  ownership label; credentials and raw session identifiers are not persisted in
+  the provider reference.
 - Later turns reuse the cached client; a restarted worker attaches through the
   persisted reference.
 - Different sessions never share a logical sandbox.
@@ -95,6 +103,36 @@ need orphan reconciliation for the create-before-binding crash window, provider
 health reporting, and provider-aware task routing when heterogeneous workers
 share a control plane. Pause, snapshot, fork, quotas, and eviction remain
 optional capabilities rather than requirements of the core interface.
+
+## Remote provider configuration
+
+Credentials stay in worker configuration. They are never written to PostgreSQL
+or returned by the Managed Agents API.
+
+| Provider | Required | Common optional values |
+|---|---|---|
+| `e2b` | `E2B_API_KEY` | `E2B_API_URL`, `E2B_TEMPLATE_ID`, `E2B_DOMAIN`, `E2B_IDLE_TIMEOUT` |
+| `cube` | `CUBE_API_URL`, `CUBE_TEMPLATE_ID` | `CUBE_API_KEY`, `CUBE_SANDBOX_DOMAIN`, `CUBE_PROXY_*`, `CUBE_IDLE_TIMEOUT` |
+| `opensandbox` | `OPEN_SANDBOX_DOMAIN` | `OPEN_SANDBOX_API_KEY`, `OPEN_SANDBOX_IMAGE`, `OPEN_SANDBOX_USE_SERVER_PROXY` |
+| `daytona` | `DAYTONA_API_KEY` | `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_SNAPSHOT`, `DAYTONA_IMAGE`, `DAYTONA_AUTO_PAUSE_MINUTES` |
+
+For local development, `make dev-env-init` creates
+`~/.config/mango/dev.env` from `config/dev.env.example` with mode `0600`.
+`scripts/with-dev-env <command>` loads it explicitly and works across
+worktrees.
+
+Live conformance is opt-in:
+
+```bash
+scripts/with-dev-env env MANGO_LIVE_E2B=1 \
+  go test ./internal/sandbox -run '^TestE2BLiveConformance$' -count=1
+
+scripts/with-dev-env env MANGO_LIVE_OPENSANDBOX=1 \
+  go test ./internal/sandbox -run '^TestOpenSandboxLiveConformance$' -count=1
+```
+
+The equivalent gates are `MANGO_LIVE_CUBE` and `MANGO_LIVE_DAYTONA`.
+Ordinary tests never contact a service or create billable resources.
 
 The upstream behavior informing the session/environment distinction is
 documented in Claude's

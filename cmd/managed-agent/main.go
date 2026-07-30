@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -38,6 +40,33 @@ const unsafeLocalSandboxEnv = "MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX"
 const (
 	sandboxProviderEnv = "MANAGED_AGENT_SANDBOX"
 	sandboxImageEnv    = "MANAGED_AGENT_SANDBOX_IMAGE"
+
+	e2bAPIKeyEnv      = "E2B_API_KEY"
+	e2bAPIURLEnv      = "E2B_API_URL"
+	e2bTemplateEnv    = "E2B_TEMPLATE_ID"
+	e2bDomainEnv      = "E2B_DOMAIN"
+	e2bIdleTimeoutEnv = "E2B_IDLE_TIMEOUT"
+
+	cubeAPIKeyEnv      = "CUBE_API_KEY"
+	cubeAPIURLEnv      = "CUBE_API_URL"
+	cubeTemplateEnv    = "CUBE_TEMPLATE_ID"
+	cubeDomainEnv      = "CUBE_SANDBOX_DOMAIN"
+	cubeProxyNodeIPEnv = "CUBE_PROXY_NODE_IP"
+	cubeProxyPortEnv   = "CUBE_PROXY_PORT_HTTP"
+	cubeProxySchemeEnv = "CUBE_PROXY_SCHEME"
+	cubeIdleTimeoutEnv = "CUBE_IDLE_TIMEOUT"
+
+	openSandboxDomainEnv   = "OPEN_SANDBOX_DOMAIN"
+	openSandboxAPIKeyEnv   = "OPEN_SANDBOX_API_KEY"
+	openSandboxImageEnv    = "OPEN_SANDBOX_IMAGE"
+	openSandboxUseProxyEnv = "OPEN_SANDBOX_USE_SERVER_PROXY"
+
+	daytonaAPIKeyEnv    = "DAYTONA_API_KEY"
+	daytonaAPIURLEnv    = "DAYTONA_API_URL"
+	daytonaTargetEnv    = "DAYTONA_TARGET"
+	daytonaSnapshotEnv  = "DAYTONA_SNAPSHOT"
+	daytonaImageEnv     = "DAYTONA_IMAGE"
+	daytonaAutoPauseEnv = "DAYTONA_AUTO_PAUSE_MINUTES"
 )
 
 // resolveRuntime returns the self-hosted agent core and whether it is backed by
@@ -83,7 +112,141 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 				})
 			},
 		},
+		sandbox.ProviderRegistration{
+			Name: sandbox.E2BProviderName,
+			Factory: func() (sandbox.Provider, error) {
+				idleTimeout, err := envDuration(e2bIdleTimeoutEnv)
+				if err != nil {
+					return nil, err
+				}
+				return sandbox.NewE2BProvider(sandbox.E2BConfig{
+					APIURL:      os.Getenv(e2bAPIURLEnv),
+					APIKey:      os.Getenv(e2bAPIKeyEnv),
+					TemplateID:  os.Getenv(e2bTemplateEnv),
+					Domain:      os.Getenv(e2bDomainEnv),
+					IdleTimeout: idleTimeout,
+				})
+			},
+		},
+		sandbox.ProviderRegistration{
+			Name: sandbox.CubeProviderName,
+			Factory: func() (sandbox.Provider, error) {
+				proxyPort, err := envPositiveInt(cubeProxyPortEnv)
+				if err != nil {
+					return nil, err
+				}
+				idleTimeout, err := envDuration(cubeIdleTimeoutEnv)
+				if err != nil {
+					return nil, err
+				}
+				return sandbox.NewCubeProvider(sandbox.CubeConfig{
+					APIURL:      os.Getenv(cubeAPIURLEnv),
+					APIKey:      os.Getenv(cubeAPIKeyEnv),
+					TemplateID:  os.Getenv(cubeTemplateEnv),
+					Domain:      os.Getenv(cubeDomainEnv),
+					ProxyNodeIP: os.Getenv(cubeProxyNodeIPEnv),
+					ProxyPort:   proxyPort,
+					ProxyScheme: os.Getenv(cubeProxySchemeEnv),
+					IdleTimeout: idleTimeout,
+				})
+			},
+		},
+		sandbox.ProviderRegistration{
+			Name: sandbox.OpenSandboxProviderName,
+			Factory: func() (sandbox.Provider, error) {
+				useProxy, err := envBool(openSandboxUseProxyEnv)
+				if err != nil {
+					return nil, err
+				}
+				return sandbox.NewOpenSandboxProvider(sandbox.OpenSandboxConfig{
+					BaseURL: os.Getenv(openSandboxDomainEnv),
+					APIKey:  os.Getenv(openSandboxAPIKeyEnv),
+					Image: firstNonEmpty(
+						os.Getenv(openSandboxImageEnv),
+						os.Getenv(sandboxImageEnv),
+					),
+					UseProxy: useProxy,
+				})
+			},
+		},
+		sandbox.ProviderRegistration{
+			Name: sandbox.DaytonaProviderName,
+			Factory: func() (sandbox.Provider, error) {
+				autoPauseMinutes, err := envPositiveInt(daytonaAutoPauseEnv)
+				if err != nil {
+					return nil, err
+				}
+				return sandbox.NewDaytonaProvider(sandbox.DaytonaConfig{
+					APIURL:   os.Getenv(daytonaAPIURLEnv),
+					APIKey:   os.Getenv(daytonaAPIKeyEnv),
+					Target:   os.Getenv(daytonaTargetEnv),
+					Snapshot: os.Getenv(daytonaSnapshotEnv),
+					Image: firstNonEmpty(
+						os.Getenv(daytonaImageEnv),
+						os.Getenv(sandboxImageEnv),
+					),
+					AutoPauseMinutes: autoPauseMinutes,
+				})
+			},
+		},
 	)
+}
+
+func envDuration(name string) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf(
+			"configuration: %s must be a positive Go duration, got %q",
+			name,
+			value,
+		)
+	}
+	return parsed, nil
+}
+
+func envPositiveInt(name string) (int, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, fmt.Errorf(
+			"configuration: %s must be a positive integer, got %q",
+			name,
+			value,
+		)
+	}
+	return parsed, nil
+}
+
+func envBool(name string) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return false, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf(
+			"configuration: %s must be a boolean, got %q",
+			name,
+			value,
+		)
+	}
+	return parsed, nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // resolveSandboxProvider selects the process-wide sandbox backend from the

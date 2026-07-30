@@ -33,9 +33,10 @@ type BindingStore interface {
 // ownership source of truth, and Provider.Attach reconstructs a client from the
 // persisted external reference.
 //
-// Operations for one session are serialized locally. Provider.Create must also
-// be idempotent by session key because separate worker processes can race before
-// either has committed the binding.
+// Operations for one session are serialized locally. Provider-side identity
+// lookup recovers lost create responses; if separate worker processes both
+// create successfully before either commits, BindingStore elects one durable
+// winner and the losing resource is destroyed.
 type SessionManager struct {
 	provider Provider
 	bindings BindingStore

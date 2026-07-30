@@ -20,7 +20,7 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build lint test test-race vet verify docs-check image image-smoke \
+.PHONY: help build lint test test-race vet verify docs-check image image-smoke dev-env-init \
 	local-config local-up local-down local-health local-ps local-logs
 
 help:
@@ -32,6 +32,7 @@ help:
 	@echo "  make vet            run go vet"
 	@echo "  make verify         run the core Go checks"
 	@echo "  make docs-check     install and verify documentation dependencies"
+	@echo "  make dev-env-init   create ~/.config/mango/dev.env with mode 0600"
 	@echo
 	@echo "Container"
 	@echo "  make image          build $(IMAGE)"
@@ -66,6 +67,15 @@ docs-check:
 	npm --prefix website ci
 	npm --prefix website run typecheck
 	npm --prefix website run build
+
+dev-env-init:
+	@mkdir -p "$${XDG_CONFIG_HOME:-$$HOME/.config}/mango"
+	@if test -e "$${XDG_CONFIG_HOME:-$$HOME/.config}/mango/dev.env"; then \
+		echo "development environment already exists; leaving it unchanged"; \
+	else \
+		install -m 600 config/dev.env.example "$${XDG_CONFIG_HOME:-$$HOME/.config}/mango/dev.env"; \
+		echo "created $${XDG_CONFIG_HOME:-$$HOME/.config}/mango/dev.env"; \
+	fi
 
 image:
 	$(DOCKER) build $(DOCKER_BUILD_ARGS) --tag $(IMAGE) .

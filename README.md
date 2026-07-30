@@ -178,9 +178,10 @@ go run ./cmd/managed-agent orchestrate
 ```
 
 `MANAGED_AGENT_SANDBOX` is a strict deployment-level provider selection:
-`local` is the offline default and `docker` is the isolated opt-in. Unknown
-provider names fail startup. Provider-specific configuration is intentionally
-kept out of the Managed Agents public API.
+`local` is the offline default; `docker`, `e2b`, `cube`, `opensandbox`, and
+`daytona` are explicit opt-ins. Unknown provider names fail startup.
+Provider-specific configuration is intentionally kept out of the Managed
+Agents public API.
 
 Do not run workers with different model or sandbox configuration on the same
 Temporal Task Queue.
@@ -222,6 +223,19 @@ make verify
 make docs-check
 make image-smoke
 ```
+
+Create the optional developer-only environment file once:
+
+```bash
+make dev-env-init
+$EDITOR ~/.config/mango/dev.env
+scripts/with-dev-env go test ./...
+```
+
+The file is outside the repository, shared by worktrees, and must remain mode
+`0600`. The wrapper exports it only to the requested command; the server never
+silently reads a dotenv file. Rotate any credential that has been pasted into
+chat, logs, or an issue before storing its replacement there.
 
 `make verify` requires golangci-lint 2.12.x and checks changed Go code against
 the standard lint set plus `gofmt`.
