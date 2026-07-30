@@ -86,7 +86,7 @@ model vendor, sandbox backend, or worker topology.
 | `internal/store` | Deprecated SQLite compatibility implementation |
 | `internal/agentruntime` | Model/tool orchestration behind `AgentRuntime` |
 | `internal/model` | Offline and Messages API model clients |
-| `internal/sandbox` | Local and Docker execution providers |
+| `internal/sandbox` | Provider registry, lifecycle contract, and local/Docker adapters |
 
 The dependency direction points inward: transport and infrastructure depend on
 application/domain semantics, while the domain has no HTTP, SQL, model-client,

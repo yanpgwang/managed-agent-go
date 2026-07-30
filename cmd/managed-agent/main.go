@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -34,6 +35,11 @@ const defaultAddr = "127.0.0.1:8080"
 // guardModelSandbox.
 const unsafeLocalSandboxEnv = "MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX"
 
+const (
+	sandboxProviderEnv = "MANAGED_AGENT_SANDBOX"
+	sandboxImageEnv    = "MANAGED_AGENT_SANDBOX_IMAGE"
+)
+
 // resolveRuntime returns the self-hosted agent core and whether it is backed by
 // a real (network-backed) model. It uses the real Messages API client when
 // MANAGED_AGENT_MODEL_BASE_URL and MANAGED_AGENT_MODEL_API_KEY are set,
@@ -58,26 +64,52 @@ func resolveRuntime() (rt agentruntime.AgentRuntime, realModel bool, err error) 
 	return agentruntime.NewAgentCore(client, domain.NewRandomIDGen()), realModel, nil
 }
 
-// resolveSandboxProvider selects the sandbox backend from the environment and
-// reports whether the selection is the local (non-isolating) provider. The
-// default is the offline, dev-grade local provider so the binary runs (and
-// tests stay offline) with no configuration. Set MANAGED_AGENT_SANDBOX=docker
-// to opt into the Docker-backed provider, which gives real isolation (Linux
-// namespaces/cgroups + --network none). MANAGED_AGENT_SANDBOX_IMAGE overrides
-// the container image (NewDockerProvider defaults to alpine:latest when empty).
+// sandboxProviderRegistry declares the adapters compiled into this worker.
+// Factories are lazy: selecting local never initializes Docker, and future
+// optional remote adapters will not require credentials unless selected.
+func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
+	return sandbox.NewProviderRegistry(
+		sandbox.ProviderRegistration{
+			Name: sandbox.LocalProviderName,
+			Factory: func() (sandbox.Provider, error) {
+				return sandbox.NewLocalProvider(), nil
+			},
+		},
+		sandbox.ProviderRegistration{
+			Name: sandbox.DockerProviderName,
+			Factory: func() (sandbox.Provider, error) {
+				return sandbox.NewDockerProvider(sandbox.DockerConfig{
+					DefaultImage: os.Getenv(sandboxImageEnv),
+				})
+			},
+		},
+	)
+}
+
+// resolveSandboxProvider selects the process-wide sandbox backend from the
+// internal registry and reports whether it is the local non-isolating provider.
+// Provider choice is deployment configuration, not part of the Managed Agents
+// public API. Unknown names fail closed instead of silently falling back to
+// host execution.
 func resolveSandboxProvider() (p sandbox.Provider, isLocal bool, err error) {
-	if os.Getenv("MANAGED_AGENT_SANDBOX") == "docker" {
-		dp, err := sandbox.NewDockerProvider(sandbox.DockerConfig{
-			DefaultImage: os.Getenv("MANAGED_AGENT_SANDBOX_IMAGE"),
-		})
-		if err != nil {
-			return nil, false, err
-		}
-		log.Printf("sandbox: docker provider (real isolation)")
-		return dp, false, nil
+	name := strings.TrimSpace(os.Getenv(sandboxProviderEnv))
+	if name == "" {
+		name = sandbox.LocalProviderName
 	}
-	log.Printf("sandbox: local provider (dev-grade guardrail, not a security boundary)")
-	return sandbox.NewLocalProvider(), true, nil
+	registry, err := sandboxProviderRegistry()
+	if err != nil {
+		return nil, false, err
+	}
+	provider, err := registry.Open(name)
+	if err != nil {
+		return nil, false, err
+	}
+	if name == sandbox.LocalProviderName {
+		log.Printf("sandbox: local provider (dev-grade guardrail, not a security boundary)")
+		return provider, true, nil
+	}
+	log.Printf("sandbox: %s provider", name)
+	return provider, false, nil
 }
 
 // guardModelSandbox refuses to start when a real, network-backed model is paired
