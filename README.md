@@ -2,7 +2,9 @@
   <img src="assets/mango-logo.png" alt="Mango" width="420">
 </p>
 
-<h1 align="center">The durable, open-source Claude Managed Agents runtime</h1>
+<p align="center">
+  <strong>Open-source Claude Managed Agents runtime, built for durable self-hosting.</strong>
+</p>
 
 Mango is an independent implementation of the core Claude Managed Agents API
 in Go. It runs agent sessions on your infrastructure with PostgreSQL-backed
