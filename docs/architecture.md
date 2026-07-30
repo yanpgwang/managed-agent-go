@@ -125,17 +125,15 @@ periodically reconcile their durable cursor and never treat a wakeup as data.
 Worker Versioning and provider-backed sandbox leases are still required before
 production rolling deployments.
 
-The pending-action selector adds new Workflow and Activity commands. During a
-manual rolling deployment, upgrade workers before exposing the matching
-client-action API behavior; Worker Versioning should enforce that ordering in a
-production deployment.
+Workflow changes use Temporal version markers where replay compatibility
+requires them. Production rolling deployments still need Worker Versioning and
+explicit replay coverage.
 
 ## Current implementation boundaries
 
 The strongest current risks are semantic rather than structural:
 
-1. `user.interrupt` still lacks the cross-process durable cancellation and
-   finish-vs-interrupt ordering contract on the primary path.
+1. Context growth is not yet bounded by a server-owned compaction policy.
 2. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
    first tool use, reused across its runs, and released on session deletion.
    The manager is in-memory, so a process restart does not restore an idle

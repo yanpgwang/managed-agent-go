@@ -22,14 +22,15 @@ import (
 // asserted (a well-behaved workflow completes each user.message turn exactly
 // once even under duplicate wakeups).
 type fakeSource struct {
-	mu             sync.Mutex
-	events         []domain.Event
-	completes      map[string]int            // triggerEventID -> times CompleteTurn appended output
-	byTurn         map[string][]domain.Event // triggerEventID -> committed output events
-	pending        map[string][]string       // triggerEventID -> pending action ids forwarded by Activity
-	resolved       map[string][]string       // triggerEventID -> barrier resolution ids forwarded by Activity
-	pendingActions []domain.PendingAction
-	maxSeq         int64
+	mu               sync.Mutex
+	events           []domain.Event
+	completes        map[string]int            // triggerEventID -> times CompleteTurn appended output
+	byTurn           map[string][]domain.Event // triggerEventID -> committed output events
+	pending          map[string][]string       // triggerEventID -> pending action ids forwarded by Activity
+	resolved         map[string][]string       // triggerEventID -> barrier resolution ids forwarded by Activity
+	pendingActions   []domain.PendingAction
+	completionParked *bool
+	maxSeq           int64
 }
 
 func newFakeSource(events []domain.Event) *fakeSource {
@@ -58,6 +59,24 @@ func (f *fakeSource) EventsAfter(_ context.Context, _ string, cursor int64, limi
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeSource) FirstUnprocessedInterruptAfter(
+	_ context.Context,
+	_ string,
+	afterSeq int64,
+) (*domain.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, event := range f.events {
+		if event.Sequence > afterSeq &&
+			event.Type == domain.EvUserInterrupt &&
+			event.ProcessedAt == nil {
+			copy := event
+			return &copy, nil
+		}
+	}
+	return nil, nil
 }
 
 func (f *fakeSource) HistoryThrough(_ context.Context, _ string, triggerEventID string, _ int) ([]domain.Event, error) {
@@ -111,7 +130,12 @@ func (f *fakeSource) CompleteTurn(_ context.Context, sessionID, triggerEventID s
 	// Idempotent: if this trigger's turn already committed, replay its output
 	// events without appending again — exactly the pg.Store contract.
 	if f.completes[triggerEventID] > 0 {
-		return TurnCompletionResult{Events: f.byTurn[triggerEventID], Applied: false, Status: status}, nil
+		return TurnCompletionResult{
+			Events:  f.byTurn[triggerEventID],
+			Applied: false,
+			Status:  status,
+			Parked:  f.completionParked,
+		}, nil
 	}
 	f.completes[triggerEventID]++
 	committed := make([]domain.Event, 0, len(output))
@@ -125,7 +149,12 @@ func (f *fakeSource) CompleteTurn(_ context.Context, sessionID, triggerEventID s
 		committed = append(committed, e)
 	}
 	f.byTurn[triggerEventID] = committed
-	return TurnCompletionResult{Events: committed, Applied: true, Status: status}, nil
+	return TurnCompletionResult{
+		Events:  committed,
+		Applied: true,
+		Status:  status,
+		Parked:  f.completionParked,
+	}, nil
 }
 
 func (f *fakeSource) CompleteWorkflowTurn(
@@ -217,6 +246,10 @@ func registerCurrentTurnActivities(
 		activity.RegisterOptions{Name: ActivityLoadEvents},
 	)
 	env.RegisterActivityWithOptions(
+		acts.LoadInterrupt,
+		activity.RegisterOptions{Name: ActivityLoadInterrupt},
+	)
+	env.RegisterActivityWithOptions(
 		acts.LoadPendingActions,
 		activity.RegisterOptions{Name: ActivityLoadPendingActions},
 	)
@@ -306,6 +339,12 @@ func TestSessionWorkflow_ParksUntilFullBarrierThenPreservesQueuedMessage(t *test
 			return LoadEventsResult{Events: out}, nil
 		},
 		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, LoadInterruptInput) (LoadInterruptResult, error) {
+			return LoadInterruptResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadInterrupt},
 	)
 
 	var pendingMu sync.Mutex

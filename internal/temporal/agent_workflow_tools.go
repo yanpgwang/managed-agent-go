@@ -28,16 +28,36 @@ type workflowTurnState struct {
 	output             []domain.EventDraft
 	attemptID          string
 	ordinal            int
+	interrupts         *turnInterruptWatcher
+}
+
+func (t *workflowTurnState) callModel(
+	input CallModelInput,
+) (CallModelResult, interruptibleActivityOutcome, error) {
+	var called CallModelResult
+	if t.interrupts == nil {
+		err := workflow.ExecuteActivity(
+			t.actx,
+			ActivityCallModel,
+			input,
+		).Get(t.actx, &called)
+		return called, interruptibleActivityOutcome{Completed: err == nil}, err
+	}
+	outcome, err := t.interrupts.executeActivity(
+		ActivityCallModel,
+		input,
+		&called,
+	)
+	return called, outcome, err
 }
 
 func (t *workflowTurnState) executeTool(
 	attemptID string,
 	use domain.ContentBlock,
 	stepID string,
-) (ExecuteToolResult, error) {
+) (ExecuteToolResult, interruptibleActivityOutcome, error) {
 	t.attemptID = attemptID
-	var executed ExecuteToolResult
-	err := workflow.ExecuteActivity(t.actx, ActivityExecuteTool, ExecuteToolInput{
+	input := ExecuteToolInput{
 		SessionID:      t.sessionID,
 		TriggerEventID: t.triggerEventID,
 		AttemptID:      attemptID,
@@ -46,12 +66,32 @@ func (t *workflowTurnState) executeTool(
 		ToolStepID:     stepID,
 		ToolName:       use.ToolName,
 		Input:          use.Input,
-	}).Get(t.actx, &executed)
-	if err != nil {
-		return ExecuteToolResult{}, err
 	}
-	t.ordinal++
-	return executed, nil
+	var executed ExecuteToolResult
+	if t.interrupts == nil {
+		err := workflow.ExecuteActivity(
+			t.actx,
+			ActivityExecuteTool,
+			input,
+		).Get(t.actx, &executed)
+		if err != nil {
+			return ExecuteToolResult{}, interruptibleActivityOutcome{}, err
+		}
+		t.ordinal++
+		return executed, interruptibleActivityOutcome{Completed: true}, nil
+	}
+	outcome, err := t.interrupts.executeActivity(
+		ActivityExecuteTool,
+		input,
+		&executed,
+	)
+	if err != nil {
+		return ExecuteToolResult{}, interruptibleActivityOutcome{}, err
+	}
+	if outcome.Completed {
+		t.ordinal++
+	}
+	return executed, outcome, nil
 }
 
 func (t *workflowTurnState) complete(
@@ -140,9 +180,9 @@ func resumeWorkflowTurn(
 	prepared PrepareTurnResult,
 	toolsByName map[string]TurnTool,
 	messages []domain.Message,
-) ([]domain.Message, turnFailure, error) {
+) ([]domain.Message, bool, turnFailure, error) {
 	if len(prepared.ResumeActions) == 0 {
-		return messages, "", nil
+		return messages, false, "", nil
 	}
 
 	actionBlocks := make([]domain.ContentBlock, 0, len(prepared.ResumeActions))
@@ -150,7 +190,7 @@ func resumeWorkflowTurn(
 	for _, action := range prepared.ResumeActions {
 		definition, ok := toolsByName[action.ToolName]
 		if !ok {
-			return nil, failTurn(
+			return nil, false, failTurn(
 				"pending action names a tool that is not enabled: " + action.ToolName,
 			), nil
 		}
@@ -166,14 +206,14 @@ func resumeWorkflowTurn(
 		switch action.Kind {
 		case domain.PendingCustomToolResult:
 			if definition.Kind != TurnToolCustom {
-				return nil, failTurn(
+				return nil, false, failTurn(
 					"custom tool result does not reference a custom tool",
 				), nil
 			}
 		case domain.PendingToolConfirmation:
 			if definition.Kind != TurnToolBuiltin ||
 				definition.Permission.Type != "always_ask" {
-				return nil, failTurn(
+				return nil, false, failTurn(
 					"tool confirmation does not reference an always_ask built-in",
 				), nil
 			}
@@ -186,11 +226,11 @@ func resumeWorkflowTurn(
 				isError = true
 			} else {
 				if action.ToolStepID == "" || prepared.AttemptID == "" {
-					return nil, failTurn(
+					return nil, false, failTurn(
 						"allowed confirmation has no durable operation id",
 					), nil
 				}
-				executed, err := turn.executeTool(
+				executed, activityOutcome, err := turn.executeTool(
 					prepared.AttemptID,
 					domain.ContentBlock{
 						Type:      "tool_use",
@@ -201,19 +241,39 @@ func resumeWorkflowTurn(
 					action.ToolStepID,
 				)
 				if err != nil {
-					return nil, "", err
+					return nil, false, "", err
+				}
+				if activityOutcome.Interrupted && !activityOutcome.Completed {
+					return nil, true, "", nil
 				}
 				if executed.FatalError != "" {
-					return nil, failTurn(executed.FatalError), nil
+					if activityOutcome.Interrupted {
+						return nil, true, "", nil
+					}
+					return nil, false, failTurn(executed.FatalError), nil
 				}
 				if executed.Ambiguous {
-					return nil, failTurn(
+					if activityOutcome.Interrupted {
+						return nil, true, "", nil
+					}
+					return nil, false, failTurn(
 						"a confirmed tool began executing but no trustworthy result was recorded; " +
 							"the side effect will not be retried",
 					), nil
 				}
 				content = executed.Result.Content
 				isError = executed.Result.IsError
+				if activityOutcome.Interrupted {
+					turn.output = append(turn.output, domain.EventDraft{
+						Type: domain.EvAgentToolResult,
+						Payload: map[string]any{
+							"tool_use_id": action.ActionEventID,
+							"content":     content,
+							"is_error":    isError,
+						},
+					})
+					return nil, true, "", nil
+				}
 			}
 			turn.output = append(turn.output, domain.EventDraft{
 				Type: domain.EvAgentToolResult,
@@ -224,7 +284,7 @@ func resumeWorkflowTurn(
 				},
 			})
 		default:
-			return nil, failTurn("unknown pending action kind"), nil
+			return nil, false, failTurn("unknown pending action kind"), nil
 		}
 		resultBlocks = append(resultBlocks, domain.ContentBlock{
 			Type:          "tool_result",
@@ -237,7 +297,7 @@ func resumeWorkflowTurn(
 	return agentruntime.AppendMerging(messages, []domain.Message{
 		{Role: domain.RoleAssistant, Content: actionBlocks},
 		{Role: domain.RoleUser, Content: resultBlocks},
-	}), "", nil
+	}), false, "", nil
 }
 
 type plannedToolUse struct {
@@ -330,21 +390,34 @@ func executeToolBatch(
 	turn *workflowTurnState,
 	attemptID string,
 	plan toolBatchPlan,
-) (toolBatchExecution, turnFailure, error) {
+) (toolBatchExecution, bool, turnFailure, error) {
 	execution := toolBatchExecution{
 		resultDrafts: make([]domain.EventDraft, 0, len(plan.executable)),
 		resultBlocks: make([]domain.ContentBlock, 0, len(plan.executable)),
 	}
 	for _, planned := range plan.executable {
-		executed, err := turn.executeTool(attemptID, planned.use, planned.stepID)
+		executed, activityOutcome, err := turn.executeTool(
+			attemptID,
+			planned.use,
+			planned.stepID,
+		)
 		if err != nil {
-			return toolBatchExecution{}, "", err
+			return toolBatchExecution{}, false, "", err
+		}
+		if activityOutcome.Interrupted && !activityOutcome.Completed {
+			return execution, true, "", nil
 		}
 		if executed.FatalError != "" {
-			return toolBatchExecution{}, failTurn(executed.FatalError), nil
+			if activityOutcome.Interrupted {
+				return execution, true, "", nil
+			}
+			return toolBatchExecution{}, false, failTurn(executed.FatalError), nil
 		}
 		if executed.Ambiguous {
-			return toolBatchExecution{}, failTurn(
+			if activityOutcome.Interrupted {
+				return execution, true, "", nil
+			}
+			return toolBatchExecution{}, false, failTurn(
 				"a tool began executing but no trustworthy result was recorded; " +
 					"the side effect will not be retried",
 			), nil
@@ -363,6 +436,9 @@ func executeToolBatch(
 			Text:          agentruntime.FlattenResultText(executed.Result.Content),
 			IsError:       executed.Result.IsError,
 		})
+		if activityOutcome.Interrupted {
+			return execution, true, "", nil
+		}
 	}
-	return execution, "", nil
+	return execution, false, "", nil
 }

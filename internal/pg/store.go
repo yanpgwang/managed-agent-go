@@ -256,10 +256,13 @@ func (s *Store) admitLocked(
 	}
 
 	hasMessage := false
+	hasInterrupt := false
 	for _, event := range events {
-		if event.Type == domain.EvUserMessage {
+		switch event.Type {
+		case domain.EvUserMessage:
 			hasMessage = true
-			break
+		case domain.EvUserInterrupt:
+			hasInterrupt = true
 		}
 	}
 
@@ -267,7 +270,10 @@ func (s *Store) admitLocked(
 	// is not runnable yet: keep the session idle, emit no status_running, and
 	// write no wakeup for work the Workflow must not consume. A partial resolution
 	// is also only a durable claim: the official barrier reopens once every
-	// blocking action has a result, not once per result.
+	// blocking action has a result, not once per result. Interrupt is the control
+	// exception: it always wakes the Workflow so an active Activity can be
+	// canceled, but it never opens a pending-action gate or by itself projects an
+	// idle session as running.
 	gated, err := q.HasUnresolvedPendingActions(ctx, session.ID)
 	if err != nil {
 		return Admission{}, err
@@ -280,18 +286,18 @@ func (s *Store) admitLocked(
 		}
 	}
 	resolutionBarrierReady := admittedResolution && gated && !hasUnclaimed
-	hasTrigger := hasMessage || resolutionBarrierReady
+	hasRunnableWork := hasMessage || resolutionBarrierReady
 
 	admission := Admission{Session: session, Events: events, MaxSeq: maxSeq}
-	if !hasTrigger {
+	if !hasRunnableWork && !hasInterrupt {
 		if err := s.putProjection(ctx, q, session); err != nil {
 			return Admission{}, err
 		}
 		return admission, nil
 	}
 
-	runnable := !gated || resolutionBarrierReady
-	if !runnable {
+	workRunnable := hasRunnableWork && (!gated || resolutionBarrierReady)
+	if !workRunnable && !hasInterrupt {
 		if err := s.putProjection(ctx, q, session); err != nil {
 			return Admission{}, err
 		}
@@ -299,9 +305,9 @@ func (s *Store) admitLocked(
 	}
 
 	// Reopen to running when a trigger arrives and the session is not already
-	// running. Emit a synthetic session.status_running so the public event order
-	// mirrors the SQLite path.
-	if session.Status != domain.StatusRunning {
+	// running. An interrupt-only admission is a control wakeup, not new work, so
+	// it deliberately emits no synthetic running transition while idle.
+	if workRunnable && session.Status != domain.StatusRunning {
 		session.Status = domain.StatusRunning
 		session.UpdatedAt = s.clock.Now().UTC()
 		statusEvents, newMax, err := s.appendDrafts(ctx, q, session.ID,
@@ -426,6 +432,34 @@ func (s *Store) EventsAfter(ctx context.Context, sessionID string, cursor int64,
 	return eventsFromRows(rows)
 }
 
+// FirstUnprocessedInterruptAfter returns the earliest interrupt that can still
+// affect work triggered after the supplied receipt sequence. A nil event means
+// no durable interrupt is currently pending.
+func (s *Store) FirstUnprocessedInterruptAfter(
+	ctx context.Context,
+	sessionID string,
+	afterSeq int64,
+) (*domain.Event, error) {
+	row, err := s.q.FirstUnprocessedInterruptAfter(
+		ctx,
+		pgstore.FirstUnprocessedInterruptAfterParams{
+			SessionID: sessionID,
+			AfterSeq:  afterSeq,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	event, err := eventFromRow(row)
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
 // GetSession returns the current session projection.
 func (s *Store) GetSession(ctx context.Context, id string) (domain.Session, error) {
 	row, err := s.q.GetSession(ctx, id)
@@ -519,6 +553,7 @@ type TurnCompletion struct {
 	Session domain.Session
 	Events  []domain.Event
 	Applied bool
+	Parked  bool
 }
 
 // CompleteTurn atomically commits the authoritative output of one turn: it
@@ -641,8 +676,60 @@ func (s *Store) completeTurn(
 				if err != nil {
 					return err
 				}
-				result = TurnCompletion{Session: session, Events: prior, Applied: false}
+				result = TurnCompletion{
+					Session: session,
+					Events:  prior,
+					Applied: false,
+					Parked:  turnEventsParked(prior),
+				}
 				return nil
+			}
+		}
+
+		// Admission and completion both hold this session row lock. Therefore the
+		// earliest unprocessed interrupt after the trigger is the exact
+		// finish-vs-interrupt linearization result: if it is visible now,
+		// interrupt admission committed first; if not, this completion commits
+		// first and any later interrupt is an idle control event.
+		var interrupt *domain.Event
+		if trigger.Type != domain.EvUserInterrupt {
+			row, err := q.FirstUnprocessedInterruptAfter(
+				ctx,
+				pgstore.FirstUnprocessedInterruptAfterParams{
+					SessionID: sessionID,
+					AfterSeq:  trigger.Seq,
+				},
+			)
+			switch {
+			case err == nil:
+				event, err := eventFromRow(row)
+				if err != nil {
+					return err
+				}
+				interrupt = &event
+			case errors.Is(err, pgx.ErrNoRows):
+				// Normal completion won.
+			default:
+				return err
+			}
+		}
+		if interrupt != nil {
+			// Keep already-produced authoritative agent/tool drafts, but terminal
+			// ownership moves to the interrupt. It contributes the single public
+			// idle/end_turn and never publishes requires_action, session.error, or
+			// terminated. A named attempt is fenced as interrupted below.
+			outputDrafts = interruptedTurnDrafts(outputDrafts)
+			outputDrafts = append(outputDrafts, domain.EventDraft{
+				Type: domain.EvSessionStatusIdle,
+				Payload: map[string]any{
+					"stop_reason": map[string]any{"type": "end_turn"},
+				},
+			})
+			status = domain.StatusIdle
+			pendingActionEventIDs = nil
+			if attemptID != "" {
+				attemptState = domain.RunAttemptInterrupted
+				attemptError = nil
 			}
 		}
 
@@ -703,7 +790,29 @@ func (s *Store) completeTurn(
 		effectiveStatus := status
 		drafts := outputDrafts
 		var remaining int32
-		if status == domain.StatusIdle && !gatedAfterCompletion {
+		if interrupt != nil {
+			remaining, err = q.CountUnprocessedUserMessages(
+				ctx,
+				pgstore.CountUnprocessedUserMessagesParams{
+					SessionID: sessionID,
+					ExcludeID: triggerEventID,
+				},
+			)
+			if err != nil {
+				return err
+			}
+			if remaining > 0 && !gatedAfterCompletion {
+				// The interrupted turn must visibly hand control back with idle,
+				// even when a redirect is already queued. Reopen immediately after
+				// that boundary so the projection stays truthful while the next
+				// message runs.
+				effectiveStatus = domain.StatusRunning
+				drafts = append(drafts, domain.EventDraft{
+					Type:    domain.EvSessionStatusRunning,
+					Payload: map[string]any{},
+				})
+			}
+		} else if status == domain.StatusIdle && !gatedAfterCompletion {
 			remaining, err = q.CountUnprocessedUserMessages(ctx, pgstore.CountUnprocessedUserMessagesParams{
 				SessionID: sessionID,
 				ExcludeID: triggerEventID,
@@ -746,6 +855,9 @@ func (s *Store) completeTurn(
 		if len(processedIDs) == 0 {
 			processedIDs = []string{triggerEventID}
 		}
+		if interrupt != nil {
+			processedIDs = append(processedIDs, interrupt.ID)
+		}
 		for _, eventID := range processedIDs {
 			if err := q.MarkEventProcessed(ctx, pgstore.MarkEventProcessedParams{
 				ProcessedAt: tsUTC(now),
@@ -777,7 +889,12 @@ func (s *Store) completeTurn(
 				return err
 			}
 		}
-		result = TurnCompletion{Session: session, Events: events, Applied: true}
+		result = TurnCompletion{
+			Session: session,
+			Events:  events,
+			Applied: true,
+			Parked:  len(pendingActionEventIDs) > 0,
+		}
 		return nil
 	})
 	if err != nil {
@@ -799,4 +916,54 @@ func withoutTerminalIdle(drafts []domain.EventDraft) []domain.EventDraft {
 		out = append(out, d)
 	}
 	return out
+}
+
+// interruptedTurnDrafts preserves work that definitely completed before an
+// interrupt while removing every competing terminal projection. The interrupt
+// completion transaction appends the one authoritative idle/end_turn after
+// this filtered prefix.
+func interruptedTurnDrafts(drafts []domain.EventDraft) []domain.EventDraft {
+	completedToolUses := make(map[string]struct{})
+	for _, draft := range drafts {
+		if draft.Type != domain.EvAgentToolResult {
+			continue
+		}
+		if toolUseID, _ := draft.Payload["tool_use_id"].(string); toolUseID != "" {
+			completedToolUses[toolUseID] = struct{}{}
+		}
+	}
+
+	out := make([]domain.EventDraft, 0, len(drafts))
+	for _, draft := range drafts {
+		switch draft.Type {
+		case domain.EvSessionError,
+			domain.EvSessionStatusIdle,
+			domain.EvSessionStatusRescheduling,
+			domain.EvSessionStatusTerminated:
+			continue
+		case domain.EvAgentToolUse, domain.EvAgentCustomToolUse:
+			// An interrupted turn cannot publish a new client-action wait. Keep a
+			// tool-use only when its result durably completed in the same output;
+			// otherwise the public ledger would contain an orphan call that cannot
+			// be resumed and must not be executed.
+			if _, completed := completedToolUses[draft.ID]; !completed {
+				continue
+			}
+		}
+		out = append(out, draft)
+	}
+	return out
+}
+
+func turnEventsParked(events []domain.Event) bool {
+	for _, event := range events {
+		if event.Type != domain.EvSessionStatusIdle {
+			continue
+		}
+		stopReason, _ := event.Payload["stop_reason"].(map[string]any)
+		if stopReason["type"] == "requires_action" {
+			return true
+		}
+	}
+	return false
 }

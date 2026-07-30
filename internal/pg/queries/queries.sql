@@ -67,6 +67,19 @@ SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_
 FROM events
 WHERE session_id = @session_id AND id = @id;
 
+-- FirstUnprocessedInterruptAfter finds the earliest durable interrupt that can
+-- race the named turn. The caller holds the session row lock, so an empty result
+-- means turn completion linearized before any later interrupt admission.
+-- name: FirstUnprocessedInterruptAfter :one
+SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+FROM events
+WHERE session_id = @session_id
+  AND seq > @after_seq
+  AND type = 'user.interrupt'
+  AND processed_at IS NULL
+ORDER BY seq
+LIMIT 1;
+
 -- PriorProcessedModelTriggers returns processed events that can drive a model
 -- turn before a given sequence, in receipt order. Resolution events are included
 -- because a completed custom-tool/confirmation resume may itself have committed

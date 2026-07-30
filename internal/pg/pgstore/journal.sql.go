@@ -225,6 +225,30 @@ func (q *Queries) InsertTurnAttempt(ctx context.Context, arg InsertTurnAttemptPa
 	return err
 }
 
+const markStartedStepsAmbiguousForAttempt = `-- name: MarkStartedStepsAmbiguousForAttempt :execrows
+UPDATE tool_steps
+SET state = 'ambiguous', finished_at = $1, updated_at = $2
+WHERE attempt_id = $3 AND state = 'started'
+`
+
+type MarkStartedStepsAmbiguousForAttemptParams struct {
+	FinishedAt pgtype.Timestamptz
+	UpdatedAt  pgtype.Timestamptz
+	AttemptID  string
+}
+
+// MarkStartedStepsAmbiguousForAttempt fences an interrupted attempt after its
+// canceled Activity has acknowledged cancellation. A step that crossed started
+// may have changed the outside world; recording ambiguous is the only honest
+// terminal classification when no durable result exists.
+func (q *Queries) MarkStartedStepsAmbiguousForAttempt(ctx context.Context, arg MarkStartedStepsAmbiguousForAttemptParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markStartedStepsAmbiguousForAttempt, arg.FinishedAt, arg.UpdatedAt, arg.AttemptID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const markToolStepAmbiguous = `-- name: MarkToolStepAmbiguous :execrows
 UPDATE tool_steps
 SET state = 'ambiguous', finished_at = $1, updated_at = $2

@@ -130,15 +130,29 @@ func TestPostgresHTTPResourceSessionAndEventPath(t *testing.T) {
 		t.Fatalf("event order = %#v", envelope.Data)
 	}
 
-	unsupported := request(
+	interrupt := request(
 		t,
 		handler,
 		http.MethodPost,
 		"/v1/sessions/"+sessionID+"/events",
 		`{"events":[{"type":"user.interrupt"}]}`,
 	)
-	if unsupported.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("interrupt status = %d, want 422: %s", unsupported.Code, unsupported.Body.String())
+	if interrupt.Code != http.StatusOK {
+		t.Fatalf("interrupt status = %d, want 200: %s", interrupt.Code, interrupt.Body.String())
+	}
+	targeted := request(
+		t,
+		handler,
+		http.MethodPost,
+		"/v1/sessions/"+sessionID+"/events",
+		`{"events":[{"type":"user.interrupt","session_thread_id":"thread_1"}]}`,
+	)
+	if targeted.Code != http.StatusUnprocessableEntity {
+		t.Fatalf(
+			"targeted interrupt status = %d, want 422: %s",
+			targeted.Code,
+			targeted.Body.String(),
+		)
 	}
 }
 

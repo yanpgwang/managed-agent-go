@@ -28,12 +28,22 @@ The default PostgreSQL/Temporal backend currently accepts:
 | Event | Current behavior |
 | --- | --- |
 | `user.message` | Starts a model turn |
+| `user.interrupt` | Cancels the active turn, or is acknowledged as an idle no-op; `session_thread_id` is not supported |
+| `user.custom_tool_result` | Supplies a result for a pending custom tool call |
+| `user.tool_confirmation` | Allows or denies a pending `always_ask` built-in |
 | `user.define_outcome` | Stored and validated |
 
-Other valid client event shapes currently return `422 unsupported_error` on
-the primary backend. The deprecated `serve -backend sqlite` compatibility mode
-retains its existing custom-tool, tool-confirmation, interrupt, tool-result, and
-system-message behavior while those semantics move into Temporal.
+Generic `user.tool_result`, `system.message`, and targeted multi-agent interrupt
+shapes return `422 unsupported_error` on the primary backend. The deprecated
+`serve -backend sqlite` compatibility mode is frozen and remains only for
+transition comparison.
+
+An interrupt is first committed to PostgreSQL and then delivered to the
+Session Workflow as a metadata-only wakeup. An interrupt that commits before
+turn completion wins that ordering point: the turn ends with exactly one
+`session.status_idle` whose stop reason is `end_turn`. If completion commits
+first, a later interrupt is an idle control event. A batch may place a new
+`user.message` after `user.interrupt` to redirect the Session into another turn.
 
 The response echoes only the submitted events:
 

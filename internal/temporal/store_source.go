@@ -21,6 +21,14 @@ func (s storeSource) EventsAfter(ctx context.Context, sessionID string, cursor i
 	return s.store.EventsAfter(ctx, sessionID, cursor, limit)
 }
 
+func (s storeSource) FirstUnprocessedInterruptAfter(
+	ctx context.Context,
+	sessionID string,
+	afterSeq int64,
+) (*domain.Event, error) {
+	return s.store.FirstUnprocessedInterruptAfter(ctx, sessionID, afterSeq)
+}
+
 func (s storeSource) HistoryThrough(ctx context.Context, sessionID, triggerEventID string, limit int) ([]domain.Event, error) {
 	return s.store.HistoryThrough(ctx, sessionID, triggerEventID, limit)
 }
@@ -67,7 +75,13 @@ func (s storeSource) CompleteWorkflowTurn(
 	if err != nil {
 		return TurnCompletionResult{}, err
 	}
-	return TurnCompletionResult{Events: res.Events, Applied: res.Applied, Status: res.Session.Status}, nil
+	parked := res.Parked
+	return TurnCompletionResult{
+		Events:  res.Events,
+		Applied: res.Applied,
+		Status:  res.Session.Status,
+		Parked:  &parked,
+	}, nil
 }
 
 // storeSource also satisfies JournalStore; the methods below delegate directly.
