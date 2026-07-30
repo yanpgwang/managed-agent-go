@@ -48,6 +48,14 @@ conformance, raw HTTP, and official-SDK tests. See the
 [architecture overview](docs/architecture.md) for the invariants and failure
 model.
 
+> **Industry context.**
+> [Anthropic describes Managed Agents](https://www.anthropic.com/engineering/managed-agents)
+> as stable, replaceable boundaries between the session, harness, and sandbox.
+> [Cursor reports](https://cursor.com/blog/cloud-agent-lessons) moving its
+> long-running cloud agents to Temporal and separating agent execution, machine
+> state, and conversation state. These are non-normative references, not
+> endorsements or compatibility evidence.
+
 ## What you get
 
 - **Claude Managed Agents compatibility** for the core Agent, Session, and
