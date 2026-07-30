@@ -12,8 +12,8 @@ Compose stack runs those roles separately; they can also be packaged in one
 deployment for development.
 
 The selected stack is Temporal orchestration, PostgreSQL, NATS Core, and
-replaceable sandbox providers. Object storage and provider-backed sandbox
-leases are not implemented.
+replaceable sandbox providers. Provider sandbox bindings are persisted in
+PostgreSQL; object storage is not implemented.
 
 ```mermaid
 flowchart LR
@@ -77,16 +77,15 @@ model vendor, sandbox backend, or worker topology.
 | --- | --- |
 | `cmd/managed-agent` | Composition root, configuration, process lifecycle |
 | `internal/httpapi` | HTTP routes, strict validation, DTO mapping, SSE |
-| `internal/app` | Shared resource validation and legacy compatibility services |
+| `internal/app` | Shared resource validation and transport-neutral use-case types |
 | `internal/controlplane` | PostgreSQL-backed public Session/Event use cases |
 | `internal/domain` | Resource, event, message, tool, and run semantics |
 | `internal/pg` | PostgreSQL repositories, ledger, outbox, and tool journal |
 | `internal/temporal` | Session Workflow, Activities, worker, and relay |
 | `internal/live` | NATS wakeups/previews plus PostgreSQL cursor reconciliation |
-| `internal/store` | Deprecated SQLite compatibility implementation |
-| `internal/agentruntime` | Model/tool orchestration behind `AgentRuntime` |
+| `internal/agentruntime` | Reusable model, message, and tool execution primitives |
 | `internal/model` | Offline and Messages API model clients |
-| `internal/sandbox` | Provider registry, lifecycle contract, and local/Docker adapters |
+| `internal/sandbox` | Provider registry, lifecycle contract, and local/remote adapters |
 
 The dependency direction points inward: transport and infrastructure depend on
 application/domain semantics, while the domain has no HTTP, SQL, model-client,

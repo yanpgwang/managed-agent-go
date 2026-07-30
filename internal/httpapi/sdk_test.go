@@ -1,4 +1,4 @@
-package httpapi_test
+package httpapi
 
 import (
 	"context"
@@ -8,13 +8,6 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	"github.com/yanpgwang/managed-agent-go/internal/store"
 )
 
 // These tests drive the server through the official Anthropic Go SDK as a
@@ -29,28 +22,10 @@ import (
 
 func sdkClientAndServer(t *testing.T) (anthropic.Client, *httptest.Server) {
 	t.Helper()
-	db, err := store.OpenMemory()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { db.Close() })
-
-	ids := domain.NewRandomIDGen()
-	clk := realClock{}
-	hub := app.NewHub(64)
-	es := app.NewEventService(store.NewEventStore(db, ids, clk), hub)
-	agents := app.NewAgentService(store.NewAgentRepo(db), ids, clk)
-	envs := app.NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
-	sessions := app.NewSessionService(store.NewSessionRepo(db), store.NewAgentRepo(db),
-		store.NewEnvironmentRepo(db), es, store.NewRunStore(db, ids, clk),
-		agentruntime.NewFake(), sandbox.NewLocalProvider(), ids, clk)
-	srv := httpapi.NewServer(
-		httpapi.Deps{Agents: agents, Envs: envs, Sessions: sessions, Events: es, Hub: hub},
-		httpapi.Config{
-			RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
-		},
-	)
-	ts := httptest.NewServer(srv.Handler())
+	handler := newTestHandler(t, Config{
+		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+	}, false)
+	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
 	client := anthropic.NewClient(
@@ -59,10 +34,6 @@ func sdkClientAndServer(t *testing.T) (anthropic.Client, *httptest.Server) {
 	)
 	return client, ts
 }
-
-type realClock struct{}
-
-func (realClock) Now() time.Time { return time.Now().UTC() }
 
 func TestSDK_AgentLifecycle(t *testing.T) {
 	client, _ := sdkClientAndServer(t)

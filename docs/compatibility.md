@@ -44,12 +44,11 @@ compatibility.
 | Multi-agent orchestration | Not supported | `multiagent` configuration can be stored, but rosters, threads, delegation, and orchestration are not executed. |
 | Distributed workers | Limited | API and Temporal worker roles are separate and can be replicated around PostgreSQL/NATS. Sandbox ownership is durable: local and Docker references require workers connected to the same host filesystem or daemon, while remote references can reattach from workers sharing the same provider configuration. Task queues must remain configuration-homogeneous. Worker Versioning, production manifests, and rollout tests remain open. |
 
-## Backend transition
+## Runtime architecture
 
-`serve` defaults to the PostgreSQL control plane. `serve -backend sqlite`
-temporarily retains the former single-process behavior for transition
-comparison. This is not a commitment to maintain two backends: SQLite is frozen
-and will be removed after the PostgreSQL/Temporal conformance gate passes.
+`serve` has one authoritative control-plane path: PostgreSQL for resources,
+events, projections, and admission; Temporal for durable orchestration; and
+NATS Core for ephemeral wakeups and previews.
 
 ## Integration contract
 
@@ -76,7 +75,7 @@ the behavior:
 
 - raw HTTP tests for JSON shapes, status codes, headers, and validation;
 - official Go SDK tests for client interoperability;
-- application and store tests for durable execution semantics;
+- application and PostgreSQL tests for durable execution semantics;
 - end-to-end tests for runtime, tool, interrupt, and streaming workflows.
 
 Test names and edge-case details live beside the implementation and in the

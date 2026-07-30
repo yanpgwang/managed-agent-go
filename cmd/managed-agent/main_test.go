@@ -3,15 +3,11 @@ package main
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	"github.com/yanpgwang/managed-agent-go/internal/store"
 )
 
 // TestResolveSandboxProvider_DefaultsToLocal asserts that, with no
@@ -122,21 +118,6 @@ func TestSandboxEnvironmentParsersRejectInvalidValues(t *testing.T) {
 	}
 }
 
-func TestResolveRuntime_UsesFakeModelWithoutEnv(t *testing.T) {
-	t.Setenv("MANAGED_AGENT_MODEL_BASE_URL", "")
-	t.Setenv("MANAGED_AGENT_MODEL_API_KEY", "")
-	rt, realModel, err := resolveRuntime()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if realModel {
-		t.Fatalf("resolveRuntime realModel=true without model env; want false (offline fake)")
-	}
-	if _, ok := rt.(*agentruntime.AgentCore); !ok {
-		t.Fatalf("runtime = %T, want *agentruntime.AgentCore", rt)
-	}
-}
-
 // TestGuardModelSandbox_Matrix covers the safe-defaults startup guard: a real
 // model against the local (non-isolating) sandbox must fail unless the operator
 // explicitly opts in via MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1. Every other
@@ -204,37 +185,35 @@ func TestNewHTTPServer_Timeouts(t *testing.T) {
 	}
 }
 
-// TestResolveRuntime_ReportsRealModelWithEnv proves resolveRuntime reports
+// TestResolveModelClient_ReportsRealModelWithEnv proves model selection reports
 // realModel=true when both the model base URL and API key are configured. It
-// performs no network call: resolveRuntime only constructs the client
-// (AnthropicFromEnv → NewAnthropic), which does not contact the endpoint. The
-// base URL is a non-routable placeholder to make that guarantee explicit.
-func TestResolveRuntime_ReportsRealModelWithEnv(t *testing.T) {
+// performs no network call: construction does not contact the endpoint.
+func TestResolveModelClient_ReportsRealModelWithEnv(t *testing.T) {
 	t.Setenv("MANAGED_AGENT_MODEL_BASE_URL", "https://model.invalid")
 	t.Setenv("MANAGED_AGENT_MODEL_API_KEY", "sk-test")
-	rt, realModel, err := resolveRuntime()
+	client, realModel, err := resolveModelClient()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !realModel {
-		t.Fatalf("resolveRuntime realModel=false with model env configured; want true")
+		t.Fatalf("resolveModelClient realModel=false with model env configured; want true")
 	}
-	if _, ok := rt.(*agentruntime.AgentCore); !ok {
-		t.Fatalf("runtime = %T, want *agentruntime.AgentCore", rt)
+	if client == nil {
+		t.Fatal("resolveModelClient returned a nil client")
 	}
 }
 
-func TestBuildHandler_Health(t *testing.T) {
-	db, err := store.OpenMemory()
+func TestResolveModelClient_UsesFakeWithoutEnv(t *testing.T) {
+	t.Setenv("MANAGED_AGENT_MODEL_BASE_URL", "")
+	t.Setenv("MANAGED_AGENT_MODEL_API_KEY", "")
+	client, realModel, err := resolveModelClient()
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
-	h, _ := buildHandler(db, httpapi.Config{}, agentruntime.NewFake(), sandbox.NewLocalProvider())
-	ts := httptest.NewServer(h)
-	defer ts.Close()
-	resp, err := ts.Client().Get(ts.URL + "/healthz")
-	if err != nil || resp.StatusCode != 200 {
-		t.Fatalf("healthz: %v status=%v", err, resp)
+	if realModel {
+		t.Fatal("resolveModelClient realModel=true without model configuration")
+	}
+	if client == nil {
+		t.Fatal("resolveModelClient returned a nil fake client")
 	}
 }

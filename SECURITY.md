@@ -31,8 +31,6 @@ maintainer contact without disclosing vulnerability details.
   audited for hostile multi-tenant workloads.
 - `-strict` checks that authentication headers are present; it does not
   validate credentials or implement authorization.
-- The deprecated SQLite backend is single-process and is not a production
-  target.
 - PostgreSQL journals tool attempts, but an external side effect can still be
   ambiguous if execution succeeds and its durable result is lost. Exactly-once
   behavior requires idempotency from the external system.

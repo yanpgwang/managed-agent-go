@@ -1,13 +1,10 @@
 -- +goose Up
 -- +goose StatementBegin
 
--- Platform-spine schema for the Temporal/PostgreSQL session path.
---
--- This is a NEW, parallel path. SQLite (internal/store) remains the default
--- compatibility store; nothing here migrates or replaces it. Only the tables the
--- first end-to-end vertical slice needs are created: a session projection, the
--- append-only public event ledger with a durable per-session receipt sequence,
--- and the coalescible orchestration outbox that wakes the SessionWorkflow.
+-- Platform-spine schema for the Temporal/PostgreSQL session path. The first
+-- vertical slice consists of a session projection, the append-only public event
+-- ledger with a durable per-session receipt sequence, and the coalescible
+-- orchestration outbox that wakes the SessionWorkflow.
 --
 -- Deliberately NOT here (out of milestone scope): agents, environments, runs,
 -- run attempts, tool steps, pending actions, multiagent threads, schedules,

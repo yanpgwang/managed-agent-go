@@ -284,8 +284,7 @@ type NextAttemptNoParams struct {
 
 // Typed queries for the Temporal-path tool-execution journal (turn_attempts,
 // tool_steps). Transitions keep an explicit from-state in the WHERE clause and
-// the Go layer checks rows-affected, mirroring the SQLite execution store's
-// guard semantics.
+// the Go layer checks rows-affected to enforce guarded state transitions.
 func (q *Queries) NextAttemptNo(ctx context.Context, arg NextAttemptNoParams) (int32, error) {
 	row := q.db.QueryRow(ctx, nextAttemptNo, arg.SessionID, arg.TriggerEventID)
 	var next_no int32

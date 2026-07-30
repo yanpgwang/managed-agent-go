@@ -197,9 +197,9 @@ func agentsFromRows(rows []pgstore.Agent) ([]domain.Agent, error) {
 	return out, nil
 }
 
-// EnvironmentRepository stores Environment resources and makes delete-if-unused
-// one PostgreSQL statement, preserving the dependency race guarantee from the
-// former SQLite repository.
+// EnvironmentRepository stores Environment resources and makes
+// delete-if-unused one PostgreSQL statement so a concurrent Session creation
+// cannot commit an orphaned reference.
 type EnvironmentRepository struct {
 	store *Store
 }

@@ -190,15 +190,3 @@ make local-down
 This keeps the PostgreSQL volume. Add `VOLUMES=1` only when you intentionally
 want to delete local data. PostgreSQL schema changes are applied by embedded,
 versioned `goose` migrations when API or worker processes start.
-
-## Temporary SQLite compatibility mode
-
-The former single-process runtime remains available during the final
-PostgreSQL/Temporal conformance transition:
-
-```bash
-go run ./cmd/managed-agent serve -backend sqlite -db managed-agent.db
-```
-
-It is a frozen comparison/rollback path, not a production backend. New
-deployments should use the PostgreSQL/Temporal stack above.

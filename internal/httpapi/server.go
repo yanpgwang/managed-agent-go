@@ -56,9 +56,6 @@ type Deps struct {
 	Sessions SessionService
 	Events   EventService
 	Stream   EventSubscriber
-	// Hub is retained only as a source-compatible bridge for the SQLite test
-	// fixture and legacy server. New wiring should set Stream explicitly.
-	Hub *app.Hub
 }
 
 type Server struct {
@@ -68,9 +65,6 @@ type Server struct {
 }
 
 func NewServer(deps Deps, cfg Config) *Server {
-	if deps.Stream == nil {
-		deps.Stream = deps.Hub
-	}
 	s := &Server{deps: deps, cfg: cfg, mux: http.NewServeMux()}
 	s.routes()
 	return s
@@ -106,13 +100,4 @@ func (s *Server) routes() {
 func (s *Server) Handler() http.Handler {
 	return requestIDMiddleware(bodyLimitMiddleware(authMiddleware(s.cfg,
 		versionMiddleware(s.cfg, contentTypeMiddleware(s.cfg, betaMiddleware(s.cfg, s.mux))))))
-}
-
-// NewServerAdapter builds a Handler from already-constructed services.
-// Intended for tests that need to reopen the store to simulate a restart.
-// Uses a lenient Config (no beta header or auth token required).
-func NewServerAdapter(agents *app.AgentService, envs *app.EnvironmentService,
-	sessions *app.SessionService, events *app.EventService, hub *app.Hub) http.Handler {
-	return NewServer(Deps{Agents: agents, Envs: envs, Sessions: sessions, Events: events, Hub: hub},
-		Config{}).Handler()
 }

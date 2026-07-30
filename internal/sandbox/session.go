@@ -51,14 +51,12 @@ type sessionMutex struct {
 	users int
 }
 
-// NewSessionManager wraps a provider with durable session ownership. The
-// optional store keeps deprecated single-process callers source-compatible; a
-// process-local store is used when none is supplied. Production Temporal
-// workers always pass PostgreSQL.
-func NewSessionManager(provider Provider, stores ...BindingStore) *SessionManager {
-	var bindings BindingStore = newMemoryBindingStore()
-	if len(stores) > 0 && stores[0] != nil {
-		bindings = stores[0]
+// NewSessionManager wraps a provider with durable session ownership.
+// BindingStore is required: sandbox identity must never fall back to process
+// memory, even in a single-worker deployment.
+func NewSessionManager(provider Provider, bindings BindingStore) *SessionManager {
+	if bindings == nil {
+		panic("sandbox: binding store is required")
 	}
 	return &SessionManager{
 		provider: provider,
@@ -244,48 +242,4 @@ func specHash(spec Spec) string {
 	body, _ := json.Marshal(spec)
 	sum := sha256.Sum256(body)
 	return fmt.Sprintf("sha256:%x", sum[:])
-}
-
-type memoryBindingStore struct {
-	mu       sync.Mutex
-	bindings map[string]Binding
-}
-
-func newMemoryBindingStore() *memoryBindingStore {
-	return &memoryBindingStore{bindings: make(map[string]Binding)}
-}
-
-func (s *memoryBindingStore) GetSandboxBinding(
-	_ context.Context,
-	sessionID string,
-) (Binding, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	binding, ok := s.bindings[sessionID]
-	return binding, ok, nil
-}
-
-func (s *memoryBindingStore) PutSandboxBinding(
-	_ context.Context,
-	binding Binding,
-) (Binding, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if current, ok := s.bindings[binding.SessionID]; ok {
-		return current, nil
-	}
-	s.bindings[binding.SessionID] = binding
-	return binding, nil
-}
-
-func (s *memoryBindingStore) DeleteSandboxBinding(
-	_ context.Context,
-	binding Binding,
-) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if current, ok := s.bindings[binding.SessionID]; ok && current.Ref == binding.Ref {
-		delete(s.bindings, binding.SessionID)
-	}
-	return nil
 }

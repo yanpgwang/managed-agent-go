@@ -1,10 +1,10 @@
 -- +goose Up
 -- +goose StatementBegin
 
--- Durable tool-execution journal for the Temporal path, mirroring the SQLite
--- prepared/started/completed/ambiguous boundary (internal/store/execution_store.go)
--- so a built-in tool step run under a RunTurn Activity survives worker/activity
--- retries without silently replaying an external side effect.
+-- Durable tool-execution journal for the Temporal path. The
+-- prepared/started/completed/ambiguous boundary lets a built-in tool step
+-- survive worker/activity retries without silently replaying an external side
+-- effect.
 --
 -- The "logical run" here is one turn, identified by (session_id,
 -- trigger_event_id) — the public event that caused the turn. Each RunTurn

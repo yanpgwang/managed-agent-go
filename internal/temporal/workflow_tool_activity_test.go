@@ -293,7 +293,7 @@ func TestWorkflowTurn_ToolResultWriteRetryDoesNotReexecute(t *testing.T) {
 	ids := domain.NewRandomIDGen()
 	source := storeSource{store: store}
 	journal := &loseFirstCompletionAckJournal{JournalStore: source}
-	manager := sandbox.NewSessionManager(sandbox.NewLocalProvider())
+	manager := sandbox.NewSessionManager(sandbox.NewLocalProvider(), store)
 	lease := &forwardingCountingLease{inner: manager}
 	t.Cleanup(func() {
 		_ = manager.Release(context.Background(), sessionID)

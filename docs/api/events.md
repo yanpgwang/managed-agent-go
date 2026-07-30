@@ -23,7 +23,7 @@ shape; persisted events receive an `id` and `processed_at`.
 The list must be non-empty. Clients cannot provide `id` or `processed_at`, and
 server-emitted event types are rejected.
 
-The default PostgreSQL/Temporal backend currently accepts:
+The PostgreSQL/Temporal control plane currently accepts:
 
 | Event | Current behavior |
 | --- | --- |
@@ -34,9 +34,7 @@ The default PostgreSQL/Temporal backend currently accepts:
 | `user.define_outcome` | Stored and validated |
 
 Generic `user.tool_result`, `system.message`, and targeted multi-agent interrupt
-shapes return `422 unsupported_error` on the primary backend. The deprecated
-`serve -backend sqlite` compatibility mode is frozen and remains only for
-transition comparison.
+shapes return `422 unsupported_error`.
 
 An interrupt is first committed to PostgreSQL and then delivered to the
 Session Workflow as a metadata-only wakeup. An interrupt that commits before

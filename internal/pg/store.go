@@ -485,10 +485,9 @@ func (s *Store) GetEvent(ctx context.Context, sessionID, id string) (domain.Even
 }
 
 // HistoryThrough reconstructs the causal conversation history for the turn
-// triggered by triggerEventID, to be projected into the model. It mirrors the
-// SQLite path's RunStore.ModelHistory: public receipt order is deliberately NOT
-// what a turn replays, because a later user.message admitted (at a lower
-// sequence) before an earlier turn finished must not appear as a peer of the
+// triggered by triggerEventID, to be projected into the model. Public receipt
+// order is deliberately NOT what a turn replays, because a later user.message
+// admitted before an earlier turn finished must not appear as a peer of the
 // current trigger.
 //
 // The reconstruction walks prior *processed* model-driving triggers

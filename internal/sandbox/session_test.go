@@ -106,7 +106,7 @@ func (p *destroyCountingProvider) Attach(
 
 func TestSessionManager_ReusesSandboxPerSession(t *testing.T) {
 	cp := &countingProvider{inner: NewLocalProvider()}
-	m := NewSessionManager(cp)
+	m := NewSessionManager(cp, newMemoryBindingStore())
 	ctx := context.Background()
 
 	first, err := m.Acquire(ctx, "sesn_a", Spec{})
@@ -128,8 +128,17 @@ func TestSessionManager_ReusesSandboxPerSession(t *testing.T) {
 	}
 }
 
+func TestNewSessionManager_RequiresBindingStore(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered == nil {
+			t.Fatal("NewSessionManager accepted a nil BindingStore")
+		}
+	}()
+	NewSessionManager(NewLocalProvider(), nil)
+}
+
 func TestSessionManager_IsolatesSessions(t *testing.T) {
-	m := NewSessionManager(NewLocalProvider())
+	m := NewSessionManager(NewLocalProvider(), newMemoryBindingStore())
 	ctx := context.Background()
 
 	a, err := m.Acquire(ctx, "sesn_a", Spec{})
@@ -156,7 +165,7 @@ func TestSessionManager_IsolatesSessions(t *testing.T) {
 
 func TestSessionManager_ReleaseDestroysExactlyOnce(t *testing.T) {
 	dp := &destroyCountingProvider{inner: NewLocalProvider()}
-	m := NewSessionManager(dp)
+	m := NewSessionManager(dp, newMemoryBindingStore())
 	ctx := context.Background()
 
 	if _, err := m.Acquire(ctx, "sesn_a", Spec{}); err != nil {
@@ -182,7 +191,7 @@ func TestSessionManager_ReleaseDestroysExactlyOnce(t *testing.T) {
 
 func TestSessionManager_ConcurrentAcquireProvisionsOnce(t *testing.T) {
 	cp := &countingProvider{inner: NewLocalProvider()}
-	m := NewSessionManager(cp)
+	m := NewSessionManager(cp, newMemoryBindingStore())
 	ctx := context.Background()
 
 	const goroutines = 32
@@ -215,7 +224,7 @@ func TestSessionManager_ConcurrentAcquireProvisionsOnce(t *testing.T) {
 
 func TestSessionManager_ProvisionFailureIsNotCached(t *testing.T) {
 	cp := &countingProvider{inner: NewLocalProvider(), provisionErr: errors.New("boom")}
-	m := NewSessionManager(cp)
+	m := NewSessionManager(cp, newMemoryBindingStore())
 	ctx := context.Background()
 
 	if _, err := m.Acquire(ctx, "sesn_a", Spec{}); err == nil {
@@ -342,7 +351,7 @@ func TestSessionManager_ReleaseWaitsForInflightProvision(t *testing.T) {
 		entered: make(chan struct{}),
 		proceed: make(chan struct{}),
 	}
-	m := NewSessionManager(p)
+	m := NewSessionManager(p, newMemoryBindingStore())
 	ctx := context.Background()
 
 	acquired := make(chan struct{})

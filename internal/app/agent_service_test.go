@@ -9,14 +9,12 @@ import (
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/store"
 )
 
 func newAgentService(t *testing.T) *AgentService {
 	t.Helper()
-	db, _ := store.OpenMemory()
-	t.Cleanup(func() { db.Close() })
-	return NewAgentService(store.NewAgentRepo(db), domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1, 0).UTC()})
+	return NewAgentService(newMemoryAgentRepository(), domain.NewSeqIDGen(),
+		domain.FixedClock{T: time.Unix(1, 0).UTC()})
 }
 
 func TestAgentService_CreateThenVersionedUpdate(t *testing.T) {

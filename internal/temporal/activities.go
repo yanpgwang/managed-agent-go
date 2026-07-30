@@ -736,9 +736,9 @@ const durableWriteTimeout = 30 * time.Second
 // durableCtx returns a context detached from the caller's cancellation
 // (context.WithoutCancel preserves values like tracing metadata) with a fresh
 // bounded timeout. It is created per durable write, never once before a long
-// runtime call, so the timeout cannot expire mid-run. This mirrors the SQLite
-// app's runToolJournal, which records tool facts on a durable context so an
-// interrupt reaching a tool executor still commits the result.
+// runtime call, so the timeout cannot expire mid-run. This lets an interrupt
+// reach a tool executor while still giving the result a bounded opportunity to
+// commit.
 func durableCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), durableWriteTimeout)
 }
