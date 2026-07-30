@@ -2,15 +2,11 @@
   <img src="assets/mango-logo.png" alt="Mango" width="420">
 </p>
 
-<h1 align="center">Mango</h1>
+<h1 align="center">The durable, open-source Claude Managed Agents runtime</h1>
 
 <p align="center">
-  <strong>The durable, open-source implementation of the core Claude Managed Agents API.</strong>
-</p>
-
-<p align="center">
-  Run CMA-compatible agent sessions on your own infrastructure with
-  PostgreSQL-backed state, Temporal-powered execution, and pluggable sandboxes.
+  A self-hosted implementation of the core API in Go, powered by PostgreSQL and
+  Temporal with pluggable sandboxes.
 </p>
 
 <p align="center">
