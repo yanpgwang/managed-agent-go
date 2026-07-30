@@ -19,7 +19,9 @@ These are the release-blocking capabilities for the managed-agent harness:
 
 Durable cross-process interrupt, deterministic finish-vs-interrupt ordering,
 Sandbox identity, worker-restart reattachment, and deletion cleanup are durable
-for the local and Docker providers.
+across the local, Docker, E2B, CubeSandbox, OpenSandbox, and Daytona provider
+adapters. Remote adapters remain Preview until repeatable service-level
+validation promotes them.
 
 ## Runtime integrations
 
