@@ -2,97 +2,73 @@
   <img src="assets/mango-logo.png" alt="Mango" width="420">
 </p>
 
-<hr>
+<h1 align="center">Mango</h1>
 
-<p align="center"><strong>Managed Agents, Native Go, On-demand.</strong></p>
+<p align="center">
+  <strong>The durable, open-source implementation of the core Claude Managed Agents API.</strong>
+</p>
 
-**Mango** is an open-source, self-hosted agent runtime in Go with a
-Claude Managed Agents-compatible HTTP API.
+<p align="center">
+  Run CMA-compatible agent sessions on your own infrastructure with
+  PostgreSQL-backed state, Temporal-powered execution, and pluggable sandboxes.
+</p>
 
-> [!IMPORTANT]
-> **Alpha.** This project implements a documented subset of the Managed Agents
-> API. It is independent, is not an Anthropic product, and is not yet a drop-in
-> production service. The default local sandbox is not a security boundary.
-> Check the [compatibility matrix](docs/compatibility.md) before depending on a
-> capability.
+<p align="center">
+  <a href="https://github.com/yanpgwang/managed-agent-go/actions/workflows/ci.yml"><img src="https://github.com/yanpgwang/managed-agent-go/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://yanpgwang.github.io/managed-agent-go/"><img src="https://img.shields.io/badge/docs-online-blue" alt="Documentation"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache 2.0 License"></a>
+</p>
 
-## What it is
+Mango is an independent agent runtime written in Go. It implements a practical
+subset of the Claude Managed Agents HTTP API, persists server-owned sessions,
+turns their history into stateless Messages API requests, executes tools in
+replaceable sandboxes, and streams results through a familiar event API.
 
-`managed-agent-go` owns durable agent sessions: it stores conversation history,
-turns that history into stateless model requests, executes tools in a
-replaceable sandbox, and streams results through a familiar HTTP API.
+For the supported surface, clients can use raw HTTP or the official Anthropic Go
+SDK with a different base URL. Compatibility is the adoption surface; the
+durable runtime is the product.
 
-The runtime is the product; Claude API compatibility is an integration surface.
-The implementation follows public wire behavior where useful without trying to
-reproduce Anthropic's internal architecture.
+## Built for the failure paths
 
-## Architecture
+A happy-path agent loop is easy to demonstrate. Mango is designed around what
+happens after the API accepts work: processes crash, wakeups are missed, tools
+are interrupted, clients take time to approve actions, and sandboxes outlive
+workers.
 
-The default path is a multi-process PostgreSQL, Temporal, and NATS architecture:
-
-```mermaid
-flowchart LR
-  Client --> API["HTTP API"]
-  API --> PG[("PostgreSQL")]
-  API -. "fast-path signal" .-> Temporal
-  PG -- "durable outbox" --> Worker
-  Worker <--> Temporal
-  Worker --> PG
-  Worker --> Model["Messages API"]
-  Worker --> Sandbox
-  Worker -. "previews + wakeups" .-> NATS
-  NATS -.-> API
-```
-
-| Component | Responsibility |
+| Failure path | Runtime behavior |
 | --- | --- |
-| PostgreSQL | Source of truth for Agents, Environments, Sessions, events, admission outbox, and tool journal |
-| Temporal | Durable in-flight Session Workflow and replay-safe model/tool Activities |
-| NATS Core | Ephemeral SSE wakeups and previews; never authoritative data |
-| API process | Managed Agents-compatible HTTP resources and PostgreSQL cursor reads |
-| Worker process | Temporal worker, outbox relay, model calls, and sandbox tools |
+| API or worker exits after accepting input | PostgreSQL commits the input events, running status, and a recoverable outbox wakeup in one transaction |
+| A Temporal signal or NATS wakeup is missed | The durable relay and PostgreSQL sequence reads repair delivery; neither fast path is authoritative |
+| A model or tool step is retried or interrupted | Temporal owns the in-flight Workflow, while the tool journal records completed and ambiguous side-effect boundaries |
+| A custom tool or confirmation waits on a client | Pending actions are persisted and resume the same logical model loop after a process restart |
+| A worker restarts or a Session is deleted | The persisted sandbox binding is reattached or durably cleaned up through the provider lifecycle |
 
-The boundaries are deliberate: a NATS outage cannot lose persisted events, and
-a failed direct Temporal signal cannot lose admitted work because PostgreSQL's
-outbox is the recovery path. See the [architecture overview](docs/architecture.md)
-for the invariants and failure model.
+These guarantees are exercised through application, store, Workflow, sandbox
+conformance, raw HTTP, and official-SDK tests. See the
+[architecture overview](docs/architecture.md) for the invariants and failure
+model.
 
-## Current scope
+> **Industry context.**
+> [Anthropic describes Managed Agents](https://www.anthropic.com/engineering/managed-agents)
+> as stable, replaceable boundaries between the session, harness, and sandbox.
+> [Cursor reports](https://cursor.com/blog/cloud-agent-lessons) moving its
+> long-running cloud agents to Temporal and separating agent execution, machine
+> state, and conversation state. These are non-normative references, not
+> endorsements or compatibility evidence.
 
-| Area | Primary PostgreSQL/Temporal path |
-| --- | --- |
-| Agents | Create, get, list, update, versions, archive |
-| Environments | Create, get, list, archive, delete; `cloud` only for Session execution |
-| Sessions | Create, get, list, update title, archive, delete |
-| Events | Process messages, interrupts, custom-tool results, and tool confirmations; store `user.define_outcome`; list, cursor pagination, and SSE |
-| Runtime | Multi-round Messages API loop, durable interrupt and client-action park/resume, and built-in tools |
-| Tools | `bash`, `read`, `write`, `edit`, `glob`, and `grep`; web tools currently return not implemented |
-| Sandboxes | Local development provider and optional Docker isolation |
-| Live delivery | Cross-process message previews and persisted-event wakeups over NATS |
+## What you get
 
-Untargeted `user.interrupt` durably cancels an active model or tool Activity
-across API and worker processes. Targeted multi-agent interrupts, generic
-tool-result, and system-message inputs return an explicit `422`. MCP execution,
-files/skills/memory/vaults, multi-agent orchestration, remote self-hosted
-workers, schedules, and webhooks are not implemented.
-See the [compatibility matrix](docs/compatibility.md) and
-[roadmap](docs/roadmap.md) for details.
-
-## Production readiness
-
-The core data and orchestration boundaries are now the intended production
-direction, so harness work can proceed without redesigning the scheduler.
-Operating this as a production service still requires:
-
-- authentication, tenant isolation, TLS, and secret management;
-- Temporal Worker Versioning, rollout tests, dependency-aware readiness, and
-  observability;
-- remote sandbox provider adapters and orphan reconciliation;
-- large-payload/object-storage offload, resource policies, and production
-  deployment manifests.
-
-Sandbox checkpoint/restore remains a provider capability rather than a format
-implemented by this control plane.
+- **Claude Managed Agents compatibility** for the core Agent, Session, and
+  Event workflows, verified through the official Anthropic Go SDK and raw HTTP
+  contract tests.
+- **Durable multi-process execution** using PostgreSQL as the source of truth
+  and Temporal for replay-safe orchestration.
+- **Resumable tool and human-in-the-loop flows** with durable interrupts,
+  custom-tool results, and `always_ask` confirmations.
+- **Pluggable Session sandboxes** across local, Docker, E2B, CubeSandbox,
+  OpenSandbox, and Daytona providers.
+- **Live event delivery** with persisted SSE events and optional low-latency
+  text previews over NATS.
 
 ## Quick start
 
@@ -124,6 +100,81 @@ make local-down
 
 Use `make local-down VOLUMES=1` only when you intentionally want to delete the
 local database.
+
+## Status and compatibility
+
+> [!IMPORTANT]
+> **Alpha.** Mango implements a documented subset of the Claude Managed Agents
+> API. It is independent, is not an Anthropic product, and does not yet claim
+> full drop-in or production compatibility. The default local sandbox is not a
+> security boundary. Check the
+> [compatibility matrix](docs/compatibility.md) before depending on a capability.
+
+| Area | Current PostgreSQL/Temporal surface |
+| --- | --- |
+| Agents | Create, get, list, update, versions, and archive |
+| Environments | Create, get, list, archive, and delete; `cloud` only for Session execution |
+| Sessions | Create, get, list, update title, archive, and delete |
+| Events | Process messages, interrupts, custom-tool results, and tool confirmations; store `user.define_outcome`; list, cursor pagination, and SSE |
+| Runtime | Multi-round Messages API loop, durable interrupt, client-action park/resume, and built-in tools |
+| Tools | `bash`, `read`, `write`, `edit`, `glob`, and `grep`; web tools currently return not implemented |
+| Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
+| Live delivery | Cross-process message previews and persisted-event wakeups over NATS |
+
+Untargeted `user.interrupt` durably cancels an active model or tool Activity
+across API and worker processes. Targeted multi-agent interrupts, generic
+tool-result, and system-message inputs return an explicit `422`. MCP execution,
+files/skills/memory/vaults, multi-agent orchestration, remote self-hosted
+workers, schedules, and webhooks are not implemented.
+
+See the [compatibility matrix](docs/compatibility.md) for exact behavior and the
+[roadmap](docs/roadmap.md) for planned work.
+
+## Architecture
+
+The default deployment has separate API and worker roles:
+
+```mermaid
+flowchart LR
+  Client --> API["Managed Agents HTTP API"]
+  API --> PG[("PostgreSQL")]
+  API -. "fast-path signal" .-> Temporal
+  PG -- "durable outbox" --> Worker
+  Worker <--> Temporal
+  Worker --> PG
+  Worker --> Model["Messages API"]
+  Worker --> Sandbox["Sandbox provider"]
+  Worker -. "previews + wakeups" .-> NATS
+  NATS -.-> API
+```
+
+| Component | Responsibility |
+| --- | --- |
+| PostgreSQL | Source of truth for Agents, Environments, Sessions, events, admission outbox, sandbox bindings, and tool journal |
+| Temporal | Durable in-flight Session Workflow and replay-safe model/tool Activities |
+| NATS Core | Ephemeral SSE wakeups and previews; never authoritative data |
+| API process | Managed Agents-compatible HTTP resources and PostgreSQL cursor reads |
+| Worker process | Temporal worker, outbox relay, model calls, and sandbox tools |
+
+The boundaries are deliberate: a NATS outage cannot lose persisted events, and
+a failed direct Temporal signal cannot lose admitted work because PostgreSQL's
+outbox is the recovery path.
+
+## Production readiness
+
+The data and orchestration boundaries are the intended production direction,
+but operating Mango as a hardened multi-tenant service still requires:
+
+- authentication, authorization, tenant isolation, TLS, and secret management;
+- Temporal Worker Versioning, rollout tests, dependency-aware readiness, and
+  observability;
+- provider-aware routing, promotion of Preview sandbox adapters, and orphan
+  reconciliation;
+- large-payload/object-storage offload, quotas, resource policies, and
+  production deployment manifests.
+
+Sandbox checkpoint/restore remains a provider capability rather than a format
+implemented by this control plane.
 
 ## Run from source
 
