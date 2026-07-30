@@ -1,6 +1,5 @@
-// Package pg provides the primary control-plane persistence: a pgx pool,
+// Package pg provides the authoritative control-plane persistence: a pgx pool,
 // embedded goose migrations, and stores built on sqlc-generated queries.
-// SQLite remains available only through the deprecated compatibility backend.
 package pg
 
 import (

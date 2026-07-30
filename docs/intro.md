@@ -59,10 +59,11 @@ messages and untargeted interrupts; cursor pagination and SSE; a multi-round
 model loop; durable custom-tool and `always_ask` waits; six `always_allow`
 built-ins; local and Docker sandboxes; and opt-in assistant text previews.
 
-The remaining transition gate before removing the deprecated SQLite comparison
-backend is black-box conformance coverage for the supported PostgreSQL/Temporal
-surface. MCP execution, files/skills/memory/vaults, multi-agent orchestration,
-remote self-hosted workers, schedules, and webhooks remain future product work.
+The remaining infrastructure closure work is autonomous recovery for interrupted
+session deletion, sandbox orphan reconciliation, and repeatable black-box
+conformance for the PostgreSQL/Temporal path. MCP execution,
+files/skills/memory/vaults, multi-agent orchestration, remote self-hosted
+workers, schedules, and webhooks remain future product work.
 
 The runtime is the product; Claude API compatibility is an integration surface.
 Public behavior is derived from official documentation and tested through raw

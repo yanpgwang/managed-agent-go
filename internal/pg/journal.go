@@ -11,11 +11,10 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
 )
 
-// The tool-execution journal preserves the same prepared/started/completed/
-// ambiguous boundary as the SQLite execution store, but for the Temporal path.
-// A turn is identified by (session_id, trigger_event_id); each RunTurn Activity
-// execution is an attempt. A Temporal retry creates a new attempt rather than
-// erasing the facts a prior attempt recorded.
+// The tool-execution journal preserves a prepared/started/completed/ambiguous
+// side-effect boundary. A turn is identified by (session_id,
+// trigger_event_id); each RunTurn Activity execution is an attempt. A Temporal
+// retry creates a new attempt rather than erasing facts from a prior attempt.
 
 // TurnAttempt is one durable execution attempt for a turn. It is internal
 // bookkeeping and never serialized on the public API.

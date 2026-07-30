@@ -1,7 +1,6 @@
 -- Typed queries for the Temporal-path tool-execution journal (turn_attempts,
 -- tool_steps). Transitions keep an explicit from-state in the WHERE clause and
--- the Go layer checks rows-affected, mirroring the SQLite execution store's
--- guard semantics.
+-- the Go layer checks rows-affected to enforce guarded state transitions.
 
 -- name: NextAttemptNo :one
 SELECT (COALESCE(MAX(attempt_no), 0) + 1)::int AS next_no

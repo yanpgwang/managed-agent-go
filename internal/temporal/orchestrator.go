@@ -41,7 +41,8 @@ func (o *Orchestrator) Admit(ctx context.Context, sessionID string, drafts []dom
 			log.Printf("orchestrator: fast-path signal failed session_id=%s (relay will deliver): %v", sessionID, sigErr)
 		}
 	}
-	// Echo only the caller-submitted events, matching the SQLite path's contract.
+	// Echo only the caller-submitted events; orchestration-generated events are
+	// observed through list and stream endpoints.
 	if len(drafts) < len(adm.Events) {
 		return adm.Events[:len(drafts)], nil
 	}

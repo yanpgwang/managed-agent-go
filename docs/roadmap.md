@@ -13,9 +13,11 @@ not by reproducing Anthropic's internal implementation.
 
 These are the release-blocking capabilities for the managed-agent harness:
 
-1. conformance tests for supported Managed Agents API behavior and removal of
-   the frozen SQLite comparison backend;
-2. bounded context management and compaction over server-owned history.
+1. autonomous recovery for interrupted deletion plus sandbox orphan
+   reconciliation;
+2. repeatable black-box conformance for the supported PostgreSQL/Temporal and
+   external-sandbox paths;
+3. bounded context management and compaction over server-owned history.
 
 Durable cross-process interrupt, deterministic finish-vs-interrupt ordering,
 Sandbox identity, worker-restart reattachment, and deletion cleanup are durable

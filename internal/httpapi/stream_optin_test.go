@@ -66,7 +66,7 @@ func TestStreamEvents_EventDeltasValidation(t *testing.T) {
 // followed by the persisted agent.message, and that a non-opted client sees
 // only the persisted agent.message.
 func TestStreamEvents_PreviewRenderedAsSSE(t *testing.T) {
-	h := NewTestHandlerAgentCore(t)
+	h := NewTestHandlerWithPreviews(t)
 	ag := createID(t, h, "POST", "/v1/agents", `{"name":"a","model":"claude-opus-4-8"}`)
 	env := createID(t, h, "POST", "/v1/environments", `{"name":"e","config":{"type":"cloud"}}`)
 	sess := createID(t, h, "POST", "/v1/sessions", `{"agent":"`+ag+`","environment_id":"`+env+`"}`)

@@ -54,10 +54,8 @@ func runOrchestrate() {
 	store.SetEventNotifier(broker)
 	log.Printf("orchestrate: NATS live channel connected")
 
-	// The execution plane uses the same model selection as the SQLite path. New
-	// Workflow executions call it through granular model/tool Activities; the
-	// runtime also retains AgentCore internally for replaying older RunTurn
-	// histories. The offline fake model is sufficient with no configuration.
+	// Workflow executions call the selected model through granular model/tool
+	// Activities. The offline fake model needs no configuration.
 	modelClient, realModel, err := resolveModelClient()
 	if err != nil {
 		log.Fatalf("orchestrate: runtime: %v", err)

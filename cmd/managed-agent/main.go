@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/controlplane"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -23,7 +22,6 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	"github.com/yanpgwang/managed-agent-go/internal/store"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
 )
 
@@ -69,11 +67,8 @@ const (
 	daytonaAutoPauseEnv = "DAYTONA_AUTO_PAUSE_MINUTES"
 )
 
-// resolveRuntime returns the self-hosted agent core and whether it is backed by
-// a real (network-backed) model. It uses the real Messages API client when
-// MANAGED_AGENT_MODEL_BASE_URL and MANAGED_AGENT_MODEL_API_KEY are set,
-// otherwise the offline deterministic fake so the binary runs (and tests stay
-// offline) with no configuration.
+// resolveModelClient returns the worker model client and reports whether it is
+// backed by a real, network-connected model.
 func resolveModelClient() (client model.Client, realModel bool, err error) {
 	if client, ok, err := model.AnthropicFromEnv(); err != nil {
 		return nil, false, err
@@ -83,14 +78,6 @@ func resolveModelClient() (client model.Client, realModel bool, err error) {
 	}
 	log.Printf("runtime: agent core using offline fake model")
 	return model.NewFake(), false, nil
-}
-
-func resolveRuntime() (rt agentruntime.AgentRuntime, realModel bool, err error) {
-	client, realModel, err := resolveModelClient()
-	if err != nil {
-		return nil, false, err
-	}
-	return agentruntime.NewAgentCore(client, domain.NewRandomIDGen()), realModel, nil
 }
 
 // sandboxProviderRegistry declares the adapters compiled into this worker.
@@ -313,22 +300,6 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
-func buildHandler(db *store.DB, cfg httpapi.Config, rt agentruntime.AgentRuntime, sbx sandbox.Provider) (http.Handler, *app.SessionService) {
-	ids := domain.NewRandomIDGen()
-	clk := realClock{}
-	hub := app.NewHub(256)
-	es := app.NewEventService(store.NewEventStore(db, ids, clk), hub)
-	agents := app.NewAgentService(store.NewAgentRepo(db), ids, clk)
-	envs := app.NewEnvironmentService(store.NewEnvironmentRepo(db), ids, clk)
-	sessions := app.NewSessionService(store.NewSessionRepo(db), store.NewAgentRepo(db),
-		store.NewEnvironmentRepo(db), es, store.NewRunStore(db, ids, clk),
-		rt, sbx, ids, clk)
-	srv := httpapi.NewServer(httpapi.Deps{
-		Agents: agents, Envs: envs, Sessions: sessions, Events: es, Hub: hub,
-	}, cfg)
-	return srv.Handler(), sessions
-}
-
 func main() {
 	if len(os.Args) < 2 {
 		log.Fatal("usage: managed-agent <serve|orchestrate> [flags]")
@@ -346,66 +317,19 @@ func main() {
 func runServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "listen address (default binds to loopback; use e.g. :8080 to expose on all interfaces)")
-	backend := fs.String("backend", "postgres", "control-plane backend: postgres (default) or sqlite (deprecated compatibility mode)")
-	dbPath := fs.String("db", "managed-agent.db", "sqlite path (used only with -backend sqlite)")
 	strict := fs.Bool("strict", false, "require Claude API wire headers (auth, version, beta, content-type) to be present and valid; this is header validation, NOT authentication")
 	_ = fs.Parse(os.Args[2:])
 
 	cfg := httpapi.Config{
 		RequireBeta: *strict, RequireAuth: *strict, RequireVersion: *strict, RequireContentType: *strict,
 	}
-	switch *backend {
-	case "postgres":
-		runPostgresAPI(*addr, cfg)
-	case "sqlite":
-		log.Printf("startup: -backend sqlite is deprecated compatibility mode; new deployments should use postgres")
-		runSQLiteAPI(*addr, *dbPath, cfg)
-	default:
-		log.Fatalf("serve: unsupported backend %q (want postgres or sqlite)", *backend)
-	}
-}
-
-func runSQLiteAPI(addr, dbPath string, cfg httpapi.Config) {
-	// resolveRuntime selects the real Messages-API-backed agent core when the
-	// model env is configured, otherwise the offline deterministic fake.
-	rt, realModel, err := resolveRuntime()
-	if err != nil {
-		log.Fatalf("runtime: %v", err)
-	}
-
-	sbx, localSandbox, err := resolveSandboxProvider()
-	if err != nil {
-		log.Fatalf("sandbox: %v", err)
-	}
-
-	// Refuse the unsafe real-model + local-sandbox pairing unless explicitly
-	// overridden. The zero-config fake + local default is always allowed.
-	allowUnsafe := os.Getenv(unsafeLocalSandboxEnv) == "1"
-	if err := guardModelSandbox(realModel, localSandbox, allowUnsafe); err != nil {
-		log.Fatalf("startup: %v", err)
-	}
-
-	db, err := store.Open(dbPath)
-	if err != nil {
-		log.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-
-	handler, sessions := buildHandler(db, cfg, rt, sbx)
-	if err := sessions.Recover(context.Background()); err != nil {
-		log.Printf("recovery: %v", err)
-	}
-	serveHTTP(addr, handler)
+	runPostgresAPI(*addr, cfg)
 }
 
 func runPostgresAPI(addr string, cfg httpapi.Config) {
 	databaseURL := os.Getenv(envDatabaseURL)
 	if databaseURL == "" {
-		log.Fatalf(
-			"serve: %s is required for the default PostgreSQL control plane "+
-				"(use -backend sqlite only for deprecated compatibility mode)",
-			envDatabaseURL,
-		)
+		log.Fatalf("serve: %s is required", envDatabaseURL)
 	}
 	ctx := context.Background()
 	pool, err := pg.Pool(ctx, databaseURL)
