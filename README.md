@@ -177,6 +177,11 @@ export MANAGED_AGENT_SANDBOX=docker
 go run ./cmd/managed-agent orchestrate
 ```
 
+`MANAGED_AGENT_SANDBOX` is a strict deployment-level provider selection:
+`local` is the offline default and `docker` is the isolated opt-in. Unknown
+provider names fail startup. Provider-specific configuration is intentionally
+kept out of the Managed Agents public API.
+
 Do not run workers with different model or sandbox configuration on the same
 Temporal Task Queue.
 

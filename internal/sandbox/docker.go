@@ -15,7 +15,6 @@ import (
 )
 
 const (
-	dockerProviderName    = "docker"
 	dockerManagedLabel    = "io.mango.managed"
 	dockerSessionKeyLabel = "io.mango.session_key"
 )
@@ -74,7 +73,7 @@ func NewDockerProvider(cfg DockerConfig) (Provider, error) {
 	return &dockerProvider{dockerPath: path, defaultImage: image}, nil
 }
 
-func (p *dockerProvider) Name() string { return dockerProviderName }
+func (p *dockerProvider) Name() string { return DockerProviderName }
 
 // runDocker invokes the docker CLI with the given args, capturing stdout/stderr
 // (capped) and the process exit code. The passed ctx bounds the whole call.

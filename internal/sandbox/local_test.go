@@ -2,6 +2,9 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -96,5 +99,26 @@ func TestLocal_AttachPreservesWorkspace(t *testing.T) {
 	data, err := second.ReadFile(ctx, "state.txt")
 	if err != nil || string(data) != "durable" {
 		t.Fatalf("attached data = %q, err=%v", data, err)
+	}
+}
+
+func TestLocal_AttachReportsNotFoundAfterBaseDirectoryLoss(t *testing.T) {
+	ctx := context.Background()
+	base := filepath.Join(t.TempDir(), "provider-base")
+	provider := &localProvider{baseDir: base}
+	ref, box, err := provider.Create(ctx, t.Name(), Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := box.Destroy(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(base); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = provider.Attach(ctx, t.Name(), ref, Spec{})
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("Attach after base loss = %v, want ErrNotFound", err)
 	}
 }

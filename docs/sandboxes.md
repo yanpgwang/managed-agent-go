@@ -20,7 +20,11 @@ Temporal Activity -> SessionManager -> sandbox.Provider -> sandbox.Sandbox
 `SessionManager` gives each session one logical sandbox. PostgreSQL persists the
 provider name and opaque external ID; a restarted worker calls `Attach` instead
 of creating an empty replacement. `Sandbox` exposes command execution, confined
-file access, a workspace root, and teardown.
+file access, a workspace root, and teardown. The execution worker selects one
+compiled adapter through an internal registry. `MANAGED_AGENT_SANDBOX` accepts
+`local` (the default) or `docker`; an unknown name fails startup instead of
+falling back to host execution. Provider selection does not add fields to the
+Managed Agents Environment or Session APIs.
 
 ## Support levels
 
@@ -60,6 +64,12 @@ A backend implements the core lifecycle contract when it can:
 5. read and write paths relative to the workspace;
 6. destroy the resource idempotently.
 
+These requirements are executable in
+`internal/sandbox/sandboxtest`. Both built-in providers run the same suite,
+including cross-client Create/Attach, workspace preservation, ownership
+rejection, cancellation, and post-delete missing-reference behavior.
+Provider-specific tests cover isolation and resource controls separately.
+
 The built-in toolset currently assumes a POSIX-like environment with
 `/bin/sh`, `find`, and `grep`. A backend that does not provide those commands is
 not compatible with all executing built-ins yet.
@@ -82,9 +92,9 @@ not compatible with all executing built-ins yet.
 
 Remote adapters must use the same lifecycle tests. Production deployments still
 need orphan reconciliation for the create-before-binding crash window, provider
-health reporting, and a provider registry suitable for heterogeneous workers.
-Pause, snapshot, fork, quotas, and eviction remain optional capabilities rather
-than requirements of the core interface.
+health reporting, and provider-aware task routing when heterogeneous workers
+share a control plane. Pause, snapshot, fork, quotas, and eviction remain
+optional capabilities rather than requirements of the core interface.
 
 The upstream behavior informing the session/environment distinction is
 documented in Claude's
@@ -100,6 +110,8 @@ A backend contribution should:
 
 - keep its external dependency optional and fail fast when explicitly selected
   but unavailable;
+- register a lazy factory under a stable lowercase provider name and pass the
+  shared `sandboxtest` lifecycle suite;
 - preserve the session-scoped ownership contract;
 - document its trust boundary, network defaults, resource controls, host
   requirements, and unsupported lifecycle features;

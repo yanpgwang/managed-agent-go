@@ -433,7 +433,18 @@ func (p *createTrackingProvider) Create(
 	sessionKey string,
 	spec Spec,
 ) (Ref, Sandbox, error) {
+	// This resilience double deliberately returns a distinct resource for each
+	// Create so the manager's losing-bind cleanup path remains testable even
+	// though conforming production providers are idempotent by session key.
+	root, err := os.MkdirTemp("", "mango-bind-election-*")
+	if err != nil {
+		return Ref{}, nil, err
+	}
+	spec.WorkDir = root
 	ref, box, err := p.inner.Create(ctx, sessionKey, spec)
+	if err != nil {
+		_ = os.RemoveAll(root)
+	}
 	if box != nil {
 		p.createdRoot = box.Root()
 	}
@@ -447,13 +458,16 @@ func (p *createTrackingProvider) Attach(
 	spec Spec,
 ) (Sandbox, error) {
 	p.attachments.Add(1)
+	// The test double's unique local path is its ownership record.
+	spec.WorkDir = ref.ID
 	return p.inner.Attach(ctx, sessionKey, ref, spec)
 }
 
 func TestSessionManager_DestroysLosingCreateAndAttachesBindingWinner(t *testing.T) {
 	ctx := context.Background()
 	inner := NewLocalProvider()
-	winnerRef, winnerBox, err := inner.Create(ctx, "winner-resource", Spec{})
+	provider := &createTrackingProvider{inner: inner}
+	winnerRef, winnerBox, err := provider.Create(ctx, "sesn_election", Spec{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,7 +476,7 @@ func TestSessionManager_DestroysLosingCreateAndAttachesBindingWinner(t *testing.
 		t.Fatal(err)
 	}
 
-	provider := &createTrackingProvider{inner: inner}
+	provider.createdRoot = ""
 	bindings := &authoritativeBindingStore{winner: Binding{
 		SessionID: "sesn_election",
 		Ref:       winnerRef,

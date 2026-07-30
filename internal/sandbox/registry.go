@@ -1,0 +1,129 @@
+package sandbox
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+)
+
+const (
+	// LocalProviderName and DockerProviderName are persisted in sandbox
+	// bindings. They are part of the internal storage compatibility contract and
+	// must remain stable across worker releases.
+	LocalProviderName  = "local"
+	DockerProviderName = "docker"
+)
+
+// ProviderFactory constructs one provider client from worker-local
+// configuration. Factories are invoked only for the selected provider, so an
+// optional adapter never requires credentials or dependencies merely because
+// it is registered.
+type ProviderFactory func() (Provider, error)
+
+// ProviderRegistration is one deployment-selectable sandbox adapter.
+type ProviderRegistration struct {
+	Name    string
+	Factory ProviderFactory
+}
+
+// ProviderRegistry resolves a deployment-level provider name to its adapter.
+// It is deliberately internal to worker composition: provider mechanics do not
+// belong in the Managed Agents Environment or Session wire models.
+//
+// A registry is immutable after construction and safe for concurrent reads.
+type ProviderRegistry struct {
+	factories map[string]ProviderFactory
+	names     []string
+}
+
+// NewProviderRegistry validates and freezes the available provider set without
+// invoking any factory.
+func NewProviderRegistry(registrations ...ProviderRegistration) (*ProviderRegistry, error) {
+	if len(registrations) == 0 {
+		return nil, errors.New("sandbox: provider registry requires at least one registration")
+	}
+	registry := &ProviderRegistry{
+		factories: make(map[string]ProviderFactory, len(registrations)),
+		names:     make([]string, 0, len(registrations)),
+	}
+	for _, registration := range registrations {
+		if err := validateProviderName(registration.Name); err != nil {
+			return nil, err
+		}
+		if registration.Factory == nil {
+			return nil, fmt.Errorf(
+				"sandbox: provider %q has no factory",
+				registration.Name,
+			)
+		}
+		if _, exists := registry.factories[registration.Name]; exists {
+			return nil, fmt.Errorf(
+				"sandbox: provider %q is registered more than once",
+				registration.Name,
+			)
+		}
+		registry.factories[registration.Name] = registration.Factory
+		registry.names = append(registry.names, registration.Name)
+	}
+	sort.Strings(registry.names)
+	return registry, nil
+}
+
+// Open constructs the selected provider and verifies that the adapter reports
+// the same stable name under which it was registered.
+func (r *ProviderRegistry) Open(name string) (Provider, error) {
+	if r == nil {
+		return nil, errors.New("sandbox: provider registry is required")
+	}
+	factory, ok := r.factories[name]
+	if !ok {
+		return nil, fmt.Errorf(
+			"sandbox: unsupported provider %q (available: %s)",
+			name,
+			strings.Join(r.names, ", "),
+		)
+	}
+	provider, err := factory()
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: initialize provider %q: %w", name, err)
+	}
+	if provider == nil {
+		return nil, fmt.Errorf("sandbox: provider %q factory returned nil", name)
+	}
+	if provider.Name() != name {
+		return nil, fmt.Errorf(
+			"sandbox: provider registered as %q reports name %q",
+			name,
+			provider.Name(),
+		)
+	}
+	return provider, nil
+}
+
+// Names returns a sorted copy of the registered provider names.
+func (r *ProviderRegistry) Names() []string {
+	if r == nil {
+		return nil
+	}
+	return append([]string(nil), r.names...)
+}
+
+func validateProviderName(name string) error {
+	if name == "" {
+		return errors.New("sandbox: provider name is required")
+	}
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		if (c >= 'a' && c <= 'z') ||
+			(i > 0 && c >= '0' && c <= '9') ||
+			(i > 0 && c == '-') {
+			continue
+		}
+		return fmt.Errorf(
+			"sandbox: invalid provider name %q (use a lowercase ASCII identifier)",
+			name,
+		)
+	}
+	return nil
+}

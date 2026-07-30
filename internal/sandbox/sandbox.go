@@ -105,6 +105,8 @@ type Sandbox interface {
 	ReadFile(ctx context.Context, path string) ([]byte, error)
 	WriteFile(ctx context.Context, path string, data []byte) error
 	Root() string
+	// Destroy is idempotent. Repeating it after the resource is already gone
+	// must succeed so deletion workflows can safely retry a lost acknowledgement.
 	Destroy(ctx context.Context) error
 }
 

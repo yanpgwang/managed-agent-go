@@ -13,8 +13,6 @@ import (
 	"time"
 )
 
-const localProviderName = "local"
-
 // maxOutput caps the bytes captured from stdout and stderr, independently.
 const maxOutput = 100_000
 
@@ -36,7 +34,7 @@ func NewLocalProvider() Provider {
 	return &localProvider{baseDir: filepath.Join(os.TempDir(), "managed-agent-sandboxes")}
 }
 
-func (p *localProvider) Name() string { return localProviderName }
+func (p *localProvider) Name() string { return LocalProviderName }
 
 func (p *localProvider) Create(
 	ctx context.Context,
@@ -49,11 +47,7 @@ func (p *localProvider) Create(
 	if sessionKey == "" {
 		return Ref{}, nil, errors.New("sandbox: session key is required")
 	}
-	root := spec.WorkDir
-	if root == "" {
-		sum := sha256.Sum256([]byte(sessionKey))
-		root = filepath.Join(p.baseDir, fmt.Sprintf("session-%x", sum[:16]))
-	}
+	root := p.rootFor(sessionKey, spec)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		return Ref{}, nil, fmt.Errorf("sandbox: create root: %w", err)
 	}
@@ -85,6 +79,20 @@ func (p *localProvider) Attach(
 			ref.Provider,
 		))
 	}
+	expectedRoot, err := canonicalLocalPath(p.rootFor(sessionKey, spec))
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: resolve expected local workspace: %w", err)
+	}
+	referencedRoot, err := canonicalLocalPath(ref.ID)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: resolve referenced local workspace: %w", err)
+	}
+	if referencedRoot != expectedRoot {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: local workspace %q belongs to another session",
+			ref.ID,
+		))
+	}
 	info, err := os.Stat(ref.ID)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w: local workspace %q", ErrNotFound, ref.ID)
@@ -96,6 +104,45 @@ func (p *localProvider) Attach(
 		return nil, fmt.Errorf("sandbox: local workspace %q is not a directory", ref.ID)
 	}
 	return p.attachRoot(ref.ID, spec)
+}
+
+// canonicalLocalPath resolves symlinks through the deepest existing ancestor.
+// This lets Attach validate session ownership before reporting a missing
+// deterministic workspace, even when an operator removed the whole local
+// provider base directory.
+func canonicalLocalPath(value string) (string, error) {
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", err
+	}
+	current := absolute
+	var missing []string
+	for {
+		resolved, err := filepath.EvalSymlinks(current)
+		if err == nil {
+			for i := len(missing) - 1; i >= 0; i-- {
+				resolved = filepath.Join(resolved, missing[i])
+			}
+			return resolved, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", err
+		}
+		missing = append(missing, filepath.Base(current))
+		current = parent
+	}
+}
+
+func (p *localProvider) rootFor(sessionKey string, spec Spec) string {
+	if spec.WorkDir != "" {
+		return spec.WorkDir
+	}
+	sum := sha256.Sum256([]byte(sessionKey))
+	return filepath.Join(p.baseDir, fmt.Sprintf("session-%x", sum[:16]))
 }
 
 func (p *localProvider) attachRoot(root string, spec Spec) (Sandbox, error) {

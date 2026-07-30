@@ -146,6 +146,10 @@ export MANAGED_AGENT_SANDBOX=docker
 go run ./cmd/managed-agent orchestrate
 ```
 
+The provider name is validated strictly. The compiled choices are currently
+`local` and `docker`; an unknown value fails worker startup and never silently
+falls back to local host execution.
+
 The configured endpoint must expose an Anthropic-shaped `/v1/messages` API.
 Do not run workers with different model or sandbox configuration on the same
 Temporal Task Queue. Keep credentials in the environment and never commit them.

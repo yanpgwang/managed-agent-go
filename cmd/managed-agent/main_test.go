@@ -54,6 +54,34 @@ func TestResolveSandboxProvider_DefaultsToLocal(t *testing.T) {
 	}
 }
 
+func TestResolveSandboxProvider_RejectsUnknownSelection(t *testing.T) {
+	t.Setenv(sandboxProviderEnv, "dockre")
+	_, _, err := resolveSandboxProvider()
+	if err == nil {
+		t.Fatal("resolveSandboxProvider accepted an unknown provider")
+	}
+	if !strings.Contains(err.Error(), `unsupported provider "dockre"`) ||
+		!strings.Contains(err.Error(), "available: docker, local") {
+		t.Fatalf("resolveSandboxProvider error = %q", err)
+	}
+}
+
+func TestSandboxProviderRegistry_IsLazy(t *testing.T) {
+	t.Setenv("PATH", "")
+	t.Setenv(sandboxImageEnv, "unused.invalid/image")
+	registry, err := sandboxProviderRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, err := registry.Open(sandbox.LocalProviderName)
+	if err != nil {
+		t.Fatalf("opening local initialized optional Docker provider: %v", err)
+	}
+	if provider.Name() != sandbox.LocalProviderName {
+		t.Fatalf("provider name = %q", provider.Name())
+	}
+}
+
 func TestResolveRuntime_UsesFakeModelWithoutEnv(t *testing.T) {
 	t.Setenv("MANAGED_AGENT_MODEL_BASE_URL", "")
 	t.Setenv("MANAGED_AGENT_MODEL_API_KEY", "")
