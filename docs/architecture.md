@@ -107,10 +107,10 @@ status, and optional attempt finalization commit together. PostgreSQL then emits
 a best-effort NATS wakeup; SSE subscribers read the committed rows by sequence.
 
 Physical session deletion is a small saga: PostgreSQL first marks the row as
-deleting under the admission lock, the API terminates its Temporal Workflow,
-then PostgreSQL removes the projection. The marker blocks concurrent admission
-and remains on an ambiguous termination error so a repeated DELETE can safely
-finish instead of leaving a `running` projection without a Workflow.
+deleting under the admission lock, the API terminates its Session Workflow, a
+short Temporal Workflow durably releases the provider sandbox and binding, and
+only then does PostgreSQL remove the projection. The binding foreign key blocks
+deletion from discarding the last reference to a live sandbox.
 
 Live text deltas are the exception: they are explicitly ephemeral previews,
 delivered only to opted-in SSE subscribers. They are never returned by event
@@ -122,8 +122,8 @@ API replicas are stateless around PostgreSQL and NATS. Temporal assigns Workflow
 and Activity tasks to workers; the PostgreSQL tool journal records the
 side-effect ambiguity boundary. Core NATS is at-most-once, so streams
 periodically reconcile their durable cursor and never treat a wakeup as data.
-Worker Versioning and provider-backed sandbox leases are still required before
-production rolling deployments.
+Worker Versioning, remote sandbox adapters, and orphan reconciliation are still
+required before production rolling deployments.
 
 Workflow changes use Temporal version markers where replay compatibility
 requires them. Production rolling deployments still need Worker Versioning and
@@ -134,11 +134,10 @@ explicit replay coverage.
 The strongest current risks are semantic rather than structural:
 
 1. Context growth is not yet bounded by a server-owned compaction policy.
-2. Sandboxes are session-scoped: a session's logical sandbox is provisioned on
-   first tool use, reused across its runs, and released on session deletion.
-   The manager is in-memory, so a process restart does not restore an idle
-   session's workspace, and there is no durable checkpoint, quota, or eviction
-   policy yet.
+2. Sandboxes are session-scoped and durably bound to opaque provider IDs.
+   Restart reattachment and deletion cleanup are implemented for local and
+   Docker on the same host/daemon. Remote providers, orphan reconciliation,
+   quotas, and eviction are not implemented.
 3. Worker Versioning, observability, authentication, large-payload offload, and
    production manifests remain open.
 

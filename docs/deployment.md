@@ -89,7 +89,7 @@ A supported Docker or Kubernetes bundle requires:
 1. explicit, versioned schema migration;
 2. dependency-aware API and worker readiness;
 3. graceful API shutdown and worker draining;
-4. durable sandbox identity, reattachment, and teardown across worker restarts;
+4. remote sandbox adapters and orphan reconciliation;
 5. real PostgreSQL, Temporal, NATS, and sandbox integration tests in CI;
 6. versioned images with upgrade and rollback documentation.
 

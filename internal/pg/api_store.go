@@ -302,9 +302,9 @@ func (s *Store) ArchiveSession(ctx context.Context, sessionID string) (domain.Se
 	return result, err
 }
 
-// PrepareSessionDeletion closes admission before the control plane terminates
-// the Temporal Workflow. This prevents a concurrent user.message from turning
-// the projection running in the gap between termination and physical deletion.
+// PrepareSessionDeletion closes admission before the control plane stops the
+// Temporal Workflow and releases its sandbox. This prevents a concurrent
+// user.message from turning the projection running during external cleanup.
 func (s *Store) PrepareSessionDeletion(ctx context.Context, sessionID string) error {
 	return s.withTx(ctx, func(q *pgstore.Queries) error {
 		row, err := q.LockSession(ctx, sessionID)
@@ -335,6 +335,9 @@ func (s *Store) PrepareSessionDeletion(ctx context.Context, sessionID string) er
 func (s *Store) FinalizeSessionDeletion(ctx context.Context, sessionID string) error {
 	affected, err := s.q.DeleteMarkedSession(ctx, sessionID)
 	if err != nil {
+		if isForeignKeyViolation(err) {
+			return domain.Conflict("session sandbox cleanup is incomplete")
+		}
 		return err
 	}
 	if affected != 1 {

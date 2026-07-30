@@ -2,95 +2,289 @@ package sandbox
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"sync"
 )
 
-// SessionManager gives each session a single logical sandbox that lives across
-// its runs. The first run that needs tools acquires the sandbox; later runs in
-// the same session get the same instance back, so filesystem state a tool
-// created in one run is visible to the next. Different sessions acquire under
-// different keys and never share a sandbox.
+// Binding is the durable association between a Managed Agents session and the
+// provider resource that owns its workspace. SpecHash is diagnostic drift
+// metadata; credentials and provider configuration must never be stored here.
+type Binding struct {
+	SessionID string
+	Ref       Ref
+	SpecHash  string
+}
+
+// BindingStore persists sandbox ownership independently of worker memory.
+// PutSandboxBinding is insert-if-absent and returns the authoritative binding,
+// which may have been won by another worker. DeleteSandboxBinding must delete
+// only when the persisted Ref still matches the caller's binding.
+type BindingStore interface {
+	GetSandboxBinding(ctx context.Context, sessionID string) (Binding, bool, error)
+	PutSandboxBinding(ctx context.Context, binding Binding) (Binding, error)
+	DeleteSandboxBinding(ctx context.Context, binding Binding) error
+}
+
+// SessionManager gives each session one logical sandbox across turns and worker
+// restarts. Its in-memory map is only a client cache; BindingStore is the
+// ownership source of truth, and Provider.Attach reconstructs a client from the
+// persisted external reference.
 //
-// Provider-specific provisioning and teardown stay behind this type: it wraps a
-// Provider and owns the acquire/reuse/release lifecycle the application needs,
-// without the application (or AgentRuntime) knowing how a sandbox is created or
-// destroyed. Entering idle does nothing here; only Release tears a sandbox down,
-// and it does so exactly once.
+// Operations for one session are serialized locally. Provider.Create must also
+// be idempotent by session key because separate worker processes can race before
+// either has committed the binding.
 type SessionManager struct {
 	provider Provider
+	bindings BindingStore
 
 	mu    sync.Mutex
-	boxes map[string]*managedSandbox
+	boxes map[string]Sandbox
+	locks map[string]*sessionMutex
 }
 
-// managedSandbox is one session's cached sandbox. ready is closed once
-// provisioning finishes, so concurrent Acquire callers for the same session
-// block until the single Provision call completes rather than racing to
-// provision twice.
-type managedSandbox struct {
-	ready chan struct{}
-	box   Sandbox
-	err   error
+type sessionMutex struct {
+	mu    sync.Mutex
+	users int
 }
 
-// NewSessionManager wraps a Provider so sandboxes can be scoped to a session
-// instead of a single run.
-func NewSessionManager(provider Provider) *SessionManager {
-	return &SessionManager{provider: provider, boxes: make(map[string]*managedSandbox)}
-}
-
-// Acquire returns the session's sandbox, provisioning it via the wrapped
-// provider on first use and returning the same instance on every later call for
-// the same sessionID. Concurrent first-use callers provision exactly once and
-// all receive the same sandbox. A provisioning failure is not cached: the entry
-// is dropped so a later Acquire can try again.
-//
-// spec is used only for the initial provision; once a session has a sandbox its
-// spec is fixed and later specs are ignored (the existing instance is reused).
-func (m *SessionManager) Acquire(ctx context.Context, sessionID string, spec Spec) (Sandbox, error) {
-	m.mu.Lock()
-	if entry, ok := m.boxes[sessionID]; ok {
-		m.mu.Unlock()
-		<-entry.ready
-		return entry.box, entry.err
+// NewSessionManager wraps a provider with durable session ownership. The
+// optional store keeps deprecated single-process callers source-compatible; a
+// process-local store is used when none is supplied. Production Temporal
+// workers always pass PostgreSQL.
+func NewSessionManager(provider Provider, stores ...BindingStore) *SessionManager {
+	var bindings BindingStore = newMemoryBindingStore()
+	if len(stores) > 0 && stores[0] != nil {
+		bindings = stores[0]
 	}
-	entry := &managedSandbox{ready: make(chan struct{})}
-	m.boxes[sessionID] = entry
+	return &SessionManager{
+		provider: provider,
+		bindings: bindings,
+		boxes:    make(map[string]Sandbox),
+		locks:    make(map[string]*sessionMutex),
+	}
+}
+
+func (m *SessionManager) acquireSessionLock(sessionID string) func() {
+	m.mu.Lock()
+	lock, ok := m.locks[sessionID]
+	if !ok {
+		lock = &sessionMutex{}
+		m.locks[sessionID] = lock
+	}
+	lock.users++
 	m.mu.Unlock()
 
-	entry.box, entry.err = m.provider.Provision(ctx, spec)
-	if entry.err != nil {
-		// Do not cache a failed provision: drop the entry so a subsequent run's
-		// Acquire re-attempts rather than reusing the failure forever.
+	lock.mu.Lock()
+	return func() {
+		lock.mu.Unlock()
 		m.mu.Lock()
-		if m.boxes[sessionID] == entry {
-			delete(m.boxes, sessionID)
+		lock.users--
+		if lock.users == 0 && m.locks[sessionID] == lock {
+			delete(m.locks, sessionID)
 		}
 		m.mu.Unlock()
 	}
-	close(entry.ready)
-	return entry.box, entry.err
 }
 
-// Release permanently destroys the session's sandbox and forgets it. Deleting
-// the map entry under the lock guarantees the underlying Destroy runs at most
-// once even under concurrent Release calls, so a session's sandbox is cleaned
-// up exactly once. Releasing an unknown or already-released session is a no-op.
-func (m *SessionManager) Release(ctx context.Context, sessionID string) error {
+// Acquire returns the session's live sandbox client. On first use it creates an
+// idempotently named provider resource and commits its Ref. After a process
+// restart it loads that Ref and attaches to the existing resource.
+func (m *SessionManager) Acquire(
+	ctx context.Context,
+	sessionID string,
+	spec Spec,
+) (Sandbox, error) {
+	if sessionID == "" {
+		return nil, errors.New("sandbox: session id is required")
+	}
+	unlock := m.acquireSessionLock(sessionID)
+	defer unlock()
+
 	m.mu.Lock()
-	entry, ok := m.boxes[sessionID]
-	if ok {
-		delete(m.boxes, sessionID)
+	if box := m.boxes[sessionID]; box != nil {
+		m.mu.Unlock()
+		return box, nil
 	}
 	m.mu.Unlock()
-	if !ok {
+
+	binding, found, err := m.bindings.GetSandboxBinding(ctx, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: load binding: %w", err)
+	}
+	if found {
+		box, err := m.attach(ctx, binding, spec)
+		if err != nil {
+			return nil, err
+		}
+		m.cache(sessionID, box)
+		return box, nil
+	}
+
+	ref, box, err := m.provider.Create(ctx, sessionID, spec)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateSandbox(m.provider, ref, box); err != nil {
+		_ = box.Destroy(context.WithoutCancel(ctx))
+		return nil, err
+	}
+	proposed := Binding{
+		SessionID: sessionID,
+		Ref:       ref,
+		SpecHash:  specHash(spec),
+	}
+	authoritative, err := m.bindings.PutSandboxBinding(ctx, proposed)
+	if err != nil {
+		// The write result is ambiguous: destroying here could remove a
+		// resource whose binding actually committed. Provider-side idempotency
+		// lets the next attempt recover it; orphan reconciliation handles the
+		// true no-commit case.
+		return nil, fmt.Errorf("sandbox: persist binding: %w", err)
+	}
+	if authoritative.Ref != proposed.Ref {
+		_ = box.Destroy(context.WithoutCancel(ctx))
+		box, err = m.attach(ctx, authoritative, spec)
+		if err != nil {
+			return nil, err
+		}
+	}
+	m.cache(sessionID, box)
+	return box, nil
+}
+
+func (m *SessionManager) attach(
+	ctx context.Context,
+	binding Binding,
+	spec Spec,
+) (Sandbox, error) {
+	if binding.Ref.Provider != m.provider.Name() {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: session %s is bound to provider %q, worker has %q",
+			binding.SessionID,
+			binding.Ref.Provider,
+			m.provider.Name(),
+		))
+	}
+	box, err := m.provider.Attach(ctx, binding.SessionID, binding.Ref, spec)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: attach session %s: %w", binding.SessionID, err)
+	}
+	if err := validateSandbox(m.provider, binding.Ref, box); err != nil {
+		return nil, err
+	}
+	return box, nil
+}
+
+func (m *SessionManager) cache(sessionID string, box Sandbox) {
+	m.mu.Lock()
+	m.boxes[sessionID] = box
+	m.mu.Unlock()
+}
+
+// Release idempotently tears down the provider resource and removes its
+// binding. If the provider reports that the external resource is already gone,
+// deleting the stale binding completes recovery. Other provider failures leave
+// the binding intact so a durable cleanup retry can resume safely.
+func (m *SessionManager) Release(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return errors.New("sandbox: session id is required")
+	}
+	unlock := m.acquireSessionLock(sessionID)
+	defer unlock()
+
+	m.mu.Lock()
+	box := m.boxes[sessionID]
+	delete(m.boxes, sessionID)
+	m.mu.Unlock()
+
+	binding, found, err := m.bindings.GetSandboxBinding(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("sandbox: load binding for release: %w", err)
+	}
+	if !found {
+		if box != nil {
+			return box.Destroy(ctx)
+		}
 		return nil
 	}
-	// Wait for any in-flight provision so we destroy the real instance rather
-	// than racing a half-provisioned entry.
-	<-entry.ready
-	if entry.err != nil || entry.box == nil {
-		return nil
+	if binding.Ref.Provider != m.provider.Name() {
+		return Permanent(fmt.Errorf(
+			"sandbox: cannot release session %s bound to provider %q with %q",
+			sessionID,
+			binding.Ref.Provider,
+			m.provider.Name(),
+		))
 	}
-	return entry.box.Destroy(ctx)
+	if box == nil {
+		box, err = m.provider.Attach(ctx, sessionID, binding.Ref, Spec{})
+		if errors.Is(err, ErrNotFound) {
+			return m.bindings.DeleteSandboxBinding(ctx, binding)
+		}
+		if err != nil {
+			return fmt.Errorf("sandbox: attach for release: %w", err)
+		}
+		if err := validateSandbox(m.provider, binding.Ref, box); err != nil {
+			return err
+		}
+	}
+	if err := box.Destroy(ctx); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	if err := m.bindings.DeleteSandboxBinding(ctx, binding); err != nil {
+		return fmt.Errorf("sandbox: delete binding: %w", err)
+	}
+	return nil
+}
+
+func specHash(spec Spec) string {
+	body, _ := json.Marshal(spec)
+	sum := sha256.Sum256(body)
+	return fmt.Sprintf("sha256:%x", sum[:])
+}
+
+type memoryBindingStore struct {
+	mu       sync.Mutex
+	bindings map[string]Binding
+}
+
+func newMemoryBindingStore() *memoryBindingStore {
+	return &memoryBindingStore{bindings: make(map[string]Binding)}
+}
+
+func (s *memoryBindingStore) GetSandboxBinding(
+	_ context.Context,
+	sessionID string,
+) (Binding, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	binding, ok := s.bindings[sessionID]
+	return binding, ok, nil
+}
+
+func (s *memoryBindingStore) PutSandboxBinding(
+	_ context.Context,
+	binding Binding,
+) (Binding, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current, ok := s.bindings[binding.SessionID]; ok {
+		return current, nil
+	}
+	s.bindings[binding.SessionID] = binding
+	return binding, nil
+}
+
+func (s *memoryBindingStore) DeleteSandboxBinding(
+	_ context.Context,
+	binding Binding,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if current, ok := s.bindings[binding.SessionID]; ok && current.Ref == binding.Ref {
+		delete(s.bindings, binding.SessionID)
+	}
+	return nil
 }

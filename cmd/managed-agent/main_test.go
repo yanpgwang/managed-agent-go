@@ -29,7 +29,11 @@ func TestResolveSandboxProvider_DefaultsToLocal(t *testing.T) {
 	if !isLocal {
 		t.Fatalf("default resolveSandboxProvider isLocal=false; want true")
 	}
-	sb, err := p.Provision(context.Background(), sandbox.Spec{Timeout: 5 * time.Second})
+	_, sb, err := p.Create(
+		context.Background(),
+		t.Name(),
+		sandbox.Spec{Timeout: 5 * time.Second},
+	)
 	if err != nil {
 		t.Fatalf("default provider Provision: %v", err)
 	}

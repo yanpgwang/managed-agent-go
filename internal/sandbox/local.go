@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -12,13 +13,18 @@ import (
 	"time"
 )
 
+const localProviderName = "local"
+
 // maxOutput caps the bytes captured from stdout and stderr, independently.
 const maxOutput = 100_000
 
 // localProvider provisions sandboxes backed by the host filesystem and a plain
 // child process. See the package doc: DEV-GRADE GUARDRAIL, not a security
-// boundary.
-type localProvider struct{}
+// boundary. baseDir is stable across provider instances so a new worker process
+// can attach to the workspace named by a persisted reference.
+type localProvider struct {
+	baseDir string
+}
 
 // NewLocalProvider returns a Provider that runs commands as local child
 // processes confined (best-effort) to a working directory.
@@ -26,26 +32,83 @@ type localProvider struct{}
 // This is a dev-grade guardrail, NOT a security boundary: it shares the host
 // kernel and filesystem namespace, and offers no network isolation. Do NOT run
 // untrusted code with it.
-func NewLocalProvider() Provider { return &localProvider{} }
+func NewLocalProvider() Provider {
+	return &localProvider{baseDir: filepath.Join(os.TempDir(), "managed-agent-sandboxes")}
+}
 
-func (p *localProvider) Provision(ctx context.Context, spec Spec) (Sandbox, error) {
+func (p *localProvider) Name() string { return localProviderName }
+
+func (p *localProvider) Create(
+	ctx context.Context,
+	sessionKey string,
+	spec Spec,
+) (Ref, Sandbox, error) {
+	if err := ctx.Err(); err != nil {
+		return Ref{}, nil, err
+	}
+	if sessionKey == "" {
+		return Ref{}, nil, errors.New("sandbox: session key is required")
+	}
 	root := spec.WorkDir
 	if root == "" {
-		dir, err := os.MkdirTemp("", "mas-sbx-*")
-		if err != nil {
-			return nil, fmt.Errorf("sandbox: create root: %w", err)
-		}
-		root = dir
-	} else if err := os.MkdirAll(root, 0o700); err != nil {
-		return nil, fmt.Errorf("sandbox: create root: %w", err)
+		sum := sha256.Sum256([]byte(sessionKey))
+		root = filepath.Join(p.baseDir, fmt.Sprintf("session-%x", sum[:16]))
 	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return Ref{}, nil, fmt.Errorf("sandbox: create root: %w", err)
+	}
+	box, err := p.attachRoot(root, spec)
+	if err != nil {
+		return Ref{}, nil, err
+	}
+	return Ref{Provider: p.Name(), ID: box.Root()}, box, nil
+}
+
+func (p *localProvider) Attach(
+	ctx context.Context,
+	sessionKey string,
+	ref Ref,
+	spec Spec,
+) (Sandbox, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if sessionKey == "" {
+		return nil, Permanent(errors.New("sandbox: session key is required"))
+	}
+	if err := ref.validate(); err != nil {
+		return nil, Permanent(err)
+	}
+	if ref.Provider != p.Name() {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: local provider cannot attach reference for %q",
+			ref.Provider,
+		))
+	}
+	info, err := os.Stat(ref.ID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("%w: local workspace %q", ErrNotFound, ref.ID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: stat local workspace: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("sandbox: local workspace %q is not a directory", ref.ID)
+	}
+	return p.attachRoot(ref.ID, spec)
+}
+
+func (p *localProvider) attachRoot(root string, spec Spec) (Sandbox, error) {
 	// Resolve symlinks so confinement checks compare canonical paths (e.g. on
 	// darwin /tmp is a symlink to /private/tmp).
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: resolve root: %w", err)
 	}
-	return &localSandbox{root: resolved, timeout: spec.Timeout}, nil
+	return &localSandbox{
+		root:    resolved,
+		timeout: spec.Timeout,
+	}, nil
 }
 
 type localSandbox struct {

@@ -170,16 +170,15 @@ func (s *SessionService) Archive(ctx context.Context, id string) (domain.Session
 }
 
 func (s *SessionService) Delete(ctx context.Context, id string) error {
-	// Fence new admission before the external termination call. Without this
-	// phase, an admission could make the session running after termination but
-	// before the physical delete, leaving a running projection with no Workflow.
+	// Fence new admission before stopping orchestration and releasing the
+	// provider sandbox. Without this phase, an admission could make the session
+	// running in the gap before physical deletion.
 	if err := s.store.PrepareSessionDeletion(ctx, id); err != nil {
 		return err
 	}
 	if err := s.orchestrator.TerminateSession(ctx, id); err != nil {
 		// Keep the fence on an ambiguous external result. Retrying DELETE safely
-		// repeats termination; reopening admission here could race a termination
-		// that actually reached Temporal despite its lost response.
+		// repeats Workflow termination and idempotent sandbox cleanup.
 		return err
 	}
 	// Once termination succeeds, finish the fenced delete even if the client

@@ -833,11 +833,26 @@ func (b *blockingDestroySandbox) Destroy(ctx context.Context) error {
 	return nil
 }
 
-// stubSandboxProvider provisions a single pre-built sandbox, so a test can
+// stubSandboxProvider returns a single pre-built sandbox, so a test can
 // inject a controllable box into a SessionService's SessionManager.
 type stubSandboxProvider struct{ box sandbox.Sandbox }
 
-func (p stubSandboxProvider) Provision(context.Context, sandbox.Spec) (sandbox.Sandbox, error) {
+func (stubSandboxProvider) Name() string { return "stub" }
+
+func (p stubSandboxProvider) Create(
+	context.Context,
+	string,
+	sandbox.Spec,
+) (sandbox.Ref, sandbox.Sandbox, error) {
+	return sandbox.Ref{Provider: p.Name(), ID: "box"}, p.box, nil
+}
+
+func (p stubSandboxProvider) Attach(
+	context.Context,
+	string,
+	sandbox.Ref,
+	sandbox.Spec,
+) (sandbox.Sandbox, error) {
 	return p.box, nil
 }
 

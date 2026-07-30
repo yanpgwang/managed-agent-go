@@ -26,6 +26,10 @@ const (
 	// SessionWorkflowType is the registered workflow name. The Workflow ID is the
 	// public session ID, so starting the same session twice is idempotent.
 	SessionWorkflowType = "SessionWorkflow"
+
+	// SandboxCleanupWorkflowType is a short durable teardown workflow started
+	// after the long-lived SessionWorkflow has been stopped for public deletion.
+	SandboxCleanupWorkflowType = "SandboxCleanupWorkflow"
 )
 
 // WakeupSignal is the wakeup metadata delivered to a SessionWorkflow. It carries
@@ -44,6 +48,10 @@ type WakeupSignal struct {
 type SessionWorkflowInput struct {
 	SessionID   string `json:"session_id"`
 	StartCursor int64  `json:"start_cursor"`
+}
+
+type ReleaseSandboxInput struct {
+	SessionID string `json:"session_id"`
 }
 
 // RunTurnResult reports whether the workflow-owned turn completed, parked on a

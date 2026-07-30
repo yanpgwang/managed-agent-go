@@ -118,6 +118,8 @@ func (l *countingSandboxLease) Acquire(
 	return nil, nil
 }
 
+func (*countingSandboxLease) Release(context.Context, string) error { return nil }
+
 func (l *countingSandboxLease) calls() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -139,6 +141,10 @@ func (l *forwardingCountingLease) Acquire(
 	l.count++
 	l.mu.Unlock()
 	return l.inner.Acquire(ctx, sessionID, spec)
+}
+
+func (l *forwardingCountingLease) Release(ctx context.Context, sessionID string) error {
+	return l.inner.Release(ctx, sessionID)
 }
 
 func (l *forwardingCountingLease) calls() int {

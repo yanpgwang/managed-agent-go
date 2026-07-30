@@ -9,8 +9,43 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 )
+
+// ErrNotFound means a durable provider reference no longer resolves to a
+// sandbox. Callers must not silently provision an empty replacement: doing so
+// would present lost session workspace state as a successful resume.
+var ErrNotFound = errors.New("sandbox: durable reference not found")
+
+// PermanentError marks invalid ownership or configuration that retrying on the
+// same worker cannot repair. Temporal Activities translate it to a
+// non-retryable failure; a later public DELETE can start a fresh cleanup run
+// after operators correct the worker configuration.
+type PermanentError struct {
+	err error
+}
+
+func (e *PermanentError) Error() string { return e.err.Error() }
+func (e *PermanentError) Unwrap() error { return e.err }
+
+// Permanent marks an adapter error as unsafe to retry on the same worker.
+func Permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	var target *PermanentError
+	if errors.As(err, &target) {
+		return err
+	}
+	return &PermanentError{err: err}
+}
+
+func IsPermanent(err error) bool {
+	var target *PermanentError
+	return errors.As(err, &target)
+}
 
 // Spec describes the sandbox to provision.
 type Spec struct {
@@ -45,6 +80,24 @@ type Result struct {
 	TimedOut bool
 }
 
+// Ref is the durable, provider-owned identity of one sandbox. It is safe to
+// persist in the control-plane database: credentials and connection details
+// remain in worker configuration, never in the reference.
+type Ref struct {
+	Provider string `json:"provider"`
+	ID       string `json:"id"`
+}
+
+func (r Ref) validate() error {
+	if r.Provider == "" {
+		return errors.New("sandbox: reference provider is required")
+	}
+	if r.ID == "" {
+		return errors.New("sandbox: reference id is required")
+	}
+	return nil
+}
+
 // Sandbox is a provisioned execution environment. File paths passed to
 // ReadFile/WriteFile are relative to (and confined within) Root.
 type Sandbox interface {
@@ -55,7 +108,35 @@ type Sandbox interface {
 	Destroy(ctx context.Context) error
 }
 
-// Provider provisions sandboxes.
+// Provider owns sandbox resources outside the agent loop. Create must be
+// idempotent for one sessionKey: after a lost response, repeating Create with
+// the same key must resolve the same logical resource rather than leak a second
+// sandbox. Attach reconstructs a client from a persisted Ref after a worker
+// restart and must verify that the provider resource still belongs to the given
+// sessionKey. Destroy remains on Sandbox so execution and teardown use the same
+// authenticated provider client.
 type Provider interface {
-	Provision(ctx context.Context, spec Spec) (Sandbox, error)
+	Name() string
+	Create(ctx context.Context, sessionKey string, spec Spec) (Ref, Sandbox, error)
+	Attach(ctx context.Context, sessionKey string, ref Ref, spec Spec) (Sandbox, error)
+}
+
+func validateSandbox(provider Provider, ref Ref, box Sandbox) error {
+	if provider == nil {
+		return errors.New("sandbox: provider is required")
+	}
+	if box == nil {
+		return errors.New("sandbox: provider returned a nil sandbox")
+	}
+	if err := ref.validate(); err != nil {
+		return Permanent(err)
+	}
+	if ref.Provider != provider.Name() {
+		return Permanent(fmt.Errorf(
+			"sandbox: provider %q returned reference for %q",
+			provider.Name(),
+			ref.Provider,
+		))
+	}
+	return nil
 }
