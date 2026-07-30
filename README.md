@@ -2,6 +2,8 @@
   <img src="assets/mango-logo.png" alt="Mango" width="420">
 </p>
 
+<hr>
+
 <p align="center">
   <strong>Open-source Claude Managed Agents runtime, built for durable self-hosting.</strong>
 </p>
