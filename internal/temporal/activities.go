@@ -911,20 +911,21 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		kind = TurnToolBuiltin
 	}
 	var executor tools.Executor
-	if kind == TurnToolBuiltin {
+	switch kind {
+	case TurnToolBuiltin:
 		var ok bool
 		executor, ok = tools.Registry()[in.ToolName]
 		if !ok {
 			out.FatalError = "built-in tool is not registered: " + in.ToolName
 			return out, nil
 		}
-	} else if kind == TurnToolMCP {
+	case TurnToolMCP:
 		if a.mcp == nil || in.MCPServer.Name == "" ||
 			in.MCPServer.URL == "" || in.MCPToolName == "" {
 			out.FatalError = "MCP tool execution is missing its pinned server definition"
 			return out, nil
 		}
-	} else {
+	default:
 		out.FatalError = "tool execution owner is not server-executable: " + string(kind)
 		return out, nil
 	}

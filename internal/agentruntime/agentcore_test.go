@@ -283,8 +283,7 @@ func TestEnabledBuiltinSchemas_UsesNativeWebDeclarations(t *testing.T) {
 		DefaultEnabled: true,
 		DefaultPolicy:  domain.PermissionPolicy{Type: "always_allow"},
 	}}
-	var native map[string]model.ToolSchema
-	native = make(map[string]model.ToolSchema)
+	native := make(map[string]model.ToolSchema)
 	for _, schema := range enabledBuiltinSchemas(ts) {
 		if schema.Type != "" {
 			native[schema.Name] = schema

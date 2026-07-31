@@ -123,7 +123,10 @@ func (r *Remote) Discover(
 	if err != nil {
 		return nil, err
 	}
-	defer session.Close()
+	defer func() {
+		// Shutdown errors do not invalidate a completed discovery response.
+		_ = session.Close()
+	}()
 
 	var out []Tool
 	cursor := ""
@@ -186,7 +189,11 @@ func (r *Remote) Call(
 	if err != nil {
 		return Result{}, err
 	}
-	defer session.Close()
+	defer func() {
+		// A shutdown error after CallTool returned must not trigger a retry of a
+		// possibly side-effecting operation.
+		_ = session.Close()
+	}()
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{
 		Name:      toolName,
 		Arguments: input,
