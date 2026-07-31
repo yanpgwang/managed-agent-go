@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 const (
 	PrefixRunAttempt = "ratm_"
@@ -53,6 +56,11 @@ const (
 type ToolStepResult struct {
 	Content []any `json:"content"`
 	IsError bool  `json:"is_error"`
+	// Raw retains a bounded executor-native result for diagnostics/UI without
+	// placing it in model context. Large raw results are stored in the Session
+	// sandbox and referenced by RawPath instead.
+	Raw     json.RawMessage `json:"raw,omitempty"`
+	RawPath string          `json:"raw_path,omitempty"`
 }
 
 // ToolStep is an internal durable record of one built-in tool request and its

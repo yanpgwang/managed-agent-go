@@ -131,7 +131,7 @@ func TestAgents_UpdateArrayNullClears(t *testing.T) {
 	srv := newTestServer(t)
 	rec := do(srv, "POST", "/v1/agents",
 		`{"name":"Agent","model":"claude-opus-4-8",`+
-			`"tools":[{"type":"custom","name":"x"}],`+
+			`"tools":[{"type":"custom","name":"x"},{"type":"mcp_toolset","mcp_server_name":"m"}],`+
 			`"mcp_servers":[{"type":"url","name":"m","url":"https://example.com"}],`+
 			`"skills":[{"type":"anthropic","skill_id":"xlsx","version":"1"}]}`)
 	if rec.Code != http.StatusOK {

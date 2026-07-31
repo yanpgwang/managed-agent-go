@@ -4,8 +4,26 @@ import (
 	"context"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 )
+
+func (s storeSource) GetMCPDiscoverySnapshot(
+	ctx context.Context,
+	sessionID string,
+	server domain.MCPServer,
+) ([]mcpclient.Tool, bool, error) {
+	return s.store.GetMCPDiscoverySnapshot(ctx, sessionID, server)
+}
+
+func (s storeSource) PutMCPDiscoverySnapshot(
+	ctx context.Context,
+	sessionID string,
+	server domain.MCPServer,
+	tools []mcpclient.Tool,
+) ([]mcpclient.Tool, error) {
+	return s.store.PutMCPDiscoverySnapshot(ctx, sessionID, server, tools)
+}
 
 // storeSource adapts *pg.Store to the EventSource interface the Activities
 // depend on. It exists so the temporal package depends on a narrow interface
@@ -48,6 +66,13 @@ func (s storeSource) UnresolvedPendingActions(
 	return s.store.UnresolvedPendingActions(ctx, sessionID)
 }
 
+func (s storeSource) LoadProviderTranscript(
+	ctx context.Context,
+	sessionID string,
+) (domain.ProviderTranscript, error) {
+	return s.store.LoadProviderTranscript(ctx, sessionID)
+}
+
 func (s storeSource) CompleteWorkflowTurn(
 	ctx context.Context,
 	sessionID string,
@@ -71,6 +96,46 @@ func (s storeSource) CompleteWorkflowTurn(
 		attemptError,
 		pendingActionEventIDs,
 		resolutionEventIDs,
+	)
+	if err != nil {
+		return TurnCompletionResult{}, err
+	}
+	parked := res.Parked
+	return TurnCompletionResult{
+		Events:  res.Events,
+		Applied: res.Applied,
+		Status:  res.Session.Status,
+		Parked:  &parked,
+	}, nil
+}
+
+func (s storeSource) CompleteWorkflowTurnWithTranscript(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	output []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
+	transcriptDelta []domain.Message,
+	toolUseMappings []domain.ProviderToolUseMapping,
+) (TurnCompletionResult, error) {
+	res, err := s.store.CompleteWorkflowTurnWithTranscript(
+		ctx,
+		sessionID,
+		triggerEventID,
+		output,
+		status,
+		attemptID,
+		attemptState,
+		attemptError,
+		pendingActionEventIDs,
+		resolutionEventIDs,
+		transcriptDelta,
+		toolUseMappings,
 	)
 	if err != nil {
 		return TurnCompletionResult{}, err

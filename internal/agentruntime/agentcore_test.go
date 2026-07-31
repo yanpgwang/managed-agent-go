@@ -266,12 +266,53 @@ func TestEnabledBuiltinSchemas_AllOfferedSchemasAreObjects(t *testing.T) {
 		t.Fatalf("offered %d builtin schemas, want %d", len(schemas), len(domain.BuiltinToolNames))
 	}
 	for _, s := range schemas {
+		if s.Type != "" {
+			continue
+		}
 		if s.InputSchema == nil {
 			t.Fatalf("tool %q offered with nil InputSchema (serializes to input_schema:null → 400)", s.Name)
 		}
 		if typ, _ := s.InputSchema["type"].(string); typ != "object" {
 			t.Fatalf("tool %q InputSchema type = %v, want object", s.Name, s.InputSchema["type"])
 		}
+	}
+}
+
+func TestEnabledBuiltinSchemas_UsesNativeWebDeclarations(t *testing.T) {
+	ts := domain.ToolSet{Builtin: &domain.BuiltinToolset{
+		DefaultEnabled: true,
+		DefaultPolicy:  domain.PermissionPolicy{Type: "always_allow"},
+	}}
+	var native map[string]model.ToolSchema
+	native = make(map[string]model.ToolSchema)
+	for _, schema := range enabledBuiltinSchemas(ts) {
+		if schema.Type != "" {
+			native[schema.Name] = schema
+		}
+	}
+	if native["web_search"].Type != "web_search_20260318" ||
+		native["web_fetch"].Type != "web_fetch_20260318" {
+		t.Fatalf("native web schemas = %#v", native)
+	}
+	if native["web_search"].InputSchema != nil ||
+		native["web_fetch"].InputSchema != nil {
+		t.Fatalf("native tools must not carry client input schemas: %#v", native)
+	}
+}
+
+func TestValidateToolCapabilities_RejectsApprovalForNativeWeb(t *testing.T) {
+	ts := domain.ToolSet{Builtin: &domain.BuiltinToolset{
+		DefaultEnabled: true,
+		DefaultPolicy:  domain.PermissionPolicy{Type: "always_allow"},
+		Configs: []domain.BuiltinConfig{{
+			Name: "web_search",
+			Policy: &domain.PermissionPolicy{
+				Type: "always_ask",
+			},
+		}},
+	}}
+	if err := ValidateToolCapabilities(ts); err == nil {
+		t.Fatal("expected provider-native web_search always_ask to be rejected")
 	}
 }
 

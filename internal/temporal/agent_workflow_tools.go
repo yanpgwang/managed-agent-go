@@ -21,14 +21,17 @@ func failTurn(message string) turnFailure {
 // manually passing the same session, trigger, output, attempt, and resolution
 // arguments in positional order.
 type workflowTurnState struct {
-	actx               workflow.Context
-	sessionID          string
-	triggerEventID     string
-	resolutionEventIDs []string
-	output             []domain.EventDraft
-	attemptID          string
-	ordinal            int
-	interrupts         *turnInterruptWatcher
+	actx                   workflow.Context
+	sessionID              string
+	triggerEventID         string
+	resolutionEventIDs     []string
+	output                 []domain.EventDraft
+	attemptID              string
+	ordinal                int
+	interrupts             *turnInterruptWatcher
+	usesProviderTranscript bool
+	transcriptDelta        []domain.Message
+	toolUseMappings        []domain.ProviderToolUseMapping
 }
 
 func (t *workflowTurnState) callModel(
@@ -54,7 +57,9 @@ func (t *workflowTurnState) callModel(
 func (t *workflowTurnState) executeTool(
 	attemptID string,
 	use domain.ContentBlock,
+	publicEventID string,
 	stepID string,
+	definition TurnTool,
 ) (ExecuteToolResult, interruptibleActivityOutcome, error) {
 	t.attemptID = attemptID
 	input := ExecuteToolInput{
@@ -62,9 +67,12 @@ func (t *workflowTurnState) executeTool(
 		TriggerEventID: t.triggerEventID,
 		AttemptID:      attemptID,
 		Ordinal:        t.ordinal,
-		ToolUseEventID: use.ToolUseID,
+		ToolUseEventID: publicEventID,
 		ToolStepID:     stepID,
 		ToolName:       use.ToolName,
+		ToolKind:       definition.Kind,
+		MCPServer:      definition.MCPServer,
+		MCPToolName:    definition.MCPToolName,
 		Input:          use.Input,
 	}
 	var executed ExecuteToolResult
@@ -117,6 +125,10 @@ func (t *workflowTurnState) complete(
 		PendingActionEventIDs: pendingActionEventIDs,
 		ResolutionEventIDs:    t.resolutionEventIDs,
 	}
+	if t.usesProviderTranscript {
+		input.TranscriptDelta = t.transcriptDelta
+		input.ToolUseMappings = t.toolUseMappings
+	}
 	if t.attemptID != "" {
 		input.AttemptState = domain.RunAttemptCompleted
 	}
@@ -146,6 +158,10 @@ func (t *workflowTurnState) terminate(
 		Status:             domain.StatusTerminated,
 		AttemptID:          t.attemptID,
 		ResolutionEventIDs: t.resolutionEventIDs,
+	}
+	if t.usesProviderTranscript {
+		input.TranscriptDelta = t.transcriptDelta
+		input.ToolUseMappings = t.toolUseMappings
 	}
 	if t.attemptID != "" {
 		input.AttemptState = domain.RunAttemptFailed
@@ -194,12 +210,18 @@ func resumeWorkflowTurn(
 				"pending action names a tool that is not enabled: " + action.ToolName,
 			), nil
 		}
-		actionBlocks = append(actionBlocks, domain.ContentBlock{
-			Type:      "tool_use",
-			ToolUseID: action.ActionEventID,
-			ToolName:  action.ToolName,
-			Input:     action.Input,
-		})
+		providerToolUseID := action.ProviderToolUseID
+		if providerToolUseID == "" {
+			providerToolUseID = action.ActionEventID
+		}
+		if !prepared.UsesProviderTranscript {
+			actionBlocks = append(actionBlocks, domain.ContentBlock{
+				Type:      "tool_use",
+				ToolUseID: providerToolUseID,
+				ToolName:  action.ToolName,
+				Input:     action.Input,
+			})
+		}
 
 		content := action.Content
 		isError := action.IsError
@@ -211,7 +233,8 @@ func resumeWorkflowTurn(
 				), nil
 			}
 		case domain.PendingToolConfirmation:
-			if definition.Kind != TurnToolBuiltin ||
+			if (definition.Kind != TurnToolBuiltin &&
+				definition.Kind != TurnToolMCP) ||
 				definition.Permission.Type != "always_ask" {
 				return nil, false, failTurn(
 					"tool confirmation does not reference an always_ask built-in",
@@ -234,11 +257,13 @@ func resumeWorkflowTurn(
 					prepared.AttemptID,
 					domain.ContentBlock{
 						Type:      "tool_use",
-						ToolUseID: action.ActionEventID,
+						ToolUseID: providerToolUseID,
 						ToolName:  action.ToolName,
 						Input:     action.Input,
 					},
+					action.ActionEventID,
 					action.ToolStepID,
+					definition,
 				)
 				if err != nil {
 					return nil, false, "", err
@@ -288,21 +313,35 @@ func resumeWorkflowTurn(
 		}
 		resultBlocks = append(resultBlocks, domain.ContentBlock{
 			Type:          "tool_result",
-			ToolResultFor: action.ActionEventID,
+			ToolResultFor: providerToolUseID,
 			Text:          agentruntime.FlattenResultText(content),
 			IsError:       isError,
 		})
 	}
 
-	return agentruntime.AppendMerging(messages, []domain.Message{
-		{Role: domain.RoleAssistant, Content: actionBlocks},
-		{Role: domain.RoleUser, Content: resultBlocks},
-	}), false, "", nil
+	var added []domain.Message
+	if len(actionBlocks) > 0 {
+		added = append(added, domain.Message{
+			Role: domain.RoleAssistant, Content: actionBlocks,
+		})
+	}
+	added = append(added, domain.Message{
+		Role: domain.RoleUser, Content: resultBlocks,
+	})
+	if prepared.UsesProviderTranscript {
+		turn.transcriptDelta = agentruntime.AppendMerging(
+			turn.transcriptDelta,
+			[]domain.Message{{Role: domain.RoleUser, Content: resultBlocks}},
+		)
+	}
+	return agentruntime.AppendMerging(messages, added), false, "", nil
 }
 
 type plannedToolUse struct {
-	use    domain.ContentBlock
-	stepID string
+	use           domain.ContentBlock
+	publicEventID string
+	stepID        string
+	definition    TurnTool
 }
 
 type toolBatchPlan struct {
@@ -317,10 +356,10 @@ type toolBatchPlan struct {
 func planToolBatch(
 	toolUses []domain.ContentBlock,
 	toolsByName map[string]TurnTool,
-	stepIDsByEvent map[string]string,
+	stepsByProviderID map[string]PlannedToolStep,
 ) (toolBatchPlan, turnFailure) {
 	for _, use := range toolUses {
-		if stepIDsByEvent[use.ToolUseID] == "" {
+		if stepsByProviderID[use.ToolUseID].ToolStepID == "" {
 			return toolBatchPlan{}, failTurn(
 				"model tool request has no durable operation id",
 			)
@@ -346,32 +385,39 @@ func planToolBatch(
 	}
 	for _, use := range toolUses {
 		definition := toolsByName[use.ToolName]
+		planned := stepsByProviderID[use.ToolUseID]
 		draft := domain.EventDraft{
-			ID: use.ToolUseID,
+			ID: planned.ToolUseEventID,
 			Payload: map[string]any{
 				"name":  use.ToolName,
 				"input": use.Input,
 			},
+		}
+		if definition.Kind == TurnToolMCP {
+			draft.Payload["name"] = definition.MCPToolName
+			draft.Payload["mcp_server_name"] = definition.MCPServer.Name
 		}
 		switch {
 		case definition.Kind == TurnToolCustom:
 			draft.Type = domain.EvAgentCustomToolUse
 			plan.pendingActionEventIDs = append(
 				plan.pendingActionEventIDs,
-				use.ToolUseID,
+				planned.ToolUseEventID,
 			)
 		case definition.Permission.Type == "always_ask":
 			draft.Type = domain.EvAgentToolUse
 			draft.Payload["evaluated_permission"] = "ask"
 			plan.pendingActionEventIDs = append(
 				plan.pendingActionEventIDs,
-				use.ToolUseID,
+				planned.ToolUseEventID,
 			)
 		default:
 			draft.Type = domain.EvAgentToolUse
 			plan.executable = append(plan.executable, plannedToolUse{
-				use:    use,
-				stepID: stepIDsByEvent[use.ToolUseID],
+				use:           use,
+				publicEventID: planned.ToolUseEventID,
+				stepID:        planned.ToolStepID,
+				definition:    definition,
 			})
 		}
 		plan.actionDrafts = append(plan.actionDrafts, draft)
@@ -382,6 +428,63 @@ func planToolBatch(
 type toolBatchExecution struct {
 	resultDrafts []domain.EventDraft
 	resultBlocks []domain.ContentBlock
+}
+
+// closeInterruptedProviderToolRound keeps the private transcript legal when an
+// interrupt wins after a provider response containing client tool_use blocks.
+// Completed tools retain their real result; every remaining provider tool id
+// receives a synthetic error result. Public output still follows the interrupt
+// projection and drops uncompleted tool-use events.
+func closeInterruptedProviderToolRound(
+	turn *workflowTurnState,
+	toolUses []domain.ContentBlock,
+	completed []domain.ContentBlock,
+	mappingCheckpoint int,
+) {
+	if !turn.usesProviderTranscript {
+		return
+	}
+	byProviderID := make(map[string]domain.ContentBlock, len(completed))
+	for _, block := range completed {
+		if block.Type == "tool_result" && block.ToolResultFor != "" {
+			byProviderID[block.ToolResultFor] = block
+		}
+	}
+	results := make([]domain.ContentBlock, 0, len(toolUses))
+	for _, use := range toolUses {
+		if block, ok := byProviderID[use.ToolUseID]; ok {
+			results = append(results, block)
+			continue
+		}
+		results = append(results, domain.ContentBlock{
+			Type:          "tool_result",
+			ToolResultFor: use.ToolUseID,
+			Text:          "Tool execution was interrupted before a result was committed.",
+			IsError:       true,
+		})
+	}
+	if len(results) > 0 {
+		turn.transcriptDelta = agentruntime.AppendMerging(
+			turn.transcriptDelta,
+			[]domain.Message{{
+				Role: domain.RoleUser, Content: results,
+			}},
+		)
+	}
+
+	if mappingCheckpoint < 0 || mappingCheckpoint > len(turn.toolUseMappings) {
+		mappingCheckpoint = len(turn.toolUseMappings)
+	}
+	filtered := append(
+		[]domain.ProviderToolUseMapping(nil),
+		turn.toolUseMappings[:mappingCheckpoint]...,
+	)
+	for _, mapping := range turn.toolUseMappings[mappingCheckpoint:] {
+		if _, completed := byProviderID[mapping.ProviderToolUseID]; completed {
+			filtered = append(filtered, mapping)
+		}
+	}
+	turn.toolUseMappings = filtered
 }
 
 // executeToolBatch remains Workflow-scoped: each tool execution is a durable
@@ -399,7 +502,9 @@ func executeToolBatch(
 		executed, activityOutcome, err := turn.executeTool(
 			attemptID,
 			planned.use,
+			planned.publicEventID,
 			planned.stepID,
+			planned.definition,
 		)
 		if err != nil {
 			return toolBatchExecution{}, false, "", err
@@ -425,7 +530,7 @@ func executeToolBatch(
 		execution.resultDrafts = append(execution.resultDrafts, domain.EventDraft{
 			Type: domain.EvAgentToolResult,
 			Payload: map[string]any{
-				"tool_use_id": planned.use.ToolUseID,
+				"tool_use_id": planned.publicEventID,
 				"content":     executed.Result.Content,
 				"is_error":    executed.Result.IsError,
 			},

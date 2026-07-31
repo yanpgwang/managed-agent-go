@@ -30,9 +30,9 @@ func (f *Fake) CreateMessage(_ context.Context, req Request) (Response, error) {
 		return Response{}, err
 	}
 
-	if len(req.Tools) > 0 && !hasToolResult(req.Messages) {
+	if tool, ok := firstClientTool(req.Tools); ok && !hasToolResult(req.Messages) {
 		return Response{
-			Content:    []domain.ContentBlock{{Type: "tool_use", ToolUseID: "fake_tool_1", ToolName: req.Tools[0].Name, Input: map[string]any{}}},
+			Content:    []domain.ContentBlock{{Type: "tool_use", ToolUseID: "fake_tool_1", ToolName: tool.Name, Input: map[string]any{}}},
 			StopReason: "tool_use",
 		}, nil
 	}
@@ -52,6 +52,15 @@ func (f *Fake) CreateMessage(_ context.Context, req Request) (Response, error) {
 		Content:    []domain.ContentBlock{{Type: "text", Text: "echo: " + lastUser}},
 		StopReason: "end_turn",
 	}, nil
+}
+
+func firstClientTool(tools []ToolSchema) (ToolSchema, bool) {
+	for _, tool := range tools {
+		if tool.Type == "" {
+			return tool, true
+		}
+	}
+	return ToolSchema{}, false
 }
 
 // SetError makes subsequent calls return err after recording their request.

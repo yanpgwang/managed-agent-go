@@ -568,7 +568,7 @@ func (s *Store) CompleteTurn(
 	outputDrafts []domain.EventDraft,
 	status domain.Status,
 ) (TurnCompletion, error) {
-	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil, nil, nil)
+	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil, nil, nil, nil, nil)
 }
 
 // CompleteWorkflowTurn atomically finalizes a Workflow-owned tool attempt (when
@@ -607,6 +607,48 @@ func (s *Store) CompleteWorkflowTurn(
 		attemptError,
 		pendingActionEventIDs,
 		resolutionEventIDs,
+		nil,
+		nil,
+	)
+}
+
+// CompleteWorkflowTurnWithTranscript extends CompleteWorkflowTurn with the
+// provider-private model-continuation delta and public/provider tool-id
+// mappings. All records commit atomically with the public events.
+func (s *Store) CompleteWorkflowTurnWithTranscript(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	outputDrafts []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
+	transcriptDelta []domain.Message,
+	toolUseMappings []domain.ProviderToolUseMapping,
+) (TurnCompletion, error) {
+	if attemptID == "" {
+		if attemptState != "" || attemptError != nil {
+			return TurnCompletion{}, domain.Validation("attempt state requires an attempt id")
+		}
+	} else if err := validateAttemptFinish(attemptState, attemptError); err != nil {
+		return TurnCompletion{}, err
+	}
+	return s.completeTurn(
+		ctx,
+		sessionID,
+		triggerEventID,
+		outputDrafts,
+		status,
+		attemptID,
+		attemptState,
+		attemptError,
+		pendingActionEventIDs,
+		resolutionEventIDs,
+		transcriptDelta,
+		toolUseMappings,
 	)
 }
 
@@ -621,6 +663,8 @@ func (s *Store) completeTurn(
 	attemptError *string,
 	pendingActionEventIDs []string,
 	resolutionEventIDs []string,
+	transcriptDelta []domain.Message,
+	toolUseMappings []domain.ProviderToolUseMapping,
 ) (TurnCompletion, error) {
 	var result TurnCompletion
 	err := s.withTx(ctx, func(q *pgstore.Queries) error {
@@ -718,6 +762,13 @@ func (s *Store) completeTurn(
 			// idle/end_turn and never publishes requires_action, session.error, or
 			// terminated. A named attempt is fenced as interrupted below.
 			outputDrafts = interruptedTurnDrafts(outputDrafts)
+			transcriptDelta = closeInterruptedProviderTranscript(
+				transcriptDelta,
+			)
+			toolUseMappings = retainCommittedProviderMappings(
+				toolUseMappings,
+				outputDrafts,
+			)
 			outputDrafts = append(outputDrafts, domain.EventDraft{
 				Type: domain.EvSessionStatusIdle,
 				Payload: map[string]any{
@@ -850,6 +901,38 @@ func (s *Store) completeTurn(
 			return err
 		}
 		now := s.clock.Now().UTC()
+		if transcriptDelta != nil {
+			representedEventIDs := resolutionEventIDs
+			if len(representedEventIDs) == 0 {
+				representedEventIDs = []string{triggerEventID}
+			}
+			representedJSON, err := json.Marshal(representedEventIDs)
+			if err != nil {
+				return err
+			}
+			messagesJSON, err := json.Marshal(transcriptDelta)
+			if err != nil {
+				return err
+			}
+			mappingsJSON, err := json.Marshal(toolUseMappings)
+			if err != nil {
+				return err
+			}
+			if err := q.InsertProviderTranscriptTurn(
+				ctx,
+				pgstore.InsertProviderTranscriptTurnParams{
+					SessionID:           sessionID,
+					TriggerEventID:      triggerEventID,
+					CommittedThroughSeq: finalMaxSeq,
+					RepresentedEventIds: representedJSON,
+					Messages:            messagesJSON,
+					ToolUseMappings:     mappingsJSON,
+					CreatedAt:           tsUTC(now),
+				},
+			); err != nil {
+				return err
+			}
+		}
 		processedIDs := resolutionEventIDs
 		if len(processedIDs) == 0 {
 			processedIDs = []string{triggerEventID}

@@ -146,7 +146,47 @@ func TestCompleteWorkflowTurn_InterruptWinsCompletionRace(t *testing.T) {
 	}
 	interruptID := interruptAdmission.Events[0].ID
 	failure := "provider failed after interrupt admission"
-	completion, err := store.CompleteWorkflowTurn(
+	transcriptDelta := []domain.Message{
+		{
+			Role: domain.RoleUser,
+			Content: []domain.ContentBlock{{
+				Type: "text", Text: "run tools",
+			}},
+		},
+		{
+			Role: domain.RoleAssistant,
+			Content: []domain.ContentBlock{
+				{
+					Type: "tool_use", ToolUseID: "provider_orphan",
+					ToolName: "client_tool", Input: map[string]any{},
+				},
+				{
+					Type: "tool_use", ToolUseID: "provider_completed",
+					ToolName: "read", Input: map[string]any{"path": "done.txt"},
+				},
+			},
+		},
+		{
+			Role: domain.RoleUser,
+			Content: []domain.ContentBlock{{
+				Type: "tool_result", ToolResultFor: "provider_completed",
+				Text: "done",
+			}},
+		},
+	}
+	mappings := []domain.ProviderToolUseMapping{
+		{
+			PublicEventID:     "sevt_orphan_custom",
+			ProviderToolUseID: "provider_orphan",
+			ToolName:          "client_tool",
+		},
+		{
+			PublicEventID:     "sevt_completed_tool",
+			ProviderToolUseID: "provider_completed",
+			ToolName:          "read",
+		},
+	}
+	completion, err := store.CompleteWorkflowTurnWithTranscript(
 		ctx,
 		sessionID,
 		trigger,
@@ -195,6 +235,8 @@ func TestCompleteWorkflowTurn_InterruptWinsCompletionRace(t *testing.T) {
 		&failure,
 		nil,
 		nil,
+		transcriptDelta,
+		mappings,
 	)
 	if err != nil {
 		t.Fatalf("complete interrupted turn: %v", err)
@@ -269,6 +311,25 @@ func TestCompleteWorkflowTurn_InterruptWinsCompletionRace(t *testing.T) {
 	}
 	if interrupt.ProcessedAt == nil {
 		t.Fatal("winning interrupt was not marked processed atomically")
+	}
+	transcript, err := store.LoadProviderTranscript(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("load provider transcript: %v", err)
+	}
+	if len(transcript.Messages) != 3 ||
+		len(transcript.Messages[2].Content) != 2 {
+		t.Fatalf("interrupted provider transcript = %#v", transcript.Messages)
+	}
+	synthetic := transcript.Messages[2].Content[1]
+	if synthetic.ToolResultFor != "provider_orphan" || !synthetic.IsError {
+		t.Fatalf("interrupted synthetic result = %#v", synthetic)
+	}
+	if len(transcript.ToolUseMappings) != 1 ||
+		transcript.ToolUseMappings[0].PublicEventID != "sevt_completed_tool" {
+		t.Fatalf(
+			"interrupted provider mappings = %#v",
+			transcript.ToolUseMappings,
+		)
 	}
 }
 

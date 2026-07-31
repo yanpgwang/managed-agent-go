@@ -59,6 +59,37 @@ func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 	}
 }
 
+func TestAnthropic_InvalidTypedBlockFailsBeforeHTTPRequest(t *testing.T) {
+	requests := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests++
+	}))
+	defer srv.Close()
+	c, err := NewAnthropic(AnthropicConfig{
+		BaseURL: srv.URL, APIKey: "sk-test", Model: "m", HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.CreateMessage(context.Background(), Request{
+		Messages: []domain.Message{{
+			Role: domain.RoleAssistant,
+			Content: []domain.ContentBlock{{
+				Type: "tool_use",
+				Input: map[string]any{
+					"invalid": func() {},
+				},
+			}},
+		}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "encode tool_use content block") {
+		t.Fatalf("expected typed block encoding error, got %v", err)
+	}
+	if requests != 0 {
+		t.Fatalf("sent %d requests after local encoding failure", requests)
+	}
+}
+
 func TestAnthropic_BearerAuthAndErrorStatus(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
@@ -251,6 +282,81 @@ func TestAnthropic_ParsesToolUseResponse(t *testing.T) {
 	}
 	if resp.StopReason != "tool_use" {
 		t.Errorf("stop_reason = %q", resp.StopReason)
+	}
+}
+
+func TestAnthropic_NativeWebToolsPreserveOpaqueBlocksForReplay(t *testing.T) {
+	var requests []map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		raw, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(raw, &body)
+		requests = append(requests, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"content": [
+				{"type":"server_tool_use","id":"srv_1","name":"web_search","input":{"query":"today"}},
+				{"type":"web_search_tool_result","tool_use_id":"srv_1","content":[{"type":"web_search_result","url":"https://example.com","title":"Example","encrypted_content":"opaque-token"}]},
+				{"type":"text","text":"answer","citations":[{"type":"web_search_result_location","url":"https://example.com","cited_text":"source"}]}
+			],
+			"stop_reason":"end_turn"
+		}`)
+	}))
+	defer srv.Close()
+
+	c, _ := NewAnthropic(AnthropicConfig{
+		BaseURL: srv.URL, APIKey: "sk-test", Model: "m", HTTPClient: srv.Client(),
+	})
+	req := Request{
+		Tools: []ToolSchema{
+			{Type: "web_search_20260318", Name: "web_search"},
+			{Type: "web_fetch_20260318", Name: "web_fetch"},
+		},
+		Messages: []domain.Message{{
+			Role: domain.RoleUser,
+			Content: []domain.ContentBlock{{
+				Type: "text", Text: "what happened today?",
+			}},
+		}},
+	}
+	resp, err := c.CreateMessageStream(context.Background(), req, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Content) != 3 || resp.Content[1].Type != "web_search_tool_result" {
+		t.Fatalf("response content = %#v", resp.Content)
+	}
+
+	req.Messages = append(req.Messages, domain.Message{
+		Role: domain.RoleAssistant, Content: resp.Content,
+	})
+	req.Messages = append(req.Messages, domain.Message{
+		Role:    domain.RoleUser,
+		Content: []domain.ContentBlock{{Type: "text", Text: "continue"}},
+	})
+	if _, err := c.CreateMessage(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want 2", len(requests))
+	}
+	tools := requests[0]["tools"].([]any)
+	search := tools[0].(map[string]any)
+	if search["type"] != "web_search_20260318" || search["name"] != "web_search" {
+		t.Fatalf("native search declaration = %#v", search)
+	}
+	if _, exists := search["input_schema"]; exists {
+		t.Fatalf("native search must not be encoded as a client tool: %#v", search)
+	}
+	replayed := requests[1]["messages"].([]any)[1].(map[string]any)["content"].([]any)
+	searchResult := replayed[1].(map[string]any)
+	nested := searchResult["content"].([]any)[0].(map[string]any)
+	if nested["encrypted_content"] != "opaque-token" {
+		t.Fatalf("opaque server-tool content was lost: %#v", searchResult)
+	}
+	text := replayed[2].(map[string]any)
+	if len(text["citations"].([]any)) != 1 {
+		t.Fatalf("citations were lost: %#v", text)
 	}
 }
 

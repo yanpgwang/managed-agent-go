@@ -68,11 +68,17 @@ func runWorkflowTurnInternal(
 	}
 
 	turn := &workflowTurnState{
-		actx:               actx,
-		sessionID:          sessionID,
-		triggerEventID:     triggerEventID,
-		resolutionEventIDs: resolutionEventIDs,
-		interrupts:         interrupts,
+		actx:                   actx,
+		sessionID:              sessionID,
+		triggerEventID:         triggerEventID,
+		resolutionEventIDs:     resolutionEventIDs,
+		interrupts:             interrupts,
+		usesProviderTranscript: prepared.UsesProviderTranscript,
+		output:                 append([]domain.EventDraft(nil), prepared.PreludeEvents...),
+		transcriptDelta: append(
+			[]domain.Message(nil),
+			prepared.TranscriptDelta...,
+		),
 	}
 	if prepared.FatalError != "" {
 		return turn.terminate(failTurn(prepared.FatalError))
@@ -98,6 +104,7 @@ func runWorkflowTurnInternal(
 	for round := 0; round < maxWorkflowToolRounds; round++ {
 		request := prepared.Request
 		request.Messages = messages
+		mappingCheckpoint := len(turn.toolUseMappings)
 
 		called, activityOutcome, err := turn.callModel(CallModelInput{
 			SessionID: sessionID,
@@ -114,6 +121,32 @@ func runWorkflowTurnInternal(
 				return turn.complete(nil)
 			}
 			return turn.terminate(failTurn(called.FatalError))
+		}
+		if prepared.UsesProviderTranscript {
+			turn.transcriptDelta = agentruntime.AppendMerging(
+				turn.transcriptDelta,
+				[]domain.Message{{
+					Role:    domain.RoleAssistant,
+					Content: called.Response.Content,
+				}},
+			)
+			for _, planned := range called.ToolSteps {
+				providerID := planned.ProviderToolUseID
+				if providerID == "" {
+					providerID = planned.ToolUseEventID
+				}
+				turn.toolUseMappings = append(
+					turn.toolUseMappings,
+					domain.ProviderToolUseMapping{
+						PublicEventID:     planned.ToolUseEventID,
+						ProviderToolUseID: providerID,
+						ToolName: toolNameForProviderID(
+							called.Response.Content,
+							providerID,
+						),
+					},
+				)
+			}
 		}
 
 		if content := agentruntime.TextBlocksToContent(called.Response.Content); len(content) > 0 {
@@ -143,24 +176,53 @@ func runWorkflowTurnInternal(
 		}
 		if prepared.AttemptID == "" {
 			if activityOutcome.Interrupted {
+				closeInterruptedProviderToolRound(
+					turn,
+					toolUses,
+					nil,
+					mappingCheckpoint,
+				)
 				return turn.complete(nil)
 			}
 			return turn.terminate(failTurn("tool-using turn has no durable attempt id"))
 		}
 
-		stepIDsByEvent := make(map[string]string, len(called.ToolSteps))
+		stepsByProviderID := make(
+			map[string]PlannedToolStep,
+			len(called.ToolSteps),
+		)
 		for _, planned := range called.ToolSteps {
-			stepIDsByEvent[planned.ToolUseEventID] = planned.ToolStepID
+			providerID := planned.ProviderToolUseID
+			if providerID == "" {
+				providerID = planned.ToolUseEventID
+			}
+			stepsByProviderID[providerID] = planned
 		}
-		plan, failure := planToolBatch(toolUses, toolsByName, stepIDsByEvent)
+		plan, failure := planToolBatch(
+			toolUses,
+			toolsByName,
+			stepsByProviderID,
+		)
 		if failure != "" {
 			if activityOutcome.Interrupted {
+				closeInterruptedProviderToolRound(
+					turn,
+					toolUses,
+					nil,
+					mappingCheckpoint,
+				)
 				return turn.complete(nil)
 			}
 			return turn.terminate(failure)
 		}
 		turn.output = append(turn.output, plan.actionDrafts...)
 		if activityOutcome.Interrupted {
+			closeInterruptedProviderToolRound(
+				turn,
+				toolUses,
+				nil,
+				mappingCheckpoint,
+			)
 			return turn.complete(nil)
 		}
 
@@ -174,12 +236,31 @@ func runWorkflowTurnInternal(
 		}
 		turn.output = append(turn.output, executed.resultDrafts...)
 		if interrupted {
+			closeInterruptedProviderToolRound(
+				turn,
+				toolUses,
+				executed.resultBlocks,
+				mappingCheckpoint,
+			)
 			return turn.complete(nil)
 		}
 		if failure != "" {
 			return turn.terminate(failure)
 		}
 
+		// A model may request an executable tool and an approval/custom tool in
+		// the same assistant block. Persist completed executable results before
+		// parking so every tool_use already executed has a matching tool_result
+		// when the remaining pending actions resume.
+		if prepared.UsesProviderTranscript && len(executed.resultBlocks) > 0 {
+			turn.transcriptDelta = agentruntime.AppendMerging(
+				turn.transcriptDelta,
+				[]domain.Message{{
+					Role:    domain.RoleUser,
+					Content: executed.resultBlocks,
+				}},
+			)
+		}
 		if len(plan.pendingActionEventIDs) > 0 {
 			return turn.complete(plan.pendingActionEventIDs)
 		}
@@ -195,4 +276,16 @@ func runWorkflowTurnInternal(
 	// Reaching the safety bound closes the public turn normally rather than
 	// allowing unbounded Workflow history.
 	return turn.complete(nil)
+}
+
+func toolNameForProviderID(
+	blocks []domain.ContentBlock,
+	providerID string,
+) string {
+	for _, block := range blocks {
+		if block.Type == "tool_use" && block.ToolUseID == providerID {
+			return block.ToolName
+		}
+	}
+	return ""
 }

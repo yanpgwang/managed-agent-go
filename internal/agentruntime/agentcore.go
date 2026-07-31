@@ -73,6 +73,9 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 	if !drivesModelTurn(req.Trigger.Type) {
 		return RunOutcome{}, nil
 	}
+	if err := ValidateToolCapabilities(req.ToolSet); err != nil {
+		return RunOutcome{}, err
+	}
 	system := ""
 	if req.AgentSnapshot.System != nil {
 		system = *req.AgentSnapshot.System
@@ -306,6 +309,21 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 	return RunOutcome{}, nil
 }
 
+// ValidateToolCapabilities rejects permission semantics the selected execution
+// owner cannot honor. Native server tools execute inside the provider request,
+// so this runtime cannot durably pause between request and execution.
+func ValidateToolCapabilities(ts domain.ToolSet) error {
+	for _, name := range []string{"web_search", "web_fetch"} {
+		enabled, policy := ts.BuiltinEnabled(name)
+		if enabled && policy.Type != "always_allow" {
+			return domain.Validation(
+				name + " requires always_allow while it is provider-native",
+			)
+		}
+	}
+	return nil
+}
+
 // seedConfirmation resolves a user.tool_confirmation into the paired
 // assistant tool_use / user tool_result blocks that unblock the parked
 // always_ask built-in, emitting the public agent.tool_result correlated to the
@@ -493,6 +511,21 @@ func (a *AgentCore) executePreparedBuiltin(
 		return tools.Result{}, err
 	}
 	result := exec(ctx, req.Sandbox, input)
+	result, materializeErr := tools.MaterializeLargeResult(
+		context.WithoutCancel(ctx),
+		req.Sandbox,
+		stepID,
+		result,
+	)
+	if materializeErr != nil {
+		result = tools.Result{
+			Content: []any{map[string]any{
+				"type": "text",
+				"text": materializeErr.Error(),
+			}},
+			IsError: true,
+		}
+	}
 	if err := req.ToolJournal.Complete(ctx, stepID, domain.ToolStepResult{
 		Content: result.Content,
 		IsError: result.IsError,
@@ -559,6 +592,20 @@ func enabledBuiltinSchemas(ts domain.ToolSet) []model.ToolSchema {
 	var schemas []model.ToolSchema
 	for _, name := range domain.BuiltinToolNames {
 		if enabled, _ := ts.BuiltinEnabled(name); !enabled {
+			continue
+		}
+		switch name {
+		case "web_search":
+			schemas = append(schemas, model.ToolSchema{
+				Type: "web_search_20260318",
+				Name: name,
+			})
+			continue
+		case "web_fetch":
+			schemas = append(schemas, model.ToolSchema{
+				Type: "web_fetch_20260318",
+				Name: name,
+			})
 			continue
 		}
 		schema := tools.Schema(name)

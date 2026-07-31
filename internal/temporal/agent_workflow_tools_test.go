@@ -34,10 +34,16 @@ func TestPlanToolBatch_ClassifiesWholeRoundBeforeExecution(t *testing.T) {
 			Permission: domain.PermissionPolicy{Type: "always_ask"},
 		},
 	})
-	steps := map[string]string{
-		"sevt_custom":  "tstep_custom",
-		"sevt_builtin": "tstep_builtin",
-		"sevt_ask":     "tstep_ask",
+	steps := map[string]PlannedToolStep{
+		"sevt_custom": {
+			ToolUseEventID: "sevt_custom", ToolStepID: "tstep_custom",
+		},
+		"sevt_builtin": {
+			ToolUseEventID: "sevt_builtin", ToolStepID: "tstep_builtin",
+		},
+		"sevt_ask": {
+			ToolUseEventID: "sevt_ask", ToolStepID: "tstep_ask",
+		},
 	}
 
 	plan, failure := planToolBatch(uses, tools, steps)
@@ -50,8 +56,10 @@ func TestPlanToolBatch_ClassifiesWholeRoundBeforeExecution(t *testing.T) {
 	}, draftTypes(plan.actionDrafts))
 	require.Equal(t, []string{"sevt_custom", "sevt_ask"}, plan.pendingActionEventIDs)
 	require.Equal(t, []plannedToolUse{{
-		use:    uses[1],
-		stepID: "tstep_builtin",
+		use:           uses[1],
+		publicEventID: "sevt_builtin",
+		stepID:        "tstep_builtin",
+		definition:    tools["bash"],
 	}}, plan.executable)
 	require.Equal(
 		t,
@@ -65,7 +73,7 @@ func TestPlanToolBatch_RejectsInvalidRoundBeforePlanning(t *testing.T) {
 		name        string
 		use         domain.ContentBlock
 		tools       []TurnTool
-		steps       map[string]string
+		steps       map[string]PlannedToolStep
 		wantFailure turnFailure
 	}{
 		{
@@ -77,7 +85,7 @@ func TestPlanToolBatch_RejectsInvalidRoundBeforePlanning(t *testing.T) {
 				Name: "bash", Kind: TurnToolBuiltin,
 				Permission: domain.PermissionPolicy{Type: "always_allow"},
 			}},
-			steps:       map[string]string{},
+			steps:       map[string]PlannedToolStep{},
 			wantFailure: failTurn("model tool request has no durable operation id"),
 		},
 		{
@@ -85,7 +93,9 @@ func TestPlanToolBatch_RejectsInvalidRoundBeforePlanning(t *testing.T) {
 			use: domain.ContentBlock{
 				Type: "tool_use", ToolUseID: "sevt_missing", ToolName: "missing",
 			},
-			steps: map[string]string{"sevt_missing": "tstep_missing"},
+			steps: map[string]PlannedToolStep{"sevt_missing": {
+				ToolUseEventID: "sevt_missing", ToolStepID: "tstep_missing",
+			}},
 			wantFailure: failTurn(
 				"model requested a tool that is not enabled: missing",
 			),
@@ -99,7 +109,9 @@ func TestPlanToolBatch_RejectsInvalidRoundBeforePlanning(t *testing.T) {
 				Name: "bash", Kind: TurnToolBuiltin,
 				Permission: domain.PermissionPolicy{Type: "always_deny"},
 			}},
-			steps: map[string]string{"sevt_bash": "tstep_bash"},
+			steps: map[string]PlannedToolStep{"sevt_bash": {
+				ToolUseEventID: "sevt_bash", ToolStepID: "tstep_bash",
+			}},
 			wantFailure: failTurn(
 				"built-in tool has unsupported permission policy: always_deny",
 			),
@@ -131,4 +143,61 @@ func TestIndexTurnTools_PreservesFirstOwner(t *testing.T) {
 	})
 
 	require.Equal(t, TurnToolBuiltin, tools["read"].Kind)
+}
+
+func TestCloseInterruptedProviderToolRound_PairsEveryProviderToolUse(t *testing.T) {
+	turn := &workflowTurnState{
+		usesProviderTranscript: true,
+		transcriptDelta: []domain.Message{{
+			Role: domain.RoleAssistant,
+			Content: []domain.ContentBlock{
+				{Type: "tool_use", ToolUseID: "provider_1", ToolName: "read"},
+				{Type: "tool_use", ToolUseID: "provider_2", ToolName: "write"},
+			},
+		}},
+		toolUseMappings: []domain.ProviderToolUseMapping{
+			{
+				PublicEventID: "public_prior", ProviderToolUseID: "provider_prior",
+				ToolName: "grep",
+			},
+			{
+				PublicEventID: "public_1", ProviderToolUseID: "provider_1",
+				ToolName: "read",
+			},
+			{
+				PublicEventID: "public_2", ProviderToolUseID: "provider_2",
+				ToolName: "write",
+			},
+		},
+	}
+	uses := append(
+		[]domain.ContentBlock(nil),
+		turn.transcriptDelta[0].Content...,
+	)
+	completed := []domain.ContentBlock{{
+		Type: "tool_result", ToolResultFor: "provider_1", Text: "done",
+	}}
+
+	closeInterruptedProviderToolRound(turn, uses, completed, 1)
+
+	require.Len(t, turn.transcriptDelta, 2)
+	require.Equal(t, domain.RoleUser, turn.transcriptDelta[1].Role)
+	require.Equal(t, []domain.ContentBlock{
+		{Type: "tool_result", ToolResultFor: "provider_1", Text: "done"},
+		{
+			Type: "tool_result", ToolResultFor: "provider_2",
+			Text:    "Tool execution was interrupted before a result was committed.",
+			IsError: true,
+		},
+	}, turn.transcriptDelta[1].Content)
+	require.Equal(t, []domain.ProviderToolUseMapping{
+		{
+			PublicEventID: "public_prior", ProviderToolUseID: "provider_prior",
+			ToolName: "grep",
+		},
+		{
+			PublicEventID: "public_1", ProviderToolUseID: "provider_1",
+			ToolName: "read",
+		},
+	}, turn.toolUseMappings)
 }

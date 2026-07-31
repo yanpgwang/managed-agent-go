@@ -1,6 +1,12 @@
 package domain
 
-import "fmt"
+import (
+	"fmt"
+	"net/netip"
+	"net/url"
+	"strings"
+	"unicode/utf8"
+)
 
 const BuiltinToolsetType = "agent_toolset_20260401"
 
@@ -26,12 +32,60 @@ type CustomTool struct {
 	InputSchema map[string]any
 }
 
-type MCPToolset struct{ ServerName string }
+type MCPToolset struct {
+	ServerName     string
+	DefaultEnabled bool
+	DefaultPolicy  PermissionPolicy
+	Configs        []BuiltinConfig
+}
+
+type MCPServer struct {
+	Name string
+	URL  string
+}
 
 type ToolSet struct {
 	Builtin *BuiltinToolset
 	Custom  []CustomTool
 	MCP     []MCPToolset
+}
+
+var blockedMCPAddressPrefixes = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),   // shared carrier-grade NAT
+	netip.MustParsePrefix("192.0.0.0/24"),    // IETF protocol assignments
+	netip.MustParsePrefix("192.0.2.0/24"),    // documentation
+	netip.MustParsePrefix("198.18.0.0/15"),   // benchmarking
+	netip.MustParsePrefix("198.51.100.0/24"), // documentation
+	netip.MustParsePrefix("203.0.113.0/24"),  // documentation
+	netip.MustParsePrefix("240.0.0.0/4"),     // reserved
+	netip.MustParsePrefix("2001:db8::/32"),   // documentation
+}
+
+// MCPAddressAllowed reports whether a resolved MCP endpoint is safe for the
+// default public-internet connector. Private MCP services require a separate
+// tunnel/egress capability; the worker must never reach them directly from a
+// tenant-controlled URL.
+func MCPAddressAllowed(address netip.Addr) bool {
+	address = address.Unmap()
+	if !address.IsValid() ||
+		!address.IsGlobalUnicast() ||
+		address.IsPrivate() ||
+		address.IsLoopback() ||
+		address.IsLinkLocalUnicast() ||
+		address.IsLinkLocalMulticast() ||
+		address.IsUnspecified() {
+		return false
+	}
+	for _, prefix := range blockedMCPAddressPrefixes {
+		if prefix.Contains(address) {
+			return false
+		}
+	}
+	return true
+}
+
+func validPermissionPolicy(policy PermissionPolicy) bool {
+	return policy.Type == "always_allow" || policy.Type == "always_ask"
 }
 
 func parsePolicy(raw any) *PermissionPolicy {
@@ -48,6 +102,8 @@ func parsePolicy(raw any) *PermissionPolicy {
 
 func ParseTools(raw []any) (ToolSet, error) {
 	var ts ToolSet
+	customNames := make(map[string]struct{})
+	mcpServers := make(map[string]struct{})
 	for _, item := range raw {
 		m, ok := item.(map[string]any)
 		if !ok {
@@ -55,15 +111,23 @@ func ParseTools(raw []any) (ToolSet, error) {
 		}
 		switch m["type"] {
 		case BuiltinToolsetType:
+			if ts.Builtin != nil {
+				return ToolSet{}, fmt.Errorf("only one built-in toolset may be configured")
+			}
 			bt := &BuiltinToolset{DefaultEnabled: true, DefaultPolicy: PermissionPolicy{Type: "always_allow"}}
 			if dc, ok := m["default_config"].(map[string]any); ok {
 				if en, ok := dc["enabled"].(bool); ok {
 					bt.DefaultEnabled = en
 				}
-				if p := parsePolicy(dc["permission_policy"]); p != nil {
+				if rawPolicy, present := dc["permission_policy"]; present {
+					p := parsePolicy(rawPolicy)
+					if p == nil || !validPermissionPolicy(*p) {
+						return ToolSet{}, fmt.Errorf("built-in default permission_policy must be always_allow or always_ask")
+					}
 					bt.DefaultPolicy = *p
 				}
 			}
+			configuredNames := make(map[string]struct{})
 			if cfgs, ok := m["configs"].([]any); ok {
 				for _, c := range cfgs {
 					cm, ok := c.(map[string]any)
@@ -74,7 +138,21 @@ func ParseTools(raw []any) (ToolSet, error) {
 					if name == "" {
 						return ToolSet{}, fmt.Errorf("toolset config requires name")
 					}
-					bc := BuiltinConfig{Name: name, Policy: parsePolicy(cm["permission_policy"])}
+					if !containsBuiltinTool(name) {
+						return ToolSet{}, fmt.Errorf("unknown built-in tool %q", name)
+					}
+					if _, duplicate := configuredNames[name]; duplicate {
+						return ToolSet{}, fmt.Errorf("duplicate built-in tool config %q", name)
+					}
+					configuredNames[name] = struct{}{}
+					bc := BuiltinConfig{Name: name}
+					if rawPolicy, present := cm["permission_policy"]; present {
+						p := parsePolicy(rawPolicy)
+						if p == nil || !validPermissionPolicy(*p) {
+							return ToolSet{}, fmt.Errorf("built-in tool %q permission_policy must be always_allow or always_ask", name)
+						}
+						bc.Policy = p
+					}
 					if en, ok := cm["enabled"].(bool); ok {
 						bc.Enabled = &en
 					}
@@ -87,6 +165,16 @@ func ParseTools(raw []any) (ToolSet, error) {
 			if name == "" {
 				return ToolSet{}, fmt.Errorf("custom tool requires name")
 			}
+			if _, duplicate := customNames[name]; duplicate {
+				return ToolSet{}, fmt.Errorf("duplicate custom tool %q", name)
+			}
+			if containsBuiltinTool(name) {
+				return ToolSet{}, fmt.Errorf(
+					"custom tool %q conflicts with a built-in tool",
+					name,
+				)
+			}
+			customNames[name] = struct{}{}
 			ct := CustomTool{Name: name}
 			ct.Description, _ = m["description"].(string)
 			ct.InputSchema, _ = m["input_schema"].(map[string]any)
@@ -96,12 +184,174 @@ func ParseTools(raw []any) (ToolSet, error) {
 			if sn == "" {
 				return ToolSet{}, fmt.Errorf("mcp_toolset requires mcp_server_name")
 			}
-			ts.MCP = append(ts.MCP, MCPToolset{ServerName: sn})
+			if _, duplicate := mcpServers[sn]; duplicate {
+				return ToolSet{}, fmt.Errorf("duplicate mcp_toolset for server %q", sn)
+			}
+			mcpServers[sn] = struct{}{}
+			mt := MCPToolset{
+				ServerName:     sn,
+				DefaultEnabled: true,
+				DefaultPolicy: PermissionPolicy{
+					Type: "always_ask",
+				},
+			}
+			if dc, ok := m["default_config"].(map[string]any); ok {
+				if en, ok := dc["enabled"].(bool); ok {
+					mt.DefaultEnabled = en
+				}
+				if rawPolicy, present := dc["permission_policy"]; present {
+					p := parsePolicy(rawPolicy)
+					if p == nil || !validPermissionPolicy(*p) {
+						return ToolSet{}, fmt.Errorf("mcp server %q default permission_policy must be always_allow or always_ask", sn)
+					}
+					mt.DefaultPolicy = *p
+				}
+			}
+			configuredNames := make(map[string]struct{})
+			if cfgs, ok := m["configs"].([]any); ok {
+				for _, c := range cfgs {
+					cm, ok := c.(map[string]any)
+					if !ok {
+						return ToolSet{}, fmt.Errorf("mcp toolset config must be an object")
+					}
+					name, _ := cm["name"].(string)
+					if name == "" {
+						return ToolSet{}, fmt.Errorf("mcp toolset config requires name")
+					}
+					if _, duplicate := configuredNames[name]; duplicate {
+						return ToolSet{}, fmt.Errorf("duplicate mcp tool config %q for server %q", name, sn)
+					}
+					configuredNames[name] = struct{}{}
+					cfg := BuiltinConfig{Name: name}
+					if rawPolicy, present := cm["permission_policy"]; present {
+						p := parsePolicy(rawPolicy)
+						if p == nil || !validPermissionPolicy(*p) {
+							return ToolSet{}, fmt.Errorf("mcp tool %s/%s permission_policy must be always_allow or always_ask", sn, name)
+						}
+						cfg.Policy = p
+					}
+					if en, ok := cm["enabled"].(bool); ok {
+						cfg.Enabled = &en
+					}
+					mt.Configs = append(mt.Configs, cfg)
+				}
+			}
+			ts.MCP = append(ts.MCP, mt)
 		default:
 			return ToolSet{}, fmt.Errorf("unknown tool type %v", m["type"])
 		}
 	}
 	return ts, nil
+}
+
+func containsBuiltinTool(name string) bool {
+	for _, candidate := range BuiltinToolNames {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (ts MCPToolset) ToolEnabled(name string) (bool, PermissionPolicy) {
+	enabled := ts.DefaultEnabled
+	policy := ts.DefaultPolicy
+	for _, config := range ts.Configs {
+		if config.Name != name {
+			continue
+		}
+		if config.Enabled != nil {
+			enabled = *config.Enabled
+		}
+		if config.Policy != nil {
+			policy = *config.Policy
+		}
+	}
+	return enabled, policy
+}
+
+func ParseMCPServers(raw []any) (map[string]MCPServer, error) {
+	if len(raw) > 20 {
+		return nil, fmt.Errorf("an agent may configure at most 20 MCP servers")
+	}
+	servers := make(map[string]MCPServer, len(raw))
+	for _, item := range raw {
+		value, ok := item.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("mcp server entry must be an object")
+		}
+		serverType, _ := value["type"].(string)
+		name, _ := value["name"].(string)
+		rawURL, _ := value["url"].(string)
+		if serverType != "url" ||
+			strings.TrimSpace(name) == "" ||
+			strings.TrimSpace(rawURL) == "" {
+			return nil, fmt.Errorf("mcp server requires type=url, name, and url")
+		}
+		if utf8.RuneCountInString(name) > 255 {
+			return nil, fmt.Errorf("mcp server name exceeds 255 characters")
+		}
+		if utf8.RuneCountInString(rawURL) > 2048 {
+			return nil, fmt.Errorf("mcp server %q url exceeds 2048 characters", name)
+		}
+		if _, duplicate := servers[name]; duplicate {
+			return nil, fmt.Errorf("duplicate mcp server name %q", name)
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") ||
+			parsed.Host == "" || parsed.User != nil || parsed.Fragment != "" {
+			return nil, fmt.Errorf("mcp server %q has an invalid http(s) url", name)
+		}
+		if address, err := netip.ParseAddr(parsed.Hostname()); err == nil &&
+			!MCPAddressAllowed(address) {
+			return nil, fmt.Errorf(
+				"mcp server %q url targets a non-public network",
+				name,
+			)
+		}
+		servers[name] = MCPServer{Name: name, URL: parsed.String()}
+	}
+	return servers, nil
+}
+
+// ValidateToolConfiguration performs control-plane validation that does not
+// require contacting a provider or MCP server. It keeps malformed or
+// internally inconsistent capabilities out of immutable Agent versions and
+// Session snapshots.
+func ValidateToolConfiguration(rawTools, rawServers []any) error {
+	toolSet, err := ParseTools(rawTools)
+	if err != nil {
+		return err
+	}
+	servers, err := ParseMCPServers(rawServers)
+	if err != nil {
+		return err
+	}
+	referenced := make(map[string]struct{}, len(toolSet.MCP))
+	for _, configured := range toolSet.MCP {
+		if _, ok := servers[configured.ServerName]; !ok {
+			return fmt.Errorf(
+				"mcp_toolset references unknown server %q",
+				configured.ServerName,
+			)
+		}
+		referenced[configured.ServerName] = struct{}{}
+	}
+	for name := range servers {
+		if _, ok := referenced[name]; !ok {
+			return fmt.Errorf("MCP server %q has no matching mcp_toolset", name)
+		}
+	}
+	for _, name := range []string{"web_search", "web_fetch"} {
+		enabled, policy := toolSet.BuiltinEnabled(name)
+		if enabled && policy.Type != "always_allow" {
+			return fmt.Errorf(
+				"%s requires always_allow while it is provider-native",
+				name,
+			)
+		}
+	}
+	return nil
 }
 
 func (ts ToolSet) BuiltinEnabled(name string) (bool, PermissionPolicy) {
