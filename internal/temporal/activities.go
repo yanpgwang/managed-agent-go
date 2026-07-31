@@ -2,9 +2,12 @@ package temporal
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -14,6 +17,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime/tools"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 )
@@ -59,6 +63,52 @@ type EventSource interface {
 		pendingActionEventIDs []string,
 		resolutionEventIDs []string,
 	) (TurnCompletionResult, error)
+}
+
+// ProviderTranscriptSource is the optional private-context capability supplied
+// by the PostgreSQL adapter. Tests and legacy stores that do not implement it
+// continue to use the public-event projection.
+type ProviderTranscriptSource interface {
+	LoadProviderTranscript(
+		ctx context.Context,
+		sessionID string,
+	) (domain.ProviderTranscript, error)
+}
+
+// ProviderTranscriptCompletionSource atomically commits the public turn and
+// the private provider transcript delta.
+type ProviderTranscriptCompletionSource interface {
+	CompleteWorkflowTurnWithTranscript(
+		ctx context.Context,
+		sessionID string,
+		triggerEventID string,
+		output []domain.EventDraft,
+		status domain.Status,
+		attemptID string,
+		attemptState domain.RunAttemptState,
+		attemptError *string,
+		pendingActionEventIDs []string,
+		resolutionEventIDs []string,
+		transcriptDelta []domain.Message,
+		toolUseMappings []domain.ProviderToolUseMapping,
+	) (TurnCompletionResult, error)
+}
+
+// MCPDiscoveryStore pins the discovered tool surface for each Session/server.
+// The first PrepareTurn discovers remotely; later turns reuse the durable
+// snapshot even if the remote server changes.
+type MCPDiscoveryStore interface {
+	GetMCPDiscoverySnapshot(
+		ctx context.Context,
+		sessionID string,
+		server domain.MCPServer,
+	) ([]mcpclient.Tool, bool, error)
+	PutMCPDiscoverySnapshot(
+		ctx context.Context,
+		sessionID string,
+		server domain.MCPServer,
+		tools []mcpclient.Tool,
+	) ([]mcpclient.Tool, error)
 }
 
 // JournalStore is the durable tool-execution journal used by the granular
@@ -127,6 +177,7 @@ type Activities struct {
 	sandboxes   SandboxLease
 	ids         domain.IDGenerator
 	previews    PreviewPublisher
+	mcp         mcpclient.Client
 }
 
 func NewActivities(
@@ -140,11 +191,19 @@ func NewActivities(
 	activities := &Activities{
 		modelClient: modelClient, source: source,
 		journal: journal, sandboxes: sandboxes, ids: ids,
+		mcp: mcpclient.NewRemote(nil),
 	}
 	if len(previewPublisher) > 0 {
 		activities.previews = previewPublisher[0]
 	}
 	return activities
+}
+
+// WithMCPClient replaces the remote MCP adapter. Production uses the official
+// Go SDK-backed client by default; tests can inject a deterministic fake.
+func (a *Activities) WithMCPClient(client mcpclient.Client) *Activities {
+	a.mcp = client
+	return a
 }
 
 // LoadEvents returns the ordered public event references after a cursor. Only
@@ -268,6 +327,17 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if err != nil {
 		return PrepareTurnResult{FatalError: "invalid toolset: " + err.Error()}, nil
 	}
+	if err := domain.ValidateToolConfiguration(
+		session.AgentSnapshot.Tools,
+		session.AgentSnapshot.MCPServers,
+	); err != nil {
+		return PrepareTurnResult{
+			FatalError: "invalid tool configuration: " + err.Error(),
+		}, nil
+	}
+	if err := agentruntime.ValidateToolCapabilities(toolSet); err != nil {
+		return PrepareTurnResult{FatalError: "unsupported tool capability: " + err.Error()}, nil
+	}
 
 	system := ""
 	if session.AgentSnapshot.System != nil {
@@ -276,12 +346,12 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	result := PrepareTurnResult{
 		AttemptID: a.ids.NewID(domain.PrefixRunAttempt),
 		Request: model.Request{
-			Model:    session.AgentSnapshot.Model.ID,
-			System:   system,
-			Messages: domain.ProjectMessages(history),
-			Tools:    agentruntime.EnabledToolSchemas(toolSet),
+			Model:  session.AgentSnapshot.Model.ID,
+			System: system,
+			Tools:  agentruntime.EnabledToolSchemas(toolSet),
 		},
 	}
+	originalHistory := history
 	if len(in.ResolutionEventIDs) > 0 {
 		resumeActions, err := a.prepareResumeActions(
 			ctx,
@@ -301,7 +371,45 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		}
 		result.ResumeActions = resumeActions
 		history = withoutResumeEvents(history, resumeActions)
-		result.Request.Messages = domain.ProjectMessages(history)
+	}
+	result.Request.Messages = domain.ProjectMessages(history)
+	if transcriptSource, ok := a.source.(ProviderTranscriptSource); ok {
+		transcript, err := transcriptSource.LoadProviderTranscript(ctx, in.SessionID)
+		if err != nil {
+			return PrepareTurnResult{}, err
+		}
+		if transcriptCoversPriorTurns(
+			transcript,
+			originalHistory,
+			trigger.ID,
+			in.ResolutionEventIDs,
+		) {
+			mappings := make(map[string]string, len(transcript.ToolUseMappings))
+			for _, mapping := range transcript.ToolUseMappings {
+				mappings[mapping.PublicEventID] = mapping.ProviderToolUseID
+			}
+			usable := true
+			for i := range result.ResumeActions {
+				providerID := mappings[result.ResumeActions[i].ActionEventID]
+				if providerID == "" {
+					usable = false
+					break
+				}
+				result.ResumeActions[i].ProviderToolUseID = providerID
+			}
+			if usable {
+				var delta []domain.Message
+				if len(in.ResolutionEventIDs) == 0 {
+					delta = domain.ProjectMessages([]domain.Event{trigger})
+				}
+				result.UsesProviderTranscript = true
+				result.TranscriptDelta = delta
+				result.Request.Messages = agentruntime.AppendMerging(
+					append([]domain.Message(nil), transcript.Messages...),
+					delta,
+				)
+			}
+		}
 	}
 	for _, name := range domain.BuiltinToolNames {
 		enabled, policy := toolSet.BuiltinEnabled(name)
@@ -316,7 +424,225 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			Name: custom.Name, Kind: TurnToolCustom,
 		})
 	}
+	if len(toolSet.MCP) > 0 || len(session.AgentSnapshot.MCPServers) > 0 {
+		setupEvents, err := a.addMCPTools(
+			ctx,
+			in.SessionID,
+			session.AgentSnapshot.MCPServers,
+			toolSet,
+			&result,
+		)
+		if err != nil {
+			var domainErr *domain.DomainError
+			if errors.As(err, &domainErr) {
+				return PrepareTurnResult{
+					FatalError: "mcp capability resolution failed: " + err.Error(),
+				}, nil
+			}
+			return PrepareTurnResult{}, err
+		}
+		result.PreludeEvents = append(result.PreludeEvents, setupEvents...)
+	}
 	return result, nil
+}
+
+func (a *Activities) addMCPTools(
+	ctx context.Context,
+	sessionID string,
+	rawServers []any,
+	toolSet domain.ToolSet,
+	result *PrepareTurnResult,
+) ([]domain.EventDraft, error) {
+	if a.mcp == nil {
+		return nil, domain.Validation("MCP client is not configured")
+	}
+	servers, err := domain.ParseMCPServers(rawServers)
+	if err != nil {
+		return nil, domain.Validation(err.Error())
+	}
+	var setupEvents []domain.EventDraft
+	referenced := make(map[string]struct{}, len(toolSet.MCP))
+	aliases := make(map[string]struct{})
+	for _, configured := range result.Request.Tools {
+		aliases[configured.Name] = struct{}{}
+	}
+	for _, configured := range toolSet.MCP {
+		server, ok := servers[configured.ServerName]
+		if !ok {
+			return nil, domain.Validation(fmt.Sprintf(
+				"mcp_toolset references unknown server %q",
+				configured.ServerName,
+			))
+		}
+		referenced[server.Name] = struct{}{}
+		var discovered []mcpclient.Tool
+		if snapshots, ok := a.source.(MCPDiscoveryStore); ok {
+			var found bool
+			discovered, found, err = snapshots.GetMCPDiscoverySnapshot(
+				ctx,
+				sessionID,
+				server,
+			)
+			if err != nil {
+				return nil, err
+			}
+			if !found {
+				discovered, err = a.mcp.Discover(ctx, server)
+				if err != nil {
+					setupEvents = append(
+						setupEvents,
+						mcpConnectionFailureEvent(server),
+					)
+					continue
+				}
+				discovered, err = snapshots.PutMCPDiscoverySnapshot(
+					ctx,
+					sessionID,
+					server,
+					discovered,
+				)
+				if err != nil {
+					return nil, err
+				}
+			}
+		} else {
+			discovered, err = a.mcp.Discover(ctx, server)
+			if err != nil {
+				setupEvents = append(
+					setupEvents,
+					mcpConnectionFailureEvent(server),
+				)
+				continue
+			}
+		}
+		for _, remoteTool := range discovered {
+			enabled, policy := configured.ToolEnabled(remoteTool.Name)
+			if !enabled {
+				continue
+			}
+			if policy.Type != "always_allow" && policy.Type != "always_ask" {
+				return nil, domain.Validation(fmt.Sprintf(
+					"mcp tool %s/%s has unsupported permission %q",
+					server.Name,
+					remoteTool.Name,
+					policy.Type,
+				))
+			}
+			alias := mcpModelToolName(server.Name, remoteTool.Name)
+			if _, duplicate := aliases[alias]; duplicate {
+				return nil, domain.Validation(fmt.Sprintf(
+					"MCP model tool name collision %q",
+					alias,
+				))
+			}
+			aliases[alias] = struct{}{}
+			result.Request.Tools = append(
+				result.Request.Tools,
+				model.ToolSchema{
+					Name:        alias,
+					Description: remoteTool.Description,
+					InputSchema: remoteTool.InputSchema,
+				},
+			)
+			result.Tools = append(result.Tools, TurnTool{
+				Name:        alias,
+				Kind:        TurnToolMCP,
+				Permission:  policy,
+				MCPServer:   server,
+				MCPToolName: remoteTool.Name,
+			})
+		}
+	}
+	for name := range servers {
+		if _, ok := referenced[name]; !ok {
+			return nil, domain.Validation(fmt.Sprintf(
+				"MCP server %q has no matching mcp_toolset",
+				name,
+			))
+		}
+	}
+	return setupEvents, nil
+}
+
+func mcpConnectionFailureEvent(server domain.MCPServer) domain.EventDraft {
+	return domain.EventDraft{
+		Type: domain.EvSessionError,
+		Payload: map[string]any{
+			"error": map[string]any{
+				"type":            "mcp_connection_failed_error",
+				"message":         "Could not connect to MCP server " + server.Name + ".",
+				"mcp_server_name": server.Name,
+				"retry_status": map[string]any{
+					"type": "exhausted",
+				},
+			},
+		},
+	}
+}
+
+func mcpModelToolName(serverName, toolName string) string {
+	sanitize := func(value string) string {
+		var b strings.Builder
+		for _, r := range value {
+			switch {
+			case r >= 'a' && r <= 'z',
+				r >= 'A' && r <= 'Z',
+				r >= '0' && r <= '9',
+				r == '_', r == '-':
+				b.WriteRune(r)
+			default:
+				b.WriteByte('_')
+			}
+		}
+		return b.String()
+	}
+	name := "mcp__" + sanitize(serverName) + "__" + sanitize(toolName)
+	if len(name) <= 64 {
+		return name
+	}
+	sum := sha256.Sum256([]byte(serverName + "\x00" + toolName))
+	suffix := "_" + hex.EncodeToString(sum[:6])
+	return name[:64-len(suffix)] + suffix
+}
+
+func transcriptCoversPriorTurns(
+	transcript domain.ProviderTranscript,
+	history []domain.Event,
+	currentTriggerID string,
+	currentResolutionIDs []string,
+) bool {
+	represented := make(map[string]struct{}, len(transcript.TriggerEventIDs))
+	for _, id := range transcript.TriggerEventIDs {
+		represented[id] = struct{}{}
+	}
+	current := make(map[string]struct{}, len(currentResolutionIDs)+1)
+	current[currentTriggerID] = struct{}{}
+	for _, id := range currentResolutionIDs {
+		current[id] = struct{}{}
+	}
+	for _, event := range history {
+		if _, ok := current[event.ID]; ok {
+			continue
+		}
+		if !drivesPreparedModelTurn(event.Type) {
+			continue
+		}
+		if _, ok := represented[event.ID]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func drivesPreparedModelTurn(eventType string) bool {
+	switch eventType {
+	case domain.EvUserMessage,
+		domain.EvUserCustomToolResult,
+		domain.EvUserToolConfirmation:
+		return true
+	default:
+		return false
+	}
 }
 
 func pendingBarrierContainsTrigger(pending []domain.PendingAction, triggerEventID string) bool {
@@ -377,6 +703,9 @@ func (a *Activities) prepareResumeActions(
 		input, inputOK := action.Payload["input"].(map[string]any)
 		if name == "" || !inputOK {
 			return nil, domain.Validation("pending action has invalid tool name or input")
+		}
+		if serverName, _ := action.Payload["mcp_server_name"].(string); serverName != "" {
+			name = mcpModelToolName(serverName, name)
 		}
 		resolution, err := a.source.GetEvent(ctx, sessionID, resolutionID)
 		if err != nil {
@@ -509,12 +838,11 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 				result.FatalError = "model returned a tool_use without an input object"
 				return result, nil
 			}
-			// The provider's transient tool id is replaced with the public
-			// server-owned event id used by the journal and event ledger.
-			normalized[i].ToolUseID = a.ids.NewID(domain.PrefixEvent)
+			publicEventID := a.ids.NewID(domain.PrefixEvent)
 			result.ToolSteps = append(result.ToolSteps, PlannedToolStep{
-				ToolUseEventID: normalized[i].ToolUseID,
-				ToolStepID:     a.ids.NewID(domain.PrefixToolStep),
+				ToolUseEventID:    publicEventID,
+				ProviderToolUseID: normalized[i].ToolUseID,
+				ToolStepID:        a.ids.NewID(domain.PrefixToolStep),
 			})
 		}
 	}
@@ -558,7 +886,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		if step.Result == nil {
 			return ExecuteToolResult{}, fmt.Errorf("temporal: completed tool step %s has no result", step.ID)
 		}
-		out.Result = *step.Result
+		out.Result = workflowToolResult(*step.Result)
 		return out, nil
 	case domain.ToolStepAmbiguous:
 		out.Ambiguous = true
@@ -578,13 +906,32 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		return ExecuteToolResult{}, fmt.Errorf("temporal: invalid tool step state %q", step.State)
 	}
 
-	executor, ok := tools.Registry()[in.ToolName]
-	if !ok {
-		out.FatalError = "built-in tool is not registered: " + in.ToolName
+	kind := in.ToolKind
+	if kind == "" {
+		kind = TurnToolBuiltin
+	}
+	var executor tools.Executor
+	switch kind {
+	case TurnToolBuiltin:
+		var ok bool
+		executor, ok = tools.Registry()[in.ToolName]
+		if !ok {
+			out.FatalError = "built-in tool is not registered: " + in.ToolName
+			return out, nil
+		}
+	case TurnToolMCP:
+		if a.mcp == nil || in.MCPServer.Name == "" ||
+			in.MCPServer.URL == "" || in.MCPToolName == "" {
+			out.FatalError = "MCP tool execution is missing its pinned server definition"
+			return out, nil
+		}
+	default:
+		out.FatalError = "tool execution owner is not server-executable: " + string(kind)
 		return out, nil
 	}
 	// Provisioning happens before Start: a transient sandbox failure cannot turn
-	// a never-executed tool into an ambiguous side effect.
+	// a never-executed tool into an ambiguous side effect. MCP also uses the
+	// Session sandbox to materialize binary and oversized results.
 	box, err := a.sandboxes.Acquire(ctx, in.SessionID, sandbox.Spec{Timeout: sandboxTurnTimeout})
 	if err != nil {
 		return ExecuteToolResult{}, err
@@ -596,12 +943,77 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		return ExecuteToolResult{}, err
 	}
 
-	executed := executor(ctx, box, in.Input)
-	out.Result = domain.ToolStepResult{Content: executed.Content, IsError: executed.IsError}
+	if kind == TurnToolMCP {
+		// Crossing StartToolStep is the side-effect uncertainty boundary. A
+		// transport failure after this point may have happened after the remote
+		// server executed the tool, so the Activity error intentionally becomes
+		// ambiguous on retry rather than blindly calling the MCP tool again.
+		called, err := a.mcp.Call(
+			ctx,
+			in.MCPServer,
+			in.MCPToolName,
+			in.Input,
+		)
+		if err != nil {
+			return ExecuteToolResult{}, err
+		}
+		executed, raw, rawPath, projectErr := tools.ProjectMCPResult(
+			context.WithoutCancel(ctx),
+			box,
+			in.ToolUseEventID,
+			called,
+		)
+		if projectErr != nil {
+			executed = tools.Result{
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": projectErr.Error(),
+				}},
+				IsError: true,
+			}
+		}
+		out.Result = domain.ToolStepResult{
+			Content: executed.Content,
+			IsError: executed.IsError,
+			Raw:     raw,
+			RawPath: rawPath,
+		}
+	} else {
+		executed := executor(ctx, box, in.Input)
+		executed, materializeErr := tools.MaterializeLargeResult(
+			context.WithoutCancel(ctx),
+			box,
+			in.ToolUseEventID,
+			executed,
+		)
+		if materializeErr != nil {
+			executed = tools.Result{
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": materializeErr.Error(),
+				}},
+				IsError: true,
+			}
+		}
+		out.Result = domain.ToolStepResult{
+			Content: executed.Content,
+			IsError: executed.IsError,
+		}
+	}
 	if err := completeToolResultDurably(ctx, a.journal, step.ID, out.Result); err != nil {
 		return ExecuteToolResult{}, err
 	}
+	out.Result = workflowToolResult(out.Result)
 	return out, nil
+}
+
+// workflowToolResult is the bounded model/public projection returned through
+// Temporal. Executor-native Raw/RawPath stay in the PostgreSQL journal and do
+// not need to inflate Workflow history.
+func workflowToolResult(result domain.ToolStepResult) domain.ToolStepResult {
+	result.Raw = nil
+	result.RawPath = ""
+	return result
 }
 
 // ReleaseSandbox completes the provider side of session deletion. It is a
@@ -666,18 +1078,37 @@ func (a *Activities) CompleteWorkflowTurn(
 ) (RunTurnResult, error) {
 	dctx, cancel := durableCtx(ctx)
 	defer cancel()
-	completion, err := a.source.CompleteWorkflowTurn(
-		dctx,
-		in.SessionID,
-		in.TriggerEventID,
-		in.Output,
-		in.Status,
-		in.AttemptID,
-		in.AttemptState,
-		in.AttemptError,
-		in.PendingActionEventIDs,
-		in.ResolutionEventIDs,
-	)
+	var completion TurnCompletionResult
+	var err error
+	if source, ok := a.source.(ProviderTranscriptCompletionSource); ok {
+		completion, err = source.CompleteWorkflowTurnWithTranscript(
+			dctx,
+			in.SessionID,
+			in.TriggerEventID,
+			in.Output,
+			in.Status,
+			in.AttemptID,
+			in.AttemptState,
+			in.AttemptError,
+			in.PendingActionEventIDs,
+			in.ResolutionEventIDs,
+			in.TranscriptDelta,
+			in.ToolUseMappings,
+		)
+	} else {
+		completion, err = a.source.CompleteWorkflowTurn(
+			dctx,
+			in.SessionID,
+			in.TriggerEventID,
+			in.Output,
+			in.Status,
+			in.AttemptID,
+			in.AttemptState,
+			in.AttemptError,
+			in.PendingActionEventIDs,
+			in.ResolutionEventIDs,
+		)
+	}
 	if err != nil {
 		return RunTurnResult{}, err
 	}

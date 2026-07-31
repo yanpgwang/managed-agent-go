@@ -95,13 +95,14 @@ type wireBlock struct {
 	IsError   bool        `json:"is_error,omitempty"`
 }
 type wireMessage struct {
-	Role    string      `json:"role"`
-	Content []wireBlock `json:"content"`
+	Role    string            `json:"role"`
+	Content []json.RawMessage `json:"content"`
 }
 type wireTool struct {
+	Type        string         `json:"type,omitempty"`
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema"`
+	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 type wireRequest struct {
 	Model     string        `json:"model"`
@@ -112,14 +113,14 @@ type wireRequest struct {
 	Stream    bool          `json:"stream,omitempty"`
 }
 type wireResponse struct {
-	Content    []wireBlock `json:"content"`
-	StopReason string      `json:"stop_reason"`
+	Content    []json.RawMessage `json:"content"`
+	StopReason string            `json:"stop_reason"`
 }
 
 // buildWireRequest maps a domain Request to the Anthropic Messages wire request,
 // applying config defaults for model and max_tokens. stream toggles the
 // server-sent-events variant ("stream": true).
-func (a *Anthropic) buildWireRequest(req Request, stream bool) wireRequest {
+func (a *Anthropic) buildWireRequest(req Request, stream bool) (wireRequest, error) {
 	model := req.Model
 	if model == "" {
 		model = a.cfg.Model
@@ -131,6 +132,7 @@ func (a *Anthropic) buildWireRequest(req Request, stream bool) wireRequest {
 	body := wireRequest{Model: model, System: req.System, MaxTokens: maxTokens, Stream: stream}
 	for _, t := range req.Tools {
 		body.Tools = append(body.Tools, wireTool{
+			Type:        t.Type,
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: t.InputSchema,
@@ -139,11 +141,19 @@ func (a *Anthropic) buildWireRequest(req Request, stream bool) wireRequest {
 	for _, m := range req.Messages {
 		wm := wireMessage{Role: string(m.Role)}
 		for _, b := range m.Content {
-			wm.Content = append(wm.Content, toWireBlock(b))
+			raw, err := toWireBlock(b)
+			if err != nil {
+				return wireRequest{}, fmt.Errorf(
+					"model: encode %s content block: %w",
+					b.Type,
+					err,
+				)
+			}
+			wm.Content = append(wm.Content, raw)
 		}
 		body.Messages = append(body.Messages, wm)
 	}
-	return body
+	return body, nil
 }
 
 // newHTTPRequest marshals the wire body and builds the POST /v1/messages request
@@ -168,7 +178,11 @@ func (a *Anthropic) newHTTPRequest(ctx context.Context, body wireRequest) (*http
 }
 
 func (a *Anthropic) CreateMessage(ctx context.Context, req Request) (Response, error) {
-	httpReq, err := a.newHTTPRequest(ctx, a.buildWireRequest(req, false))
+	body, err := a.buildWireRequest(req, false)
+	if err != nil {
+		return Response{}, err
+	}
+	httpReq, err := a.newHTTPRequest(ctx, body)
 	if err != nil {
 		return Response{}, err
 	}
@@ -187,12 +201,10 @@ func (a *Anthropic) CreateMessage(ctx context.Context, req Request) (Response, e
 		return Response{}, fmt.Errorf("model: decode response: %w", err)
 	}
 	out := Response{StopReason: wr.StopReason}
-	for _, b := range wr.Content {
-		cb := domain.ContentBlock{Type: b.Type, Text: b.Text}
-		if b.Type == "tool_use" {
-			cb.ToolUseID = b.ID
-			cb.ToolName = b.Name
-			cb.Input = b.Input
+	for _, raw := range wr.Content {
+		cb, err := parseProviderBlock(raw)
+		if err != nil {
+			return Response{}, fmt.Errorf("model: decode content block: %w", err)
 		}
 		out.Content = append(out.Content, cb)
 	}
@@ -225,7 +237,32 @@ func (a *Anthropic) CreateMessage(ctx context.Context, req Request) (Response, e
 // at content_block_stop. This is enough for the tool loop (which needs the
 // complete tool call), but partial_json is not surfaced incrementally.
 func (a *Anthropic) CreateMessageStream(ctx context.Context, req Request, onDelta func(index int, text string)) (Response, error) {
-	httpReq, err := a.newHTTPRequest(ctx, a.buildWireRequest(req, true))
+	// Server-tool responses contain provider-private blocks and citation
+	// structures whose streaming deltas evolve independently of the client-tool
+	// wire shape. Until the streaming assembler can losslessly retain every
+	// unknown delta, use the non-streaming endpoint whenever a native tool is
+	// enabled. This preserves the exact response block while still publishing
+	// complete text blocks as best-effort preview deltas.
+	if hasNativeTool(req.Tools) {
+		resp, err := a.CreateMessage(ctx, req)
+		if err != nil {
+			return Response{}, err
+		}
+		if onDelta != nil {
+			for index, block := range resp.Content {
+				if block.Type == "text" && block.Text != "" {
+					onDelta(index, block.Text)
+				}
+			}
+		}
+		return resp, nil
+	}
+
+	body, err := a.buildWireRequest(req, true)
+	if err != nil {
+		return Response{}, err
+	}
+	httpReq, err := a.newHTTPRequest(ctx, body)
 	if err != nil {
 		return Response{}, err
 	}
@@ -385,6 +422,11 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 		default:
 			cb.Text = b.text.String()
 		}
+		raw, err := marshalTypedBlock(cb)
+		if err != nil {
+			return Response{}, fmt.Errorf("model: encode streamed content block: %w", err)
+		}
+		cb.Raw = raw
 		out.Content = append(out.Content, cb)
 	}
 	return out, nil
@@ -394,19 +436,65 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 // text blocks carry only text; tool_use blocks carry id/name/input; tool_result
 // blocks carry tool_use_id, is_error, and a content array of text blocks (the
 // wire shape the API requires, [{type:"text",text:...}]).
-func toWireBlock(b domain.ContentBlock) wireBlock {
+func toWireBlock(b domain.ContentBlock) (json.RawMessage, error) {
+	if len(b.Raw) > 0 {
+		return append(json.RawMessage(nil), b.Raw...), nil
+	}
+	return marshalTypedBlock(b)
+}
+
+func marshalTypedBlock(b domain.ContentBlock) (json.RawMessage, error) {
+	var value any
 	switch b.Type {
 	case "tool_use":
-		return wireBlock{Type: "tool_use", ID: b.ToolUseID, Name: b.ToolName, Input: b.Input}
+		value = wireBlock{Type: "tool_use", ID: b.ToolUseID, Name: b.ToolName, Input: b.Input}
 	case "tool_result":
 		wb := wireBlock{Type: "tool_result", ToolUseID: b.ToolResultFor, IsError: b.IsError}
 		if b.Text != "" {
 			wb.Content = []wireBlock{{Type: "text", Text: b.Text}}
 		}
-		return wb
+		value = wb
 	default:
-		return wireBlock{Type: b.Type, Text: b.Text}
+		value = wireBlock{Type: b.Type, Text: b.Text}
 	}
+	raw, err := json.Marshal(value)
+	return json.RawMessage(raw), err
+}
+
+func parseProviderBlock(raw json.RawMessage) (domain.ContentBlock, error) {
+	var header struct {
+		Type  string         `json:"type"`
+		Text  string         `json:"text"`
+		ID    string         `json:"id"`
+		Name  string         `json:"name"`
+		Input map[string]any `json:"input"`
+	}
+	if err := json.Unmarshal(raw, &header); err != nil {
+		return domain.ContentBlock{}, err
+	}
+	if header.Type == "" {
+		return domain.ContentBlock{}, errors.New("content block type is required")
+	}
+	block := domain.ContentBlock{
+		Type: header.Type,
+		Text: header.Text,
+		Raw:  append(json.RawMessage(nil), raw...),
+	}
+	if header.Type == "tool_use" {
+		block.ToolUseID = header.ID
+		block.ToolName = header.Name
+		block.Input = header.Input
+	}
+	return block, nil
+}
+
+func hasNativeTool(tools []ToolSchema) bool {
+	for _, tool := range tools {
+		if tool.Type != "" {
+			return true
+		}
+	}
+	return false
 }
 
 const maxUpstreamErrorLen = 512

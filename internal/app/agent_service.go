@@ -71,5 +71,8 @@ func validateAgent(a domain.Agent) error {
 	if a.Model.ID == "" {
 		return domain.Validation("model is required")
 	}
+	if err := domain.ValidateToolConfiguration(a.Tools, a.MCPServers); err != nil {
+		return domain.Validation("invalid tool configuration: " + err.Error())
+	}
 	return validateMetadata(a.Metadata)
 }

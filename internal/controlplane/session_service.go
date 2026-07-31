@@ -95,6 +95,14 @@ func (s *SessionService) Create(
 	if input.Overrides != nil {
 		snapshot = agent.WithOverrides(*input.Overrides)
 	}
+	if err := domain.ValidateToolConfiguration(
+		snapshot.Tools,
+		snapshot.MCPServers,
+	); err != nil {
+		return domain.Session{}, domain.Validation(
+			"invalid agent tool configuration: " + err.Error(),
+		)
+	}
 	metadata := input.Metadata
 	if metadata == nil {
 		metadata = map[string]any{}

@@ -35,8 +35,9 @@ flowchart LR
 
 ### The server owns history
 
-The event log is the source of truth for a session, but two different orderings
-are read from it:
+The event log is the source of truth for public session history. It is not the
+lossless provider transcript and must not be used to reconstruct provider-native
+context. Two different public orderings are read from the event ledger:
 
 - **Public event history** (`GET .../events`, list, and the live SSE stream) is
   the immutable receipt/commit sequence. It never reorders or hides events.
@@ -46,9 +47,13 @@ are read from it:
   the current trigger. A turn never sees a later message queued while it was
   still running.
 
-Before each model turn the application reconstructs that causal history and
-projects it into a Messages API conversation. The model endpoint performs
-inference; it does not own session state.
+New Sessions continue model conversations from a lossless Provider Transcript;
+the causal public-event projection remains only as a compatibility fallback for
+Sessions created before transcript support. Immutable Context Snapshots remain
+follow-up work. This separation is required for native server-tool blocks,
+citations, compaction, and large results. See
+[Storage, context, and connected tools](architecture/storage-context-and-tools.md).
+The model endpoint performs inference; it does not own session state.
 
 ### Wire and domain models are separate
 
@@ -139,6 +144,10 @@ The strongest current risks are semantic rather than structural:
    quotas, and eviction are not implemented.
 3. Worker Versioning, observability, authentication, large-payload offload, and
    production manifests remain open.
+4. Provider Transcript, native Web Search/Fetch, sandbox result
+   materialization, and unauthenticated MCP tools are implemented. Context
+   Snapshots, provider-round records, deployment-managed MCP authentication, and
+   reference-only Temporal payloads remain open.
 
 Current API support is tracked in the [compatibility matrix](compatibility.md);
 planned capability work is kept in the [roadmap](roadmap.md).

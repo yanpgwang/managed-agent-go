@@ -78,13 +78,16 @@ type TurnToolKind string
 const (
 	TurnToolBuiltin TurnToolKind = "builtin"
 	TurnToolCustom  TurnToolKind = "custom"
+	TurnToolMCP     TurnToolKind = "mcp"
 )
 
 // TurnTool is the immutable, Workflow-facing classification of an offered tool.
 type TurnTool struct {
-	Name       string                  `json:"name"`
-	Kind       TurnToolKind            `json:"kind"`
-	Permission domain.PermissionPolicy `json:"permission"`
+	Name        string                  `json:"name"`
+	Kind        TurnToolKind            `json:"kind"`
+	Permission  domain.PermissionPolicy `json:"permission"`
+	MCPServer   domain.MCPServer        `json:"mcp_server,omitempty"`
+	MCPToolName string                  `json:"mcp_tool_name,omitempty"`
 }
 
 // PrepareTurnInput identifies one public trigger whose model turn should run.
@@ -105,6 +108,16 @@ type PrepareTurnResult struct {
 	Request          model.Request  `json:"request"`
 	Tools            []TurnTool     `json:"tools,omitempty"`
 	ResumeActions    []ResumeAction `json:"resume_actions,omitempty"`
+	// PreludeEvents are recoverable setup diagnostics, such as one unavailable
+	// MCP server. The Workflow commits them with the turn while continuing with
+	// the remaining tool surface.
+	PreludeEvents []domain.EventDraft `json:"prelude_events,omitempty"`
+	// UsesProviderTranscript is true when Request.Messages came from the
+	// lossless private transcript rather than the legacy public-event
+	// projection. TranscriptDelta contains only the new input represented by
+	// this turn; Workflow code appends provider responses and tool results.
+	UsesProviderTranscript bool             `json:"uses_provider_transcript,omitempty"`
+	TranscriptDelta        []domain.Message `json:"transcript_delta,omitempty"`
 }
 
 // ResumeAction is the server-owned reconstruction of one parked tool call and
@@ -122,6 +135,7 @@ type ResumeAction struct {
 	Confirmation      string                   `json:"confirmation,omitempty"`
 	DenyMessage       string                   `json:"deny_message,omitempty"`
 	ToolStepID        string                   `json:"tool_step_id,omitempty"`
+	ProviderToolUseID string                   `json:"provider_tool_use_id,omitempty"`
 }
 
 // CallModelInput is one plan/observe step. Each call is its own Activity so its
@@ -135,13 +149,15 @@ type CallModelInput struct {
 // Both ids are Activity output recorded in Workflow history; retries therefore
 // reuse explicit operation ids rather than deriving one namespace from another.
 type PlannedToolStep struct {
-	ToolUseEventID string `json:"tool_use_event_id"`
-	ToolStepID     string `json:"tool_step_id"`
+	ToolUseEventID    string `json:"tool_use_event_id"`
+	ProviderToolUseID string `json:"provider_tool_use_id"`
+	ToolStepID        string `json:"tool_step_id"`
 }
 
-// CallModelResult carries a normalized model response. ToolUseID values have
-// been replaced with server-owned public event IDs, and MessageEventID names the
-// public agent.message when the response contains non-empty text.
+// CallModelResult carries a normalized model response. Provider tool-use IDs
+// remain untouched for exact replay; ToolSteps maps each one to server-owned
+// public/journal IDs. MessageEventID names the public agent.message when the
+// response contains non-empty text.
 type CallModelResult struct {
 	Response       model.Response    `json:"response"`
 	MessageEventID string            `json:"message_event_id,omitempty"`
@@ -152,14 +168,17 @@ type CallModelResult struct {
 // ExecuteToolInput identifies one logical built-in tool step. ToolUseEventID is
 // stable because it came from the completed CallModel Activity result.
 type ExecuteToolInput struct {
-	SessionID      string         `json:"session_id"`
-	TriggerEventID string         `json:"trigger_event_id"`
-	AttemptID      string         `json:"attempt_id"`
-	Ordinal        int            `json:"ordinal"`
-	ToolUseEventID string         `json:"tool_use_event_id"`
-	ToolStepID     string         `json:"tool_step_id"`
-	ToolName       string         `json:"tool_name"`
-	Input          map[string]any `json:"input"`
+	SessionID      string           `json:"session_id"`
+	TriggerEventID string           `json:"trigger_event_id"`
+	AttemptID      string           `json:"attempt_id"`
+	Ordinal        int              `json:"ordinal"`
+	ToolUseEventID string           `json:"tool_use_event_id"`
+	ToolStepID     string           `json:"tool_step_id"`
+	ToolName       string           `json:"tool_name"`
+	ToolKind       TurnToolKind     `json:"tool_kind,omitempty"`
+	MCPServer      domain.MCPServer `json:"mcp_server,omitempty"`
+	MCPToolName    string           `json:"mcp_tool_name,omitempty"`
+	Input          map[string]any   `json:"input"`
 }
 
 // ExecuteToolResult is the durable result of one tool Activity. Ambiguous is a
@@ -187,6 +206,10 @@ type CompleteWorkflowTurnInput struct {
 	// ResolutionEventIDs names every client event that closes the current
 	// pending-action barrier. PostgreSQL validates the set atomically.
 	ResolutionEventIDs []string `json:"resolution_event_ids,omitempty"`
+	// TranscriptDelta and ToolUseMappings are provider-private continuation
+	// state. PostgreSQL commits them atomically with Output when supported.
+	TranscriptDelta []domain.Message                `json:"transcript_delta,omitempty"`
+	ToolUseMappings []domain.ProviderToolUseMapping `json:"tool_use_mappings,omitempty"`
 }
 
 // LoadEventsInput requests the ordered public events after a cursor.

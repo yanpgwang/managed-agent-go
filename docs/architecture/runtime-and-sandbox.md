@@ -37,6 +37,12 @@ Conversation ownership remains in this server. This is why earlier
 self-contained harness integrations were removed: a second component owning
 history would create competing sources of truth.
 
+The context boundary now includes a lossless Provider Transcript rather than
+reconstructing provider-native history from public events. Native Web
+Search/Fetch and MCP keep separate raw, model-facing, and public projections;
+immutable Context Snapshots remain follow-up work. See
+[Storage, context, and connected tools](storage-context-and-tools.md).
+
 ## Tool runtime
 
 Agent tool configuration is parsed into:
@@ -45,12 +51,17 @@ Agent tool configuration is parsed into:
 - custom tool definitions;
 - MCP toolset references.
 
-`bash`, `read`, `write`, `edit`, `glob`, and `grep` currently execute.
-`web_fetch` and `web_search` can be declared but return a not-implemented tool
-result. MCP references are parsed but not resolved.
+`bash`, `read`, `write`, `edit`, `glob`, and `grep` execute in the Session
+sandbox. `web_fetch` and `web_search` are sent as native server-tool
+declarations to the configured Messages API endpoint and currently require
+`always_allow`. Remote MCP tools are discovered through Streamable HTTP, pinned
+per Session, permission-checked, journaled, and given the same sandbox-backed
+large-result policy. Deployment-managed MCP authentication and deprecated-SSE
+fallback remain follow-up work.
 
-Built-ins with `always_allow` execute inside the current run. Custom tools and
-`always_ask` built-ins park the session for a client response.
+Locally executable built-ins and MCP tools with `always_allow` execute inside
+the current run. Custom tools and interceptable `always_ask` tools park the
+session for a client response.
 
 ## Sandbox provider
 

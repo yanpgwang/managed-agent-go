@@ -171,6 +171,91 @@ func TestWorkflowTurn_PreservesTextAndMultipleTools(t *testing.T) {
 	require.Equal(t, domain.RunAttemptCompleted, completed.AttemptState)
 }
 
+func TestWorkflowTurn_MixedExecutableAndPendingToolsCommitExecutedTranscriptResult(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	initial := []domain.Message{{
+		Role: domain.RoleUser,
+		Content: []domain.ContentBlock{{
+			Type: "text", Text: "read then ask",
+		}},
+	}}
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{
+			AttemptID:              "ratm_mixed",
+			UsesProviderTranscript: true,
+			TranscriptDelta:        initial,
+			Request: model.Request{
+				Model:    "test-model",
+				Messages: initial,
+				Tools: []model.ToolSchema{
+					{Name: "read"},
+					{Name: "ask_client"},
+				},
+			},
+			Tools: []TurnTool{
+				{
+					Name: "read", Kind: TurnToolBuiltin,
+					Permission: domain.PermissionPolicy{Type: "always_allow"},
+				},
+				{Name: "ask_client", Kind: TurnToolCustom},
+			},
+		}, nil
+	}
+	callModel := func(context.Context, CallModelInput) (CallModelResult, error) {
+		return CallModelResult{
+			ToolSteps: []PlannedToolStep{
+				{
+					ToolUseEventID: "public_read", ProviderToolUseID: "provider_read",
+					ToolStepID: "tstep_read",
+				},
+				{
+					ToolUseEventID: "public_ask", ProviderToolUseID: "provider_ask",
+					ToolStepID: "tstep_ask",
+				},
+			},
+			Response: model.Response{Content: []domain.ContentBlock{
+				{
+					Type: "tool_use", ToolUseID: "provider_read", ToolName: "read",
+					Input: map[string]any{"path": "a.txt"},
+				},
+				{
+					Type: "tool_use", ToolUseID: "provider_ask", ToolName: "ask_client",
+					Input: map[string]any{"question": "continue?"},
+				},
+			}},
+		}, nil
+	}
+	executeTool := func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+		return ExecuteToolResult{Result: domain.ToolStepResult{
+			Content: []any{map[string]any{
+				"type": "text", "text": "file contents",
+			}},
+		}}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnParked}, nil
+	}
+	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_mixed", TriggerEventID: "sevt_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, []string{"public_ask"}, completed.PendingActionEventIDs)
+	require.Len(t, completed.TranscriptDelta, 3)
+	require.Equal(t, domain.RoleUser, completed.TranscriptDelta[2].Role)
+	require.Equal(t, []domain.ContentBlock{{
+		Type:          "tool_result",
+		ToolResultFor: "provider_read",
+		Text:          "file contents",
+	}}, completed.TranscriptDelta[2].Content)
+}
+
 func TestWorkflowTurn_ToolActivityRetryDoesNotRepeatModelStep(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

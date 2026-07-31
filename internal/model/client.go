@@ -11,6 +11,9 @@ import (
 )
 
 type ToolSchema struct {
+	// Type is set for provider-native server tools. Ordinary client tools leave
+	// it empty and provide Description/InputSchema.
+	Type        string
 	Name        string
 	Description string
 	InputSchema map[string]any

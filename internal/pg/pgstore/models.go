@@ -39,6 +39,14 @@ type Event struct {
 	ProcessedAt pgtype.Timestamptz
 }
 
+type McpDiscoverySnapshot struct {
+	SessionID  string
+	ServerName string
+	ServerUrl  string
+	Tools      []byte
+	CreatedAt  pgtype.Timestamptz
+}
+
 type OrchestrationOutbox struct {
 	SessionID     string
 	MaxEventSeq   int64
@@ -56,6 +64,17 @@ type PendingAction struct {
 	ResolvingEventID *string
 	CreatedAt        pgtype.Timestamptz
 	ResolvedAt       pgtype.Timestamptz
+}
+
+type ProviderTranscriptTurn struct {
+	SessionID           string
+	TriggerEventID      string
+	TurnOrdinal         *int64
+	CommittedThroughSeq int64
+	RepresentedEventIds []byte
+	Messages            []byte
+	ToolUseMappings     []byte
+	CreatedAt           pgtype.Timestamptz
 }
 
 type Session struct {

@@ -14,6 +14,7 @@ const sidebars: SidebarsConfig = {
         'architecture/domain-model',
         'architecture/session-lifecycle',
         'architecture/runtime-and-sandbox',
+        'architecture/storage-context-and-tools',
       ],
     },
     {

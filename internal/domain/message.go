@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"encoding/json"
+	"strings"
+)
 
 type Role string
 
@@ -17,11 +20,33 @@ type ContentBlock struct {
 	Input         map[string]any // tool_use: arguments
 	ToolResultFor string         // tool_result: the tool_use id it answers
 	IsError       bool           // tool_result: error flag
+	// Raw is the complete provider content block. Provider adapters populate it
+	// for responses so unknown server-tool, citation, encrypted-continuation,
+	// and future fields can be round-tripped without flattening. Locally created
+	// blocks leave Raw empty and are encoded from the typed fields above.
+	Raw json.RawMessage `json:"raw,omitempty"`
 }
 
 type Message struct {
 	Role    Role
 	Content []ContentBlock
+}
+
+// ProviderToolUseMapping keeps provider-private tool ids separate from the
+// stable public event ids exposed by Managed Agents.
+type ProviderToolUseMapping struct {
+	PublicEventID     string `json:"public_event_id"`
+	ProviderToolUseID string `json:"provider_tool_use_id"`
+	ToolName          string `json:"tool_name"`
+}
+
+// ProviderTranscript is the committed, lossless model-continuation history for
+// one Session. TriggerEventIDs identifies which public turns are represented so
+// a caller can safely fall back for sessions created before transcript support.
+type ProviderTranscript struct {
+	Messages        []Message                `json:"messages"`
+	TriggerEventIDs []string                 `json:"trigger_event_ids"`
+	ToolUseMappings []ProviderToolUseMapping `json:"tool_use_mappings"`
 }
 
 // ProjectMessages folds an ordered session event log into a Messages-API
