@@ -141,6 +141,86 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 	}
 }
 
+// TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd models an API
+// process exiting after PostgreSQL commits the deletion fence but before it
+// starts Temporal cleanup. A worker-side scan must discover the row, release
+// the persisted sandbox through the deterministic cleanup Workflow, and
+// physically finalize the Session without another DELETE request.
+func TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd(t *testing.T) {
+	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
+	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
+	if dbURL == "" || hostPort == "" {
+		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run lifecycle recovery")
+	}
+	ctx := context.Background()
+	store, cleanup := integrationStore(t, dbURL)
+	defer cleanup()
+	c, err := client.Dial(client.Options{HostPort: hostPort})
+	if err != nil {
+		t.Skipf("temporal unreachable at %s: %v", hostPort, err)
+	}
+	defer c.Close()
+
+	ids := domain.NewRandomIDGen()
+	runtime := temporalpkg.NewRuntimeOnTaskQueue(
+		c,
+		store,
+		model.NewFake(),
+		sandbox.NewLocalProvider(),
+		ids,
+		temporalpkg.RelayConfig{},
+		"managed-agent-lifecycle-test-"+ids.NewID(""),
+	)
+	if err := runtime.Worker.Start(); err != nil {
+		t.Fatalf("worker start: %v", err)
+	}
+	defer runtime.Worker.Stop()
+
+	session := domain.Session{
+		ID:            "sess_lifecycle_" + ids.NewID(""),
+		AgentID:       "agent_1",
+		AgentVersion:  1,
+		EnvironmentID: "env_1",
+		Status:        domain.StatusIdle,
+		Metadata:      map[string]any{},
+		CreatedAt:     time.Now().UTC(),
+		UpdatedAt:     time.Now().UTC(),
+	}
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	box, err := runtime.Sandbox.Acquire(ctx, session.ID, sandbox.Spec{})
+	if err != nil {
+		t.Fatalf("acquire sandbox: %v", err)
+	}
+	root := box.Root()
+	if err := box.WriteFile(ctx, "before-crash", []byte("durable")); err != nil {
+		t.Fatalf("write sandbox marker: %v", err)
+	}
+	if err := store.PrepareSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatalf("prepare deletion: %v", err)
+	}
+
+	reconcileCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	result, err := runtime.Lifecycle.RunOnce(reconcileCtx)
+	if err != nil {
+		t.Fatalf("reconcile deletion: %v", err)
+	}
+	if result.Deletions != 1 {
+		t.Fatalf("reconciled deletions = %d, want 1", result.Deletions)
+	}
+	if _, err := store.GetSession(ctx, session.ID); err == nil {
+		t.Fatal("session survived reconciled deletion")
+	}
+	if _, found, err := store.GetSandboxBinding(ctx, session.ID); err != nil || found {
+		t.Fatalf("sandbox binding survived: found=%v err=%v", found, err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("sandbox root survived cleanup or stat failed: %v", err)
+	}
+}
+
 // TestVerticalSlice_InterruptCancelsModelActivity proves the cross-process
 // cancellation path against real Temporal and PostgreSQL. The public interrupt
 // is first committed to PostgreSQL, its metadata-only wakeup reaches the

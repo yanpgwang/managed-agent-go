@@ -13,17 +13,19 @@ not by reproducing Anthropic's internal implementation.
 
 These are the release-blocking capabilities for the managed-agent harness:
 
-1. autonomous recovery for interrupted deletion plus sandbox orphan
-   reconciliation;
-2. repeatable black-box conformance for the supported PostgreSQL/Temporal and
+1. repeatable black-box conformance for the supported PostgreSQL/Temporal and
    external-sandbox paths;
-3. bounded context management and compaction over server-owned history.
+2. bounded context management and compaction over server-owned history.
 
 Durable cross-process interrupt, deterministic finish-vs-interrupt ordering,
 Sandbox identity, worker-restart reattachment, and deletion cleanup are durable
 across the local, Docker, E2B, CubeSandbox, OpenSandbox, and Daytona provider
 adapters. Remote adapters remain Preview until repeatable service-level
 validation promotes them.
+
+Workers persist provisioning intent before provider creation and reconcile the
+create-before-binding crash window. They also discover fenced Session deletions
+and resume deterministic Temporal cleanup without requiring another API call.
 
 ## Runtime integrations
 
@@ -43,7 +45,7 @@ Production deployments additionally need:
 - Worker Versioning and rolling-upgrade coverage;
 - metrics, traces, audit logs, and operational runbooks;
 - object storage for large histories and artifacts;
-- quotas, resource policy, and orphan reconciliation;
+- quotas and resource policy;
 - versioned deployment manifests and migration procedures.
 
 Files, skills, memory, vaults, multi-agent orchestration, schedules, and webhooks

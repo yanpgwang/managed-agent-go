@@ -355,6 +355,18 @@ func (s *Store) FinalizeSessionDeletion(ctx context.Context, sessionID string) e
 	return nil
 }
 
+// ListDeletingSessionIDs returns fenced sessions in stable oldest-first order
+// for worker-side lifecycle reconciliation.
+func (s *Store) ListDeletingSessionIDs(
+	ctx context.Context,
+	limit int,
+) ([]string, error) {
+	if limit <= 0 {
+		return []string{}, nil
+	}
+	return s.q.ListDeletingSessionIDs(ctx, int32(limit))
+}
+
 // DeleteSession is the storage-only convenience used by repository tests. The
 // HTTP control plane uses the explicit prepare/terminate/finalize sequence.
 func (s *Store) DeleteSession(ctx context.Context, sessionID string) error {

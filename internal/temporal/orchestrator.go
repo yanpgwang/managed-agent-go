@@ -98,12 +98,13 @@ func (o *Orchestrator) CreateAPISession(
 // Runtime bundles the worker and relay so cmd can run the execution plane with a
 // single call.
 type Runtime struct {
-	Client  client.Client
-	Worker  worker.Worker
-	Relay   *Relay
-	Store   *pg.Store
-	Signal  *Signaler
-	Sandbox *sandbox.SessionManager
+	Client    client.Client
+	Worker    worker.Worker
+	Relay     *Relay
+	Lifecycle *LifecycleReconciler
+	Store     *pg.Store
+	Signal    *Signaler
+	Sandbox   *sandbox.SessionManager
 }
 
 // NewRuntime wires the full Temporal execution plane against a PostgreSQL store,
@@ -152,7 +153,16 @@ func NewRuntimeOnTaskQueue(
 	w := NewWorkerOnTaskQueue(c, acts, taskQueue)
 	signaler := NewSignalerOnTaskQueue(c, taskQueue)
 	relay := NewRelay(store, signaler, relayCfg)
-	return &Runtime{Client: c, Worker: w, Relay: relay, Store: store, Signal: signaler, Sandbox: sandboxes}
+	lifecycle := NewLifecycleReconciler(
+		store,
+		signaler,
+		sandboxes,
+		LifecycleReconcilerConfig{},
+	)
+	return &Runtime{
+		Client: c, Worker: w, Relay: relay, Lifecycle: lifecycle,
+		Store: store, Signal: signaler, Sandbox: sandboxes,
+	}
 }
 
 // Orchestrator returns an admission orchestrator sharing this runtime's store

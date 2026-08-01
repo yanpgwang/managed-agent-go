@@ -77,6 +77,15 @@ type ProviderTranscriptTurn struct {
 	CreatedAt           pgtype.Timestamptz
 }
 
+type SandboxProvisioningIntent struct {
+	SessionID string
+	Provider  string
+	Spec      []byte
+	SpecHash  string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
+}
+
 type Session struct {
 	ID            string
 	Status        string

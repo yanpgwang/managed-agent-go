@@ -105,3 +105,10 @@ WHERE id = @id;
 -- name: DeleteMarkedSession :execrows
 DELETE FROM sessions
 WHERE id = @id AND deleting_at IS NOT NULL;
+
+-- name: ListDeletingSessionIDs :many
+SELECT id
+FROM sessions
+WHERE deleting_at IS NOT NULL
+ORDER BY deleting_at, id
+LIMIT @row_limit;
