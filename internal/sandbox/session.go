@@ -9,6 +9,12 @@ import (
 	"sync"
 )
 
+// ErrProvisioningUnavailable means a provisioning intent could not be opened
+// because the owning session is absent, deletion-fenced, or already bound.
+// Callers should re-read the binding before deciding whether the session is
+// unavailable: another worker may have committed it after the first lookup.
+var ErrProvisioningUnavailable = errors.New("sandbox: provisioning unavailable")
+
 // Binding is the durable association between a Managed Agents session and the
 // provider resource that owns its workspace. SpecHash is diagnostic drift
 // metadata; credentials and provider configuration must never be stored here.
@@ -18,11 +24,42 @@ type Binding struct {
 	SpecHash  string
 }
 
+// ProvisioningIntent is the durable record written before Provider.Create.
+// Spec contains sandbox configuration only; provider credentials must never be
+// placed in it. Deleting is a reconciliation projection, not persisted intent
+// state.
+type ProvisioningIntent struct {
+	SessionID string
+	Provider  string
+	Spec      Spec
+	SpecHash  string
+	Deleting  bool
+}
+
 // BindingStore persists sandbox ownership independently of worker memory.
-// PutSandboxBinding is insert-if-absent and returns the authoritative binding,
-// which may have been won by another worker. DeleteSandboxBinding must delete
-// only when the persisted Ref still matches the caller's binding.
+// PutSandboxProvisioningIntent is insert-if-absent and records the
+// provider-create obligation before the external call. PutSandboxBinding is
+// insert-if-absent, returns the authoritative binding (which may have been won
+// by another worker), and atomically removes the intent. Delete methods must
+// remove only a record that still matches the caller's value.
 type BindingStore interface {
+	GetSandboxProvisioningIntent(
+		ctx context.Context,
+		sessionID string,
+	) (ProvisioningIntent, bool, error)
+	PutSandboxProvisioningIntent(
+		ctx context.Context,
+		intent ProvisioningIntent,
+	) (ProvisioningIntent, error)
+	ListSandboxProvisioningIntents(
+		ctx context.Context,
+		provider string,
+		limit int,
+	) ([]ProvisioningIntent, error)
+	DeleteSandboxProvisioningIntent(
+		ctx context.Context,
+		intent ProvisioningIntent,
+	) error
 	GetSandboxBinding(ctx context.Context, sessionID string) (Binding, bool, error)
 	PutSandboxBinding(ctx context.Context, binding Binding) (Binding, error)
 	DeleteSandboxBinding(ctx context.Context, binding Binding) error
@@ -122,6 +159,53 @@ func (m *SessionManager) Acquire(
 		return box, nil
 	}
 
+	proposedIntent := ProvisioningIntent{
+		SessionID: sessionID,
+		Provider:  m.provider.Name(),
+		Spec:      spec,
+		SpecHash:  specHash(spec),
+	}
+	intent, err := m.bindings.PutSandboxProvisioningIntent(ctx, proposedIntent)
+	if err != nil {
+		if errors.Is(err, ErrProvisioningUnavailable) {
+			binding, found, loadErr := m.bindings.GetSandboxBinding(ctx, sessionID)
+			if loadErr != nil {
+				return nil, fmt.Errorf(
+					"sandbox: reload binding after provisioning race: %w",
+					loadErr,
+				)
+			}
+			if found {
+				box, attachErr := m.attach(ctx, binding, spec)
+				if attachErr != nil {
+					return nil, attachErr
+				}
+				m.cache(sessionID, box)
+				return box, nil
+			}
+			return nil, Permanent(fmt.Errorf(
+				"%w for session %s",
+				ErrProvisioningUnavailable,
+				sessionID,
+			))
+		}
+		return nil, fmt.Errorf("sandbox: persist provisioning intent: %w", err)
+	}
+	if intent.Provider != proposedIntent.Provider ||
+		intent.SpecHash != proposedIntent.SpecHash {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: session %s provisioning intent is for provider/spec %s/%s, worker requested %s/%s",
+			sessionID,
+			intent.Provider,
+			intent.SpecHash,
+			proposedIntent.Provider,
+			proposedIntent.SpecHash,
+		))
+	}
+	// A retry uses the authoritative saved Spec so provider identity does not
+	// drift across a worker/configuration restart.
+	spec = intent.Spec
+
 	ref, box, err := m.provider.Create(ctx, sessionID, spec)
 	if err != nil {
 		return nil, err
@@ -133,14 +217,14 @@ func (m *SessionManager) Acquire(
 	proposed := Binding{
 		SessionID: sessionID,
 		Ref:       ref,
-		SpecHash:  specHash(spec),
+		SpecHash:  intent.SpecHash,
 	}
 	authoritative, err := m.bindings.PutSandboxBinding(ctx, proposed)
 	if err != nil {
 		// The write result is ambiguous: destroying here could remove a
 		// resource whose binding actually committed. Provider-side idempotency
-		// lets the next attempt recover it; orphan reconciliation handles the
-		// true no-commit case.
+		// lets the next attempt recover it, while the durable provisioning
+		// intent keeps a true no-commit case visible to reconciliation.
 		return nil, fmt.Errorf("sandbox: persist binding: %w", err)
 	}
 	if authoritative.Ref != proposed.Ref {
@@ -204,8 +288,47 @@ func (m *SessionManager) Release(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("sandbox: load binding for release: %w", err)
 	}
 	if !found {
-		if box != nil {
-			return box.Destroy(ctx)
+		intent, intentFound, intentErr := m.bindings.GetSandboxProvisioningIntent(
+			ctx,
+			sessionID,
+		)
+		if intentErr != nil {
+			return fmt.Errorf("sandbox: load provisioning intent for release: %w", intentErr)
+		}
+		if !intentFound {
+			if box != nil {
+				return box.Destroy(ctx)
+			}
+			return nil
+		}
+		if intent.Provider != m.provider.Name() {
+			return Permanent(fmt.Errorf(
+				"sandbox: cannot reconcile session %s intent for provider %q with %q",
+				sessionID,
+				intent.Provider,
+				m.provider.Name(),
+			))
+		}
+		// Provider.Create is idempotent by session key. It recovers a resource
+		// created before a lost binding write; if the process died after writing
+		// only the intent, creating then destroying an empty resource safely
+		// discharges the same obligation.
+		ref, orphan, createErr := m.provider.Create(ctx, sessionID, intent.Spec)
+		if createErr != nil {
+			return fmt.Errorf("sandbox: recover unbound resource for release: %w", createErr)
+		}
+		if err := validateSandbox(m.provider, ref, orphan); err != nil {
+			if orphan != nil {
+				_ = orphan.Destroy(context.WithoutCancel(ctx))
+			}
+			return err
+		}
+		if destroyErr := orphan.Destroy(ctx); destroyErr != nil &&
+			!errors.Is(destroyErr, ErrNotFound) {
+			return destroyErr
+		}
+		if err := m.bindings.DeleteSandboxProvisioningIntent(ctx, intent); err != nil {
+			return fmt.Errorf("sandbox: delete provisioning intent: %w", err)
 		}
 		return nil
 	}
@@ -220,7 +343,10 @@ func (m *SessionManager) Release(ctx context.Context, sessionID string) error {
 	if box == nil {
 		box, err = m.provider.Attach(ctx, sessionID, binding.Ref, Spec{})
 		if errors.Is(err, ErrNotFound) {
-			return m.bindings.DeleteSandboxBinding(ctx, binding)
+			if err := m.bindings.DeleteSandboxBinding(ctx, binding); err != nil {
+				return err
+			}
+			return m.clearMatchingProvisioningIntent(ctx, sessionID)
 		}
 		if err != nil {
 			return fmt.Errorf("sandbox: attach for release: %w", err)
@@ -234,6 +360,129 @@ func (m *SessionManager) Release(ctx context.Context, sessionID string) error {
 	}
 	if err := m.bindings.DeleteSandboxBinding(ctx, binding); err != nil {
 		return fmt.Errorf("sandbox: delete binding: %w", err)
+	}
+	return m.clearMatchingProvisioningIntent(ctx, sessionID)
+}
+
+// clearMatchingProvisioningIntent removes a stale same-provider intent after
+// the authoritative binding has been destroyed. Such a coexistence could be
+// produced by an older worker racing a binding commit. A different-provider
+// intent may represent a second external resource and must be reconciled by a
+// worker configured for that provider instead of being discarded here.
+func (m *SessionManager) clearMatchingProvisioningIntent(
+	ctx context.Context,
+	sessionID string,
+) error {
+	intent, found, err := m.bindings.GetSandboxProvisioningIntent(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("sandbox: load stale provisioning intent: %w", err)
+	}
+	if !found {
+		return nil
+	}
+	if intent.Provider != m.provider.Name() {
+		return Permanent(fmt.Errorf(
+			"sandbox: session %s also has an intent for provider %q; worker has %q",
+			sessionID,
+			intent.Provider,
+			m.provider.Name(),
+		))
+	}
+	if err := m.bindings.DeleteSandboxProvisioningIntent(ctx, intent); err != nil {
+		return fmt.Errorf("sandbox: delete stale provisioning intent: %w", err)
+	}
+	return nil
+}
+
+// ReconcileProvisioning recovers provider resources left between the durable
+// intent and binding commits. Active sessions finish binding the idempotently
+// named resource; deleting sessions recover-and-destroy it. Every intent is
+// attempted even if an earlier one fails.
+func (m *SessionManager) ReconcileProvisioning(
+	ctx context.Context,
+	limit int,
+) (int, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	intents, err := m.bindings.ListSandboxProvisioningIntents(
+		ctx,
+		m.provider.Name(),
+		limit,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("sandbox: list provisioning intents: %w", err)
+	}
+	var (
+		completed int
+		errs      []error
+	)
+	for _, intent := range intents {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if intent.Deleting {
+			err = m.Release(ctx, intent.SessionID)
+		} else {
+			_, err = m.Acquire(ctx, intent.SessionID, intent.Spec)
+			if err == nil {
+				err = m.clearBoundProvisioningIntent(ctx, intent)
+			}
+		}
+		if err != nil {
+			errs = append(errs, fmt.Errorf(
+				"session %s: %w",
+				intent.SessionID,
+				err,
+			))
+			continue
+		}
+		_, found, err := m.bindings.GetSandboxProvisioningIntent(
+			ctx,
+			intent.SessionID,
+		)
+		if err != nil {
+			errs = append(errs, fmt.Errorf(
+				"verify session %s provisioning intent: %w",
+				intent.SessionID,
+				err,
+			))
+			continue
+		}
+		if found {
+			errs = append(errs, fmt.Errorf(
+				"session %s provisioning intent remains unresolved",
+				intent.SessionID,
+			))
+			continue
+		}
+		completed++
+	}
+	return completed, errors.Join(errs...)
+}
+
+func (m *SessionManager) clearBoundProvisioningIntent(
+	ctx context.Context,
+	intent ProvisioningIntent,
+) error {
+	binding, found, err := m.bindings.GetSandboxBinding(ctx, intent.SessionID)
+	if err != nil {
+		return fmt.Errorf("sandbox: load binding while reconciling intent: %w", err)
+	}
+	if !found {
+		return errors.New("sandbox: acquire completed without a durable binding")
+	}
+	if binding.Ref.Provider != intent.Provider {
+		return Permanent(fmt.Errorf(
+			"sandbox: session %s is bound to provider %q but intent uses %q",
+			intent.SessionID,
+			binding.Ref.Provider,
+			intent.Provider,
+		))
+	}
+	if err := m.bindings.DeleteSandboxProvisioningIntent(ctx, intent); err != nil {
+		return fmt.Errorf("sandbox: clear reconciled provisioning intent: %w", err)
 	}
 	return nil
 }

@@ -59,9 +59,8 @@ messages and untargeted interrupts; cursor pagination and SSE; a multi-round
 model loop; durable custom-tool and `always_ask` waits; six `always_allow`
 built-ins; local and Docker sandboxes; and opt-in assistant text previews.
 
-The remaining infrastructure closure work is autonomous recovery for interrupted
-session deletion, sandbox orphan reconciliation, and repeatable black-box
-conformance for the PostgreSQL/Temporal path. MCP execution,
+The remaining infrastructure closure work is repeatable black-box conformance
+for the PostgreSQL/Temporal path and bounded context management. MCP execution,
 files/skills/memory/vaults, multi-agent orchestration, remote self-hosted
 workers, schedules, and webhooks remain future product work.
 

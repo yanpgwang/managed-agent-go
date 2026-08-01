@@ -82,7 +82,9 @@ not compatible with all executing built-ins yet.
 ## Lifecycle today
 
 - The first tool-using run idempotently creates the provider resource and
-  persists `{provider, external_id, spec_hash}` in PostgreSQL.
+  persists `{provider, external_id, spec_hash}` in PostgreSQL. Before calling
+  the provider it writes a non-secret provisioning intent; a worker reconciler
+  recovers and binds any resource left by a crash between those commits.
 - Remote services receive a fixed-length hash of the session key as their
   ownership label; credentials and raw session identifiers are not persisted in
   the provider reference.
@@ -93,16 +95,23 @@ not compatible with all executing built-ins yet.
 - Deleting the session fences admission, stops its Session Workflow, durably
   retries provider teardown on the worker, removes the binding, and only then
   deletes the session row.
+- A worker that discovers an interrupted deletion restarts or joins its
+  deterministic cleanup Workflow and finalizes the fenced PostgreSQL row. An
+  unbound provisioning intent is recovered and destroyed before finalization.
 - A persisted reference that no longer exists fails explicitly; Mango does not
   silently replace lost workspace state with an empty sandbox.
+- A deployment must keep a worker for every provider name still referenced by
+  a binding or provisioning intent. Changing the configured provider does not
+  migrate existing resources; remove their sessions or restore the old provider
+  before retiring that adapter.
 
 ## Required production lifecycle
 
 Remote adapters must use the same lifecycle tests. Production deployments still
-need orphan reconciliation for the create-before-binding crash window, provider
-health reporting, and provider-aware task routing when heterogeneous workers
-share a control plane. Pause, snapshot, fork, quotas, and eviction remain
-optional capabilities rather than requirements of the core interface.
+need provider health reporting and provider-aware task routing when
+heterogeneous workers share a control plane. Pause, snapshot, fork, quotas, and
+eviction remain optional capabilities rather than requirements of the core
+interface.
 
 ## Remote provider configuration
 

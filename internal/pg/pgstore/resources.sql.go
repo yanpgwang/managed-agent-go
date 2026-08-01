@@ -207,6 +207,34 @@ func (q *Queries) ListAgentVersions(ctx context.Context, id string) ([]Agent, er
 	return items, nil
 }
 
+const listDeletingSessionIDs = `-- name: ListDeletingSessionIDs :many
+SELECT id
+FROM sessions
+WHERE deleting_at IS NOT NULL
+ORDER BY deleting_at, id
+LIMIT $1
+`
+
+func (q *Queries) ListDeletingSessionIDs(ctx context.Context, rowLimit int32) ([]string, error) {
+	rows, err := q.db.Query(ctx, listDeletingSessionIDs, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEnvironments = `-- name: ListEnvironments :many
 SELECT id, name, config_type, body, created_at, updated_at, archived_at
 FROM environments

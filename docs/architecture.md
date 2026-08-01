@@ -114,7 +114,9 @@ Physical session deletion is a small saga: PostgreSQL first marks the row as
 deleting under the admission lock, the API terminates its Session Workflow, a
 short Temporal Workflow durably releases the provider sandbox and binding, and
 only then does PostgreSQL remove the projection. The binding foreign key blocks
-deletion from discarding the last reference to a live sandbox.
+deletion from discarding the last reference to a live sandbox. Workers scan the
+durable deletion fence and resume this sequence if the API process exits before
+cleanup or finalization completes.
 
 Live text deltas are the exception: they are explicitly ephemeral previews,
 delivered only to opted-in SSE subscribers. They are never returned by event
@@ -126,8 +128,8 @@ API replicas are stateless around PostgreSQL and NATS. Temporal assigns Workflow
 and Activity tasks to workers; the PostgreSQL tool journal records the
 side-effect ambiguity boundary. Core NATS is at-most-once, so streams
 periodically reconcile their durable cursor and never treat a wakeup as data.
-Worker Versioning, remote sandbox adapters, and orphan reconciliation are still
-required before production rolling deployments.
+Worker Versioning and promotion of remote sandbox adapters through repeatable
+live conformance are still required before production rolling deployments.
 
 Workflow changes use Temporal version markers where replay compatibility
 requires them. Production rolling deployments still need Worker Versioning and
@@ -140,8 +142,10 @@ The strongest current risks are semantic rather than structural:
 1. Context growth is not yet bounded by a server-owned compaction policy.
 2. Sandboxes are session-scoped and durably bound to opaque provider IDs.
    Restart reattachment and deletion cleanup are implemented for local and
-   Docker on the same host/daemon. Remote providers, orphan reconciliation,
-   quotas, and eviction are not implemented.
+   Docker on the same host/daemon. Provisioning intent closes the
+   create-before-binding crash window and workers autonomously resume fenced
+   deletions. Provider-aware routing for heterogeneous workers, quotas, and
+   eviction are not implemented.
 3. Worker Versioning, observability, authentication, large-payload offload, and
    production manifests remain open.
 4. Provider Transcript, native Web Search/Fetch, sandbox result

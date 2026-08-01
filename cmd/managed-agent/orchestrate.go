@@ -97,6 +97,9 @@ func runOrchestrate() {
 	relayErr := make(chan error, 1)
 	go func() { relayErr <- runtime.Relay.Run(ctx) }()
 	log.Printf("orchestrate: outbox relay running")
+	lifecycleErr := make(chan error, 1)
+	go func() { lifecycleErr <- runtime.Lifecycle.Run(ctx) }()
+	log.Printf("orchestrate: sandbox and deletion lifecycle reconciler running")
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -106,6 +109,10 @@ func runOrchestrate() {
 	case err := <-relayErr:
 		if err != nil && ctx.Err() == nil {
 			log.Printf("orchestrate: relay stopped: %v", err)
+		}
+	case err := <-lifecycleErr:
+		if err != nil && ctx.Err() == nil {
+			log.Printf("orchestrate: lifecycle reconciler stopped: %v", err)
 		}
 	}
 	cancel()

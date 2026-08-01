@@ -10,6 +10,192 @@ import (
 	"time"
 )
 
+type failBindingCommitStore struct {
+	*memoryBindingStore
+	failures int
+}
+
+func (s *failBindingCommitStore) PutSandboxBinding(
+	ctx context.Context,
+	binding Binding,
+) (Binding, error) {
+	if s.failures > 0 {
+		s.failures--
+		return Binding{}, errors.New("simulated binding commit failure")
+	}
+	return s.memoryBindingStore.PutSandboxBinding(ctx, binding)
+}
+
+func TestSessionManager_ReconcilesCreateBeforeBindingCrash(t *testing.T) {
+	ctx := context.Background()
+	provider := NewLocalProvider()
+	store := &failBindingCommitStore{
+		memoryBindingStore: newMemoryBindingStore(),
+		failures:           1,
+	}
+	spec := Spec{WorkDir: t.TempDir(), Timeout: time.Second}
+
+	first := NewSessionManager(provider, store)
+	if _, err := first.Acquire(ctx, "sesn_orphan_recover", spec); err == nil {
+		t.Fatal("Acquire succeeded despite simulated binding commit failure")
+	}
+	if _, found, err := store.GetSandboxBinding(ctx, "sesn_orphan_recover"); err != nil || found {
+		t.Fatalf("binding after failed commit: found=%v err=%v", found, err)
+	}
+	if _, found, err := store.GetSandboxProvisioningIntent(
+		ctx,
+		"sesn_orphan_recover",
+	); err != nil || !found {
+		t.Fatalf("provisioning intent after failed commit: found=%v err=%v", found, err)
+	}
+
+	// The provider resource exists even though its binding did not commit. A
+	// marker proves reconciliation attaches the same workspace rather than
+	// silently replacing it.
+	if err := os.WriteFile(spec.WorkDir+"/survives-crash", []byte("present"), 0o600); err != nil {
+		t.Fatalf("write crash marker: %v", err)
+	}
+	restarted := NewSessionManager(provider, store)
+	completed, err := restarted.ReconcileProvisioning(ctx, 10)
+	if err != nil {
+		t.Fatalf("reconcile provisioning: %v", err)
+	}
+	if completed != 1 {
+		t.Fatalf("reconciled = %d, want 1", completed)
+	}
+	box, err := restarted.Acquire(ctx, "sesn_orphan_recover", spec)
+	if err != nil {
+		t.Fatalf("acquire reconciled sandbox: %v", err)
+	}
+	got, err := box.ReadFile(ctx, "survives-crash")
+	if err != nil || string(got) != "present" {
+		t.Fatalf("reconciled marker = %q, err=%v", got, err)
+	}
+	if _, found, err := store.GetSandboxProvisioningIntent(
+		ctx,
+		"sesn_orphan_recover",
+	); err != nil || found {
+		t.Fatalf("intent survived binding commit: found=%v err=%v", found, err)
+	}
+}
+
+func TestSessionManager_ReleaseRecoversUnboundResource(t *testing.T) {
+	ctx := context.Background()
+	provider := NewLocalProvider()
+	store := newMemoryBindingStore()
+	spec := Spec{WorkDir: t.TempDir(), Timeout: time.Second}
+	intent := ProvisioningIntent{
+		SessionID: "sesn_orphan_delete",
+		Provider:  provider.Name(),
+		Spec:      spec,
+		SpecHash:  specHash(spec),
+		Deleting:  true,
+	}
+	if _, err := store.PutSandboxProvisioningIntent(ctx, intent); err != nil {
+		t.Fatalf("put intent: %v", err)
+	}
+	_, box, err := provider.Create(ctx, intent.SessionID, spec)
+	if err != nil {
+		t.Fatalf("create unbound resource: %v", err)
+	}
+	root := box.Root()
+
+	manager := NewSessionManager(provider, store)
+	if err := manager.Release(ctx, intent.SessionID); err != nil {
+		t.Fatalf("release unbound resource: %v", err)
+	}
+	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan root still exists or stat failed unexpectedly: %v", err)
+	}
+	if _, found, err := store.GetSandboxProvisioningIntent(ctx, intent.SessionID); err != nil || found {
+		t.Fatalf("intent survived orphan release: found=%v err=%v", found, err)
+	}
+}
+
+func TestSessionManager_ReleaseClearsStaleIntentAlongsideBinding(t *testing.T) {
+	ctx := context.Background()
+	provider := NewLocalProvider()
+	store := newMemoryBindingStore()
+	spec := Spec{Timeout: time.Second}
+	sessionID := "sesn_stale_intent_delete"
+	ref, _, err := provider.Create(ctx, sessionID, spec)
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	binding := Binding{
+		SessionID: sessionID,
+		Ref:       ref,
+		SpecHash:  specHash(spec),
+	}
+	if _, err := store.PutSandboxBinding(ctx, binding); err != nil {
+		t.Fatalf("put binding: %v", err)
+	}
+	// Model the state an older racing worker could leave by recreating an
+	// intent after the binding transaction had cleared the original one.
+	store.mu.Lock()
+	store.intents[sessionID] = ProvisioningIntent{
+		SessionID: sessionID,
+		Provider:  provider.Name(),
+		Spec:      spec,
+		SpecHash:  specHash(spec),
+		Deleting:  true,
+	}
+	store.mu.Unlock()
+
+	manager := NewSessionManager(provider, store)
+	if err := manager.Release(ctx, sessionID); err != nil {
+		t.Fatalf("release stale intent and binding: %v", err)
+	}
+	if _, found, err := store.GetSandboxBinding(ctx, sessionID); err != nil || found {
+		t.Fatalf("binding after release: found=%v err=%v", found, err)
+	}
+	if _, found, err := store.GetSandboxProvisioningIntent(
+		ctx,
+		sessionID,
+	); err != nil || found {
+		t.Fatalf("intent after release: found=%v err=%v", found, err)
+	}
+}
+
+func TestSessionManager_ReconcileClearsStaleIntentAlongsideBinding(t *testing.T) {
+	ctx := context.Background()
+	provider := NewLocalProvider()
+	store := newMemoryBindingStore()
+	spec := Spec{Timeout: time.Second}
+	sessionID := "sesn_stale_intent_active"
+	ref, _, err := provider.Create(ctx, sessionID, spec)
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	binding := Binding{SessionID: sessionID, Ref: ref, SpecHash: specHash(spec)}
+	if _, err := store.PutSandboxBinding(ctx, binding); err != nil {
+		t.Fatalf("put binding: %v", err)
+	}
+	store.mu.Lock()
+	store.intents[sessionID] = ProvisioningIntent{
+		SessionID: sessionID,
+		Provider:  provider.Name(),
+		Spec:      spec,
+		SpecHash:  specHash(spec),
+	}
+	store.mu.Unlock()
+
+	manager := NewSessionManager(provider, store)
+	completed, err := manager.ReconcileProvisioning(ctx, 10)
+	if err != nil || completed != 1 {
+		t.Fatalf("reconcile stale intent: completed=%d err=%v", completed, err)
+	}
+	if _, found, err := store.GetSandboxProvisioningIntent(
+		ctx,
+		sessionID,
+	); err != nil || found {
+		t.Fatalf("intent after reconciliation: found=%v err=%v", found, err)
+	}
+	if err := manager.Release(ctx, sessionID); err != nil {
+		t.Fatalf("release reconciled sandbox: %v", err)
+	}
+}
+
 // countingProvider wraps a Provider and counts Create calls so tests can assert
 // a session creates its logical sandbox exactly once.
 type countingProvider struct {
@@ -409,6 +595,35 @@ func TestSessionManager_ReleaseWaitsForInflightProvision(t *testing.T) {
 
 type authoritativeBindingStore struct {
 	winner Binding
+}
+
+func (*authoritativeBindingStore) GetSandboxProvisioningIntent(
+	context.Context,
+	string,
+) (ProvisioningIntent, bool, error) {
+	return ProvisioningIntent{}, false, nil
+}
+
+func (*authoritativeBindingStore) PutSandboxProvisioningIntent(
+	_ context.Context,
+	intent ProvisioningIntent,
+) (ProvisioningIntent, error) {
+	return intent, nil
+}
+
+func (*authoritativeBindingStore) ListSandboxProvisioningIntents(
+	context.Context,
+	string,
+	int,
+) ([]ProvisioningIntent, error) {
+	return []ProvisioningIntent{}, nil
+}
+
+func (*authoritativeBindingStore) DeleteSandboxProvisioningIntent(
+	context.Context,
+	ProvisioningIntent,
+) error {
+	return nil
 }
 
 func (*authoritativeBindingStore) GetSandboxBinding(

@@ -126,10 +126,11 @@ and never share a sandbox, so they stay isolated even when they use the same
 agent and environment.
 
 Ownership lives in a session-scoped manager that wraps the provider inside the
-`internal/sandbox` package. PostgreSQL stores the provider name, opaque external
-ID, and spec hash; the in-memory map is only a live client cache. The
-`AgentRuntime` is unaware of this — the application resolves the sandbox and
-passes it in the run request.
+`internal/sandbox` package. PostgreSQL stores a non-secret provisioning intent
+before provider creation, then atomically replaces it with the provider name,
+opaque external ID, and spec hash. The in-memory map is only a live client
+cache. The `AgentRuntime` is unaware of this — the application resolves the
+sandbox and passes it in the run request.
 
 Entering idle does not tear the sandbox down. After a worker restart, `Attach`
 reconstructs the client from the persisted reference; if the resource has
@@ -137,10 +138,14 @@ disappeared, acquisition fails instead of silently replacing session state.
 
 Session deletion runs provider teardown as a retryable Temporal Activity and
 removes the binding before PostgreSQL permits the Session row to be deleted.
-Local references require the same host filesystem and Docker references require
-the same daemon. Remote multi-worker execution therefore needs a service-backed
-provider. Checkpoint/restore, quotas, eviction, and orphan reconciliation are
-not implemented.
+Workers reconcile provisioning intents left before binding and resume fenced
+deletions left before cleanup or finalization. Local references require the same
+host filesystem and Docker references require the same daemon. Remote
+multi-worker execution therefore needs a service-backed provider.
+Every provider name still present in a binding or provisioning intent must stay
+routable to a compatible worker; changing the default provider does not migrate
+existing resources or discharge their cleanup obligations.
+Checkpoint/restore, quotas, and eviction are not implemented.
 
 ## Streaming previews
 
