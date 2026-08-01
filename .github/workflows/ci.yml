@@ -37,6 +37,43 @@ jobs:
       - run: make test-race
       - run: make vet
 
+  service-conformance:
+    name: Service conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Start PostgreSQL, Temporal, and NATS
+        run: docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats
+      - name: Run service conformance tests
+        run: make test-service
+      - name: Show dependency logs after failure
+        if: failure()
+        run: docker compose -f deployments/local/compose.yaml logs --no-color postgres temporal nats
+      - name: Stop service dependencies
+        if: always()
+        run: docker compose -f deployments/local/compose.yaml down --volumes
+
+  security:
+    name: Security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+      - run: make security
+
   container:
     name: Container
     runs-on: ubuntu-latest

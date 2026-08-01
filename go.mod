@@ -1,6 +1,6 @@
 module github.com/yanpgwang/managed-agent-go
 
-go 1.26.4
+go 1.26.5
 
 require (
 	github.com/alibaba/OpenSandbox/sdks/sandbox/go v1.0.5

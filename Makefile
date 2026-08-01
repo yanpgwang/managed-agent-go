@@ -4,6 +4,7 @@ GO ?= go
 DOCKER ?= docker
 COMPOSE ?= docker compose
 GOLANGCI_LINT ?= golangci-lint
+GOVULNCHECK ?= go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
 BIN_DIR ?= bin
 BINARY ?= $(BIN_DIR)/managed-agent
@@ -12,6 +13,9 @@ VERSION ?= dev
 REVISION ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 GOPROXY ?=
 LINT_BASE ?= origin/main
+MANAGED_AGENT_TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable
+MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT ?= localhost:7233
+MANAGED_AGENT_TEST_NATS_URL ?= nats://localhost:4222
 
 DOCKER_BUILD_ARGS := --build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION)
 ifneq ($(strip $(GOPROXY)),)
@@ -20,7 +24,8 @@ endif
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build lint test test-race vet verify docs-check image image-smoke dev-env-init \
+.PHONY: help build lint test test-race test-service test-model-live test-platform-live \
+	vet verify security docs-check image image-smoke dev-env-init \
 	local-config local-up local-down local-health local-ps local-logs
 
 help:
@@ -29,8 +34,12 @@ help:
 	@echo "  make lint           lint changes relative to $(LINT_BASE)"
 	@echo "  make test           run unit tests"
 	@echo "  make test-race      run tests with the race detector"
+	@echo "  make test-service   run tests against PostgreSQL, Temporal, NATS, and Docker"
+	@echo "  make test-model-live     test an explicitly configured Messages endpoint"
+	@echo "  make test-platform-live  run one durable turn against that live model"
 	@echo "  make vet            run go vet"
 	@echo "  make verify         run the core Go checks"
+	@echo "  make security       scan reachable Go code and high-severity npm issues"
 	@echo "  make docs-check     install and verify documentation dependencies"
 	@echo "  make dev-env-init   create ~/.config/mango/dev.env with mode 0600"
 	@echo
@@ -58,10 +67,31 @@ test:
 test-race:
 	$(GO) test -race ./...
 
+test-service:
+	MANAGED_AGENT_TEST_LIVE_MODEL=0 \
+	MANAGED_AGENT_TEST_DATABASE_URL='$(MANAGED_AGENT_TEST_DATABASE_URL)' \
+	MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT='$(MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT)' \
+	MANAGED_AGENT_TEST_NATS_URL='$(MANAGED_AGENT_TEST_NATS_URL)' \
+	$(GO) test ./... -count=1
+
+test-model-live:
+	MANAGED_AGENT_TEST_LIVE_MODEL=1 \
+	$(GO) test ./internal/model -run '^TestAnthropic_LiveMessagesConformance$$' -count=1
+
+test-platform-live:
+	MANAGED_AGENT_TEST_LIVE_MODEL=1 \
+	MANAGED_AGENT_TEST_DATABASE_URL='$(MANAGED_AGENT_TEST_DATABASE_URL)' \
+	MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT='$(MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT)' \
+	$(GO) test ./internal/temporal -run '^TestVerticalSlice_LiveModelEndToEnd$$' -count=1
+
 vet:
 	$(GO) vet ./...
 
 verify: lint test test-race vet
+
+security:
+	$(GOVULNCHECK) ./...
+	npm --prefix website audit --omit=dev --audit-level=high
 
 docs-check:
 	npm --prefix website ci

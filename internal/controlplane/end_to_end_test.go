@@ -255,8 +255,22 @@ func TestHTTPPostgresTemporalNATSEndToEnd(t *testing.T) {
 	if len(pending) != 0 {
 		t.Fatalf("pending barrier not cleared: %+v", pending)
 	}
+	transcript, err := fixture.store.LoadProviderTranscript(ctx, customSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var providerToolUseID string
+	for _, mapping := range transcript.ToolUseMappings {
+		if mapping.PublicEventID == customActionID {
+			providerToolUseID = mapping.ProviderToolUseID
+			break
+		}
+	}
+	if providerToolUseID == "" {
+		t.Fatalf("provider mapping missing for public custom action %s", customActionID)
+	}
 	lastRequest := modelClient.LastRequest()
-	if !requestHasToolResult(lastRequest, customActionID, "client result") {
+	if !requestHasToolResult(lastRequest, providerToolUseID, "client result") {
 		t.Fatalf("resumed model request lost custom result: %#v", lastRequest.Messages)
 	}
 
@@ -341,10 +355,24 @@ func TestHTTPPostgresTemporalNATSEndToEnd(t *testing.T) {
 	if len(pending) != 0 {
 		t.Fatalf("confirmation barrier not cleared: %+v", pending)
 	}
+	transcript, err = fixture.store.LoadProviderTranscript(ctx, confirmationSessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	providerToolUseID = ""
+	for _, mapping := range transcript.ToolUseMappings {
+		if mapping.PublicEventID == confirmationActionID {
+			providerToolUseID = mapping.ProviderToolUseID
+			break
+		}
+	}
+	if providerToolUseID == "" {
+		t.Fatalf("provider mapping missing for public confirmation action %s", confirmationActionID)
+	}
 	lastRequest = modelClient.LastRequest()
 	if !requestHasToolResult(
 		lastRequest,
-		confirmationActionID,
+		providerToolUseID,
 		"Tool call denied by user. not safe",
 	) {
 		t.Fatalf("resumed model request lost confirmation result: %#v", lastRequest.Messages)

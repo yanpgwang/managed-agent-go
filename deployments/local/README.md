@@ -52,6 +52,22 @@ export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
 
 The `default` Temporal namespace is created automatically by `auto-setup`.
 
+## Service conformance tests
+
+Start only the infrastructure dependencies, then run every test that can be
+executed without an external model or sandbox account:
+
+```sh
+docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats
+make test-service
+```
+
+This is the same suite run by CI. It covers real PostgreSQL migrations and
+transactions, Temporal workflows and Activities, NATS reconciliation and
+previews, the HTTP-to-service vertical slice, and a Docker sandbox tool step.
+Each database test uses an isolated schema; workflow and sandbox cleanup is part
+of the assertions.
+
 ## Health checks
 
 Each service declares a Docker `healthcheck`:
