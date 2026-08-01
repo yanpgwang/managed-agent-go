@@ -82,12 +82,14 @@ transactional outbox, tool journal, interrupt ordering, and sandbox lifecycle.
 | Agents, Environments, Sessions | Core lifecycle implemented |
 | Events | Messages, interrupts, custom-tool results, confirmations, pagination, and SSE |
 | Runtime | Multi-round model/tool loop with durable park and resume |
-| Tools | `bash`, `read`, `write`, `edit`, `glob`, and `grep` |
+| Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
-MCP execution, files, skills, memory, vaults, multi-agent orchestration,
-schedules, and webhooks are not implemented. See
-[Claude API coverage](docs/compatibility.md) for exact behavior and the
+Web Search/Fetch currently require a supporting Messages API endpoint and
+`always_allow`. MCP supports unauthenticated public Streamable HTTP servers;
+deployment-managed authentication remains future work. Files, skills, memory,
+vaults, multi-agent orchestration, schedules, and webhooks are not implemented.
+See [Claude API coverage](docs/compatibility.md) for exact behavior and the
 [roadmap](docs/roadmap.md) for planned work.
 
 ## Next steps

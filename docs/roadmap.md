@@ -29,10 +29,12 @@ and resume deterministic Temporal cleanup without requiring another API call.
 
 ## Runtime integrations
 
-After the core loop is complete:
+The first integration slice now includes provider-native Web Search/Fetch and
+unauthenticated remote MCP tool discovery and execution. Remaining work is:
 
-- MCP tool discovery and execution;
-- supported server tools such as web search and fetch;
+- deployment-managed MCP authentication and private-network connectivity;
+- explicit per-endpoint server-tool capability profiles;
+- optional managed Web Search/Fetch executors that can honor `always_ask`;
 - token usage and model/tool execution spans;
 - additional preview event types;
 - promotion of preview sandbox adapters after recorded live conformance.
