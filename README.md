@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/mango-logo-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="assets/mango-logo.png">
+    <source media="(prefers-color-scheme: dark)" srcset="assets/mango-logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/mango-logo.svg">
     <img src="assets/mango-logo.png" alt="Mango" width="420">
   </picture>
 </p>
