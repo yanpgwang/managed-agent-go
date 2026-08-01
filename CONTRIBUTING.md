@@ -25,7 +25,7 @@ Requirements:
 - [golangci-lint](https://golangci-lint.run/docs/welcome/install/local/)
   2.12.x for local lint checks;
 - Node.js 20 or newer for the documentation site;
-- Docker only for optional Docker sandbox tests.
+- Docker with Compose for service-conformance and Docker sandbox tests.
 
 Run the core checks:
 
@@ -42,6 +42,13 @@ Run the documentation checks:
 make docs-check
 ```
 
+Run reachable Go vulnerability scanning and fail on high-severity production
+dependency advisories for the documentation toolchain:
+
+```bash
+make security
+```
+
 Validate the deployment configuration and container entrypoint:
 
 ```bash
@@ -49,8 +56,26 @@ make local-config
 make image-smoke
 ```
 
-Default tests must stay offline and deterministic. Tests that require a Docker
-daemon or real model endpoint must be opt-in and skip cleanly when unavailable.
+Run the same PostgreSQL, Temporal, NATS, and Docker conformance suite as CI:
+
+```bash
+docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats
+make test-service
+```
+
+Default tests must stay offline and deterministic. Service tests must use
+isolated database schemas and clean up their workflows and sandboxes. A real
+model endpoint is a separate, explicitly enabled test tier because it uses a
+credentialed network call and may incur cost:
+
+```bash
+make test-model-live
+make test-platform-live
+```
+
+The live targets require the `MANAGED_AGENT_MODEL_*` variables documented in
+the getting-started guide. They are intentionally not run in public CI and must
+never print or persist API keys.
 
 ## Compatibility changes
 

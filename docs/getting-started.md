@@ -156,6 +156,27 @@ The configured endpoint must expose an Anthropic-shaped `/v1/messages` API.
 Do not run workers with different model or sandbox configuration on the same
 Temporal Task Queue. Keep credentials in the environment and never commit them.
 
+Only this model endpoint is called: the credential does not need access to a
+separate hosted Managed Agents service. Whether a Claude Code-oriented key is
+usable therefore depends on whether its gateway permits authenticated
+`POST /v1/messages` requests with streaming; the following opt-in smoke tests
+answer that directly:
+
+```bash
+# Checks the external Messages endpoint only. This makes a real, potentially
+# billable request.
+make test-model-live
+
+# With the local PostgreSQL and Temporal services running, checks one complete
+# durable platform turn against the same model endpoint.
+make test-platform-live
+```
+
+These tests run only when invoked through the live targets, do not enable tools,
+and never print the API key. They are excluded from public CI because external
+credentials, availability, latency, and cost are not deterministic. Use a newly
+issued key if a credential has ever appeared in chat, logs, or shell history.
+
 If you understand the risk and deliberately want a real model against the local
 sandbox during development, set `MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1` to
 override the startup guard. This is a dev-only escape hatch — the local sandbox

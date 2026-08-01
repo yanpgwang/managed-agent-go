@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -77,14 +78,28 @@ func TestCompleteWorkflowTurn_CommitsLosslessTranscriptAtomically(t *testing.T) 
 	if len(got.TriggerEventIDs) != 1 || got.TriggerEventIDs[0] != triggerID {
 		t.Fatalf("trigger ids = %#v", got.TriggerEventIDs)
 	}
-	if len(got.Messages) != 2 ||
-		string(got.Messages[1].Content[0].Raw) != string(opaque) {
+	if len(got.Messages) != 2 || len(got.Messages[1].Content) != 1 ||
+		!equivalentJSON(got.Messages[1].Content[0].Raw, opaque) {
 		t.Fatalf("transcript = %#v", got.Messages)
 	}
 	if len(got.ToolUseMappings) != 1 ||
 		got.ToolUseMappings[0] != mappings[0] {
 		t.Fatalf("mappings = %#v", got.ToolUseMappings)
 	}
+}
+
+// PostgreSQL jsonb intentionally normalizes insignificant whitespace and key
+// order. Provider-native blocks are lossless at the JSON value level, not at
+// the original byte-serialization level.
+func equivalentJSON(left, right []byte) bool {
+	var leftValue, rightValue any
+	if err := json.Unmarshal(left, &leftValue); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(right, &rightValue); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
 }
 
 func TestCloseInterruptedProviderTranscript_PairsDanglingTools(t *testing.T) {

@@ -31,6 +31,37 @@ import (
 // MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT are set, so `go test ./...` passes with no
 // local stack. The local dev stack (deployments/local) satisfies both.
 func TestVerticalSlice_EndToEnd(t *testing.T) {
+	runVerticalSliceEndToEnd(t, model.NewFake(), "fake", 30*time.Second)
+}
+
+// TestVerticalSlice_LiveModelEndToEnd exercises the same durable platform path
+// with a real Anthropic-shaped Messages endpoint. It is deliberately gated so
+// normal development and CI never make billable, credentialed network calls.
+func TestVerticalSlice_LiveModelEndToEnd(t *testing.T) {
+	if os.Getenv("MANAGED_AGENT_TEST_LIVE_MODEL") != "1" {
+		t.Skip("set MANAGED_AGENT_TEST_LIVE_MODEL=1 to run the live-model platform smoke test")
+	}
+	modelID := strings.TrimSpace(os.Getenv("MANAGED_AGENT_MODEL_ID"))
+	if modelID == "" {
+		t.Fatal("MANAGED_AGENT_MODEL_ID is required for the live-model platform smoke test")
+	}
+	modelClient, configured, err := model.AnthropicFromEnv()
+	if err != nil {
+		t.Fatalf("configure live model: %v", err)
+	}
+	if !configured {
+		t.Fatal("MANAGED_AGENT_MODEL_BASE_URL and MANAGED_AGENT_MODEL_API_KEY are required for the live-model platform smoke test")
+	}
+	runVerticalSliceEndToEnd(t, modelClient, modelID, 2*time.Minute)
+}
+
+func runVerticalSliceEndToEnd(
+	t *testing.T,
+	modelClient model.Client,
+	modelID string,
+	testTimeout time.Duration,
+) {
+	t.Helper()
 	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
 	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
 	if dbURL == "" || hostPort == "" {
@@ -50,7 +81,6 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 	defer c.Close()
 
 	ids := domain.NewRandomIDGen()
-	modelClient := model.NewFake()
 
 	runtime := temporalpkg.NewRuntimeOnTaskQueue(
 		c,
@@ -83,8 +113,11 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 		EnvironmentID: "env_1",
 		Status:        domain.StatusIdle,
 		Metadata:      map[string]any{},
-		CreatedAt:     time.Now().UTC(),
-		UpdatedAt:     time.Now().UTC(),
+		AgentSnapshot: domain.Agent{
+			ID: "agent_1", Version: 1, Model: domain.Model{ID: modelID},
+		},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
 	}
 	if _, _, err := orch.CreateSession(ctx, sess, nil); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -98,7 +131,7 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 	defer terminateIntegrationWorkflow(t, c, sess.ID)
 
 	// Poll PostgreSQL until the agent.message and terminal idle land.
-	deadline := time.Now().Add(30 * time.Second)
+	deadline := time.Now().Add(testTimeout)
 	var events []domain.Event
 	for time.Now().Before(deadline) {
 		events, err = store.EventsAfter(ctx, sess.ID, 0, 100)
