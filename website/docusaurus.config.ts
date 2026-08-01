@@ -5,7 +5,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 const config: Config = {
   title: 'Mango',
   tagline: 'A self-hosted implementation of the Claude Managed Agents API',
-  favicon: 'img/mango-mark.png',
+  favicon: 'img/mango-mark.svg',
 
   future: {
     v4: true,
@@ -59,7 +59,7 @@ const config: Config = {
       title: 'Mango',
       logo: {
         alt: 'Mango',
-        src: 'img/mango-mark.png',
+        src: 'img/mango-mark.svg',
       },
       items: [
         {
