@@ -12,11 +12,11 @@ internal design, is secondary and cannot establish a compatibility claim.
 ## Official Go SDK (test dependency)
 
 - [github.com/anthropics/anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go)
-- Test and reference version: [v1.60.0](https://github.com/anthropics/anthropic-sdk-go/tree/v1.60.0),
-  tag commit `b43f0d7a327fe3e30c302d773162669ab3bb4d26` (verified
-  2026-07-24).
+- Test and reference version: [v1.61.0](https://github.com/anthropics/anthropic-sdk-go/tree/v1.61.0),
+  tag commit `0303a8539676836e0cb351f3489fc2d347bbacde` (verified
+  2026-08-01).
 - Module checksum recorded in `go.sum`:
-  `h1:cZzHheifXy7+pps7XsQ/6hfVKc34gwNiG8butUzik/4=`.
+  `h1:JRTnm1tPqn5xo1xd1zfrcFDlcoWXVMvV1K68YmhpZKw=`.
 - Used only as a black-box compatibility client in tests (base URL pointed at an
   in-process `httptest` server through an explicit per-test client). No
   package-global SDK base-URL hook is used, and no SDK request/response types are
@@ -70,6 +70,14 @@ declaration, the custom/permission handoff, and the tool-block event wire.
 - [Permission policies](https://platform.claude.com/docs/en/managed-agents/permission-policies)
   — `always_allow` / `always_ask` / `always_deny` evaluation and the
   `requires_action` stop reason that a pending confirmation produces.
+- [MCP connector](https://platform.claude.com/docs/en/managed-agents/mcp-connector)
+  — server/toolset matching, default permission policy, oversized-result
+  handling, and recoverable connection failures. Verified 2026-08-01.
+- [Web Search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)
+  and
+  [Web Fetch](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool)
+  — provider-native server-tool declarations, result blocks, citations, and
+  continuation behavior. Verified 2026-08-01.
 - [Cloud environment setup](https://platform.claude.com/docs/en/managed-agents/environments)
   — reusable Environment configuration and isolated session sandbox ownership.
 - [Self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
@@ -108,10 +116,16 @@ forwarding upstream frames.
 
 ## Compatibility claim boundary
 
-- The implemented tool set is `bash`, `read`, `write`, `edit`, `glob`, and
-  `grep`. `web_fetch`, `web_search`, and MCP execution are not supported. The
-  default local sandbox is a guardrail, not a security boundary; the optional
-  Docker provider supplies container isolation.
+- The sandbox-executed tool set is `bash`, `read`, `write`, `edit`, `glob`, and
+  `grep`. `web_fetch` and `web_search` use the configured Messages API endpoint
+  as provider-native server tools and currently require `always_allow`.
+- MCP tool discovery and execution support unauthenticated public Streamable
+  HTTP servers with Session-pinned definitions, permission checks, durable
+  journaling, and sandbox materialization for large or binary results. Vault
+  authentication, private-network connectivity, deprecated-SSE fallback,
+  resources, and prompts are not supported.
+- The default local sandbox is a guardrail, not a security boundary; the
+  optional Docker provider supplies container isolation.
 - Opaque multiagent configuration persists with tested replace/null-clear
   behavior. Resolved rosters, reference validation, and multiagent
   execution/orchestration are not implemented.
