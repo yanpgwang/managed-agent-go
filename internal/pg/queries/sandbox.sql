@@ -12,7 +12,14 @@ INSERT INTO sandbox_provisioning_intents (
 SELECT
     @session_id, @provider, @spec, @spec_hash, @created_at, @updated_at
 FROM sessions
-WHERE id = @session_id AND deleting_at IS NULL
+WHERE id = @session_id
+  AND deleting_at IS NULL
+  AND NOT EXISTS (
+      SELECT 1
+      FROM session_sandboxes
+      WHERE session_id = @session_id
+  )
+FOR UPDATE
 ON CONFLICT (session_id) DO UPDATE SET
     updated_at = sandbox_provisioning_intents.updated_at
 RETURNING session_id, provider, spec, spec_hash, created_at, updated_at;

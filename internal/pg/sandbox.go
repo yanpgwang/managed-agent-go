@@ -54,6 +54,9 @@ func (s *Store) PutSandboxProvisioningIntent(
 			UpdatedAt: now,
 		},
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sandbox.ProvisioningIntent{}, sandbox.ErrProvisioningUnavailable
+	}
 	if err != nil {
 		return sandbox.ProvisioningIntent{}, err
 	}
@@ -157,6 +160,12 @@ func (s *Store) PutSandboxBinding(
 	now := tsUTC(s.clock.Now())
 	var row pgstore.SessionSandbox
 	err := s.withTx(ctx, func(q *pgstore.Queries) error {
+		// Serialize binding election with both the deletion fence and intent
+		// creation. Without the explicit row lock, a stale worker can recreate an
+		// intent immediately after another worker commits the binding.
+		if _, err := q.LockSession(ctx, binding.SessionID); err != nil {
+			return err
+		}
 		var err error
 		row, err = q.PutSandboxBinding(ctx, pgstore.PutSandboxBindingParams{
 			SessionID:  binding.SessionID,

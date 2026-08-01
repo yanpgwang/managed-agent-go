@@ -34,6 +34,9 @@ func (s *memoryBindingStore) PutSandboxProvisioningIntent(
 ) (ProvisioningIntent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if _, bound := s.bindings[intent.SessionID]; bound {
+		return ProvisioningIntent{}, ErrProvisioningUnavailable
+	}
 	if current, ok := s.intents[intent.SessionID]; ok {
 		return current, nil
 	}

@@ -142,6 +142,9 @@ Workers reconcile provisioning intents left before binding and resume fenced
 deletions left before cleanup or finalization. Local references require the same
 host filesystem and Docker references require the same daemon. Remote
 multi-worker execution therefore needs a service-backed provider.
+Every provider name still present in a binding or provisioning intent must stay
+routable to a compatible worker; changing the default provider does not migrate
+existing resources or discharge their cleanup obligations.
 Checkpoint/restore, quotas, and eviction are not implemented.
 
 ## Streaming previews

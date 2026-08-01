@@ -100,6 +100,10 @@ not compatible with all executing built-ins yet.
   unbound provisioning intent is recovered and destroyed before finalization.
 - A persisted reference that no longer exists fails explicitly; Mango does not
   silently replace lost workspace state with an empty sandbox.
+- A deployment must keep a worker for every provider name still referenced by
+  a binding or provisioning intent. Changing the configured provider does not
+  migrate existing resources; remove their sessions or restore the old provider
+  before retiring that adapter.
 
 ## Required production lifecycle
 

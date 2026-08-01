@@ -2,12 +2,123 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 )
+
+func TestSandboxProvisioningIntentSerializesWithDeletionFence(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_sandbox_intent_fence_race")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Hold the same row lock used by PrepareSessionDeletion and make its fence
+	// update visible only when this transaction commits.
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin deletion transaction: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(
+		ctx,
+		"SELECT id FROM sessions WHERE id = $1 FOR UPDATE",
+		session.ID,
+	); err != nil {
+		t.Fatalf("lock session: %v", err)
+	}
+	if _, err := tx.Exec(
+		ctx,
+		"UPDATE sessions SET deleting_at = now() WHERE id = $1",
+		session.ID,
+	); err != nil {
+		t.Fatalf("mark deleting: %v", err)
+	}
+
+	intent := sandbox.ProvisioningIntent{
+		SessionID: session.ID,
+		Provider:  "docker",
+		Spec:      sandbox.Spec{Image: "example.test/sandbox:fixed"},
+		SpecHash:  "sha256:fence-race",
+	}
+	putDone := make(chan error, 1)
+	go func() {
+		_, putErr := store.PutSandboxProvisioningIntent(ctx, intent)
+		putDone <- putErr
+	}()
+	select {
+	case err := <-putDone:
+		t.Fatalf("intent creation did not wait for deletion fence: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit deletion fence: %v", err)
+	}
+	select {
+	case err := <-putDone:
+		if !errors.Is(err, sandbox.ErrProvisioningUnavailable) {
+			t.Fatalf("intent after concurrent fence = %v, want unavailable", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("intent creation stayed blocked after deletion fence commit")
+	}
+}
+
+func TestSandboxReleaseRepairsLegacyBindingAndIntentCoexistence(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_sandbox_legacy_double_state")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	provider := sandbox.NewLocalProvider()
+	spec := sandbox.Spec{}
+	ref, _, err := provider.Create(ctx, session.ID, spec)
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	binding := sandbox.Binding{
+		SessionID: session.ID,
+		Ref:       ref,
+		SpecHash:  "sha256:legacy-double-state",
+	}
+	if _, err := store.PutSandboxBinding(ctx, binding); err != nil {
+		t.Fatalf("put binding: %v", err)
+	}
+	rawSpec, err := json.Marshal(spec)
+	if err != nil {
+		t.Fatalf("marshal spec: %v", err)
+	}
+	// Bypass the fixed write API to model a row left by an older worker.
+	if _, err := store.pool.Exec(
+		ctx,
+		`INSERT INTO sandbox_provisioning_intents
+            (session_id, provider, spec, spec_hash, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, now(), now())`,
+		session.ID,
+		provider.Name(),
+		rawSpec,
+		binding.SpecHash,
+	); err != nil {
+		t.Fatalf("insert legacy intent: %v", err)
+	}
+	if err := store.PrepareSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatalf("prepare deletion: %v", err)
+	}
+	manager := sandbox.NewSessionManager(provider, store)
+	if err := manager.Release(ctx, session.ID); err != nil {
+		t.Fatalf("release double state: %v", err)
+	}
+	if err := store.FinalizeSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatalf("finalize repaired deletion: %v", err)
+	}
+}
 
 func TestSandboxBindingPersistsAndFencesSessionDeletion(t *testing.T) {
 	store := testStore(t)
@@ -114,6 +225,15 @@ func TestSandboxProvisioningIntentReconcilesCrashBoundaries(t *testing.T) {
 	}
 	if _, found, err := store.GetSandboxProvisioningIntent(ctx, session.ID); err != nil || found {
 		t.Fatalf("intent after binding commit: found=%v err=%v", found, err)
+	}
+
+	// A worker that observed the missing binding before this commit must not be
+	// able to recreate the intent afterward.
+	if _, err := store.PutSandboxProvisioningIntent(ctx, intent); !errors.Is(
+		err,
+		sandbox.ErrProvisioningUnavailable,
+	) {
+		t.Fatalf("recreate intent after binding = %v, want provisioning unavailable", err)
 	}
 }
 

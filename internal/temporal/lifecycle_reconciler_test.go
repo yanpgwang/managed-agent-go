@@ -165,6 +165,22 @@ func TestLifecycleReconciler_ProvisioningFailureDoesNotBlockDeletion(t *testing.
 	}
 }
 
+func TestLifecycleReconciler_DrainDelayHasPositiveFloor(t *testing.T) {
+	reconciler := NewLifecycleReconciler(
+		nil,
+		nil,
+		nil,
+		LifecycleReconcilerConfig{PollInterval: 5 * time.Second},
+	)
+
+	if got := reconciler.nextDelay(LifecycleReconcileResult{Provisioning: 1}); got != lifecycleDrainDelay {
+		t.Fatalf("active delay = %v, want %v", got, lifecycleDrainDelay)
+	}
+	if got := reconciler.nextDelay(LifecycleReconcileResult{}); got != 5*time.Second {
+		t.Fatalf("idle delay = %v, want 5s", got)
+	}
+}
+
 func equalStrings(got, want []string) bool {
 	if len(got) != len(want) {
 		return false

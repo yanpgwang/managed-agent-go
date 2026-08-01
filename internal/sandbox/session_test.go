@@ -112,6 +112,90 @@ func TestSessionManager_ReleaseRecoversUnboundResource(t *testing.T) {
 	}
 }
 
+func TestSessionManager_ReleaseClearsStaleIntentAlongsideBinding(t *testing.T) {
+	ctx := context.Background()
+	provider := NewLocalProvider()
+	store := newMemoryBindingStore()
+	spec := Spec{Timeout: time.Second}
+	sessionID := "sesn_stale_intent_delete"
+	ref, _, err := provider.Create(ctx, sessionID, spec)
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	binding := Binding{
+		SessionID: sessionID,
+		Ref:       ref,
+		SpecHash:  specHash(spec),
+	}
+	if _, err := store.PutSandboxBinding(ctx, binding); err != nil {
+		t.Fatalf("put binding: %v", err)
+	}
+	// Model the state an older racing worker could leave by recreating an
+	// intent after the binding transaction had cleared the original one.
+	store.mu.Lock()
+	store.intents[sessionID] = ProvisioningIntent{
+		SessionID: sessionID,
+		Provider:  provider.Name(),
+		Spec:      spec,
+		SpecHash:  specHash(spec),
+		Deleting:  true,
+	}
+	store.mu.Unlock()
+
+	manager := NewSessionManager(provider, store)
+	if err := manager.Release(ctx, sessionID); err != nil {
+		t.Fatalf("release stale intent and binding: %v", err)
+	}
+	if _, found, err := store.GetSandboxBinding(ctx, sessionID); err != nil || found {
+		t.Fatalf("binding after release: found=%v err=%v", found, err)
+	}
+	if _, found, err := store.GetSandboxProvisioningIntent(
+		ctx,
+		sessionID,
+	); err != nil || found {
+		t.Fatalf("intent after release: found=%v err=%v", found, err)
+	}
+}
+
+func TestSessionManager_ReconcileClearsStaleIntentAlongsideBinding(t *testing.T) {
+	ctx := context.Background()
+	provider := NewLocalProvider()
+	store := newMemoryBindingStore()
+	spec := Spec{Timeout: time.Second}
+	sessionID := "sesn_stale_intent_active"
+	ref, _, err := provider.Create(ctx, sessionID, spec)
+	if err != nil {
+		t.Fatalf("create sandbox: %v", err)
+	}
+	binding := Binding{SessionID: sessionID, Ref: ref, SpecHash: specHash(spec)}
+	if _, err := store.PutSandboxBinding(ctx, binding); err != nil {
+		t.Fatalf("put binding: %v", err)
+	}
+	store.mu.Lock()
+	store.intents[sessionID] = ProvisioningIntent{
+		SessionID: sessionID,
+		Provider:  provider.Name(),
+		Spec:      spec,
+		SpecHash:  specHash(spec),
+	}
+	store.mu.Unlock()
+
+	manager := NewSessionManager(provider, store)
+	completed, err := manager.ReconcileProvisioning(ctx, 10)
+	if err != nil || completed != 1 {
+		t.Fatalf("reconcile stale intent: completed=%d err=%v", completed, err)
+	}
+	if _, found, err := store.GetSandboxProvisioningIntent(
+		ctx,
+		sessionID,
+	); err != nil || found {
+		t.Fatalf("intent after reconciliation: found=%v err=%v", found, err)
+	}
+	if err := manager.Release(ctx, sessionID); err != nil {
+		t.Fatalf("release reconciled sandbox: %v", err)
+	}
+}
+
 // countingProvider wraps a Provider and counts Create calls so tests can assert
 // a session creates its logical sandbox exactly once.
 type countingProvider struct {

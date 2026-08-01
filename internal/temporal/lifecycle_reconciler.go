@@ -8,6 +8,8 @@ import (
 	"time"
 )
 
+const lifecycleDrainDelay = 100 * time.Millisecond
+
 // DeletionStore is the worker-side view of fenced Session deletion state.
 // PostgreSQL remains authoritative; the reconciler only resumes the external
 // cleanup and finalization that a crashed API process may have left unfinished.
@@ -106,12 +108,17 @@ func (r *LifecycleReconciler) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		wait := r.cfg.PollInterval
-		if result.total() > 0 {
-			wait = 0
-		}
+		wait := r.nextDelay(result)
 		timer.Reset(wait)
 	}
+}
+
+func (r *LifecycleReconciler) nextDelay(result LifecycleReconcileResult) time.Duration {
+	wait := r.cfg.PollInterval
+	if result.total() > 0 && wait > lifecycleDrainDelay {
+		wait = lifecycleDrainDelay
+	}
+	return wait
 }
 
 func (r *LifecycleReconciler) RunOnce(
