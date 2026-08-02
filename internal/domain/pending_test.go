@@ -12,6 +12,7 @@ func TestPendingActionKindForEvent(t *testing.T) {
 		{EvAgentCustomToolUse, nil, PendingCustomToolResult, true},
 		// agent.tool_use parks only when its evaluated permission is "ask".
 		{EvAgentToolUse, map[string]any{"evaluated_permission": "ask"}, PendingToolConfirmation, true},
+		{EvAgentToolUse, map[string]any{InternalToolExecutionOwner: "self_hosted", "evaluated_permission": "allow"}, PendingToolResult, true},
 		{EvAgentToolUse, map[string]any{"evaluated_permission": "always_allow"}, "", false},
 		{EvAgentToolUse, map[string]any{"evaluated_permission": "always_deny"}, "", false},
 		{EvAgentToolUse, map[string]any{}, "", false},
@@ -35,6 +36,10 @@ func TestResolutionReference(t *testing.T) {
 	id, kind, ok = ResolutionReference(EvUserToolConfirmation, map[string]any{"tool_use_id": "sevt_2"})
 	if !ok || id != "sevt_2" || kind != PendingToolConfirmation {
 		t.Fatalf("tool_confirmation = %q,%q,%v", id, kind, ok)
+	}
+	id, kind, ok = ResolutionReference(EvUserToolResult, map[string]any{"tool_use_id": "sevt_3"})
+	if !ok || id != "sevt_3" || kind != PendingToolResult {
+		t.Fatalf("tool_result = %q,%q,%v", id, kind, ok)
 	}
 	// A resolution event missing its reference field is not a valid resolution.
 	if _, _, ok := ResolutionReference(EvUserCustomToolResult, map[string]any{}); ok {

@@ -58,6 +58,60 @@ func TestAdmitEvents_AtomicEventAndOutbox(t *testing.T) {
 	}
 }
 
+func TestSystemMessage_IsLinkedToItsTurnAndProcessedAtomically(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	sess := newSession("sess_system_companion")
+	if _, err := store.CreateSession(ctx, sess, nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	admission, err := store.AdmitEvents(ctx, sess.ID, []domain.EventDraft{
+		{Type: domain.EvUserMessage, Payload: map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "hello"}},
+		}},
+		{Type: domain.EvSystemMessage, Payload: map[string]any{
+			"content": []any{map[string]any{"type": "text", "text": "timezone UTC"}},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("admit paired system message: %v", err)
+	}
+	if len(admission.Events) != 3 {
+		t.Fatalf("admitted events = %d, want user/system/running", len(admission.Events))
+	}
+	trigger := admission.Events[0]
+	systemEvent := admission.Events[1]
+	if got := trigger.Payload[domain.InternalCompanionSystemEventID]; got != systemEvent.ID {
+		t.Fatalf("companion link = %v, want %s", got, systemEvent.ID)
+	}
+
+	if _, err := store.CompleteWorkflowTurn(
+		ctx,
+		sess.ID,
+		trigger.ID,
+		[]domain.EventDraft{{
+			Type:    domain.EvSessionStatusIdle,
+			Payload: map[string]any{"stop_reason": map[string]any{"type": "end_turn"}},
+		}},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		nil,
+	); err != nil {
+		t.Fatalf("complete paired turn: %v", err)
+	}
+	processed, err := store.GetEvent(ctx, sess.ID, systemEvent.ID)
+	if err != nil {
+		t.Fatalf("get system event: %v", err)
+	}
+	if processed.ProcessedAt == nil {
+		t.Fatal("system.message remained unprocessed after its accompanying turn")
+	}
+}
+
 // TestAdmitEvents_CoalescesWakeup proves the outbox is coalescible, not a queue:
 // a second admission before delivery updates the single pending row to the new
 // highest sequence rather than creating another wakeup.

@@ -392,7 +392,13 @@ func TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically(t *testing.T) {
 		}},
 		{Type: domain.EvSessionStatusIdle, Payload: map[string]any{}},
 	}
-	first, err := store.CompleteWorkflowTurn(
+	usage := domain.TokenUsage{
+		CacheCreation:        domain.CacheCreationUsage{Ephemeral1hInputTokens: 3, Ephemeral5mInputTokens: 4},
+		CacheReadInputTokens: 5,
+		InputTokens:          11,
+		OutputTokens:         7,
+	}
+	first, err := store.CompleteWorkflowTurnWithUsage(
 		ctx,
 		sessionID,
 		trigger,
@@ -403,6 +409,7 @@ func TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		usage,
 	)
 	if err != nil {
 		t.Fatalf("complete workflow turn: %v", err)
@@ -423,7 +430,7 @@ func TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically(t *testing.T) {
 	// A lost Activity acknowledgement retries the same transaction entry point.
 	// It must replay the committed turn without trying to finalize the attempt a
 	// second time.
-	second, err := store.CompleteWorkflowTurn(
+	second, err := store.CompleteWorkflowTurnWithUsage(
 		ctx,
 		sessionID,
 		trigger,
@@ -434,11 +441,19 @@ func TestCompleteWorkflowTurn_FinalizesAttemptAndTurnAtomically(t *testing.T) {
 		nil,
 		nil,
 		nil,
+		usage,
 	)
 	if err != nil {
 		t.Fatalf("retry completion: %v", err)
 	}
 	if second.Applied {
 		t.Fatal("retry must replay rather than append")
+	}
+	gotSession, err := store.GetSession(ctx, sessionID)
+	if err != nil {
+		t.Fatalf("get session usage: %v", err)
+	}
+	if gotSession.Usage != usage {
+		t.Fatalf("usage after idempotent retry = %#v, want %#v", gotSession.Usage, usage)
 	}
 }

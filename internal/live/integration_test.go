@@ -86,9 +86,11 @@ func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	frame := receiveFrame(t, frames)
-	if frame.Event == nil || frame.Event.ID != admission.Events[0].ID {
-		t.Fatalf("ledger frame = %+v, want event %s", frame, admission.Events[0].ID)
+	for _, admitted := range admission.Events {
+		frame := receiveFrame(t, frames)
+		if frame.Event == nil || frame.Event.ID != admitted.ID {
+			t.Fatalf("ledger frame = %+v, want event %s", frame, admitted.ID)
+		}
 	}
 
 	preview := domain.PreviewFrame{
@@ -98,7 +100,7 @@ func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
 	if err := broker.PublishPreview(ctx, session.ID, preview); err != nil {
 		t.Fatal(err)
 	}
-	frame = receiveFrame(t, frames)
+	frame := receiveFrame(t, frames)
 	if frame.Preview == nil || frame.Preview.Text != preview.Text {
 		t.Fatalf("preview frame = %+v, want %+v", frame, preview)
 	}
@@ -107,10 +109,9 @@ func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
 	// stream's periodic cursor reconciliation repairs the missed wakeup.
 	store.SetEventNotifier(nil)
 	missed, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
-		Type: domain.EvUserDefineOutcome,
+		Type: domain.EvUserMessage,
 		Payload: map[string]any{
-			"description": "still done",
-			"rubric":      map[string]any{"type": "text", "content": "still ok"},
+			"content": []any{map[string]any{"type": "text", "text": "still working"}},
 		},
 	}})
 	if err != nil {
@@ -121,10 +122,25 @@ func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
 		t.Fatalf("reconciled frame = %+v, want event %s", frame, missed.Events[0].ID)
 	}
 
-	if err := store.DeleteSession(ctx, session.ID); err != nil {
+	// Deletion has its own idle-only lifecycle rule. Use a separate idle Session
+	// so the missed-wakeup case above can remain truthfully running.
+	store.SetEventNotifier(broker)
+	deletable := domain.Session{
+		ID: "sesn_live_delete", Status: domain.StatusIdle, Metadata: map[string]any{},
+		CreatedAt: clock.Now(), UpdatedAt: clock.Now(),
+	}
+	if _, err := store.CreateSession(ctx, deletable, nil); err != nil {
 		t.Fatal(err)
 	}
-	frame = receiveFrame(t, frames)
+	deleteFrames, cancelDelete, err := stream.SubscribeContext(ctx, deletable.ID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelDelete()
+	if err := store.DeleteSession(ctx, deletable.ID); err != nil {
+		t.Fatal(err)
+	}
+	frame = receiveFrame(t, deleteFrames)
 	if frame.Event == nil || frame.Event.Type != domain.EvSessionDeleted {
 		t.Fatalf("delete frame = %+v", frame)
 	}

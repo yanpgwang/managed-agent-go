@@ -28,6 +28,21 @@ const (
 	EvSessionError              = "session.error"
 	EvSessionUpdated            = "session.updated"
 	EvSessionDeleted            = "session.deleted"
+
+	EvSpanOutcomeEvaluationStart   = "span.outcome_evaluation_start"
+	EvSpanOutcomeEvaluationOngoing = "span.outcome_evaluation_ongoing"
+	EvSpanOutcomeEvaluationEnd     = "span.outcome_evaluation_end"
+	EvSpanModelRequestStart        = "span.model_request_start"
+	EvSpanModelRequestEnd          = "span.model_request_end"
+)
+
+// Internal event payload keys support server-side causal linking without
+// changing the public Managed Agents event shape. HTTP projections must never
+// expose keys with this prefix.
+const (
+	InternalCompanionSystemEventID = "__companion_system_event_id"
+	InternalCompanionSystemContent = "__companion_system_content"
+	InternalToolExecutionOwner     = "__tool_execution_owner"
 )
 
 // EventDraft is an event about to be persisted. Payload holds the type-specific

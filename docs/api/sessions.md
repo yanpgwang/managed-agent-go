@@ -48,7 +48,9 @@ Session-local overrides:
 ```
 
 Overrides replace model, system, tools, MCP servers, or skills for this session
-only. They do not mutate or renumber the agent.
+only. They do not mutate or renumber the agent. A model override may change the
+model ID or speed; effort remains an Agent-level setting and a session override
+does not replace it.
 
 Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.
@@ -122,6 +124,8 @@ Delete removes the session and persisted history, sends a final
 
 The response embeds the resolved agent snapshot and includes `resources`,
 `vault_ids`, `outcome_evaluations`, `stats`, `usage`, and `deployment_id`.
-Several of those fields are currently empty or zero placeholders. SDK decoding
-does not imply that every upstream field is implemented; see
-[Claude API coverage](../compatibility.md).
+`stats` and `usage` are cumulative live projections, and
+`outcome_evaluations` reflects each admitted outcome. Non-empty resources and
+vaults are rejected at create time, so their required response arrays are
+truthfully empty; `deployment_id` is null because deployment-created sessions
+are not implemented. See [Claude API coverage](../compatibility.md).

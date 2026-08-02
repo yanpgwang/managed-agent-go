@@ -31,8 +31,8 @@ makes the agent read-only.
 
 An environment is a named configuration record selected when creating a
 session. The current `cloud` record routes to the Temporal worker and its
-configured sandbox provider. `self_hosted` records can be stored but sessions
-against them are explicitly unsupported.
+configured sandbox provider. A `self_hosted` record routes built-in tool calls
+to a durable client-action barrier and resumes from `user.tool_result`.
 
 An environment cannot be deleted while a session references it. Archiving
 prevents it from being selected by new sessions without invalidating existing

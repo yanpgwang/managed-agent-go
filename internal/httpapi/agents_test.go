@@ -242,6 +242,35 @@ func TestAgents_MultiagentNullAndInvalidShapes(t *testing.T) {
 	}
 }
 
+func TestAgents_ModelEffortAcceptsOfficialInputShapes(t *testing.T) {
+	srv := newTestServer(t)
+	asString := do(srv, "POST", "/v1/agents",
+		`{"name":"Agent","model":{"id":"claude-opus-4-8","effort":"high"}}`)
+	if asString.Code != http.StatusOK {
+		t.Fatalf("string effort status = %d, want 200: %s", asString.Code, asString.Body)
+	}
+	var stringResult map[string]any
+	if err := json.Unmarshal(asString.Body.Bytes(), &stringResult); err != nil {
+		t.Fatal(err)
+	}
+	effort := stringResult["model"].(map[string]any)["effort"].(map[string]any)
+	if effort["type"] != "high" {
+		t.Fatalf("canonical effort response = %#v", effort)
+	}
+
+	asObject := do(srv, "POST", "/v1/agents",
+		`{"name":"Agent","model":{"id":"claude-opus-4-8","effort":{"type":"high"},"speed":"standard"}}`)
+	if asObject.Code != http.StatusOK {
+		t.Fatalf("tagged effort status = %d, want 200: %s", asObject.Code, asObject.Body)
+	}
+
+	invalid := do(srv, "POST", "/v1/agents",
+		`{"name":"Agent","model":{"id":"claude-opus-4-8","effort":{"type":"high","extra":true}}}`)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid effort object status = %d, want 400: %s", invalid.Code, invalid.Body)
+	}
+}
+
 func TestAgents_MetadataValidationUsesResultingBag(t *testing.T) {
 	srv := newTestServer(t)
 	rec := do(srv, "POST", "/v1/agents",

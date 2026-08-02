@@ -30,9 +30,17 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var rawModel any
-	_ = json.Unmarshal(in.Model, &rawModel)
+	if err := json.Unmarshal(in.Model, &rawModel); err != nil {
+		writeError(w, domain.Validation("model must be a string or object"))
+		return
+	}
+	model, err := parseModel(rawModel)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	a := domain.Agent{
-		Name: in.Name, Model: parseModel(rawModel), System: in.System, Description: in.Description,
+		Name: in.Name, Model: model, System: in.System, Description: in.Description,
 		Tools: in.Tools, MCPServers: in.MCPServers, Skills: in.Skills, Metadata: in.Metadata,
 	}
 	if multiagent != nil {
@@ -139,9 +147,9 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, domain.Validation("model must be a string or object"))
 			return
 		}
-		m := parseModel(raw)
-		if m.ID == "" {
-			writeError(w, domain.Validation("model id is required"))
+		m, err := parseModel(raw)
+		if err != nil {
+			writeError(w, err)
 			return
 		}
 		patch.Model = &m

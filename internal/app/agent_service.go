@@ -20,6 +20,7 @@ func (s *AgentService) Create(ctx context.Context, a domain.Agent) (domain.Agent
 	if err := validateAgent(a); err != nil {
 		return domain.Agent{}, err
 	}
+	a.Model = domain.NormalizeModel(a.Model)
 	now := s.clock.Now().UTC()
 	a.ID = s.ids.NewID(domain.PrefixAgent)
 	a.Version = 1
@@ -68,8 +69,8 @@ func validateAgent(a domain.Agent) error {
 	if a.Name == "" {
 		return domain.Validation("name is required")
 	}
-	if a.Model.ID == "" {
-		return domain.Validation("model is required")
+	if err := domain.ValidateModel(a.Model); err != nil {
+		return err
 	}
 	if err := domain.ValidateToolConfiguration(a.Tools, a.MCPServers); err != nil {
 		return domain.Validation("invalid tool configuration: " + err.Error())

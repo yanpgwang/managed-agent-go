@@ -226,6 +226,12 @@ func (s *Store) admitLocked(
 	session domain.Session,
 	drafts []domain.EventDraft,
 ) (Admission, error) {
+	drafts = s.linkCompanionSystemMessage(drafts)
+	var err error
+	drafts, session, err = s.prepareOutcomeDrafts(session, drafts)
+	if err != nil {
+		return Admission{}, err
+	}
 	for _, d := range drafts {
 		if !domain.IsClientSubmittable(d.Type) {
 			return Admission{}, domain.Validation("event type is not client-submittable: " + d.Type)
@@ -256,11 +262,14 @@ func (s *Store) admitLocked(
 	}
 
 	hasMessage := false
+	hasOutcome := false
 	hasInterrupt := false
 	for _, event := range events {
 		switch event.Type {
 		case domain.EvUserMessage:
 			hasMessage = true
+		case domain.EvUserDefineOutcome:
+			hasOutcome = true
 		case domain.EvUserInterrupt:
 			hasInterrupt = true
 		}
@@ -278,6 +287,13 @@ func (s *Store) admitLocked(
 	if err != nil {
 		return Admission{}, err
 	}
+	if gated && len(events) >= 2 &&
+		events[len(events)-1].Type == domain.EvSystemMessage &&
+		events[len(events)-2].Type == domain.EvUserMessage {
+		return Admission{}, domain.Validation(
+			"system.message may accompany only a tool result while the session requires action",
+		)
+	}
 	hasUnclaimed := false
 	if gated {
 		hasUnclaimed, err = q.HasUnclaimedPendingActions(ctx, session.ID)
@@ -286,7 +302,7 @@ func (s *Store) admitLocked(
 		}
 	}
 	resolutionBarrierReady := admittedResolution && gated && !hasUnclaimed
-	hasRunnableWork := hasMessage || resolutionBarrierReady
+	hasRunnableWork := hasMessage || hasOutcome || resolutionBarrierReady
 
 	admission := Admission{Session: session, Events: events, MaxSeq: maxSeq}
 	if !hasRunnableWork && !hasInterrupt {
@@ -307,9 +323,11 @@ func (s *Store) admitLocked(
 	// Reopen to running when a trigger arrives and the session is not already
 	// running. An interrupt-only admission is a control wakeup, not new work, so
 	// it deliberately emits no synthetic running transition while idle.
+	if workRunnable {
+		session.MarkActiveOutcomeRunning()
+	}
 	if workRunnable && session.Status != domain.StatusRunning {
-		session.Status = domain.StatusRunning
-		session.UpdatedAt = s.clock.Now().UTC()
+		session.TransitionStatus(domain.StatusRunning, s.clock.Now().UTC())
 		statusEvents, newMax, err := s.appendDrafts(ctx, q, session.ID,
 			[]domain.EventDraft{{Type: domain.EvSessionStatusRunning, Payload: map[string]any{}}},
 			maxSeq, nil)
@@ -338,6 +356,60 @@ func (s *Store) admitLocked(
 	}
 	admission.Enqueued = true
 	return admission, nil
+}
+
+func (s *Store) prepareOutcomeDrafts(
+	session domain.Session,
+	drafts []domain.EventDraft,
+) ([]domain.EventDraft, domain.Session, error) {
+	prepared := append([]domain.EventDraft(nil), drafts...)
+	for index, draft := range prepared {
+		if draft.Type != domain.EvUserDefineOutcome {
+			continue
+		}
+		payload := make(map[string]any, len(draft.Payload)+1)
+		for key, value := range draft.Payload {
+			payload[key] = value
+		}
+		outcomeID := s.ids.NewID(domain.PrefixOutcome)
+		payload["outcome_id"] = outcomeID
+		if _, configured := payload["max_iterations"]; !configured {
+			payload["max_iterations"] = 3
+		}
+		description, _ := payload["description"].(string)
+		if err := session.StartOutcome(domain.OutcomeSpec{
+			OutcomeID: outcomeID, Description: description,
+		}); err != nil {
+			return nil, domain.Session{}, err
+		}
+		draft.Payload = payload
+		prepared[index] = draft
+	}
+	return prepared, session, nil
+}
+
+func (s *Store) linkCompanionSystemMessage(
+	drafts []domain.EventDraft,
+) []domain.EventDraft {
+	if len(drafts) < 2 || drafts[len(drafts)-1].Type != domain.EvSystemMessage {
+		return drafts
+	}
+	linked := append([]domain.EventDraft(nil), drafts...)
+	companion := linked[len(linked)-1]
+	if companion.ID == "" {
+		companion.ID = s.ids.NewID(domain.PrefixEvent)
+	}
+	linked[len(linked)-1] = companion
+	preceding := linked[len(linked)-2]
+	payload := make(map[string]any, len(preceding.Payload)+2)
+	for key, value := range preceding.Payload {
+		payload[key] = value
+	}
+	payload[domain.InternalCompanionSystemEventID] = companion.ID
+	payload[domain.InternalCompanionSystemContent] = companion.Payload["content"]
+	preceding.Payload = payload
+	linked[len(linked)-2] = preceding
+	return linked
 }
 
 // appendDrafts inserts a slice of drafts starting after startSeq, returning the
@@ -568,7 +640,7 @@ func (s *Store) CompleteTurn(
 	outputDrafts []domain.EventDraft,
 	status domain.Status,
 ) (TurnCompletion, error) {
-	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil, nil, nil, nil, nil)
+	return s.completeTurn(ctx, sessionID, triggerEventID, outputDrafts, status, "", "", nil, nil, nil, nil, nil, domain.TokenUsage{})
 }
 
 // CompleteWorkflowTurn atomically finalizes a Workflow-owned tool attempt (when
@@ -588,6 +660,37 @@ func (s *Store) CompleteWorkflowTurn(
 	attemptError *string,
 	pendingActionEventIDs []string,
 	resolutionEventIDs []string,
+) (TurnCompletion, error) {
+	return s.CompleteWorkflowTurnWithUsage(
+		ctx,
+		sessionID,
+		triggerEventID,
+		outputDrafts,
+		status,
+		attemptID,
+		attemptState,
+		attemptError,
+		pendingActionEventIDs,
+		resolutionEventIDs,
+		domain.TokenUsage{},
+	)
+}
+
+// CompleteWorkflowTurnWithUsage extends CompleteWorkflowTurn with the token
+// usage observed while producing the turn. The usage is committed in the same
+// transaction as the public events, so Activity retries cannot double-count it.
+func (s *Store) CompleteWorkflowTurnWithUsage(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	outputDrafts []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
+	usage domain.TokenUsage,
 ) (TurnCompletion, error) {
 	if attemptID == "" {
 		if attemptState != "" || attemptError != nil {
@@ -609,6 +712,7 @@ func (s *Store) CompleteWorkflowTurn(
 		resolutionEventIDs,
 		nil,
 		nil,
+		usage,
 	)
 }
 
@@ -628,6 +732,40 @@ func (s *Store) CompleteWorkflowTurnWithTranscript(
 	resolutionEventIDs []string,
 	transcriptDelta []domain.Message,
 	toolUseMappings []domain.ProviderToolUseMapping,
+) (TurnCompletion, error) {
+	return s.CompleteWorkflowTurnWithTranscriptAndUsage(
+		ctx,
+		sessionID,
+		triggerEventID,
+		outputDrafts,
+		status,
+		attemptID,
+		attemptState,
+		attemptError,
+		pendingActionEventIDs,
+		resolutionEventIDs,
+		transcriptDelta,
+		toolUseMappings,
+		domain.TokenUsage{},
+	)
+}
+
+// CompleteWorkflowTurnWithTranscriptAndUsage atomically commits the public
+// output, private provider transcript, tool-id mappings, and token usage.
+func (s *Store) CompleteWorkflowTurnWithTranscriptAndUsage(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	outputDrafts []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
+	transcriptDelta []domain.Message,
+	toolUseMappings []domain.ProviderToolUseMapping,
+	usage domain.TokenUsage,
 ) (TurnCompletion, error) {
 	if attemptID == "" {
 		if attemptState != "" || attemptError != nil {
@@ -649,6 +787,7 @@ func (s *Store) CompleteWorkflowTurnWithTranscript(
 		resolutionEventIDs,
 		transcriptDelta,
 		toolUseMappings,
+		usage,
 	)
 }
 
@@ -665,6 +804,7 @@ func (s *Store) completeTurn(
 	resolutionEventIDs []string,
 	transcriptDelta []domain.Message,
 	toolUseMappings []domain.ProviderToolUseMapping,
+	usage domain.TokenUsage,
 ) (TurnCompletion, error) {
 	var result TurnCompletion
 	err := s.withTx(ctx, func(q *pgstore.Queries) error {
@@ -690,12 +830,18 @@ func (s *Store) completeTurn(
 		if err != nil {
 			return err
 		}
+		var triggerPayload map[string]any
+		if err := json.Unmarshal(trigger.Payload, &triggerPayload); err != nil {
+			return err
+		}
 		// Idempotent replay: a trigger already stamped processed normally means
-		// this turn's completion committed. A claimed pending-action resolution is
-		// the exception: user.custom_tool_result is processed on receipt by public
-		// contract, while its resume turn still has to close the pending row. That
-		// row remains unresolved until this transaction succeeds and therefore
-		// disambiguates admission processing from turn completion.
+		// this turn's completion committed. There are two receipt-processed
+		// exceptions whose actual turn still has to run:
+		//   - a claimed pending-action resolution, disambiguated by its unresolved
+		//     pending row; and
+		//   - the define_outcome event that owns the Session's active outcome.
+		// Once that outcome becomes terminal ActiveOutcome returns nil, so a retry
+		// correctly replays the already-committed turn instead of applying it twice.
 		if trigger.ProcessedAt.Valid {
 			pendingResume, err := q.IsUnresolvedPendingResolution(
 				ctx,
@@ -707,7 +853,7 @@ func (s *Store) completeTurn(
 			if err != nil {
 				return err
 			}
-			if !pendingResume {
+			if !pendingResume && !activeReceiptProcessedOutcome(session, trigger.Type, triggerPayload) {
 				priorRows, err := q.ListEventsByTurn(ctx, pgstore.ListEventsByTurnParams{
 					SessionID:   sessionID,
 					TurnEventID: &triggerEventID,
@@ -761,7 +907,8 @@ func (s *Store) completeTurn(
 			// ownership moves to the interrupt. It contributes the single public
 			// idle/end_turn and never publishes requires_action, session.error, or
 			// terminated. A named attempt is fenced as interrupted below.
-			outputDrafts = interruptedTurnDrafts(outputDrafts)
+			var interruptedOutcomeIteration int
+			outputDrafts, interruptedOutcomeIteration = interruptedTurnDrafts(outputDrafts)
 			transcriptDelta = closeInterruptedProviderTranscript(
 				transcriptDelta,
 			)
@@ -769,18 +916,46 @@ func (s *Store) completeTurn(
 				toolUseMappings,
 				outputDrafts,
 			)
-			outputDrafts = append(outputDrafts, domain.EventDraft{
-				Type: domain.EvSessionStatusIdle,
-				Payload: map[string]any{
-					"stop_reason": map[string]any{"type": "end_turn"},
-				},
-			})
 			status = domain.StatusIdle
 			pendingActionEventIDs = nil
 			if attemptID != "" {
 				attemptState = domain.RunAttemptInterrupted
 				attemptError = nil
 			}
+			// Outcome admission updates the Session projection before its queued
+			// evaluation turn starts. An interrupt that belongs to some earlier
+			// ordinary turn must not terminate that unrelated active outcome.
+			if activeReceiptProcessedOutcome(session, trigger.Type, triggerPayload) {
+				outcome := session.ActiveOutcome()
+				iteration := max(outcome.Iteration, interruptedOutcomeIteration)
+				outputDrafts = append(outputDrafts,
+					domain.EventDraft{
+						Type: domain.EvSpanOutcomeEvaluationEnd,
+						Payload: map[string]any{
+							// Official outcome semantics use an empty correlation id
+							// when interruption happens before an evaluation-start event.
+							"outcome_evaluation_start_id": "",
+							"outcome_id":                  outcome.OutcomeID,
+							"result":                      "interrupted",
+							"explanation":                 "Outcome work was interrupted by the user.",
+							"iteration":                   iteration,
+							"usage": map[string]any{
+								"cache_creation_input_tokens": 0,
+								"cache_read_input_tokens":     0,
+								"input_tokens":                0,
+								"output_tokens":               0,
+								"speed":                       nil,
+							},
+						},
+					},
+				)
+			}
+			outputDrafts = append(outputDrafts, domain.EventDraft{
+				Type: domain.EvSessionStatusIdle,
+				Payload: map[string]any{
+					"stop_reason": map[string]any{"type": "end_turn"},
+				},
+			})
 		}
 
 		if err := validatePendingCompletion(
@@ -940,6 +1115,9 @@ func (s *Store) completeTurn(
 		if interrupt != nil {
 			processedIDs = append(processedIDs, interrupt.ID)
 		}
+		if companionID, _ := triggerPayload[domain.InternalCompanionSystemEventID].(string); companionID != "" {
+			processedIDs = append(processedIDs, companionID)
+		}
 		for _, eventID := range processedIDs {
 			if err := q.MarkEventProcessed(ctx, pgstore.MarkEventProcessedParams{
 				ProcessedAt: tsUTC(now),
@@ -949,8 +1127,9 @@ func (s *Store) completeTurn(
 				return err
 			}
 		}
-		session.Status = effectiveStatus
-		session.UpdatedAt = now
+		session.Usage.Add(usage)
+		applyOutcomeResults(&session, drafts, now)
+		session.TransitionStatus(effectiveStatus, now)
 		if err := s.putProjection(ctx, q, session); err != nil {
 			return err
 		}
@@ -986,6 +1165,51 @@ func (s *Store) completeTurn(
 	return result, nil
 }
 
+func activeReceiptProcessedOutcome(
+	session domain.Session,
+	triggerType string,
+	triggerPayload map[string]any,
+) bool {
+	if triggerType != domain.EvUserDefineOutcome {
+		return false
+	}
+	outcomeID, _ := triggerPayload["outcome_id"].(string)
+	active := session.ActiveOutcome()
+	return outcomeID != "" && active != nil && active.OutcomeID == outcomeID
+}
+
+func applyOutcomeResults(
+	session *domain.Session,
+	drafts []domain.EventDraft,
+	now time.Time,
+) {
+	for _, draft := range drafts {
+		if draft.Type != domain.EvSpanOutcomeEvaluationEnd {
+			continue
+		}
+		outcomeID, _ := draft.Payload["outcome_id"].(string)
+		result, _ := draft.Payload["result"].(string)
+		explanation, _ := draft.Payload["explanation"].(string)
+		iteration := intFromAny(draft.Payload["iteration"])
+		session.ApplyOutcomeResult(outcomeID, result, explanation, iteration, now)
+	}
+}
+
+func intFromAny(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int32:
+		return int(typed)
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
 // withoutTerminalIdle returns drafts with any session.status_idle draft removed,
 // keeping every other draft in order. Used when an intermediate turn must not
 // publish an idle event because later user.message work is still queued.
@@ -1004,14 +1228,28 @@ func withoutTerminalIdle(drafts []domain.EventDraft) []domain.EventDraft {
 // interrupt while removing every competing terminal projection. The interrupt
 // completion transaction appends the one authoritative idle/end_turn after
 // this filtered prefix.
-func interruptedTurnDrafts(drafts []domain.EventDraft) []domain.EventDraft {
+func interruptedTurnDrafts(drafts []domain.EventDraft) ([]domain.EventDraft, int) {
 	completedToolUses := make(map[string]struct{})
+	completedOutcomeStarts := make(map[string]struct{})
+	interruptedOutcomeIteration := 0
 	for _, draft := range drafts {
-		if draft.Type != domain.EvAgentToolResult {
-			continue
-		}
-		if toolUseID, _ := draft.Payload["tool_use_id"].(string); toolUseID != "" {
-			completedToolUses[toolUseID] = struct{}{}
+		switch draft.Type {
+		case domain.EvAgentToolResult:
+			if toolUseID, _ := draft.Payload["tool_use_id"].(string); toolUseID != "" {
+				completedToolUses[toolUseID] = struct{}{}
+			}
+		case domain.EvSpanOutcomeEvaluationEnd:
+			result, _ := draft.Payload["result"].(string)
+			if result != "needs_revision" {
+				continue
+			}
+			if startID, _ := draft.Payload["outcome_evaluation_start_id"].(string); startID != "" {
+				completedOutcomeStarts[startID] = struct{}{}
+			}
+			interruptedOutcomeIteration = max(
+				interruptedOutcomeIteration,
+				intFromAny(draft.Payload["iteration"])+1,
+			)
 		}
 	}
 
@@ -1021,8 +1259,17 @@ func interruptedTurnDrafts(drafts []domain.EventDraft) []domain.EventDraft {
 		case domain.EvSessionError,
 			domain.EvSessionStatusIdle,
 			domain.EvSessionStatusRescheduling,
-			domain.EvSessionStatusTerminated:
+			domain.EvSessionStatusTerminated,
+			domain.EvSpanOutcomeEvaluationOngoing:
 			continue
+		case domain.EvSpanOutcomeEvaluationStart:
+			if _, completed := completedOutcomeStarts[draft.ID]; !completed {
+				continue
+			}
+		case domain.EvSpanOutcomeEvaluationEnd:
+			if result, _ := draft.Payload["result"].(string); result != "needs_revision" {
+				continue
+			}
 		case domain.EvAgentToolUse, domain.EvAgentCustomToolUse:
 			// An interrupted turn cannot publish a new client-action wait. Keep a
 			// tool-use only when its result durably completed in the same output;
@@ -1034,7 +1281,7 @@ func interruptedTurnDrafts(drafts []domain.EventDraft) []domain.EventDraft {
 		}
 		out = append(out, draft)
 	}
-	return out
+	return out, interruptedOutcomeIteration
 }
 
 func turnEventsParked(events []domain.Event) bool {

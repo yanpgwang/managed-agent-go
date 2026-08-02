@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
@@ -59,7 +60,7 @@ func toDrafts(items []map[string]any) []domain.EventDraft {
 func eventToJSON(e domain.Event) map[string]any {
 	out := map[string]any{"id": e.ID, "type": e.Type}
 	for k, v := range e.Payload {
-		if k == "id" || k == "type" || k == "processed_at" {
+		if k == "id" || k == "type" || k == "processed_at" || strings.HasPrefix(k, "__") {
 			continue
 		}
 		out[k] = v
@@ -90,6 +91,10 @@ func (s *Server) sendEvents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+	}
+	if err := validateClientEventBatch(in.Events); err != nil {
+		writeError(w, err)
+		return
 	}
 	drafts := toDrafts(in.Events)
 	out, err := s.deps.Sessions.SendEvent(r.Context(), r.PathValue("id"), drafts)
@@ -227,6 +232,20 @@ func validateClientEvent(event map[string]any) error {
 	if _, ok := event["processed_at"]; ok {
 		return domain.Validation("client events must not include processed_at")
 	}
+	allowedFields := map[string]map[string]bool{
+		domain.EvUserMessage:          {"type": true, "content": true},
+		domain.EvSystemMessage:        {"type": true, "content": true},
+		domain.EvUserInterrupt:        {"type": true, "session_thread_id": true},
+		domain.EvUserCustomToolResult: {"type": true, "custom_tool_use_id": true, "content": true, "is_error": true},
+		domain.EvUserToolResult:       {"type": true, "tool_use_id": true, "content": true, "is_error": true},
+		domain.EvUserToolConfirmation: {"type": true, "tool_use_id": true, "result": true, "deny_message": true},
+		domain.EvUserDefineOutcome:    {"type": true, "description": true, "rubric": true, "max_iterations": true},
+	}
+	for key := range event {
+		if !allowedFields[t][key] {
+			return domain.Validation(fmt.Sprintf("unknown field %q for %s", key, t))
+		}
+	}
 
 	requireString := func(key string) error {
 		if value, ok := event[key].(string); !ok || value == "" {
@@ -234,10 +253,21 @@ func validateClientEvent(event map[string]any) error {
 		}
 		return nil
 	}
-	requireContent := func() error {
+	validateContent := func(required bool, allowedTypes map[string]bool) error {
 		content, ok := event["content"].([]any)
-		if !ok || len(content) == 0 {
+		if !ok {
+			if !required {
+				if _, present := event["content"]; !present {
+					return nil
+				}
+			}
 			return domain.Validation(fmt.Sprintf("content is required for %s", t))
+		}
+		if required && len(content) == 0 {
+			return domain.Validation(fmt.Sprintf("content is required for %s", t))
+		}
+		if len(content) > 1000 {
+			return domain.Validation("content must contain at most 1000 blocks")
 		}
 		for _, raw := range content {
 			block, ok := raw.(map[string]any)
@@ -248,26 +278,55 @@ func validateClientEvent(event map[string]any) error {
 			if blockType == "" {
 				return domain.Validation("content block type is required")
 			}
+			if !allowedTypes[blockType] {
+				return domain.Validation(fmt.Sprintf("content block type %q is not allowed for %s", blockType, t))
+			}
 			if blockType == "text" {
 				if _, ok := block["text"].(string); !ok {
 					return domain.Validation("text content blocks require text")
 				}
 			}
+			if blockType == "image" || blockType == "document" {
+				source, ok := block["source"].(map[string]any)
+				if !ok {
+					return domain.Validation(blockType + " content blocks require a source")
+				}
+				sourceType, _ := source["type"].(string)
+				if sourceType == "" {
+					return domain.Validation(blockType + " content source type is required")
+				}
+				if sourceType == "file" {
+					return domain.Unsupported("file-sourced content requires the Files API")
+				}
+			}
 		}
 		return nil
 	}
+	messageContent := map[string]bool{"text": true, "image": true, "document": true}
+	resultContent := map[string]bool{
+		"text": true, "image": true, "document": true, "search_result": true,
+	}
+	systemContent := map[string]bool{"text": true}
 
 	switch t {
-	case domain.EvUserMessage, domain.EvSystemMessage:
-		return requireContent()
+	case domain.EvUserMessage:
+		return validateContent(true, messageContent)
+	case domain.EvSystemMessage:
+		return validateContent(true, systemContent)
 	case domain.EvUserInterrupt:
 		return optionalString(event, "session_thread_id")
 	case domain.EvUserCustomToolResult:
 		if err := requireString("custom_tool_use_id"); err != nil {
 			return err
 		}
+		if err := validateContent(false, resultContent); err != nil {
+			return err
+		}
 	case domain.EvUserToolResult:
 		if err := requireString("tool_use_id"); err != nil {
+			return err
+		}
+		if err := validateContent(false, resultContent); err != nil {
 			return err
 		}
 	case domain.EvUserToolConfirmation:
@@ -303,6 +362,7 @@ func validateClientEvent(event map[string]any) error {
 			if value, ok := rubric["file_id"].(string); !ok || value == "" {
 				return domain.Validation("file rubric requires file_id")
 			}
+			return domain.Unsupported("file outcome rubrics require the Files API")
 		default:
 			return domain.Validation("rubric type must be text or file")
 		}
@@ -323,7 +383,37 @@ func validateClientEvent(event map[string]any) error {
 			return domain.Validation("is_error must be a boolean")
 		}
 	}
-	return optionalString(event, "session_thread_id")
+	return nil
+}
+
+func validateClientEventBatch(events []map[string]any) error {
+	defineOutcomes := 0
+	systemMessages := 0
+	for i, event := range events {
+		typeName, _ := event["type"].(string)
+		if typeName == domain.EvUserDefineOutcome {
+			defineOutcomes++
+		}
+		if typeName == domain.EvSystemMessage {
+			systemMessages++
+			if i != len(events)-1 || i == 0 {
+				return domain.Validation("system.message must be the final event and immediately follow its accompanying user event")
+			}
+			previousType, _ := events[i-1]["type"].(string)
+			switch previousType {
+			case domain.EvUserMessage, domain.EvUserToolResult, domain.EvUserCustomToolResult:
+			default:
+				return domain.Validation("system.message must immediately follow user.message, user.tool_result, or user.custom_tool_result")
+			}
+		}
+	}
+	if defineOutcomes > 1 {
+		return domain.Validation("events may contain at most one user.define_outcome")
+	}
+	if systemMessages > 1 {
+		return domain.Validation("events may contain at most one system.message")
+	}
+	return nil
 }
 
 func optionalString(object map[string]any, key string) error {

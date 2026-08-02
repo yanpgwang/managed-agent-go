@@ -186,7 +186,7 @@ flowchart LR
   Config["Agent tool configuration"] --> Resolve["Session capability snapshot"]
   Resolve --> Native["provider_native"]
   Resolve --> Managed["platform_managed"]
-  Resolve --> Worker["self_hosted_worker"]
+  Resolve --> Worker["client_self_hosted"]
   Resolve --> Client["client_custom"]
   Native --> Raw["Raw result / provider block"]
   Managed --> Raw
@@ -208,7 +208,7 @@ The internal execution owners are:
 | --- | --- |
 | `provider_native` | The configured model endpoint executes a server tool inside the model call |
 | `platform_managed` | This control plane invokes a search/fetch service or remote MCP server |
-| `self_hosted_worker` | A customer worker executes the tool in its sandbox/network |
+| `client_self_hosted` | The Session parks while the API client executes the built-in in its sandbox/network and returns `user.tool_result` |
 | `client_custom` | The Session pauses and waits for a client-supplied custom-tool result |
 
 The selected owner, provider tool version, capability profile, and permission
@@ -270,8 +270,9 @@ Therefore:
 
 - `provider_native + always_allow` is supported;
 - `provider_native + always_ask` is rejected during capability resolution;
-- `always_ask` becomes available only with a `platform_managed` or
-  `self_hosted_worker` executor that can durably park before execution.
+- `always_ask` becomes available only with a `platform_managed` executor that
+  can durably park before execution. A `client_self_hosted` environment already
+  makes execution client-owned and parks for `user.tool_result`.
 
 This rejection is a temporary platform capability gap, not a restriction of the
 Managed Agents contract: Anthropic's managed executor can honor `always_ask`
@@ -463,8 +464,10 @@ tool boundaries needed for native web and unauthenticated MCP:
    and pins public IPs per connection and rejects loopback, link-local, private,
    metadata, and reserved networks; private MCP requires a future explicit
    tunnel/egress capability.
-7. Deployment-managed MCP authentication, provider-round records, explicit per-endpoint
-   capability profiles, context snapshots/compaction, and reference-only
+7. Request-time token-aware context projection and extractive compaction are
+   implemented without rewriting the Provider Transcript. Durable Context
+   Snapshot records, deployment-managed MCP authentication, provider-round
+   records, explicit per-endpoint capability profiles, and reference-only
    Temporal payloads remain follow-up work.
 
 ## Delivery order
@@ -476,15 +479,17 @@ tool boundaries needed for native web and unauthenticated MCP:
 3. **Native web:** provider capability profile plus native Web Search/Fetch in
    `always_allow` mode, with exact replay, citations, and a hard per-request
    context-size ceiling. Native declarations and replay are implemented;
-   explicit per-endpoint capability configuration and compaction remain.
+   explicit per-endpoint capability configuration remains.
 4. **MCP tools:** Agent/server validation, discovery snapshots, approval
    parking, and journaled invocation. Unauthenticated Streamable HTTP,
    discovery snapshots, approval, and invocation are implemented;
    deployment-managed authentication remains.
-5. **Managed executors:** optional search/fetch providers and self-hosted
-   execution, enabling `always_ask` for web tools.
-6. **Context engineering:** token budgets, compaction policies, summaries,
-   retention controls, and independent cross-Session Memory.
+5. **Self-hosted execution:** built-in calls park for `user.tool_result` and are
+   implemented. Optional managed search/fetch providers remain follow-up work.
+6. **Context engineering:** conservative token budgets, rich-content-aware
+   projection, and extractive compaction are implemented. Durable snapshot
+   records, provider-exact counters, retention controls, and independent
+   cross-Session Memory remain follow-up work.
 
 The first two steps were treated as prerequisites rather than cleanup after
 native web, so new Sessions do not depend on reconstructing provider context

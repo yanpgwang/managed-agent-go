@@ -1,6 +1,10 @@
 package temporal
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
+
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
@@ -101,22 +105,53 @@ func runWorkflowTurnInternal(
 		return turn.terminate(failure)
 	}
 
-	for round := 0; round < maxWorkflowToolRounds; round++ {
+	maxRounds := maxWorkflowToolRounds
+	if prepared.Outcome != nil {
+		// Each evaluation cycle may consume a full tool loop, and
+		// max_iterations_reached is followed by one final acknowledgment turn.
+		maxRounds *= prepared.Outcome.MaxIterations + 1
+	}
+	outcomeIteration := 0
+	outcomeFinished := false
+	for round := 0; round < maxRounds; round++ {
 		request := prepared.Request
 		request.Messages = messages
 		mappingCheckpoint := len(turn.toolUseMappings)
+		modelRequestStartID, modelRequestEndID := modelRequestSpanIDs(
+			sessionID,
+			triggerEventID,
+			round,
+		)
 
 		called, activityOutcome, err := turn.callModel(CallModelInput{
-			SessionID: sessionID,
-			Request:   request,
+			SessionID:           sessionID,
+			ModelRequestStartID: modelRequestStartID,
+			ModelRequestEndID:   modelRequestEndID,
+			Request:             request,
 		})
 		if err != nil {
 			return RunTurnResult{}, err
 		}
 		if activityOutcome.Interrupted && !activityOutcome.Completed {
+			cancelled := CallModelResult{
+				ModelRequestStartID: modelRequestStartID,
+				ModelRequestEndID:   modelRequestEndID,
+			}
+			if start := modelRequestStartDraft(cancelled); start != nil {
+				turn.output = append(turn.output, *start)
+			}
+			if end := modelRequestEndDraft(cancelled, true); end != nil {
+				turn.output = append(turn.output, *end)
+			}
 			return turn.complete(nil)
 		}
+		if start := modelRequestStartDraft(called); start != nil {
+			turn.output = append(turn.output, *start)
+		}
 		if called.FatalError != "" {
+			if end := modelRequestEndDraft(called, true); end != nil {
+				turn.output = append(turn.output, *end)
+			}
 			if activityOutcome.Interrupted {
 				return turn.complete(nil)
 			}
@@ -172,7 +207,81 @@ func runWorkflowTurnInternal(
 			}
 		}
 		if len(toolUses) == 0 {
-			return turn.complete(nil)
+			if end := modelRequestEndDraft(called, false); end != nil {
+				turn.output = append(turn.output, *end)
+			}
+			if prepared.Outcome == nil || outcomeFinished {
+				return turn.complete(nil)
+			}
+			candidate := agentruntime.AppendMerging(messages, []domain.Message{{
+				Role: domain.RoleAssistant, Content: called.Response.Content,
+			}})
+			finalCycle := outcomeIteration+1 >= prepared.Outcome.MaxIterations
+			evaluated, evaluationOutcome, err := turn.evaluateOutcome(
+				EvaluateOutcomeInput{
+					SessionID:  sessionID,
+					Model:      prepared.Request.Model,
+					Effort:     prepared.Request.Effort,
+					Speed:      prepared.Request.Speed,
+					Outcome:    *prepared.Outcome,
+					Candidate:  candidate,
+					Iteration:  outcomeIteration,
+					FinalCycle: finalCycle,
+				},
+			)
+			if err != nil {
+				return RunTurnResult{}, err
+			}
+			if evaluationOutcome.Interrupted && !evaluationOutcome.Completed {
+				return turn.complete(nil)
+			}
+			if evaluated.FatalError != "" {
+				if evaluationOutcome.Interrupted {
+					return turn.complete(nil)
+				}
+				return turn.terminate(failTurn(evaluated.FatalError))
+			}
+			turn.output = append(
+				turn.output,
+				outcomeEvaluationDrafts(
+					*prepared.Outcome,
+					outcomeIteration,
+					evaluated,
+				)...,
+			)
+			if evaluationOutcome.Interrupted {
+				return turn.complete(nil)
+			}
+			switch evaluated.Result {
+			case "satisfied", "failed":
+				return turn.complete(nil)
+			case "needs_revision", "max_iterations_reached":
+				feedback := "Independent outcome evaluation: " + evaluated.Explanation
+				if evaluated.Result == "max_iterations_reached" {
+					feedback += "\nThe evaluation budget is exhausted. Provide one final acknowledgment of the best available result."
+					outcomeFinished = true
+				} else {
+					feedback += "\nRevise the deliverable to address this feedback, then present the updated result."
+					outcomeIteration++
+				}
+				feedbackMessage := domain.Message{
+					Role:    domain.RoleUser,
+					Content: []domain.ContentBlock{{Type: "text", Text: feedback}},
+				}
+				messages = agentruntime.AppendMerging(candidate, []domain.Message{feedbackMessage})
+				if prepared.UsesProviderTranscript {
+					turn.transcriptDelta = agentruntime.AppendMerging(
+						turn.transcriptDelta,
+						[]domain.Message{feedbackMessage},
+					)
+				}
+				continue
+			default:
+				return turn.terminate(failTurn("grader returned an unsupported outcome result"))
+			}
+		}
+		if end := modelRequestEndDraft(called, false); end != nil {
+			turn.output = append(turn.output, *end)
 		}
 		if prepared.AttemptID == "" {
 			if activityOutcome.Interrupted {
@@ -276,6 +385,20 @@ func runWorkflowTurnInternal(
 	// Reaching the safety bound closes the public turn normally rather than
 	// allowing unbounded Workflow history.
 	return turn.complete(nil)
+}
+
+// modelRequestSpanIDs are deterministic Workflow-owned operation ids. Owning
+// them before the interruptible model Activity starts lets an interrupt commit
+// the terminal span.model_request_end that closes any best-effort preview, even
+// when cancellation prevents the Activity result from being recorded.
+func modelRequestSpanIDs(sessionID, triggerEventID string, round int) (string, string) {
+	makeID := func(kind string) string {
+		sum := sha256.Sum256([]byte(
+			sessionID + "\x00" + triggerEventID + "\x00" + strconv.Itoa(round) + "\x00" + kind,
+		))
+		return domain.PrefixEvent + hex.EncodeToString(sum[:12])
+	}
+	return makeID("model_start"), makeID("model_end")
 }
 
 func toolNameForProviderID(

@@ -34,7 +34,9 @@ func TestAnthropic_LiveMessagesConformance(t *testing.T) {
 	defer cancel()
 	var streamed strings.Builder
 	response, err := client.CreateMessageStream(ctx, Request{
-		Model: modelID,
+		Model:  modelID,
+		Effort: "high",
+		Speed:  "standard",
 		Messages: []domain.Message{{
 			Role: domain.RoleUser,
 			Content: []domain.ContentBlock{{

@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -11,6 +13,82 @@ func ev(t string, content ...string) Event {
 		blocks = append(blocks, map[string]any{"type": "text", "text": c})
 	}
 	return Event{Type: t, Payload: map[string]any{"content": blocks}}
+}
+
+func TestProjectMessages_PreservesImageAndDocumentBlocks(t *testing.T) {
+	events := []Event{{
+		Type: EvUserMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "inspect these"},
+			map[string]any{"type": "image", "source": map[string]any{
+				"type": "url", "url": "https://example.com/image.png",
+			}},
+			map[string]any{"type": "document", "source": map[string]any{
+				"type": "text", "data": "document body", "media_type": "text/plain",
+			}},
+		}},
+	}}
+	got := ProjectMessages(events)
+	if len(got) != 1 || len(got[0].Content) != 3 {
+		t.Fatalf("projection = %#v", got)
+	}
+	for i, wantType := range []string{"text", "image", "document"} {
+		if got[0].Content[i].Type != wantType {
+			t.Fatalf("content[%d].type = %q, want %q", i, got[0].Content[i].Type, wantType)
+		}
+	}
+	var image map[string]any
+	if err := json.Unmarshal(got[0].Content[1].Raw, &image); err != nil {
+		t.Fatal(err)
+	}
+	if image["type"] != "image" {
+		t.Fatalf("image raw = %#v", image)
+	}
+}
+
+func TestProjectMessages_PreservesRichToolResultContent(t *testing.T) {
+	events := []Event{
+		{ID: "use_1", Type: EvAgentCustomToolUse, Payload: map[string]any{
+			"name": "inspect", "input": map[string]any{},
+		}},
+		{Type: EvUserCustomToolResult, Payload: map[string]any{
+			"custom_tool_use_id": "use_1",
+			"content": []any{
+				map[string]any{"type": "text", "text": "caption"},
+				map[string]any{"type": "image", "source": map[string]any{
+					"type": "url", "url": "https://example.com/result.png",
+				}},
+			},
+		}},
+	}
+	got := ProjectMessages(events)
+	if len(got) != 2 || len(got[1].Content) != 1 {
+		t.Fatalf("projection = %#v", got)
+	}
+	result := got[1].Content[0]
+	if result.Text != "caption" || len(result.ResultContent) != 2 {
+		t.Fatalf("rich result = %#v", result)
+	}
+}
+
+func TestProjectSystemContext_IncludesPersistedAndCurrentCompanion(t *testing.T) {
+	history := []Event{{
+		Type: EvSystemMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "persisted guidance"},
+		}},
+	}}
+	trigger := Event{Payload: map[string]any{
+		InternalCompanionSystemContent: []any{
+			map[string]any{"type": "text", "text": "current guidance"},
+		},
+	}}
+	got := ProjectSystemContext("base prompt", history, trigger)
+	for _, want := range []string{"base prompt", "persisted guidance", "current guidance"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("system context %q does not contain %q", got, want)
+		}
+	}
 }
 
 func TestProjectMessages_MultiTurnTextOnly(t *testing.T) {
@@ -352,5 +430,33 @@ func TestProjectMessages_KeepsPairedCustomToolResultUnderFilter(t *testing.T) {
 	}
 	if !foundUse || !foundResult {
 		t.Fatalf("paired custom tool_use/result dropped: use=%v result=%v\n%#v", foundUse, foundResult, got)
+	}
+}
+
+func TestProjectMessages_SelfHostedToolResultPairing(t *testing.T) {
+	events := []Event{
+		{
+			ID: "sevt_tool", Type: EvAgentToolUse,
+			Payload: map[string]any{
+				"name": "read", "input": map[string]any{"path": "a.txt"},
+				InternalToolExecutionOwner: "self_hosted",
+			},
+		},
+		{
+			ID: "sevt_result", Type: EvUserToolResult,
+			Payload: map[string]any{
+				"tool_use_id": "sevt_tool",
+				"content":     []any{map[string]any{"type": "text", "text": "contents"}},
+			},
+		},
+	}
+	got := ProjectMessages(events)
+	if len(got) != 2 {
+		t.Fatalf("ProjectMessages = %#v", got)
+	}
+	if got[0].Content[0].ToolUseID != "sevt_tool" ||
+		got[1].Content[0].ToolResultFor != "sevt_tool" ||
+		got[1].Content[0].Text != "contents" {
+		t.Fatalf("self-hosted pair = %#v", got)
 	}
 }

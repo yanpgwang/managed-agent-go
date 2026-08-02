@@ -447,10 +447,12 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	require.Zero(t, executions, "permanent model failure must not execute a tool")
 	require.Equal(t, domain.StatusTerminated, completed.Status)
 	require.Equal(t, []string{
+		domain.EvSpanModelRequestStart,
+		domain.EvSpanModelRequestEnd,
 		domain.EvSessionError,
 		domain.EvSessionStatusTerminated,
 	}, draftTypes(completed.Output))
-	errorPayload, ok := completed.Output[0].Payload["error"].(map[string]any)
+	errorPayload, ok := completed.Output[2].Payload["error"].(map[string]any)
 	require.True(t, ok)
 	require.Contains(t, errorPayload["message"], "invalid_request_error")
 }
@@ -689,6 +691,63 @@ func TestWorkflowTurn_DeniedConfirmationDoesNotExecute(t *testing.T) {
 	require.True(t, result.IsError)
 	require.Equal(t, "Tool call denied by user. not safe", result.Text)
 	require.Equal(t, true, completed.Output[0].Payload["is_error"])
+}
+
+func TestWorkflowTurn_SelfHostedToolResultResumesWithoutServerExecution(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{
+			Request: model.Request{Model: "test-model"},
+			Tools: []TurnTool{{
+				Name: "read", Kind: TurnToolSelfHosted,
+				Permission: domain.PermissionPolicy{Type: "always_allow"},
+			}},
+			ResumeActions: []ResumeAction{{
+				ActionEventID: "sevt_read", Kind: domain.PendingToolResult,
+				ToolName: "read", Input: map[string]any{"path": "report.md"},
+				ResolutionEventID: "sevt_read_result",
+				Content:           []any{map[string]any{"type": "text", "text": "contents"}},
+			}},
+		}, nil
+	}
+	var modelInput CallModelInput
+	callModel := func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+		modelInput = in
+		return CallModelResult{
+			MessageEventID: "sevt_final",
+			Response: model.Response{Content: []domain.ContentBlock{{
+				Type: "text", Text: "used client result",
+			}}},
+		}, nil
+	}
+	executions := 0
+	executeTool := func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+		executions++
+		return ExecuteToolResult{}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
+	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_self_hosted", TriggerEventID: "sevt_read_result",
+		ResolutionEventIDs: []string{"sevt_read_result"},
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Zero(t, executions)
+	require.Len(t, modelInput.Request.Messages, 2)
+	require.Equal(t, "sevt_read", modelInput.Request.Messages[0].Content[0].ToolUseID)
+	require.Equal(t, "contents", modelInput.Request.Messages[1].Content[0].Text)
+	require.Equal(t, []string{
+		domain.EvAgentMessage,
+		domain.EvSessionStatusIdle,
+	}, draftTypes(completed.Output), "user.tool_result itself is the public result event")
 }
 
 func TestWorkflowTurn_InvalidResumeTerminatesBeforeModelOrTool(t *testing.T) {

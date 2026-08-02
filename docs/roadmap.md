@@ -9,23 +9,34 @@ Mango is focused on a reliable, self-hosted implementation of the core Claude
 Managed Agents session API. Priorities are ordered by user-visible capability,
 not by reproducing Anthropic's internal implementation.
 
-## Core compatibility
+## M1: core Session API alignment
 
-These are the release-blocking capabilities for the managed-agent harness:
+The first release milestone is the single-agent Session harness exposed by the
+official Agent setup, Sessions, Events, outcomes, and Tools contracts.
 
-1. repeatable black-box conformance for the supported PostgreSQL/Temporal and
-   external-sandbox paths;
-2. bounded context management and compaction over server-owned history.
+Implemented in the current M1 slice:
 
-Durable cross-process interrupt, deterministic finish-vs-interrupt ordering,
-Sandbox identity, worker-restart reattachment, and deletion cleanup are durable
-across the local, Docker, E2B, CubeSandbox, OpenSandbox, and Daytona provider
-adapters. Remote adapters remain Preview until repeatable service-level
-validation promotes them.
+- effective model ID, effort, speed, session override, usage, and timing stats;
+- all single-agent input event variants, companion system context, correlated
+  model spans, live message deltas, durable confirmation/custom/self-hosted
+  result barriers, and cross-process interrupt;
+- text-rubric outcome work with an isolated grader, revisions, terminal Session
+  projection, usage, and interruption;
+- lossless provider transcript plus conservative token-aware request projection,
+  extractive compaction, and rich image/document/large-result handling;
+- built-in sandbox tools, provider-native Web Search/Fetch, remote MCP basics,
+  custom tools, and confirmation.
 
-Workers persist provisioning intent before provider creation and reconcile the
-create-before-binding crash window. They also discover fenced Session deletions
-and resume deterministic Temporal cleanup without requiring another API call.
+Remaining M1 conformance work is deliberately narrow:
+
+1. repeatable black-box comparison against the hosted Managed Agents API when a
+   Managed Agents-capable credential is available;
+2. public periodic `span.outcome_evaluation_ongoing` events during long grader
+   calls and Files-backed outcome rubrics;
+3. live publication of `span.model_request_start` before message preview deltas
+   (the durable pair is currently committed at the turn boundary);
+4. `agent.thinking` preview production and exact endpoint/model context-window
+   profiles where a provider exposes them.
 
 ## Runtime integrations
 
@@ -35,11 +46,18 @@ unauthenticated remote MCP tool discovery and execution. Remaining work is:
 - deployment-managed MCP authentication and private-network connectivity;
 - explicit per-endpoint server-tool capability profiles;
 - optional managed Web Search/Fetch executors that can honor `always_ask`;
-- token usage and model/tool execution spans;
 - additional preview event types;
 - promotion of preview sandbox adapters after recorded live conformance.
 
-## Production hardening
+## M2: multi-agent
+
+After M1 conformance is stable, implement the official roster, Session thread,
+delegation/message, cross-posted confirmation, context-compaction, and targeted
+interrupt events. The single-agent event ledger, pending-action barrier, private
+provider transcript, and Temporal turn loop are intended to be reused rather
+than replaced.
+
+## Deferred platform hardening
 
 Production deployments additionally need:
 
@@ -50,7 +68,9 @@ Production deployments additionally need:
 - quotas and resource policy;
 - versioned deployment manifests and migration procedures.
 
-Files, skills, memory, vaults, multi-agent orchestration, schedules, and webhooks
-remain outside the core harness scope. Current behavior is tracked in the
+Authentication/tenancy, provider routing, quotas, audit, metrics, backups, and
+deployment management are intentionally not prerequisites for M1 API alignment.
+Skills, memory, vaults, schedules, and webhooks remain outside the current core
+harness. Current behavior is tracked in the
 [compatibility matrix](compatibility.md); architectural guarantees are
 documented in the [architecture overview](architecture.md).

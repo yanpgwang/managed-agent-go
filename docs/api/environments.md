@@ -20,9 +20,12 @@ An environment is a named session execution configuration.
 `name` is required. If `config.type` is omitted, the stored type defaults to
 `cloud`.
 
-The current runtime accepts sessions against `cloud` environment records.
-Creating a session against `self_hosted` returns `422`; no remote worker
-protocol is implemented yet.
+The runtime accepts `cloud` and `self_hosted` sessions. In `cloud`, enabled
+built-in sandbox tools execute on the configured worker sandbox. In
+`self_hosted`, the same `agent.tool_use` parks the Session with
+`requires_action`; the client executes it and sends a correlated
+`user.tool_result`. The server then resumes the same model loop without
+executing the tool a second time.
 
 ## Get and list
 

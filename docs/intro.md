@@ -56,15 +56,15 @@ offline model and needs no credentials.
 
 The primary path supports Agent, Environment, Session, and Event resources;
 messages and untargeted interrupts; cursor pagination and SSE; a multi-round
-model loop; durable custom-tool and interceptable `always_ask` waits; six
-sandbox built-ins; provider-native Web Search/Fetch; unauthenticated remote MCP
-tools; local and Docker sandboxes; and opt-in assistant text previews.
+model loop; durable custom-tool, confirmation, and self-hosted tool-result
+waits; outcome evaluation; eight built-ins; provider-native Web Search/Fetch;
+unauthenticated remote MCP tools; token-aware provider context; local and Docker
+sandboxes; and opt-in assistant text previews.
 
-The remaining infrastructure closure work is repeatable black-box conformance
-for the PostgreSQL/Temporal path and bounded context management.
-Deployment-managed MCP authentication, files/skills/memory/vaults, multi-agent
-orchestration, remote self-hosted workers, schedules, and webhooks remain future
-product work.
+The remaining M1 closure work is repeatable hosted black-box conformance,
+outcome evaluation heartbeat events, Files-backed rubrics, and thinking
+previews. Deployment-managed MCP authentication, skills/memory/vaults,
+multi-agent orchestration, schedules, and webhooks remain future work.
 
 The runtime is the product; Claude API compatibility is an integration surface.
 Public behavior is derived from official documentation and tested through raw

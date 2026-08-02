@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -30,6 +31,7 @@ const (
 	ActivityLoadPendingActions   = "LoadPendingActions"
 	ActivityPrepareTurn          = "PrepareTurn"
 	ActivityCallModel            = "CallModel"
+	ActivityEvaluateOutcome      = "EvaluateOutcome"
 	ActivityExecuteTool          = "ExecuteTool"
 	ActivityCompleteWorkflowTurn = "CompleteWorkflowTurn"
 	ActivityReleaseSandbox       = "ReleaseSandbox"
@@ -65,6 +67,25 @@ type EventSource interface {
 	) (TurnCompletionResult, error)
 }
 
+// UsageCompletionSource is implemented by stores that can atomically account
+// model usage while completing a public turn. It is optional so lightweight
+// EventSource implementations remain source-compatible.
+type UsageCompletionSource interface {
+	CompleteWorkflowTurnWithUsage(
+		ctx context.Context,
+		sessionID string,
+		triggerEventID string,
+		output []domain.EventDraft,
+		status domain.Status,
+		attemptID string,
+		attemptState domain.RunAttemptState,
+		attemptError *string,
+		pendingActionEventIDs []string,
+		resolutionEventIDs []string,
+		usage domain.TokenUsage,
+	) (TurnCompletionResult, error)
+}
+
 // ProviderTranscriptSource is the optional private-context capability supplied
 // by the PostgreSQL adapter. Tests and legacy stores that do not implement it
 // continue to use the public-event projection.
@@ -91,6 +112,26 @@ type ProviderTranscriptCompletionSource interface {
 		resolutionEventIDs []string,
 		transcriptDelta []domain.Message,
 		toolUseMappings []domain.ProviderToolUseMapping,
+	) (TurnCompletionResult, error)
+}
+
+// ProviderTranscriptUsageCompletionSource is the full atomic completion
+// capability used by the PostgreSQL adapter.
+type ProviderTranscriptUsageCompletionSource interface {
+	CompleteWorkflowTurnWithTranscriptAndUsage(
+		ctx context.Context,
+		sessionID string,
+		triggerEventID string,
+		output []domain.EventDraft,
+		status domain.Status,
+		attemptID string,
+		attemptState domain.RunAttemptState,
+		attemptError *string,
+		pendingActionEventIDs []string,
+		resolutionEventIDs []string,
+		transcriptDelta []domain.Message,
+		toolUseMappings []domain.ProviderToolUseMapping,
+		usage domain.TokenUsage,
 	) (TurnCompletionResult, error)
 }
 
@@ -152,9 +193,14 @@ type TurnCompletionResult struct {
 	Parked *bool
 }
 
-// historyLimit bounds how many prior events a turn projects into the model. It
-// matches the app layer's generous ceiling.
-const historyLimit = 10000
+// historyScanLimit bounds the ledger scan used to verify transcript coverage
+// and support legacy sessions. The actual model-context bound is token-aware
+// and applied after projection.
+const historyScanLimit = 10000
+
+// defaultContextTokenBudget leaves headroom inside Claude's usual context
+// window for the system prompt, tools, model output, and provider overhead.
+const defaultContextTokenBudget = 150000
 
 // sandboxTurnTimeout bounds a built-in tool execution within a turn.
 const sandboxTurnTimeout = 120 * time.Second
@@ -171,13 +217,14 @@ const toolResultWriteAttempts = 3
 // lives here, never in the workflow. journal and sandboxes may be nil for a
 // deployment that never routes tool-using turns.
 type Activities struct {
-	modelClient model.Client
-	source      EventSource
-	journal     JournalStore
-	sandboxes   SandboxLease
-	ids         domain.IDGenerator
-	previews    PreviewPublisher
-	mcp         mcpclient.Client
+	modelClient        model.Client
+	source             EventSource
+	journal            JournalStore
+	sandboxes          SandboxLease
+	ids                domain.IDGenerator
+	previews           PreviewPublisher
+	mcp                mcpclient.Client
+	contextTokenBudget int
 }
 
 func NewActivities(
@@ -191,12 +238,19 @@ func NewActivities(
 	activities := &Activities{
 		modelClient: modelClient, source: source,
 		journal: journal, sandboxes: sandboxes, ids: ids,
-		mcp: mcpclient.NewRemote(nil),
+		mcp: mcpclient.NewRemote(nil), contextTokenBudget: defaultContextTokenBudget,
 	}
 	if len(previewPublisher) > 0 {
 		activities.previews = previewPublisher[0]
 	}
 	return activities
+}
+
+// WithContextTokenBudget overrides the request-time message budget. It is
+// primarily useful for deterministic conformance tests and smaller providers.
+func (a *Activities) WithContextTokenBudget(tokens int) *Activities {
+	a.contextTokenBudget = tokens
+	return a
 }
 
 // WithMCPClient replaces the remote MCP adapter. Production uses the official
@@ -314,12 +368,23 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		}
 	}
 	if trigger.ProcessedAt != nil && !pendingBarrierContainsTrigger(pending, trigger.ID) {
-		return PrepareTurnResult{
-			AlreadyCompleted: true,
-			Terminated:       session.Status == domain.StatusTerminated,
-		}, nil
+		completed := true
+		if trigger.Type == domain.EvUserDefineOutcome {
+			outcomeID, _ := trigger.Payload["outcome_id"].(string)
+			active := session.ActiveOutcome()
+			// define_outcome is stamped processed_at on receipt by the public
+			// contract, before its asynchronous work completes. It remains runnable
+			// only while the matching Session outcome projection is active.
+			completed = active == nil || active.OutcomeID != outcomeID
+		}
+		if completed {
+			return PrepareTurnResult{
+				AlreadyCompleted: true,
+				Terminated:       session.Status == domain.StatusTerminated,
+			}, nil
+		}
 	}
-	history, err := a.source.HistoryThrough(ctx, in.SessionID, in.TriggerEventID, historyLimit)
+	history, err := a.source.HistoryThrough(ctx, in.SessionID, in.TriggerEventID, historyScanLimit)
 	if err != nil {
 		return PrepareTurnResult{}, err
 	}
@@ -335,21 +400,52 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			FatalError: "invalid tool configuration: " + err.Error(),
 		}, nil
 	}
-	if err := agentruntime.ValidateToolCapabilities(toolSet); err != nil {
-		return PrepareTurnResult{FatalError: "unsupported tool capability: " + err.Error()}, nil
+	selfHosted := session.EnvironmentType == "self_hosted"
+	if !selfHosted {
+		if err := agentruntime.ValidateToolCapabilities(toolSet); err != nil {
+			return PrepareTurnResult{FatalError: "unsupported tool capability: " + err.Error()}, nil
+		}
 	}
 
 	system := ""
 	if session.AgentSnapshot.System != nil {
 		system = *session.AgentSnapshot.System
 	}
+	system = domain.ProjectSystemContext(system, history, trigger)
+	toolSchemas := agentruntime.EnabledToolSchemas(toolSet)
+	if selfHosted {
+		toolSchemas = agentruntime.EnabledSelfHostedToolSchemas(toolSet)
+	}
 	result := PrepareTurnResult{
 		AttemptID: a.ids.NewID(domain.PrefixRunAttempt),
 		Request: model.Request{
 			Model:  session.AgentSnapshot.Model.ID,
 			System: system,
-			Tools:  agentruntime.EnabledToolSchemas(toolSet),
+			Tools:  toolSchemas,
 		},
+	}
+	if trigger.Type == domain.EvUserDefineOutcome {
+		outcomeID, _ := trigger.Payload["outcome_id"].(string)
+		description, _ := trigger.Payload["description"].(string)
+		rubric, _ := trigger.Payload["rubric"].(map[string]any)
+		maxIterations := 3
+		if configured := intValue(trigger.Payload["max_iterations"]); configured > 0 {
+			maxIterations = configured
+		}
+		if outcomeID == "" || description == "" || rubric == nil {
+			result.FatalError = "define_outcome is missing its server id, description, or rubric"
+		} else {
+			result.Outcome = &domain.OutcomeSpec{
+				OutcomeID: outcomeID, Description: description,
+				Rubric: rubric, MaxIterations: maxIterations,
+			}
+		}
+	}
+	if session.AgentSnapshot.Model.EffortExplicit {
+		result.Request.Effort = session.AgentSnapshot.Model.Effort
+	}
+	if session.AgentSnapshot.Model.SpeedExplicit {
+		result.Request.Speed = session.AgentSnapshot.Model.Speed
 	}
 	originalHistory := history
 	if len(in.ResolutionEventIDs) > 0 {
@@ -414,8 +510,12 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	for _, name := range domain.BuiltinToolNames {
 		enabled, policy := toolSet.BuiltinEnabled(name)
 		if enabled {
+			kind := TurnToolBuiltin
+			if selfHosted {
+				kind = TurnToolSelfHosted
+			}
 			result.Tools = append(result.Tools, TurnTool{
-				Name: name, Kind: TurnToolBuiltin, Permission: policy,
+				Name: name, Kind: kind, Permission: policy,
 			})
 		}
 	}
@@ -443,7 +543,25 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		}
 		result.PreludeEvents = append(result.PreludeEvents, setupEvents...)
 	}
+	availableContextTokens := a.contextTokenBudget - requestContextOverhead(result.Request)
+	if availableContextTokens < 8000 {
+		availableContextTokens = 8000
+	}
+	result.Request.Messages, result.ContextProjection = domain.CompactMessages(
+		result.Request.Messages,
+		availableContextTokens,
+	)
 	return result, nil
+}
+
+func requestContextOverhead(request model.Request) int {
+	overhead := domain.EstimateTextTokens(request.System)
+	if encoded, err := json.Marshal(request.Tools); err == nil {
+		overhead += domain.EstimateTextTokens(string(encoded))
+	}
+	// Reserve output capacity and provider framing in addition to measured
+	// system/tool bytes.
+	return overhead + 4096
 }
 
 func (a *Activities) addMCPTools(
@@ -637,11 +755,129 @@ func transcriptCoversPriorTurns(
 func drivesPreparedModelTurn(eventType string) bool {
 	switch eventType {
 	case domain.EvUserMessage,
+		domain.EvUserDefineOutcome,
 		domain.EvUserCustomToolResult,
+		domain.EvUserToolResult,
 		domain.EvUserToolConfirmation:
 		return true
 	default:
 		return false
+	}
+}
+
+const outcomeGraderSystem = "You are an independent outcome grader for a managed agent harness."
+
+// EvaluateOutcome uses a separate model context from the working agent. It
+// returns only a compact verdict that deterministic Workflow code can use to
+// decide whether to revise or finish.
+func (a *Activities) EvaluateOutcome(
+	ctx context.Context,
+	in EvaluateOutcomeInput,
+) (EvaluateOutcomeResult, error) {
+	if a.modelClient == nil {
+		return EvaluateOutcomeResult{}, fmt.Errorf("temporal: model client is not configured")
+	}
+	stopHeartbeat := heartbeatActivity(ctx)
+	defer stopHeartbeat()
+	prompt, err := outcomeEvaluationPrompt(in.Outcome, in.Candidate, in.Iteration)
+	if err != nil {
+		return EvaluateOutcomeResult{FatalError: err.Error()}, nil
+	}
+	response, err := a.modelClient.CreateMessage(ctx, model.Request{
+		Model: in.Model, Effort: in.Effort, Speed: in.Speed,
+		System: outcomeGraderSystem + " Return exactly one JSON object with " +
+			`{"result":"satisfied|needs_revision|failed","explanation":"..."}.`,
+		MaxTokens: 1024,
+		Messages: []domain.Message{{Role: domain.RoleUser, Content: []domain.ContentBlock{{
+			Type: "text", Text: prompt,
+		}}}},
+	})
+	if err != nil {
+		var apiErr *model.APIError
+		if errors.As(err, &apiErr) && !apiErr.Retryable() {
+			return EvaluateOutcomeResult{FatalError: apiErr.Error()}, nil
+		}
+		return EvaluateOutcomeResult{}, err
+	}
+	verdict, explanation, err := parseOutcomeVerdict(response.Content)
+	if err != nil {
+		return EvaluateOutcomeResult{
+			Usage:      response.Usage,
+			FatalError: "grader returned an invalid verdict: " + err.Error(),
+		}, nil
+	}
+	if in.FinalCycle && verdict == "needs_revision" {
+		verdict = "max_iterations_reached"
+	}
+	return EvaluateOutcomeResult{
+		StartEventID: a.ids.NewID(domain.PrefixEvent),
+		EndEventID:   a.ids.NewID(domain.PrefixEvent),
+		Result:       verdict, Explanation: explanation, Usage: response.Usage,
+	}, nil
+}
+
+func outcomeEvaluationPrompt(
+	outcome domain.OutcomeSpec,
+	candidate []domain.Message,
+	iteration int,
+) (string, error) {
+	rubric, err := json.Marshal(outcome.Rubric)
+	if err != nil {
+		return "", fmt.Errorf("encode outcome rubric: %w", err)
+	}
+	transcript, err := json.Marshal(candidate)
+	if err != nil {
+		return "", fmt.Errorf("encode outcome candidate: %w", err)
+	}
+	return fmt.Sprintf(
+		"Evaluate revision cycle %d.\n\nOutcome:\n%s\n\nRubric:\n%s\n\nAgent transcript and deliverable evidence:\n%s",
+		iteration, outcome.Description, rubric, transcript,
+	), nil
+}
+
+func parseOutcomeVerdict(
+	content []domain.ContentBlock,
+) (string, string, error) {
+	var text strings.Builder
+	for _, block := range content {
+		if block.Type == "text" {
+			text.WriteString(block.Text)
+		}
+	}
+	raw := text.String()
+	start := strings.IndexByte(raw, '{')
+	end := strings.LastIndexByte(raw, '}')
+	if start < 0 || end < start {
+		return "", "", fmt.Errorf("response did not contain a JSON object")
+	}
+	var parsed struct {
+		Result      string `json:"result"`
+		Explanation string `json:"explanation"`
+	}
+	if err := json.Unmarshal([]byte(raw[start:end+1]), &parsed); err != nil {
+		return "", "", err
+	}
+	switch parsed.Result {
+	case "satisfied", "needs_revision", "failed":
+	default:
+		return "", "", fmt.Errorf("unknown result %q", parsed.Result)
+	}
+	if strings.TrimSpace(parsed.Explanation) == "" {
+		return "", "", fmt.Errorf("explanation is required")
+	}
+	return parsed.Result, parsed.Explanation, nil
+}
+
+func intValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	default:
+		return 0
 	}
 }
 
@@ -724,7 +960,7 @@ func (a *Activities) prepareResumeActions(
 			ResolutionEventID: resolution.ID,
 		}
 		switch row.Kind {
-		case domain.PendingCustomToolResult:
+		case domain.PendingCustomToolResult, domain.PendingToolResult:
 			if raw, present := resolution.Payload["content"]; present {
 				content, ok := raw.([]any)
 				if !ok {
@@ -784,6 +1020,14 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 	stopHeartbeat := heartbeatActivity(ctx)
 	defer stopHeartbeat()
 	messageEventID := a.ids.NewID(domain.PrefixEvent)
+	modelRequestStartID := in.ModelRequestStartID
+	if modelRequestStartID == "" {
+		modelRequestStartID = a.ids.NewID(domain.PrefixEvent)
+	}
+	modelRequestEndID := in.ModelRequestEndID
+	if modelRequestEndID == "" {
+		modelRequestEndID = a.ids.NewID(domain.PrefixEvent)
+	}
 	startedPreview := false
 	var previewMu sync.Mutex
 	response, err := a.modelClient.CreateMessageStream(ctx, in.Request, func(index int, text string) {
@@ -816,11 +1060,19 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 			// the existing successful-result terminal channel so the Workflow
 			// commits session.error and status_terminated instead of retrying the
 			// Activity forever.
-			return CallModelResult{FatalError: apiErr.Error()}, nil
+			return CallModelResult{
+				ModelRequestStartID: modelRequestStartID,
+				ModelRequestEndID:   modelRequestEndID,
+				FatalError:          apiErr.Error(),
+			}, nil
 		}
 		return CallModelResult{}, err
 	}
-	result := CallModelResult{Response: response}
+	result := CallModelResult{
+		Response:            response,
+		ModelRequestStartID: modelRequestStartID,
+		ModelRequestEndID:   modelRequestEndID,
+	}
 	normalized := append([]domain.ContentBlock(nil), response.Content...)
 	hasText := false
 	for i := range normalized {
@@ -1080,7 +1332,23 @@ func (a *Activities) CompleteWorkflowTurn(
 	defer cancel()
 	var completion TurnCompletionResult
 	var err error
-	if source, ok := a.source.(ProviderTranscriptCompletionSource); ok {
+	if source, ok := a.source.(ProviderTranscriptUsageCompletionSource); ok {
+		completion, err = source.CompleteWorkflowTurnWithTranscriptAndUsage(
+			dctx,
+			in.SessionID,
+			in.TriggerEventID,
+			in.Output,
+			in.Status,
+			in.AttemptID,
+			in.AttemptState,
+			in.AttemptError,
+			in.PendingActionEventIDs,
+			in.ResolutionEventIDs,
+			in.TranscriptDelta,
+			in.ToolUseMappings,
+			in.Usage,
+		)
+	} else if source, ok := a.source.(ProviderTranscriptCompletionSource); ok {
 		completion, err = source.CompleteWorkflowTurnWithTranscript(
 			dctx,
 			in.SessionID,
@@ -1094,6 +1362,20 @@ func (a *Activities) CompleteWorkflowTurn(
 			in.ResolutionEventIDs,
 			in.TranscriptDelta,
 			in.ToolUseMappings,
+		)
+	} else if source, ok := a.source.(UsageCompletionSource); ok {
+		completion, err = source.CompleteWorkflowTurnWithUsage(
+			dctx,
+			in.SessionID,
+			in.TriggerEventID,
+			in.Output,
+			in.Status,
+			in.AttemptID,
+			in.AttemptState,
+			in.AttemptError,
+			in.PendingActionEventIDs,
+			in.ResolutionEventIDs,
+			in.Usage,
 		)
 	} else {
 		completion, err = a.source.CompleteWorkflowTurn(

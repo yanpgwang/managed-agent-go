@@ -219,11 +219,58 @@ func TestSendEvents_ValidatesVariantShape(t *testing.T) {
 		`{"events":[{"type":"user.tool_confirmation","tool_use_id":"sevt_x","result":"maybe"}]}`,
 		`{"events":[{"type":"user.tool_confirmation","tool_use_id":"sevt_x","result":"deny","deny_message":42}]}`,
 		`{"events":[{"type":"user.define_outcome","description":"x"}]}`,
+		`{"events":[{"type":"user.message","content":[{"type":"text","text":"x"}],"bogus":true}]}`,
+		`{"events":[{"type":"user.message","content":[{"type":"text","text":"x"}],"session_thread_id":"st_1"}]}`,
+		`{"events":[{"type":"system.message","content":[{"type":"text","text":"late context"}]}]}`,
+		`{"events":[{"type":"system.message","content":[{"type":"image","source":{"type":"url","url":"https://example.com/x.png"}}]}]}`,
 	} {
 		rec := do(h, "POST", "/v1/sessions/"+id+"/events", body)
 		if rec.Code != 400 {
 			t.Errorf("body %s: got %d, want 400 (%s)", body, rec.Code, rec.Body)
 		}
+	}
+
+	paired := `{"events":[` +
+		`{"type":"user.message","content":[{"type":"text","text":"hello"}]},` +
+		`{"type":"system.message","content":[{"type":"text","text":"timezone UTC"}]}` +
+		`]}`
+	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", paired); rec.Code != 200 {
+		t.Fatalf("paired system.message -> %d: %s", rec.Code, rec.Body)
+	}
+
+	fileRubric := `{"events":[{"type":"user.define_outcome","description":"x",` +
+		`"rubric":{"type":"file","file_id":"file_x"}}]}`
+	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileRubric); rec.Code != 422 {
+		t.Fatalf("file rubric -> %d, want 422: %s", rec.Code, rec.Body)
+	}
+
+	fileDocument := `{"events":[{"type":"user.message","content":[{` +
+		`"type":"document","source":{"type":"file","file_id":"file_x"}}]}]}`
+	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileDocument); rec.Code != 422 {
+		t.Fatalf("file document -> %d, want 422: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestCreateSessionRejectsMoreThanFiftyInitialEvents(t *testing.T) {
+	h := NewTestHandler(t)
+	ag := createID(t, h, "POST", "/v1/agents", `{"name":"a","model":"claude-opus-4-8"}`)
+	env := createID(t, h, "POST", "/v1/environments", `{"name":"e","config":{"type":"cloud"}}`)
+	events := make([]map[string]any, 51)
+	for index := range events {
+		events[index] = map[string]any{
+			"type":    "user.message",
+			"content": []any{map[string]any{"type": "text", "text": "x"}},
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"agent": ag, "environment_id": env, "initial_events": events,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := do(h, "POST", "/v1/sessions", string(body))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body)
 	}
 }
 

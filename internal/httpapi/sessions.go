@@ -25,25 +25,43 @@ func (s *Server) registerSessionRoutes() {
 }
 
 func sessionToJSON(s domain.Session) map[string]any {
+	activeSeconds, durationSeconds := s.ObservableStats(time.Now())
+	outcomes := make([]any, 0, len(s.Outcomes))
+	for _, outcome := range s.Outcomes {
+		item := map[string]any{
+			"type": "outcome_evaluation", "outcome_id": outcome.OutcomeID,
+			"description": outcome.Description, "result": outcome.Result,
+			"explanation": nil, "iteration": outcome.Iteration,
+		}
+		if outcome.Explanation != "" {
+			item["explanation"] = outcome.Explanation
+		}
+		if outcome.CompletedAt != nil {
+			item["completed_at"] = outcome.CompletedAt.Format(timeFmt)
+		} else {
+			item["completed_at"] = nil
+		}
+		outcomes = append(outcomes, item)
+	}
 	out := map[string]any{
 		"id": s.ID, "type": "session", "status": string(s.Status),
 		"agent":          agentSnapshotJSON(s.AgentSnapshot),
 		"environment_id": s.EnvironmentID, "title": s.Title, "metadata": orEmptyMap(s.Metadata),
 		"created_at": s.CreatedAt.Format(timeFmt), "updated_at": s.UpdatedAt.Format(timeFmt),
-		"outcome_evaluations": []any{},
+		"outcome_evaluations": outcomes,
 		"resources":           []any{},
 		"stats": map[string]any{
-			"active_seconds":   0,
-			"duration_seconds": 0,
+			"active_seconds":   activeSeconds,
+			"duration_seconds": durationSeconds,
 		},
 		"usage": map[string]any{
 			"cache_creation": map[string]any{
-				"ephemeral_1h_input_tokens": 0,
-				"ephemeral_5m_input_tokens": 0,
+				"ephemeral_1h_input_tokens": s.Usage.CacheCreation.Ephemeral1hInputTokens,
+				"ephemeral_5m_input_tokens": s.Usage.CacheCreation.Ephemeral5mInputTokens,
 			},
-			"cache_read_input_tokens": 0,
-			"input_tokens":            0,
-			"output_tokens":           0,
+			"cache_read_input_tokens": s.Usage.CacheReadInputTokens,
+			"input_tokens":            s.Usage.InputTokens,
+			"output_tokens":           s.Usage.OutputTokens,
 		},
 		"vault_ids":     []string{},
 		"deployment_id": nil,
@@ -111,9 +129,9 @@ func parseAgentRef(raw json.RawMessage) (agentRef, error) {
 			if err := json.Unmarshal(obj.Model, &m); err != nil {
 				return agentRef{}, domain.Validation("agent override model must be a string or object")
 			}
-			mm := parseModel(m)
-			if mm.ID == "" {
-				return agentRef{}, domain.Validation("agent override model id is required")
+			mm, err := parseModel(m)
+			if err != nil {
+				return agentRef{}, err
 			}
 			ov.Model = &mm
 		}
@@ -161,6 +179,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// initial_events accepts only user.message / user.define_outcome.
+	if len(in.InitialEvents) > 50 {
+		writeError(w, domain.Validation("initial_events must contain at most 50 events"))
+		return
+	}
 	for _, it := range in.InitialEvents {
 		t, _ := it["type"].(string)
 		if !domain.IsInitialEventType(t) {
@@ -171,6 +193,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			writeError(w, err)
 			return
 		}
+	}
+	if err := validateClientEventBatch(in.InitialEvents); err != nil {
+		writeError(w, err)
+		return
 	}
 	drafts := toDrafts(in.InitialEvents)
 	sess, err := s.deps.Sessions.Create(r.Context(), app.CreateSessionInput{

@@ -63,7 +63,9 @@ func NewAgentCore(c model.Client, ids domain.IDGenerator) *AgentCore {
 // themselves drive a turn.
 func drivesModelTurn(triggerType string) bool {
 	switch triggerType {
-	case domain.EvUserMessage, domain.EvUserCustomToolResult, domain.EvUserToolConfirmation:
+	case domain.EvUserMessage, domain.EvUserDefineOutcome,
+		domain.EvUserCustomToolResult, domain.EvUserToolResult,
+		domain.EvUserToolConfirmation:
 		return true
 	}
 	return false
@@ -578,6 +580,31 @@ func EnabledToolSchemas(ts domain.ToolSet) []model.ToolSchema {
 			Name:        ct.Name,
 			Description: ct.Description,
 			InputSchema: ct.InputSchema,
+		})
+	}
+	return schemas
+}
+
+// EnabledSelfHostedToolSchemas declares every built-in as a client tool. In a
+// self_hosted Environment the Managed Agents client, not the Messages provider,
+// executes sandbox-routed tools and returns user.tool_result. Web Search/Fetch
+// therefore must not be declared as provider-native server tools on this path.
+func EnabledSelfHostedToolSchemas(ts domain.ToolSet) []model.ToolSchema {
+	var schemas []model.ToolSchema
+	for _, name := range domain.BuiltinToolNames {
+		if enabled, _ := ts.BuiltinEnabled(name); !enabled {
+			continue
+		}
+		schema := tools.Schema(name)
+		if schema == nil {
+			continue
+		}
+		schemas = append(schemas, model.ToolSchema{Name: name, InputSchema: schema})
+	}
+	for _, custom := range ts.Custom {
+		schemas = append(schemas, model.ToolSchema{
+			Name: custom.Name, Description: custom.Description,
+			InputSchema: custom.InputSchema,
 		})
 	}
 	return schemas
