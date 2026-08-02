@@ -9,6 +9,48 @@ type Model struct {
 	ID     string
 	Effort string
 	Speed  string
+	// EffortExplicit and SpeedExplicit distinguish an explicit Agent setting
+	// from the Managed Agents defaults echoed in the resolved resource. The
+	// Messages adapter uses this distinction to avoid sending preview fields to
+	// endpoints when the caller only accepted the platform default.
+	EffortExplicit bool
+	SpeedExplicit  bool
+}
+
+const (
+	DefaultModelEffort = "high"
+	DefaultModelSpeed  = "standard"
+)
+
+// NormalizeModel fills the defaults the Managed Agents API exposes on a
+// resolved Agent while preserving whether the user supplied each value.
+func NormalizeModel(model Model) Model {
+	if model.Effort == "" {
+		model.Effort = DefaultModelEffort
+	}
+	if model.Speed == "" {
+		model.Speed = DefaultModelSpeed
+	}
+	return model
+}
+
+// ValidateModel enforces the public model configuration enums. Model support
+// for a particular effort/speed combination remains a provider concern.
+func ValidateModel(model Model) error {
+	if model.ID == "" {
+		return Validation("model is required")
+	}
+	switch model.Effort {
+	case "", "low", "medium", "high", "xhigh", "max":
+	default:
+		return Validation("model effort must be low, medium, high, xhigh, or max")
+	}
+	switch model.Speed {
+	case "", "standard", "fast":
+	default:
+		return Validation("model speed must be standard or fast")
+	}
+	return nil
 }
 
 type Agent struct {
@@ -62,7 +104,16 @@ func (a Agent) Apply(p AgentPatch) (Agent, bool, error) {
 		next.Name = *p.Name
 	}
 	if p.Model != nil {
-		next.Model = *p.Model
+		model := *p.Model
+		// Managed Agents treats effort as the one sticky model field: updating
+		// the same model id without effort preserves the stored level. Changing
+		// ids resets an omitted effort to that model's default. Other omitted
+		// model fields, including speed, take their defaults.
+		if model.ID == a.Model.ID && !model.EffortExplicit {
+			model.Effort = a.Model.Effort
+			model.EffortExplicit = a.Model.EffortExplicit
+		}
+		next.Model = NormalizeModel(model)
 	}
 	if p.System != nil {
 		next.System = p.System.Value
@@ -126,7 +177,13 @@ type AgentOverrides struct {
 func (a Agent) WithOverrides(o AgentOverrides) Agent {
 	next := a
 	if o.Model != nil {
-		next.Model = *o.Model
+		model := *o.Model
+		// Per-session model overrides may select a model and speed, but the
+		// official API does not apply effort supplied inside the override. The
+		// Agent's resolved effort remains authoritative for the Session.
+		model.Effort = a.Model.Effort
+		model.EffortExplicit = a.Model.EffortExplicit
+		next.Model = NormalizeModel(model)
 	}
 	if o.System != nil {
 		next.System = o.System.Value

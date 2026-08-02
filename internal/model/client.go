@@ -21,6 +21,8 @@ type ToolSchema struct {
 
 type Request struct {
 	Model     string
+	Effort    string
+	Speed     string
 	System    string
 	Messages  []domain.Message
 	MaxTokens int
@@ -30,6 +32,7 @@ type Request struct {
 type Response struct {
 	Content    []domain.ContentBlock
 	StopReason string
+	Usage      domain.TokenUsage
 }
 
 type Client interface {

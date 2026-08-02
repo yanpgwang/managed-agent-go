@@ -35,8 +35,8 @@ curl -i http://localhost:8080/readyz
 
 ## Create an environment
 
-Environment records identify where a session runs. The implemented `cloud`
-record routes work to the Temporal worker:
+Environment records identify where sandbox-routed tools run. A `cloud` record
+routes them to the Temporal worker:
 
 ```bash
 ENV_ID=$(
@@ -47,7 +47,8 @@ ENV_ID=$(
 )
 ```
 
-`self_hosted` environment sessions are not implemented and return `422`.
+With `{"type":"self_hosted"}`, built-in calls instead park for a client
+`user.tool_result`.
 
 ## Create an agent
 

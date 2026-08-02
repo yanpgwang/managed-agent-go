@@ -296,11 +296,6 @@ func (s *testSessionService) Create(
 	if environment.ArchivedAt != nil {
 		return domain.Session{}, domain.Validation("environment is archived")
 	}
-	if environment.ConfigType == "self_hosted" {
-		return domain.Session{}, domain.Unsupported(
-			"sessions against self_hosted environments are not supported in v0.1",
-		)
-	}
 	snapshot := agent
 	if input.Overrides != nil {
 		snapshot = snapshot.WithOverrides(*input.Overrides)
@@ -313,8 +308,9 @@ func (s *testSessionService) Create(
 	session := domain.Session{
 		ID: s.ids.NewID(domain.PrefixSession), AgentID: agent.ID,
 		AgentVersion: agent.Version, AgentSnapshot: snapshot,
-		EnvironmentID: environment.ID, Status: domain.StatusIdle,
-		Title: input.Title, Metadata: metadata, CreatedAt: now, UpdatedAt: now,
+		EnvironmentID: environment.ID, EnvironmentType: environment.ConfigType,
+		Status: domain.StatusIdle,
+		Title:  input.Title, Metadata: metadata, CreatedAt: now, UpdatedAt: now,
 	}
 	s.mu.Lock()
 	s.sessions[session.ID] = session

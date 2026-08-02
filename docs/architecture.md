@@ -139,7 +139,9 @@ explicit replay coverage.
 
 The strongest current risks are semantic rather than structural:
 
-1. Context growth is not yet bounded by a server-owned compaction policy.
+1. Model requests are bounded by a conservative server-owned token estimate and
+   extractive compaction policy. Provider-exact tokenizers, per-model context
+   profiles, and durable Context Snapshot resources are not yet implemented.
 2. Sandboxes are session-scoped and durably bound to opaque provider IDs.
    Restart reattachment and deletion cleanup are implemented for local and
    Docker on the same host/daemon. Provisioning intent closes the

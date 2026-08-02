@@ -30,11 +30,14 @@ The PostgreSQL/Temporal control plane currently accepts:
 | `user.message` | Starts a model turn |
 | `user.interrupt` | Cancels the active turn, or is acknowledged as an idle no-op; `session_thread_id` is not supported |
 | `user.custom_tool_result` | Supplies a result for a pending custom tool call |
+| `user.tool_result` | Supplies a client-executed built-in result for a `self_hosted` environment |
 | `user.tool_confirmation` | Allows or denies a pending `always_ask` built-in |
-| `user.define_outcome` | Stored and validated |
+| `user.define_outcome` | Starts outcome work and independent evaluation/revision cycles |
+| `system.message` | Text-only companion context; must be the final event immediately after a message or tool result |
 
-Generic `user.tool_result`, `system.message`, and targeted multi-agent interrupt
-shapes return `422 unsupported_error`.
+`user.tool_result` is rejected unless it resolves a pending self-hosted
+`agent.tool_use`. Targeted multi-agent interrupt shapes return
+`422 unsupported_error`.
 
 An interrupt is first committed to PostgreSQL and then delivered to the
 Session Workflow as a metadata-only wakeup. An interrupt that commits before
@@ -130,6 +133,20 @@ Preview frames:
 - are never written to the event log;
 - never appear in list results;
 - may end without an authoritative event if generation or the process fails.
+
+If generation is interrupted after preview delivery, the terminal
+`span.model_request_end` closes the preview even when no buffered
+`agent.message` is produced.
+
+Model request span IDs are allocated before provider execution and the durable
+start/end pair is committed with the turn result. The current stream therefore
+does not expose a live `span.model_request_start` before the provider call;
+only `agent.message` text has a best-effort live preview.
+
+For an active outcome interrupted before an evaluation-start event was emitted,
+`span.outcome_evaluation_end.outcome_evaluation_start_id` is the documented
+empty string. Completed `needs_revision` evaluation pairs remain in history and
+the interrupt end uses the next zero-based iteration.
 
 `agent.thinking` is accepted as an opt-in value but no thinking previews are
 currently emitted.

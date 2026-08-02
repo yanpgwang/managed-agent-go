@@ -133,6 +133,30 @@ func TestPlanToolBatch_RejectsInvalidRoundBeforePlanning(t *testing.T) {
 	}
 }
 
+func TestPlanToolBatch_SelfHostedBuiltinParksForClientResult(t *testing.T) {
+	use := domain.ContentBlock{
+		Type: "tool_use", ToolUseID: "provider_read", ToolName: "read",
+		Input: map[string]any{"path": "report.md"},
+	}
+	plan, failure := planToolBatch(
+		[]domain.ContentBlock{use},
+		indexTurnTools([]TurnTool{{
+			Name: "read", Kind: TurnToolSelfHosted,
+			Permission: domain.PermissionPolicy{Type: "always_allow"},
+		}}),
+		map[string]PlannedToolStep{"provider_read": {
+			ToolUseEventID: "sevt_read", ProviderToolUseID: "provider_read",
+			ToolStepID: "tstep_read",
+		}},
+	)
+	require.Empty(t, failure)
+	require.Empty(t, plan.executable)
+	require.Equal(t, []string{"sevt_read"}, plan.pendingActionEventIDs)
+	require.Equal(t, domain.EvAgentToolUse, plan.actionDrafts[0].Type)
+	require.Equal(t, "allow", plan.actionDrafts[0].Payload["evaluated_permission"])
+	require.Equal(t, "self_hosted", plan.actionDrafts[0].Payload[domain.InternalToolExecutionOwner])
+}
+
 func TestIndexTurnTools_PreservesFirstOwner(t *testing.T) {
 	tools := indexTurnTools([]TurnTool{
 		{

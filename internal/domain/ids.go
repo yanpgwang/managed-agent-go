@@ -14,6 +14,7 @@ const (
 	PrefixSession = "sesn_"
 	PrefixEvent   = "sevt_"
 	PrefixRun     = "run_"
+	PrefixOutcome = "outc_"
 )
 
 type Clock interface{ Now() time.Time }

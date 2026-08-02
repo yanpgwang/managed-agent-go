@@ -171,7 +171,8 @@ func (s *Store) claimPendingResolutionsLocked(
 		actionEventID, kind, ok := domain.ResolutionReference(event.Type, event.Payload)
 		if !ok {
 			switch event.Type {
-			case domain.EvUserCustomToolResult, domain.EvUserToolConfirmation:
+			case domain.EvUserCustomToolResult, domain.EvUserToolConfirmation,
+				domain.EvUserToolResult:
 				return false, domain.Validation("resolution event is missing its action event id")
 			default:
 				continue

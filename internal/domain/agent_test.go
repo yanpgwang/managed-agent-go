@@ -45,4 +45,69 @@ func TestAgentApply_NilMetadataNoop(t *testing.T) {
 	}
 }
 
+func TestAgentApply_ModelDefaultsAndStickyEffort(t *testing.T) {
+	base := Agent{
+		Version: 1,
+		Model: Model{
+			ID:             "claude-sonnet-a",
+			Effort:         "max",
+			Speed:          "fast",
+			EffortExplicit: true,
+			SpeedExplicit:  true,
+		},
+	}
+
+	sameModel, changed, err := base.Apply(AgentPatch{Model: &Model{ID: "claude-sonnet-a"}})
+	if err != nil || !changed {
+		t.Fatalf("same-model update: changed=%v err=%v", changed, err)
+	}
+	if sameModel.Model.Effort != "max" || !sameModel.Model.EffortExplicit {
+		t.Fatalf("same-model omitted effort must stay sticky: %#v", sameModel.Model)
+	}
+	if sameModel.Model.Speed != DefaultModelSpeed || sameModel.Model.SpeedExplicit {
+		t.Fatalf("omitted speed must reset to its default: %#v", sameModel.Model)
+	}
+
+	newModel, changed, err := base.Apply(AgentPatch{Model: &Model{ID: "claude-sonnet-b"}})
+	if err != nil || !changed {
+		t.Fatalf("new-model update: changed=%v err=%v", changed, err)
+	}
+	if newModel.Model.Effort != DefaultModelEffort || newModel.Model.EffortExplicit {
+		t.Fatalf("new model must use its default effort: %#v", newModel.Model)
+	}
+}
+
+func TestAgentWithOverrides_IgnoresSessionEffort(t *testing.T) {
+	base := Agent{Model: Model{
+		ID:             "claude-opus",
+		Effort:         "high",
+		Speed:          "standard",
+		EffortExplicit: true,
+	}}
+	overridden := base.WithOverrides(AgentOverrides{Model: &Model{
+		ID:             "claude-sonnet",
+		Effort:         "low",
+		Speed:          "fast",
+		EffortExplicit: true,
+		SpeedExplicit:  true,
+	}})
+	if overridden.Model.ID != "claude-sonnet" || overridden.Model.Speed != "fast" {
+		t.Fatalf("model id/speed override not applied: %#v", overridden.Model)
+	}
+	if overridden.Model.Effort != "high" || !overridden.Model.EffortExplicit {
+		t.Fatalf("session effort must remain the Agent effort: %#v", overridden.Model)
+	}
+}
+
+func TestValidateModel_RejectsUnknownEnums(t *testing.T) {
+	for _, model := range []Model{
+		{ID: "m", Effort: "ultra"},
+		{ID: "m", Speed: "turbo"},
+	} {
+		if err := ValidateModel(model); err == nil {
+			t.Fatalf("ValidateModel(%#v) unexpectedly succeeded", model)
+		}
+	}
+}
+
 func strPtr(s string) *string { return &s }

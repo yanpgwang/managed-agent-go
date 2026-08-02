@@ -29,6 +29,14 @@ func (f *Fake) CreateMessage(_ context.Context, req Request) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
+	if strings.Contains(req.System, "independent outcome grader") {
+		return Response{
+			Content: []domain.ContentBlock{{
+				Type: "text", Text: `{"result":"satisfied","explanation":"The requested outcome satisfies the rubric."}`,
+			}},
+			StopReason: "end_turn",
+		}, nil
+	}
 
 	if tool, ok := firstClientTool(req.Tools); ok && !hasToolResult(req.Messages) {
 		return Response{

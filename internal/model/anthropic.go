@@ -90,9 +90,9 @@ type wireBlock struct {
 	Name  string         `json:"name,omitempty"`
 	Input map[string]any `json:"input,omitempty"`
 	// tool_result
-	ToolUseID string      `json:"tool_use_id,omitempty"`
-	Content   []wireBlock `json:"content,omitempty"`
-	IsError   bool        `json:"is_error,omitempty"`
+	ToolUseID string            `json:"tool_use_id,omitempty"`
+	Content   []json.RawMessage `json:"content,omitempty"`
+	IsError   bool              `json:"is_error,omitempty"`
 }
 type wireMessage struct {
 	Role    string            `json:"role"`
@@ -105,16 +105,33 @@ type wireTool struct {
 	InputSchema map[string]any `json:"input_schema,omitempty"`
 }
 type wireRequest struct {
-	Model     string        `json:"model"`
-	System    string        `json:"system,omitempty"`
-	MaxTokens int           `json:"max_tokens"`
-	Messages  []wireMessage `json:"messages"`
-	Tools     []wireTool    `json:"tools,omitempty"`
-	Stream    bool          `json:"stream,omitempty"`
+	Model        string            `json:"model"`
+	Speed        string            `json:"speed,omitempty"`
+	OutputConfig *wireOutputConfig `json:"output_config,omitempty"`
+	System       string            `json:"system,omitempty"`
+	MaxTokens    int               `json:"max_tokens"`
+	Messages     []wireMessage     `json:"messages"`
+	Tools        []wireTool        `json:"tools,omitempty"`
+	Stream       bool              `json:"stream,omitempty"`
+}
+type wireOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
+}
+type wireCacheCreationUsage struct {
+	Ephemeral1hInputTokens int64 `json:"ephemeral_1h_input_tokens"`
+	Ephemeral5mInputTokens int64 `json:"ephemeral_5m_input_tokens"`
+}
+type wireUsage struct {
+	CacheCreation        wireCacheCreationUsage `json:"cache_creation"`
+	CacheReadInputTokens int64                  `json:"cache_read_input_tokens"`
+	InputTokens          int64                  `json:"input_tokens"`
+	OutputTokens         int64                  `json:"output_tokens"`
+	Speed                string                 `json:"speed"`
 }
 type wireResponse struct {
 	Content    []json.RawMessage `json:"content"`
 	StopReason string            `json:"stop_reason"`
+	Usage      wireUsage         `json:"usage"`
 }
 
 // buildWireRequest maps a domain Request to the Anthropic Messages wire request,
@@ -129,7 +146,22 @@ func (a *Anthropic) buildWireRequest(req Request, stream bool) (wireRequest, err
 	if maxTokens <= 0 {
 		maxTokens = defaultMaxTokens
 	}
-	body := wireRequest{Model: model, System: req.System, MaxTokens: maxTokens, Stream: stream}
+	body := wireRequest{
+		Model: model, System: req.System,
+		MaxTokens: maxTokens, Stream: stream,
+	}
+	// high and standard are the Managed Agents and Messages defaults. Omitting
+	// those exact defaults preserves their semantics while keeping the adapter
+	// compatible with older Claude-compatible endpoints (including Bedrock
+	// gateways) that reject the preview request fields entirely. Non-default
+	// values must be forwarded so an unsupported endpoint fails explicitly
+	// instead of silently ignoring the Agent configuration.
+	if req.Effort != "" && req.Effort != domain.DefaultModelEffort {
+		body.OutputConfig = &wireOutputConfig{Effort: req.Effort}
+	}
+	if req.Speed == "fast" {
+		body.Speed = req.Speed
+	}
 	for _, t := range req.Tools {
 		body.Tools = append(body.Tools, wireTool{
 			Type:        t.Type,
@@ -169,6 +201,12 @@ func (a *Anthropic) newHTTPRequest(ctx context.Context, body wireRequest) (*http
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("anthropic-version", anthropicVersion)
+	if body.Speed == "fast" {
+		// Fast mode remains a Messages API research preview. Managed Agents hides
+		// this provider detail, but the self-hosted adapter must opt in when it
+		// forwards the resolved Agent speed to Anthropic directly.
+		httpReq.Header.Set("anthropic-beta", "fast-mode-2026-02-01")
+	}
 	if a.cfg.AuthHeader == "authorization-bearer" {
 		httpReq.Header.Set("Authorization", "Bearer "+a.cfg.APIKey)
 	} else {
@@ -200,7 +238,7 @@ func (a *Anthropic) CreateMessage(ctx context.Context, req Request) (Response, e
 	if err := json.Unmarshal(raw, &wr); err != nil {
 		return Response{}, fmt.Errorf("model: decode response: %w", err)
 	}
-	out := Response{StopReason: wr.StopReason}
+	out := Response{StopReason: wr.StopReason, Usage: usageFromWire(wr.Usage)}
 	for _, raw := range wr.Content {
 		cb, err := parseProviderBlock(raw)
 		if err != nil {
@@ -310,6 +348,10 @@ type sseEvent struct {
 		PartialJSON string `json:"partial_json"`
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
+	Message struct {
+		Usage wireUsage `json:"usage"`
+	} `json:"message"`
+	Usage wireUsage `json:"usage"`
 }
 
 // decodeMessageStream reads an Anthropic Messages-API SSE body and assembles the
@@ -323,6 +365,7 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 	blocks := map[int]*streamBlock{}
 	var order []int
 	stopReason := ""
+	var usage wireUsage
 
 	finalize := func(idx int) {
 		b := blocks[idx]
@@ -359,6 +402,8 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 			return Response{}, fmt.Errorf("model: decode stream event: %w", err)
 		}
 		switch ev.Type {
+		case "message_start":
+			usage = ev.Message.Usage
 		case "content_block_start":
 			b := &streamBlock{typ: ev.ContentBlock.Type}
 			if b.typ == "" {
@@ -398,6 +443,9 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 			if ev.Delta.StopReason != "" {
 				stopReason = ev.Delta.StopReason
 			}
+			// Streaming message_delta usage is the latest cumulative output
+			// token count for this request; it is not an additive delta.
+			usage.OutputTokens = ev.Usage.OutputTokens
 		case "message_stop":
 			// End of stream; loop exits when the body is drained.
 		}
@@ -410,7 +458,7 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 		finalize(idx)
 	}
 
-	out := Response{StopReason: stopReason}
+	out := Response{StopReason: stopReason, Usage: usageFromWire(usage)}
 	for _, idx := range order {
 		b := blocks[idx]
 		cb := domain.ContentBlock{Type: b.typ}
@@ -432,6 +480,19 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 	return out, nil
 }
 
+func usageFromWire(usage wireUsage) domain.TokenUsage {
+	return domain.TokenUsage{
+		CacheCreation: domain.CacheCreationUsage{
+			Ephemeral1hInputTokens: usage.CacheCreation.Ephemeral1hInputTokens,
+			Ephemeral5mInputTokens: usage.CacheCreation.Ephemeral5mInputTokens,
+		},
+		CacheReadInputTokens: usage.CacheReadInputTokens,
+		InputTokens:          usage.InputTokens,
+		OutputTokens:         usage.OutputTokens,
+		Speed:                usage.Speed,
+	}
+}
+
 // toWireBlock maps a domain ContentBlock to its Anthropic Messages wire shape.
 // text blocks carry only text; tool_use blocks carry id/name/input; tool_result
 // blocks carry tool_use_id, is_error, and a content array of text blocks (the
@@ -450,8 +511,14 @@ func marshalTypedBlock(b domain.ContentBlock) (json.RawMessage, error) {
 		value = wireBlock{Type: "tool_use", ID: b.ToolUseID, Name: b.ToolName, Input: b.Input}
 	case "tool_result":
 		wb := wireBlock{Type: "tool_result", ToolUseID: b.ToolResultFor, IsError: b.IsError}
-		if b.Text != "" {
-			wb.Content = []wireBlock{{Type: "text", Text: b.Text}}
+		if len(b.ResultContent) > 0 {
+			wb.Content = append([]json.RawMessage(nil), b.ResultContent...)
+		} else if b.Text != "" {
+			raw, err := json.Marshal(wireBlock{Type: "text", Text: b.Text})
+			if err != nil {
+				return nil, err
+			}
+			wb.Content = []json.RawMessage{raw}
 		}
 		value = wb
 	default:

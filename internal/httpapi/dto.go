@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
@@ -12,29 +13,61 @@ import (
 // response, and the public wire shapes here are the single source used by
 // send, list, and stream alike.
 
-func parseModel(raw any) domain.Model {
+func parseModel(raw any) (domain.Model, error) {
 	switch v := raw.(type) {
 	case string:
-		return domain.Model{ID: v}
+		if v == "" {
+			return domain.Model{}, domain.Validation("model id is required")
+		}
+		return domain.Model{ID: v}, nil
 	case map[string]any:
 		m := domain.Model{}
+		for key := range v {
+			switch key {
+			case "id", "effort", "speed":
+			default:
+				return domain.Model{}, domain.Validation(fmt.Sprintf("unknown model field %q", key))
+			}
+		}
 		if id, ok := v["id"].(string); ok {
 			m.ID = id
 		}
-		switch e := v["effort"].(type) {
-		case string:
-			m.Effort = e
-		case map[string]any:
-			if t, ok := e["type"].(string); ok {
-				m.Effort = t
+		if rawEffort, present := v["effort"]; present {
+			m.EffortExplicit = true
+			switch effort := rawEffort.(type) {
+			case string:
+				m.Effort = effort
+			case map[string]any:
+				if len(effort) != 1 {
+					return domain.Model{}, domain.Validation("model effort object must contain only type")
+				}
+				if t, ok := effort["type"].(string); ok {
+					m.Effort = t
+				}
+			default:
+				return domain.Model{}, domain.Validation("model effort must be a string or object")
+			}
+			if m.Effort == "" {
+				return domain.Model{}, domain.Validation("model effort level is required")
 			}
 		}
-		if sp, ok := v["speed"].(string); ok {
+		if rawSpeed, present := v["speed"]; present {
+			sp, ok := rawSpeed.(string)
+			if !ok || sp == "" {
+				return domain.Model{}, domain.Validation("model speed must be a string")
+			}
 			m.Speed = sp
+			m.SpeedExplicit = true
 		}
-		return m
+		if m.ID == "" {
+			return domain.Model{}, domain.Validation("model id is required")
+		}
+		if err := domain.ValidateModel(m); err != nil {
+			return domain.Model{}, err
+		}
+		return m, nil
 	}
-	return domain.Model{}
+	return domain.Model{}, domain.Validation("model must be a string or object")
 }
 
 func parseNullableStrict(raw json.RawMessage, field string) (*domain.NullableString, error) {

@@ -18,6 +18,9 @@ const (
 	// parked event. Allow executes the original server-owned built-in call; deny
 	// produces a correlated error tool result without execution.
 	PendingToolConfirmation PendingActionKind = "tool_confirmation"
+	// PendingToolResult is parked by a self-hosted agent.tool_use. The client
+	// executes the sandbox-routed tool and resolves it with user.tool_result.
+	PendingToolResult PendingActionKind = "tool_result"
 )
 
 // PendingAction is a first-class durable record that a run parked awaiting a
@@ -51,6 +54,9 @@ func PendingActionKindForEvent(eventType string, payload map[string]any) (Pendin
 	case EvAgentCustomToolUse:
 		return PendingCustomToolResult, true
 	case EvAgentToolUse:
+		if owner, _ := payload[InternalToolExecutionOwner].(string); owner == "self_hosted" {
+			return PendingToolResult, true
+		}
 		if perm, _ := payload["evaluated_permission"].(string); perm == "ask" {
 			return PendingToolConfirmation, true
 		}
@@ -78,6 +84,12 @@ func ResolutionReference(eventType string, payload map[string]any) (actionEventI
 			return "", "", false
 		}
 		return id, PendingToolConfirmation, true
+	case EvUserToolResult:
+		id, _ := payload["tool_use_id"].(string)
+		if id == "" {
+			return "", "", false
+		}
+		return id, PendingToolResult, true
 	}
 	return "", "", false
 }

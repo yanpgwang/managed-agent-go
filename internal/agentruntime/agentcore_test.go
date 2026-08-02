@@ -315,6 +315,28 @@ func TestValidateToolCapabilities_RejectsApprovalForNativeWeb(t *testing.T) {
 	}
 }
 
+func TestEnabledSelfHostedToolSchemasDeclaresWebAsClientTool(t *testing.T) {
+	toolSet, err := domain.ParseTools([]any{map[string]any{
+		"type": domain.BuiltinToolsetType,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	webTools := 0
+	for _, schema := range EnabledSelfHostedToolSchemas(toolSet) {
+		if schema.Name != "web_search" && schema.Name != "web_fetch" {
+			continue
+		}
+		webTools++
+		if schema.Type != "" || schema.InputSchema == nil {
+			t.Fatalf("self-hosted web schema = %+v, want ordinary client tool", schema)
+		}
+	}
+	if webTools != 2 {
+		t.Fatalf("self-hosted schemas included %d web tools, want 2", webTools)
+	}
+}
+
 func TestAgentCore_ExecutesBuiltinToolLoop(t *testing.T) {
 	_, sb, err := sandbox.NewLocalProvider().Create(
 		context.Background(),

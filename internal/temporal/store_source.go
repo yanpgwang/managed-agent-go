@@ -85,7 +85,7 @@ func (s storeSource) CompleteWorkflowTurn(
 	pendingActionEventIDs []string,
 	resolutionEventIDs []string,
 ) (TurnCompletionResult, error) {
-	res, err := s.store.CompleteWorkflowTurn(
+	return s.CompleteWorkflowTurnWithUsage(
 		ctx,
 		sessionID,
 		triggerEventID,
@@ -96,6 +96,35 @@ func (s storeSource) CompleteWorkflowTurn(
 		attemptError,
 		pendingActionEventIDs,
 		resolutionEventIDs,
+		domain.TokenUsage{},
+	)
+}
+
+func (s storeSource) CompleteWorkflowTurnWithUsage(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	output []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
+	usage domain.TokenUsage,
+) (TurnCompletionResult, error) {
+	res, err := s.store.CompleteWorkflowTurnWithUsage(
+		ctx,
+		sessionID,
+		triggerEventID,
+		output,
+		status,
+		attemptID,
+		attemptState,
+		attemptError,
+		pendingActionEventIDs,
+		resolutionEventIDs,
+		usage,
 	)
 	if err != nil {
 		return TurnCompletionResult{}, err
@@ -123,7 +152,7 @@ func (s storeSource) CompleteWorkflowTurnWithTranscript(
 	transcriptDelta []domain.Message,
 	toolUseMappings []domain.ProviderToolUseMapping,
 ) (TurnCompletionResult, error) {
-	res, err := s.store.CompleteWorkflowTurnWithTranscript(
+	return s.CompleteWorkflowTurnWithTranscriptAndUsage(
 		ctx,
 		sessionID,
 		triggerEventID,
@@ -136,6 +165,39 @@ func (s storeSource) CompleteWorkflowTurnWithTranscript(
 		resolutionEventIDs,
 		transcriptDelta,
 		toolUseMappings,
+		domain.TokenUsage{},
+	)
+}
+
+func (s storeSource) CompleteWorkflowTurnWithTranscriptAndUsage(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	output []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
+	transcriptDelta []domain.Message,
+	toolUseMappings []domain.ProviderToolUseMapping,
+	usage domain.TokenUsage,
+) (TurnCompletionResult, error) {
+	res, err := s.store.CompleteWorkflowTurnWithTranscriptAndUsage(
+		ctx,
+		sessionID,
+		triggerEventID,
+		output,
+		status,
+		attemptID,
+		attemptState,
+		attemptError,
+		pendingActionEventIDs,
+		resolutionEventIDs,
+		transcriptDelta,
+		toolUseMappings,
+		usage,
 	)
 	if err != nil {
 		return TurnCompletionResult{}, err

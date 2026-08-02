@@ -17,17 +17,18 @@ import (
 
 func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 	var gotBody map[string]any
-	var gotAuth, gotVersion string
+	var gotAuth, gotVersion, gotBeta string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages" {
 			t.Errorf("path = %s, want /v1/messages", r.URL.Path)
 		}
 		gotAuth = r.Header.Get("x-api-key")
 		gotVersion = r.Header.Get("anthropic-version")
+		gotBeta = r.Header.Get("anthropic-beta")
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"hi back"}],"stop_reason":"end_turn"}`))
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"hi back"}],"stop_reason":"end_turn","usage":{"cache_creation":{"ephemeral_1h_input_tokens":3,"ephemeral_5m_input_tokens":4},"cache_read_input_tokens":5,"input_tokens":11,"output_tokens":7,"speed":"standard"}}`))
 	}))
 	defer srv.Close()
 
@@ -39,6 +40,8 @@ func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 	}
 	resp, err := c.CreateMessage(context.Background(), Request{
 		Model:    "claude-x",
+		Effort:   "max",
+		Speed:    "fast",
 		System:   "sys",
 		Messages: []domain.Message{{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "hi"}}}},
 	})
@@ -51,11 +54,77 @@ func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 	if gotVersion != "2023-06-01" {
 		t.Errorf("anthropic-version = %q, want 2023-06-01", gotVersion)
 	}
+	if gotBeta != "fast-mode-2026-02-01" {
+		t.Errorf("anthropic-beta = %q, want fast mode beta", gotBeta)
+	}
 	if gotBody["model"] != "claude-x" || gotBody["system"] != "sys" {
 		t.Errorf("body model/system = %v/%v", gotBody["model"], gotBody["system"])
 	}
+	if gotBody["speed"] != "fast" {
+		t.Errorf("body speed = %v, want fast", gotBody["speed"])
+	}
+	outputConfig, ok := gotBody["output_config"].(map[string]any)
+	if !ok || outputConfig["effort"] != "max" {
+		t.Errorf("body output_config = %#v, want effort=max", gotBody["output_config"])
+	}
 	if len(resp.Content) != 1 || resp.Content[0].Text != "hi back" || resp.StopReason != "end_turn" {
 		t.Fatalf("resp = %#v", resp)
+	}
+	if resp.Usage.InputTokens != 11 || resp.Usage.OutputTokens != 7 ||
+		resp.Usage.CacheReadInputTokens != 5 ||
+		resp.Usage.CacheCreation.Ephemeral1hInputTokens != 3 ||
+		resp.Usage.CacheCreation.Ephemeral5mInputTokens != 4 ||
+		resp.Usage.Speed != "standard" {
+		t.Fatalf("usage = %#v", resp.Usage)
+	}
+}
+
+func TestAnthropic_OmitsSemanticModelDefaults(t *testing.T) {
+	c, err := NewAnthropic(AnthropicConfig{
+		BaseURL: "https://example.com", APIKey: "sk-test", Model: "claude-x",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := c.buildWireRequest(Request{
+		Model: "claude-x", Effort: "high", Speed: "standard",
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(encoded, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := wire["output_config"]; present {
+		t.Fatalf("default effort must be omitted for compatible endpoints: %s", encoded)
+	}
+	if _, present := wire["speed"]; present {
+		t.Fatalf("default speed must be omitted for compatible endpoints: %s", encoded)
+	}
+}
+
+func TestDecodeMessageStream_AccumulatesUsage(t *testing.T) {
+	stream := strings.NewReader(
+		"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"cache_creation\":{\"ephemeral_1h_input_tokens\":2,\"ephemeral_5m_input_tokens\":3},\"cache_read_input_tokens\":4,\"input_tokens\":10,\"output_tokens\":1}}}\n\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":6}}\n\n" +
+			"data: {\"type\":\"message_stop\"}\n\n",
+	)
+	resp, err := decodeMessageStream(stream, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 6 ||
+		resp.Usage.CacheReadInputTokens != 4 ||
+		resp.Usage.CacheCreation.Ephemeral1hInputTokens != 2 ||
+		resp.Usage.CacheCreation.Ephemeral5mInputTokens != 3 {
+		t.Fatalf("stream usage = %#v", resp.Usage)
 	}
 }
 
@@ -250,6 +319,32 @@ func TestAnthropic_SerializesToolsAndToolBlocks(t *testing.T) {
 	cb := content[0].(map[string]any)
 	if cb["type"] != "text" || cb["text"] != "72F" {
 		t.Errorf("tool_result.content[0] = %#v", cb)
+	}
+}
+
+func TestAnthropic_SerializesRichToolResultContent(t *testing.T) {
+	image := json.RawMessage(`{"type":"image","source":{"type":"url","url":"https://example.com/result.png"}}`)
+	raw, err := marshalTypedBlock(domain.ContentBlock{
+		Type:          "tool_result",
+		ToolResultFor: "toolu_1",
+		ResultContent: []json.RawMessage{
+			json.RawMessage(`{"type":"text","text":"caption"}`),
+			image,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var block map[string]any
+	if err := json.Unmarshal(raw, &block); err != nil {
+		t.Fatal(err)
+	}
+	content, ok := block["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("content = %#v", block["content"])
+	}
+	if content[1].(map[string]any)["type"] != "image" {
+		t.Fatalf("rich content = %#v", content)
 	}
 }
 

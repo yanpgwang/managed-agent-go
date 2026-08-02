@@ -76,9 +76,10 @@ const (
 type TurnToolKind string
 
 const (
-	TurnToolBuiltin TurnToolKind = "builtin"
-	TurnToolCustom  TurnToolKind = "custom"
-	TurnToolMCP     TurnToolKind = "mcp"
+	TurnToolBuiltin    TurnToolKind = "builtin"
+	TurnToolCustom     TurnToolKind = "custom"
+	TurnToolMCP        TurnToolKind = "mcp"
+	TurnToolSelfHosted TurnToolKind = "self_hosted"
 )
 
 // TurnTool is the immutable, Workflow-facing classification of an offered tool.
@@ -116,8 +117,30 @@ type PrepareTurnResult struct {
 	// lossless private transcript rather than the legacy public-event
 	// projection. TranscriptDelta contains only the new input represented by
 	// this turn; Workflow code appends provider responses and tool results.
-	UsesProviderTranscript bool             `json:"uses_provider_transcript,omitempty"`
-	TranscriptDelta        []domain.Message `json:"transcript_delta,omitempty"`
+	UsesProviderTranscript bool                     `json:"uses_provider_transcript,omitempty"`
+	TranscriptDelta        []domain.Message         `json:"transcript_delta,omitempty"`
+	Outcome                *domain.OutcomeSpec      `json:"outcome,omitempty"`
+	ContextProjection      domain.ContextProjection `json:"context_projection"`
+}
+
+type EvaluateOutcomeInput struct {
+	SessionID  string             `json:"session_id"`
+	Model      string             `json:"model"`
+	Effort     string             `json:"effort,omitempty"`
+	Speed      string             `json:"speed,omitempty"`
+	Outcome    domain.OutcomeSpec `json:"outcome"`
+	Candidate  []domain.Message   `json:"candidate"`
+	Iteration  int                `json:"iteration"`
+	FinalCycle bool               `json:"final_cycle"`
+}
+
+type EvaluateOutcomeResult struct {
+	StartEventID string            `json:"start_event_id"`
+	EndEventID   string            `json:"end_event_id"`
+	Result       string            `json:"result"`
+	Explanation  string            `json:"explanation"`
+	Usage        domain.TokenUsage `json:"usage"`
+	FatalError   string            `json:"fatal_error,omitempty"`
 }
 
 // ResumeAction is the server-owned reconstruction of one parked tool call and
@@ -141,8 +164,10 @@ type ResumeAction struct {
 // CallModelInput is one plan/observe step. Each call is its own Activity so its
 // completed response is recorded independently in Workflow history.
 type CallModelInput struct {
-	SessionID string        `json:"session_id"`
-	Request   model.Request `json:"request"`
+	SessionID           string        `json:"session_id"`
+	ModelRequestStartID string        `json:"model_request_start_id,omitempty"`
+	ModelRequestEndID   string        `json:"model_request_end_id,omitempty"`
+	Request             model.Request `json:"request"`
 }
 
 // PlannedToolStep binds one public tool-use event to its internal journal step.
@@ -159,10 +184,12 @@ type PlannedToolStep struct {
 // public/journal IDs. MessageEventID names the public agent.message when the
 // response contains non-empty text.
 type CallModelResult struct {
-	Response       model.Response    `json:"response"`
-	MessageEventID string            `json:"message_event_id,omitempty"`
-	ToolSteps      []PlannedToolStep `json:"tool_steps,omitempty"`
-	FatalError     string            `json:"fatal_error,omitempty"`
+	Response            model.Response    `json:"response"`
+	MessageEventID      string            `json:"message_event_id,omitempty"`
+	ModelRequestStartID string            `json:"model_request_start_id,omitempty"`
+	ModelRequestEndID   string            `json:"model_request_end_id,omitempty"`
+	ToolSteps           []PlannedToolStep `json:"tool_steps,omitempty"`
+	FatalError          string            `json:"fatal_error,omitempty"`
 }
 
 // ExecuteToolInput identifies one logical built-in tool step. ToolUseEventID is
@@ -210,6 +237,7 @@ type CompleteWorkflowTurnInput struct {
 	// state. PostgreSQL commits them atomically with Output when supported.
 	TranscriptDelta []domain.Message                `json:"transcript_delta,omitempty"`
 	ToolUseMappings []domain.ProviderToolUseMapping `json:"tool_use_mappings,omitempty"`
+	Usage           domain.TokenUsage               `json:"usage,omitempty"`
 }
 
 // LoadEventsInput requests the ordered public events after a cursor.

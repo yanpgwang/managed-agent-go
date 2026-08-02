@@ -1,6 +1,8 @@
 package temporal
 
 import (
+	"encoding/json"
+
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
@@ -32,6 +34,7 @@ type workflowTurnState struct {
 	usesProviderTranscript bool
 	transcriptDelta        []domain.Message
 	toolUseMappings        []domain.ProviderToolUseMapping
+	usage                  domain.TokenUsage
 }
 
 func (t *workflowTurnState) callModel(
@@ -44,6 +47,9 @@ func (t *workflowTurnState) callModel(
 			ActivityCallModel,
 			input,
 		).Get(t.actx, &called)
+		if err == nil {
+			t.usage.Add(called.Response.Usage)
+		}
 		return called, interruptibleActivityOutcome{Completed: err == nil}, err
 	}
 	outcome, err := t.interrupts.executeActivity(
@@ -51,7 +57,111 @@ func (t *workflowTurnState) callModel(
 		input,
 		&called,
 	)
+	if err == nil && outcome.Completed {
+		t.usage.Add(called.Response.Usage)
+	}
 	return called, outcome, err
+}
+
+func (t *workflowTurnState) evaluateOutcome(
+	input EvaluateOutcomeInput,
+) (EvaluateOutcomeResult, interruptibleActivityOutcome, error) {
+	var evaluated EvaluateOutcomeResult
+	if t.interrupts == nil {
+		err := workflow.ExecuteActivity(
+			t.actx,
+			ActivityEvaluateOutcome,
+			input,
+		).Get(t.actx, &evaluated)
+		if err == nil {
+			t.usage.Add(evaluated.Usage)
+		}
+		return evaluated, interruptibleActivityOutcome{Completed: err == nil}, err
+	}
+	outcome, err := t.interrupts.executeActivity(
+		ActivityEvaluateOutcome,
+		input,
+		&evaluated,
+	)
+	if err == nil && outcome.Completed {
+		t.usage.Add(evaluated.Usage)
+	}
+	return evaluated, outcome, err
+}
+
+func outcomeEvaluationDrafts(
+	outcome domain.OutcomeSpec,
+	iteration int,
+	evaluated EvaluateOutcomeResult,
+) []domain.EventDraft {
+	cacheCreation := evaluated.Usage.CacheCreation.Ephemeral1hInputTokens +
+		evaluated.Usage.CacheCreation.Ephemeral5mInputTokens
+	usage := map[string]any{
+		"cache_creation_input_tokens": cacheCreation,
+		"cache_read_input_tokens":     evaluated.Usage.CacheReadInputTokens,
+		"input_tokens":                evaluated.Usage.InputTokens,
+		"output_tokens":               evaluated.Usage.OutputTokens,
+		"speed":                       nullableSpeed(evaluated.Usage.Speed),
+	}
+	return []domain.EventDraft{
+		{
+			ID: evaluated.StartEventID, Type: domain.EvSpanOutcomeEvaluationStart,
+			Payload: map[string]any{
+				"outcome_id": outcome.OutcomeID, "iteration": iteration,
+			},
+		},
+		{
+			ID: evaluated.EndEventID, Type: domain.EvSpanOutcomeEvaluationEnd,
+			Payload: map[string]any{
+				"outcome_evaluation_start_id": evaluated.StartEventID,
+				"outcome_id":                  outcome.OutcomeID, "iteration": iteration,
+				"result": evaluated.Result, "explanation": evaluated.Explanation,
+				"usage": usage,
+			},
+		},
+	}
+}
+
+func modelRequestStartDraft(called CallModelResult) *domain.EventDraft {
+	if called.ModelRequestStartID == "" {
+		return nil
+	}
+	return &domain.EventDraft{
+		ID: called.ModelRequestStartID, Type: domain.EvSpanModelRequestStart,
+		Payload: map[string]any{},
+	}
+}
+
+func modelRequestEndDraft(
+	called CallModelResult,
+	isError bool,
+) *domain.EventDraft {
+	if called.ModelRequestEndID == "" || called.ModelRequestStartID == "" {
+		return nil
+	}
+	usage := called.Response.Usage
+	return &domain.EventDraft{
+		ID: called.ModelRequestEndID, Type: domain.EvSpanModelRequestEnd,
+		Payload: map[string]any{
+			"model_request_start_id": called.ModelRequestStartID,
+			"is_error":               isError,
+			"model_usage": map[string]any{
+				"cache_creation_input_tokens": usage.CacheCreation.Ephemeral1hInputTokens +
+					usage.CacheCreation.Ephemeral5mInputTokens,
+				"cache_read_input_tokens": usage.CacheReadInputTokens,
+				"input_tokens":            usage.InputTokens,
+				"output_tokens":           usage.OutputTokens,
+				"speed":                   nullableSpeed(usage.Speed),
+			},
+		},
+	}
+}
+
+func nullableSpeed(speed string) any {
+	if speed == "" {
+		return nil
+	}
+	return speed
 }
 
 func (t *workflowTurnState) executeTool(
@@ -124,6 +234,7 @@ func (t *workflowTurnState) complete(
 		AttemptID:             t.attemptID,
 		PendingActionEventIDs: pendingActionEventIDs,
 		ResolutionEventIDs:    t.resolutionEventIDs,
+		Usage:                 t.usage,
 	}
 	if t.usesProviderTranscript {
 		input.TranscriptDelta = t.transcriptDelta
@@ -158,6 +269,7 @@ func (t *workflowTurnState) terminate(
 		Status:             domain.StatusTerminated,
 		AttemptID:          t.attemptID,
 		ResolutionEventIDs: t.resolutionEventIDs,
+		Usage:              t.usage,
 	}
 	if t.usesProviderTranscript {
 		input.TranscriptDelta = t.transcriptDelta
@@ -230,6 +342,12 @@ func resumeWorkflowTurn(
 			if definition.Kind != TurnToolCustom {
 				return nil, false, failTurn(
 					"custom tool result does not reference a custom tool",
+				), nil
+			}
+		case domain.PendingToolResult:
+			if definition.Kind != TurnToolSelfHosted {
+				return nil, false, failTurn(
+					"tool result does not reference a self-hosted built-in tool",
 				), nil
 			}
 		case domain.PendingToolConfirmation:
@@ -316,6 +434,7 @@ func resumeWorkflowTurn(
 			ToolResultFor: providerToolUseID,
 			Text:          agentruntime.FlattenResultText(content),
 			IsError:       isError,
+			ResultContent: rawResultContent(content),
 		})
 	}
 
@@ -400,6 +519,14 @@ func planToolBatch(
 		switch {
 		case definition.Kind == TurnToolCustom:
 			draft.Type = domain.EvAgentCustomToolUse
+			plan.pendingActionEventIDs = append(
+				plan.pendingActionEventIDs,
+				planned.ToolUseEventID,
+			)
+		case definition.Kind == TurnToolSelfHosted:
+			draft.Type = domain.EvAgentToolUse
+			draft.Payload["evaluated_permission"] = "allow"
+			draft.Payload[domain.InternalToolExecutionOwner] = "self_hosted"
 			plan.pendingActionEventIDs = append(
 				plan.pendingActionEventIDs,
 				planned.ToolUseEventID,
@@ -540,10 +667,33 @@ func executeToolBatch(
 			ToolResultFor: planned.use.ToolUseID,
 			Text:          agentruntime.FlattenResultText(executed.Result.Content),
 			IsError:       executed.Result.IsError,
+			ResultContent: rawResultContent(executed.Result.Content),
 		})
 		if activityOutcome.Interrupted {
 			return execution, true, "", nil
 		}
 	}
 	return execution, false, "", nil
+}
+
+func rawResultContent(content []any) []json.RawMessage {
+	hasRichContent := false
+	for _, item := range content {
+		block, ok := item.(map[string]any)
+		if !ok || block["type"] != "text" {
+			hasRichContent = true
+			break
+		}
+	}
+	if !hasRichContent {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(content))
+	for _, item := range content {
+		raw, err := json.Marshal(item)
+		if err == nil {
+			out = append(out, json.RawMessage(raw))
+		}
+	}
+	return out
 }

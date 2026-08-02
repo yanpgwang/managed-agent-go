@@ -23,7 +23,7 @@ paths:
   /v1/environments/{id}/archive:
     post: { summary: Archive environment, responses: { "200": { description: ok } } }
   /v1/sessions:
-    post: { summary: Create session, responses: { "200": { description: ok }, "422": { description: self_hosted unsupported } } }
+    post: { summary: Create session, responses: { "200": { description: ok } } }
     get: { summary: List sessions, responses: { "200": { description: ok } } }
   /v1/sessions/{id}:
     get: { summary: Get session, responses: { "200": { description: ok } } }

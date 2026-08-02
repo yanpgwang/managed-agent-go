@@ -30,6 +30,8 @@ Required fields:
 - `model`: model ID string or an object with a non-empty `id`.
 
 The object model form also preserves supported `effort` and `speed` values.
+`effort` accepts either a level string such as `"high"` or the tagged object
+`{"type":"high"}`; responses use the tagged object form.
 `multiagent` may be an object, but the server currently stores it opaquely and
 does not resolve or execute its topology.
 

@@ -23,6 +23,9 @@ func (s *EnvironmentService) Create(ctx context.Context, e domain.Environment) (
 	if e.ConfigType == "" {
 		e.ConfigType = "cloud"
 	}
+	if e.ConfigType != "cloud" && e.ConfigType != "self_hosted" {
+		return domain.Environment{}, domain.Validation("config type must be cloud or self_hosted")
+	}
 	now := s.clock.Now().UTC()
 	e.ID = s.ids.NewID(domain.PrefixEnv)
 	e.CreatedAt = now

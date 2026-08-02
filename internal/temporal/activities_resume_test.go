@@ -3,6 +3,7 @@ package temporal
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,55 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
+
+func TestPrepareTurnCompactsRequestButKeepsLosslessTranscriptDelta(t *testing.T) {
+	processedAt := time.Now().UTC()
+	base := newFakeSource([]domain.Event{
+		{
+			ID: "sevt_prior", Sequence: 1, Type: domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "old request"},
+			}},
+			ProcessedAt: &processedAt,
+		},
+		{
+			ID: "sevt_current", Sequence: 2, Type: domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "current request"},
+			}},
+		},
+	})
+	largeImage := json.RawMessage(`{"type":"image","source":{"type":"base64","media_type":"image/png","data":"` + strings.Repeat("A", 30000) + `"}}`)
+	source := &configuredTranscriptFakeSource{
+		transcriptFakeSource: &transcriptFakeSource{
+			fakeSource: base,
+			transcript: domain.ProviderTranscript{
+				TriggerEventIDs: []string{"sevt_prior"},
+				Messages: []domain.Message{
+					{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "image", Raw: largeImage}}},
+					{Role: domain.RoleAssistant, Content: []domain.ContentBlock{{Type: "text", Text: strings.Repeat("old response ", 3000)}}},
+				},
+			},
+		},
+		session: domain.Session{
+			ID: "sess_context", Status: domain.StatusRunning,
+			AgentSnapshot: domain.Agent{Model: domain.Model{ID: "model"}},
+		},
+	}
+
+	prepared, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithContextTokenBudget(500).PrepareTurn(context.Background(), PrepareTurnInput{
+		SessionID: "sess_context", TriggerEventID: "sevt_current",
+	})
+	require.NoError(t, err)
+	require.True(t, prepared.UsesProviderTranscript)
+	require.True(t, prepared.ContextProjection.Compacted)
+	require.Equal(t, "current request", prepared.TranscriptDelta[0].Content[0].Text)
+	require.Contains(t, prepared.Request.Messages[0].Content[0].Text, "compacted")
+	require.NotEmpty(t, source.transcript.Messages[0].Content[0].Raw,
+		"request projection must not mutate the durable provider transcript")
+}
 
 type transcriptFakeSource struct {
 	*fakeSource

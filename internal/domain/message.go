@@ -2,6 +2,7 @@ package domain
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -20,6 +21,10 @@ type ContentBlock struct {
 	Input         map[string]any // tool_use: arguments
 	ToolResultFor string         // tool_result: the tool_use id it answers
 	IsError       bool           // tool_result: error flag
+	// ResultContent preserves rich user/custom/MCP tool-result items (text,
+	// image, document, and search_result) without flattening them. Text remains
+	// populated as a convenient projection for existing executors.
+	ResultContent []json.RawMessage `json:"result_content,omitempty"`
 	// Raw is the complete provider content block. Provider adapters populate it
 	// for responses so unknown server-tool, citation, encrypted-continuation,
 	// and future fields can be round-tripped without flattening. Locally created
@@ -96,6 +101,10 @@ func ProjectMessages(events []Event) []Message {
 			if id, _ := e.Payload["custom_tool_use_id"].(string); id != "" {
 				answered[id] = struct{}{}
 			}
+		case EvUserToolResult:
+			if id, _ := e.Payload["tool_use_id"].(string); id != "" {
+				answered[id] = struct{}{}
+			}
 		}
 	}
 
@@ -113,9 +122,11 @@ func ProjectMessages(events []Event) []Message {
 	for _, e := range events {
 		switch e.Type {
 		case EvUserMessage:
-			add(RoleUser, textBlocks(e.Payload))
+			add(RoleUser, contentBlocks(e.Payload))
+		case EvUserDefineOutcome:
+			add(RoleUser, outcomePromptBlocks(e.Payload))
 		case EvAgentMessage:
-			add(RoleAssistant, textBlocks(e.Payload))
+			add(RoleAssistant, contentBlocks(e.Payload))
 		case EvAgentToolUse, EvAgentCustomToolUse:
 			// The correlation id is the committed event id (Event.ID), the same
 			// value the public wire exposes and the value a tool_result event's
@@ -158,6 +169,15 @@ func ProjectMessages(events []Event) []Message {
 				continue
 			}
 			add(RoleUser, []ContentBlock{resultBlock(id, e.Payload)})
+		case EvUserToolResult:
+			id, _ := e.Payload["tool_use_id"].(string)
+			if id == "" {
+				continue
+			}
+			if _, ok := seen[id]; !ok {
+				continue
+			}
+			add(RoleUser, []ContentBlock{resultBlock(id, e.Payload)})
 		default:
 			continue
 		}
@@ -165,10 +185,32 @@ func ProjectMessages(events []Event) []Message {
 	return out
 }
 
+func outcomePromptBlocks(payload map[string]any) []ContentBlock {
+	description, _ := payload["description"].(string)
+	rubric, _ := payload["rubric"].(map[string]any)
+	maxIterations := 3
+	if raw, ok := payload["max_iterations"].(float64); ok && raw >= 1 {
+		maxIterations = int(raw)
+	}
+	var rubricText string
+	switch rubric["type"] {
+	case "text":
+		rubricText, _ = rubric["content"].(string)
+	case "file":
+		fileID, _ := rubric["file_id"].(string)
+		rubricText = "Rubric file reference: " + fileID
+	}
+	text := "Work toward the following outcome and produce the requested deliverable.\n\n" +
+		"Outcome:\n" + description + "\n\nRubric:\n" + rubricText +
+		fmt.Sprintf("\n\nThe harness may evaluate and request up to %d revision cycles.", maxIterations)
+	return []ContentBlock{{Type: "text", Text: text}}
+}
+
 func resultBlock(toolUseID string, payload map[string]any) ContentBlock {
 	b := ContentBlock{Type: "tool_result", ToolResultFor: toolUseID}
 	b.IsError, _ = payload["is_error"].(bool)
 	b.Text = flattenText(payload["content"])
+	b.ResultContent = rawContentBlocks(payload["content"])
 	return b
 }
 
@@ -190,7 +232,7 @@ func flattenText(raw any) string {
 	return sb.String()
 }
 
-func textBlocks(payload map[string]any) []ContentBlock {
+func contentBlocks(payload map[string]any) []ContentBlock {
 	raw, ok := payload["content"].([]any)
 	if !ok {
 		return nil
@@ -201,14 +243,105 @@ func textBlocks(payload map[string]any) []ContentBlock {
 		if !ok {
 			continue
 		}
-		if t, _ := block["type"].(string); t != "text" {
+		t, _ := block["type"].(string)
+		if t == "" {
 			continue
 		}
-		text, _ := block["text"].(string)
-		if strings.TrimSpace(text) == "" {
+		if t == "text" {
+			text, _ := block["text"].(string)
+			if strings.TrimSpace(text) == "" {
+				continue
+			}
+			blocks = append(blocks, ContentBlock{Type: "text", Text: text})
 			continue
 		}
-		blocks = append(blocks, ContentBlock{Type: "text", Text: text})
+		encoded, err := json.Marshal(block)
+		if err != nil {
+			continue
+		}
+		blocks = append(blocks, ContentBlock{
+			Type: t,
+			Raw:  json.RawMessage(encoded),
+		})
 	}
 	return blocks
+}
+
+func rawContentBlocks(raw any) []json.RawMessage {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	hasRichContent := false
+	for _, item := range items {
+		block, ok := item.(map[string]any)
+		if !ok || block["type"] != "text" {
+			hasRichContent = true
+			break
+		}
+	}
+	if !hasRichContent {
+		return nil
+	}
+	out := make([]json.RawMessage, 0, len(items))
+	for _, item := range items {
+		encoded, err := json.Marshal(item)
+		if err == nil {
+			out = append(out, json.RawMessage(encoded))
+		}
+	}
+	return out
+}
+
+// ProjectSystemContext appends persisted mid-conversation system messages to
+// the Agent's top-level system prompt. The current accompanying system.message
+// is causally linked into trigger when it follows that trigger in receipt order
+// and therefore is not yet visible to HistoryThrough.
+func ProjectSystemContext(base string, events []Event, trigger Event) string {
+	var additions []string
+	appendContent := func(raw any) {
+		for _, block := range rawContentItems(raw) {
+			if block["type"] != "text" {
+				continue
+			}
+			text, _ := block["text"].(string)
+			if strings.TrimSpace(text) != "" {
+				additions = append(additions, text)
+			}
+		}
+	}
+	for _, event := range events {
+		if event.Type == EvSystemMessage {
+			appendContent(event.Payload["content"])
+		}
+	}
+	appendContent(trigger.Payload[InternalCompanionSystemContent])
+	if len(additions) == 0 {
+		return base
+	}
+	var projected strings.Builder
+	projected.WriteString(base)
+	for _, addition := range additions {
+		if projected.Len() > 0 {
+			projected.WriteString("\n\n")
+		}
+		projected.WriteString("<system-message>\n")
+		projected.WriteString(addition)
+		projected.WriteString("\n</system-message>")
+	}
+	return projected.String()
+}
+
+func rawContentItems(raw any) []map[string]any {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if block, ok := item.(map[string]any); ok {
+			out = append(out, block)
+		}
+	}
+	return out
 }

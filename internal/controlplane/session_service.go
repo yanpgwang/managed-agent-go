@@ -75,11 +75,6 @@ func (s *SessionService) Create(
 	if environment.ArchivedAt != nil {
 		return domain.Session{}, domain.Validation("environment is archived")
 	}
-	if environment.ConfigType == "self_hosted" {
-		return domain.Session{}, domain.Unsupported(
-			"sessions against self_hosted environments are not supported in v0.1",
-		)
-	}
 	if len(input.InitialEvents) > 50 {
 		return domain.Session{}, domain.Validation("initial_events exceeds 50")
 	}
@@ -109,16 +104,17 @@ func (s *SessionService) Create(
 	}
 	now := s.clock.Now().UTC()
 	session := domain.Session{
-		ID:            s.ids.NewID(domain.PrefixSession),
-		AgentID:       agent.ID,
-		AgentVersion:  agent.Version,
-		EnvironmentID: environment.ID,
-		Status:        domain.StatusIdle,
-		Title:         input.Title,
-		Metadata:      metadata,
-		AgentSnapshot: snapshot,
-		CreatedAt:     now,
-		UpdatedAt:     now,
+		ID:              s.ids.NewID(domain.PrefixSession),
+		AgentID:         agent.ID,
+		AgentVersion:    agent.Version,
+		EnvironmentID:   environment.ID,
+		EnvironmentType: environment.ConfigType,
+		Status:          domain.StatusIdle,
+		Title:           input.Title,
+		Metadata:        metadata,
+		AgentSnapshot:   snapshot,
+		CreatedAt:       now,
+		UpdatedAt:       now,
 	}
 	created, _, err := s.orchestrator.CreateAPISession(ctx, session, input.InitialEvents)
 	return created, err
@@ -145,7 +141,9 @@ func (s *SessionService) SendEvent(
 		case domain.EvUserMessage,
 			domain.EvUserDefineOutcome,
 			domain.EvUserCustomToolResult,
-			domain.EvUserToolConfirmation:
+			domain.EvUserToolResult,
+			domain.EvUserToolConfirmation,
+			domain.EvSystemMessage:
 			// define_outcome is processed on receipt; messages schedule ordinary
 			// turns; custom results and confirmations claim the durable
 			// pending-action barrier and wake the SessionWorkflow only when the full
