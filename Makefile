@@ -36,7 +36,7 @@ help:
 	@echo "  make test-race      run tests with the race detector"
 	@echo "  make test-service   run tests against PostgreSQL, Temporal, NATS, and Docker"
 	@echo "  make test-model-live     test an explicitly configured Messages endpoint"
-	@echo "  make test-platform-live  run one durable turn against that live model"
+	@echo "  make test-platform-live  run durable text and Docker tool turns against that live model"
 	@echo "  make vet            run go vet"
 	@echo "  make verify         run the core Go checks"
 	@echo "  make security       scan reachable Go code and high-severity npm issues"
@@ -82,7 +82,7 @@ test-platform-live:
 	MANAGED_AGENT_TEST_LIVE_MODEL=1 \
 	MANAGED_AGENT_TEST_DATABASE_URL='$(MANAGED_AGENT_TEST_DATABASE_URL)' \
 	MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT='$(MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT)' \
-	$(GO) test ./internal/temporal -run '^TestVerticalSlice_LiveModelEndToEnd$$' -count=1
+	$(GO) test ./internal/temporal -run '^TestVerticalSlice_LiveModel(EndToEnd|ToolStepEndToEnd)$$' -count=1
 
 vet:
 	$(GO) vet ./...

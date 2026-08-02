@@ -3,6 +3,7 @@ package temporal_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"strings"
@@ -38,21 +39,31 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 // with a real Anthropic-shaped Messages endpoint. It is deliberately gated so
 // normal development and CI never make billable, credentialed network calls.
 func TestVerticalSlice_LiveModelEndToEnd(t *testing.T) {
+	modelClient, modelID := liveModelForTest(t, "platform smoke test")
+	runVerticalSliceEndToEnd(t, modelClient, modelID, 2*time.Minute)
+}
+
+func liveModelForTest(t *testing.T, purpose string) (model.Client, string) {
+	t.Helper()
 	if os.Getenv("MANAGED_AGENT_TEST_LIVE_MODEL") != "1" {
-		t.Skip("set MANAGED_AGENT_TEST_LIVE_MODEL=1 to run the live-model platform smoke test")
+		t.Skipf("set MANAGED_AGENT_TEST_LIVE_MODEL=1 to run the live-model %s", purpose)
+	}
+	if os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL") == "" ||
+		os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT") == "" {
+		t.Skipf("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the live-model %s", purpose)
 	}
 	modelID := strings.TrimSpace(os.Getenv("MANAGED_AGENT_MODEL_ID"))
 	if modelID == "" {
-		t.Fatal("MANAGED_AGENT_MODEL_ID is required for the live-model platform smoke test")
+		t.Fatalf("MANAGED_AGENT_MODEL_ID is required for the live-model %s", purpose)
 	}
 	modelClient, configured, err := model.AnthropicFromEnv()
 	if err != nil {
 		t.Fatalf("configure live model: %v", err)
 	}
 	if !configured {
-		t.Fatal("MANAGED_AGENT_MODEL_BASE_URL and MANAGED_AGENT_MODEL_API_KEY are required for the live-model platform smoke test")
+		t.Fatalf("MANAGED_AGENT_MODEL_BASE_URL and MANAGED_AGENT_MODEL_API_KEY are required for the live-model %s", purpose)
 	}
-	runVerticalSliceEndToEnd(t, modelClient, modelID, 2*time.Minute)
+	return modelClient, modelID
 }
 
 func runVerticalSliceEndToEnd(
@@ -402,18 +413,57 @@ func TestVerticalSlice_InterruptCancelsModelActivity(t *testing.T) {
 
 // TestVerticalSlice_ToolStepEndToEnd is the real integration path for a
 // tool-using turn: a session whose agent enables the built-in toolset admits one
-// user.message, and the fake model requests the first enabled built-in. The turn
-// runs the tool step as its own Activity under the durable journal and commits
-// the paired agent.tool_use / agent.tool_result plus a terminal idle to
-// PostgreSQL. Skips unless both the DB and Temporal env vars are set.
+// user.message, and a deterministic model requests bash with a valid command.
+// The turn runs the tool step as its own Activity under the durable journal and
+// commits agent.tool_use, agent.tool_result, the final agent.message, and
+// terminal idle to PostgreSQL. Skips unless both the DB and Temporal env vars
+// are set.
 func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
-	runToolStepEndToEnd(t, sandbox.NewLocalProvider(), model.NewFake(), "sess_tool_e2e_", "")
+	const marker = "managed-agent-temporal-local-ok"
+	runToolStepEndToEnd(t, toolStepCase{
+		provider: sandbox.NewLocalProvider(),
+		modelClient: toolProbeModel{
+			command:   "printf '" + marker + "'",
+			finalText: "Local probe completed",
+		},
+		modelID:            "fake",
+		sessionPrefix:      "sess_tool_e2e_",
+		prompt:             "run a tool",
+		tools:              []any{map[string]any{"type": domain.BuiltinToolsetType}},
+		expectedTool:       bashToolName,
+		expectedToolOutput: marker,
+		timeout:            30 * time.Second,
+	})
+}
+
+// TestVerticalSlice_LiveModelToolStepEndToEnd verifies the external model
+// contract beyond plain text streaming: a real model selects the offered bash
+// tool, Mango executes it in Docker as a durable sandbox Activity, feeds the
+// result back into the provider transcript, and commits the final assistant
+// response. It is opt-in because it reaches a billable model endpoint.
+func TestVerticalSlice_LiveModelToolStepEndToEnd(t *testing.T) {
+	modelClient, modelID := liveModelForTest(t, "tool conformance test")
+	provider := dockerProviderForTest(t, dockerRequired)
+	const marker = "mango-live-tool-ok"
+	runToolStepEndToEnd(t, toolStepCase{
+		provider:      provider,
+		modelClient:   modelClient,
+		modelID:       modelID,
+		sessionPrefix: "sess_live_tool_e2e_",
+		prompt: fmt.Sprintf(
+			"Use the bash tool exactly once. Pass the text between <command> tags as the command without changes; do not include the tags. <command>printf '%s' > live-tool.txt && cat live-tool.txt</command> After you receive the tool result, reply with a short confirmation and do not call another tool.",
+			marker,
+		),
+		tools:              bashOnlyToolset(t),
+		expectedTool:       bashToolName,
+		expectedToolOutput: marker,
+		timeout:            2 * time.Minute,
+	})
 }
 
 // TestVerticalSlice_DockerToolStepEndToEnd runs the same real PostgreSQL +
-// Temporal tool path through the Docker sandbox provider. Unlike the generic
-// fake-model path, its model requests a real shell command that checks
-// /.dockerenv, writes inside /workspace, and reads the marker back. The committed
+// Temporal tool path through the Docker sandbox provider. Its command checks
+// /.dockerenv and /workspace before writing and reading the marker. The committed
 // non-error tool_result therefore proves the Activity actually executed inside
 // the provisioned container, not merely that Docker provisioning succeeded.
 func TestVerticalSlice_DockerToolStepEndToEnd(t *testing.T) {
@@ -421,23 +471,121 @@ func TestVerticalSlice_DockerToolStepEndToEnd(t *testing.T) {
 		os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT") == "" {
 		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the Docker tool end-to-end slice")
 	}
+	provider := dockerProviderForTest(t, dockerOptional)
+	const marker = "managed-agent-temporal-docker-ok"
+	runToolStepEndToEnd(t, toolStepCase{
+		provider: provider,
+		modelClient: toolProbeModel{
+			command:   "test -f /.dockerenv && test \"$(pwd)\" = /workspace && printf '" + marker + "' > probe.txt && cat probe.txt",
+			finalText: "Docker probe completed",
+		},
+		modelID:            "fake",
+		sessionPrefix:      "sess_docker_tool_e2e_",
+		prompt:             "run a tool",
+		tools:              []any{map[string]any{"type": domain.BuiltinToolsetType}},
+		expectedTool:       bashToolName,
+		expectedToolOutput: marker,
+		timeout:            30 * time.Second,
+	})
+}
+
+type dockerRequirement bool
+
+const (
+	dockerOptional dockerRequirement = false
+	dockerRequired dockerRequirement = true
+)
+
+func dockerProviderForTest(t *testing.T, requirement dockerRequirement) sandbox.Provider {
+	t.Helper()
 	dockerPath, err := exec.LookPath("docker")
 	if err != nil {
+		if requirement == dockerRequired {
+			t.Fatalf("docker CLI is required for live tool conformance: %v", err)
+		}
 		t.Skip("docker CLI not installed")
 	}
-	if err := exec.Command(dockerPath, "version", "--format", "{{.Server.Version}}").Run(); err != nil {
+	probeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(probeCtx, dockerPath, "version", "--format", "{{.Server.Version}}").Run(); err != nil {
+		if requirement == dockerRequired {
+			t.Fatalf("docker daemon is required for live tool conformance: %v", err)
+		}
 		t.Skipf("docker daemon unreachable: %v", err)
 	}
 	provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{DockerPath: dockerPath, DefaultImage: "alpine:latest"})
 	if err != nil {
 		t.Fatalf("docker provider: %v", err)
 	}
-	const marker = "managed-agent-temporal-docker-ok"
-	runToolStepEndToEnd(t, provider, dockerProbeModel{marker: marker}, "sess_docker_tool_e2e_", marker)
+	return provider
 }
 
-func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient model.Client, sessionPrefix, expectedToolOutput string) {
+type toolStepCase struct {
+	provider           sandbox.Provider
+	modelClient        model.Client
+	modelID            string
+	sessionPrefix      string
+	prompt             string
+	tools              []any
+	expectedTool       string
+	expectedToolOutput string
+	timeout            time.Duration
+}
+
+const bashToolName = "bash"
+
+func bashOnlyToolset(t *testing.T) []any {
 	t.Helper()
+	raw := []any{map[string]any{
+		"type": domain.BuiltinToolsetType,
+		"default_config": map[string]any{
+			"enabled": false,
+			"permission_policy": map[string]any{
+				"type": "always_allow",
+			},
+		},
+		"configs": []any{map[string]any{
+			"name": bashToolName, "enabled": true,
+			"permission_policy": map[string]any{
+				"type": "always_allow",
+			},
+		}},
+	}}
+	parsed, err := domain.ParseTools(raw)
+	if err != nil {
+		t.Fatalf("parse live tool configuration: %v", err)
+	}
+	bashEnabled, bashPolicy := parsed.BuiltinEnabled(bashToolName)
+	if !bashEnabled || bashPolicy.Type != "always_allow" {
+		t.Fatalf("live tool configuration enables bash = %v with policy %q, want true with always_allow", bashEnabled, bashPolicy.Type)
+	}
+	for _, name := range domain.BuiltinToolNames {
+		enabled, policy := parsed.BuiltinEnabled(name)
+		wantEnabled := name == bashToolName
+		if enabled != wantEnabled {
+			t.Fatalf("live tool configuration enables %q = %v, want %v", name, enabled, wantEnabled)
+		}
+		if enabled && policy.Type != "always_allow" {
+			t.Fatalf("live tool configuration policy for %q = %q, want always_allow", name, policy.Type)
+		}
+	}
+	return raw
+}
+
+func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
+	t.Helper()
+	if tc.provider == nil || tc.modelClient == nil {
+		t.Fatal("tool step test provider and model client are required")
+	}
+	if tc.modelID == "" || tc.sessionPrefix == "" || tc.prompt == "" || tc.expectedTool == "" {
+		t.Fatal("tool step test model ID, session prefix, prompt, and expected tool are required")
+	}
+	if tc.timeout <= 0 {
+		t.Fatal("tool step test timeout must be positive")
+	}
+	if tc.expectedToolOutput == "" {
+		t.Fatal("tool step test expected output must be non-empty")
+	}
 	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
 	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
 	if dbURL == "" || hostPort == "" {
@@ -458,8 +606,8 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	runtime := temporalpkg.NewRuntimeOnTaskQueue(
 		c,
 		store,
-		modelClient,
-		provider,
+		tc.modelClient,
+		tc.provider,
 		ids,
 		temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
 		"managed-agent-test-"+ids.NewID(""),
@@ -474,7 +622,7 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	go func() { _ = runtime.Relay.Run(relayCtx) }()
 
 	orch := runtime.Orchestrator()
-	sessID := sessionPrefix + ids.NewID("")
+	sessID := tc.sessionPrefix + ids.NewID("")
 	// SessionManager keeps a sandbox alive across turns by design. Explicitly
 	// release it after this integration test so the Docker variant cannot leak a
 	// container (the second call is a harmless no-op after normal-path release).
@@ -491,8 +639,8 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 		Status:        domain.StatusIdle,
 		Metadata:      map[string]any{},
 		AgentSnapshot: domain.Agent{
-			ID: "agent_1", Version: 1, Model: domain.Model{ID: "fake"},
-			Tools: []any{map[string]any{"type": domain.BuiltinToolsetType}},
+			ID: "agent_1", Version: 1, Model: domain.Model{ID: tc.modelID},
+			Tools: tc.tools,
 		},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -502,7 +650,7 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	}
 	if _, err := orch.Admit(ctx, sessID, []domain.EventDraft{{
 		Type:    domain.EvUserMessage,
-		Payload: map[string]any{"content": []any{map[string]any{"type": "text", "text": "run a tool"}}},
+		Payload: map[string]any{"content": []any{map[string]any{"type": "text", "text": tc.prompt}}},
 	}}); err != nil {
 		t.Fatalf("admit: %v", err)
 	}
@@ -512,37 +660,74 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	// retry against data that no longer exists.
 	defer terminateIntegrationWorkflow(t, c, sessID)
 
-	deadline := time.Now().Add(30 * time.Second)
+	expectedOrder := []string{
+		domain.EvUserMessage,
+		domain.EvSessionStatusRunning,
+		domain.EvAgentToolUse,
+		domain.EvAgentToolResult,
+		domain.EvAgentMessage,
+		domain.EvSessionStatusIdle,
+	}
+	deadline := time.Now().Add(tc.timeout)
 	var events []domain.Event
+	completed := false
 	for time.Now().Before(deadline) {
 		events, err = store.EventsAfter(ctx, sessID, 0, 100)
 		if err != nil {
 			t.Fatalf("events: %v", err)
 		}
-		if hasType(events, domain.EvAgentToolResult) && hasType(events, domain.EvSessionStatusIdle) {
+		if failure, ok := firstFailureEvent(events); ok {
+			t.Fatalf("tool workflow failed with %s: %#v; events=%s", failure.Type, failure.Payload, typeList(events))
+		}
+		if eventsHaveOrder(events, expectedOrder...) {
+			completed = true
 			break
 		}
 		time.Sleep(250 * time.Millisecond)
 	}
+	if !completed {
+		t.Fatalf("timed out after %s waiting for %v; got %s", tc.timeout, expectedOrder, typeList(events))
+	}
 
-	assertOrder(t, events,
-		domain.EvUserMessage,
-		domain.EvSessionStatusRunning,
-		domain.EvAgentToolUse,
-		domain.EvAgentToolResult,
-		domain.EvSessionStatusIdle,
-	)
-	if expectedToolOutput != "" {
-		text, isError, ok := toolResult(events)
-		if !ok {
-			t.Fatalf("agent.tool_result missing; got %s", typeList(events))
-		}
-		if isError {
-			t.Fatalf("Docker probe tool_result is_error=true; content=%q", text)
-		}
-		if !strings.Contains(text, expectedToolOutput) {
-			t.Fatalf("Docker probe output %q does not contain %q", text, expectedToolOutput)
-		}
+	assertOrder(t, events, expectedOrder...)
+	toolUses := eventsOfType(events, domain.EvAgentToolUse)
+	if len(toolUses) != 1 {
+		t.Fatalf("agent.tool_use count = %d, want exactly 1; got %s", len(toolUses), typeList(events))
+	}
+	toolUse := toolUses[0]
+	toolName, ok := toolUse.Payload["name"].(string)
+	if !ok || toolName == "" {
+		t.Fatalf("agent.tool_use has invalid name payload: %#v", toolUse.Payload)
+	}
+	if toolName != tc.expectedTool {
+		t.Fatalf("agent.tool_use name = %q, want %q", toolName, tc.expectedTool)
+	}
+	toolResults := eventsOfType(events, domain.EvAgentToolResult)
+	if len(toolResults) != 1 {
+		t.Fatalf("agent.tool_result count = %d, want exactly 1; got %s", len(toolResults), typeList(events))
+	}
+	toolResult := toolResults[0]
+	toolUseID, ok := toolResult.Payload["tool_use_id"].(string)
+	if !ok || toolUseID != toolUse.ID {
+		t.Fatalf("agent.tool_result tool_use_id = %q, want %q", toolUseID, toolUse.ID)
+	}
+	text, isError, ok := eventText(toolResult)
+	if !ok {
+		t.Fatalf("agent.tool_result has invalid content payload: %#v", toolResult.Payload)
+	}
+	if isError {
+		t.Fatalf("tool_result is_error=true; content=%q", text)
+	}
+	if strings.TrimSpace(text) != tc.expectedToolOutput {
+		t.Fatalf("tool output = %q, want %q", text, tc.expectedToolOutput)
+	}
+	finalMessage, ok := firstEventOfTypeAfter(events, toolResult.ID, domain.EvAgentMessage)
+	if !ok {
+		t.Fatalf("agent.message missing after tool result; got %s", typeList(events))
+	}
+	finalText, _, ok := eventText(finalMessage)
+	if !ok || strings.TrimSpace(finalText) == "" {
+		t.Fatalf("final agent.message has empty or invalid content: %#v", finalMessage.Payload)
 	}
 
 	final, err := store.GetSession(ctx, sessID)
@@ -556,7 +741,7 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	if err != nil {
 		t.Fatalf("get sandbox binding: %v", err)
 	}
-	if !found || binding.Ref.Provider != provider.Name() || binding.Ref.ID == "" {
+	if !found || binding.Ref.Provider != tc.provider.Name() || binding.Ref.ID == "" {
 		t.Fatalf("sandbox binding = %+v, found=%v", binding, found)
 	}
 	if err := store.PrepareSessionDeletion(ctx, sessID); err != nil {
@@ -575,36 +760,36 @@ func runToolStepEndToEnd(t *testing.T, provider sandbox.Provider, modelClient mo
 	}
 }
 
-// dockerProbeModel is a deterministic, retry-safe model client for the Docker
-// integration test. Before a tool result exists it requests one real bash step;
-// afterwards it ends the turn. Behavior depends only on projected history, not a
-// mutable call counter, so an Activity retry receives the same response.
-type dockerProbeModel struct {
-	marker string
+// toolProbeModel is a deterministic, retry-safe model client for integration
+// tests. Before a tool result exists it requests one real bash step; afterwards
+// it ends the turn. Behavior depends only on projected history, not a mutable
+// call counter, so an Activity retry receives the same response.
+type toolProbeModel struct {
+	command   string
+	finalText string
 }
 
-func (m dockerProbeModel) CreateMessage(_ context.Context, req model.Request) (model.Response, error) {
+func (m toolProbeModel) CreateMessage(_ context.Context, req model.Request) (model.Response, error) {
 	for _, message := range req.Messages {
 		for _, block := range message.Content {
 			if block.Type == "tool_result" {
 				return model.Response{
-					Content:    []domain.ContentBlock{{Type: "text", Text: "Docker probe completed"}},
+					Content:    []domain.ContentBlock{{Type: "text", Text: m.finalText}},
 					StopReason: "end_turn",
 				}, nil
 			}
 		}
 	}
-	command := "test -f /.dockerenv && test \"$(pwd)\" = /workspace && printf '" + m.marker + "' > probe.txt && cat probe.txt"
 	return model.Response{
 		Content: []domain.ContentBlock{{
-			Type: "tool_use", ToolUseID: "docker_probe_tool_1", ToolName: "bash",
-			Input: map[string]any{"command": command},
+			Type: "tool_use", ToolUseID: "probe_tool_1", ToolName: bashToolName,
+			Input: map[string]any{"command": m.command},
 		}},
 		StopReason: "tool_use",
 	}, nil
 }
 
-func (m dockerProbeModel) CreateMessageStream(ctx context.Context, req model.Request, onDelta func(index int, text string)) (model.Response, error) {
+func (m toolProbeModel) CreateMessageStream(ctx context.Context, req model.Request, onDelta func(index int, text string)) (model.Response, error) {
 	resp, err := m.CreateMessage(ctx, req)
 	if err == nil && resp.StopReason == "end_turn" && len(resp.Content) == 1 && onDelta != nil {
 		onDelta(0, resp.Content[0].Text)
@@ -654,6 +839,35 @@ func hasType(events []domain.Event, t string) bool {
 	return false
 }
 
+func eventsHaveOrder(events []domain.Event, types ...string) bool {
+	idx := 0
+	for _, event := range events {
+		if idx < len(types) && event.Type == types[idx] {
+			idx++
+		}
+	}
+	return idx == len(types)
+}
+
+func firstFailureEvent(events []domain.Event) (domain.Event, bool) {
+	for _, event := range events {
+		if event.Type == domain.EvSessionError || event.Type == domain.EvSessionStatusTerminated {
+			return event, true
+		}
+	}
+	return domain.Event{}, false
+}
+
+func eventsOfType(events []domain.Event, eventType string) []domain.Event {
+	var matches []domain.Event
+	for _, event := range events {
+		if event.Type == eventType {
+			matches = append(matches, event)
+		}
+	}
+	return matches
+}
+
 func typeList(events []domain.Event) string {
 	s := ""
 	for _, e := range events {
@@ -662,22 +876,35 @@ func typeList(events []domain.Event) string {
 	return s
 }
 
-func toolResult(events []domain.Event) (text string, isError bool, ok bool) {
+func firstEventOfTypeAfter(events []domain.Event, afterID, eventType string) (domain.Event, bool) {
+	after := false
 	for _, event := range events {
-		if event.Type != domain.EvAgentToolResult {
-			continue
+		if after && event.Type == eventType {
+			return event, true
 		}
-		isError, _ = event.Payload["is_error"].(bool)
-		content, _ := event.Payload["content"].([]any)
-		var out strings.Builder
-		for _, raw := range content {
-			block, _ := raw.(map[string]any)
-			part, _ := block["text"].(string)
-			out.WriteString(part)
+		if event.ID == afterID {
+			after = true
 		}
-		return out.String(), isError, true
 	}
-	return "", false, false
+	return domain.Event{}, false
+}
+
+func eventText(event domain.Event) (text string, isError bool, ok bool) {
+	isError, _ = event.Payload["is_error"].(bool)
+	content, ok := event.Payload["content"].([]any)
+	if !ok {
+		return "", isError, false
+	}
+	var out strings.Builder
+	for _, raw := range content {
+		block, blockOK := raw.(map[string]any)
+		part, textOK := block["text"].(string)
+		if !blockOK || !textOK {
+			return "", isError, false
+		}
+		out.WriteString(part)
+	}
+	return out.String(), isError, true
 }
 
 func terminateIntegrationWorkflow(t *testing.T, c client.Client, workflowID string) {
@@ -697,13 +924,7 @@ func terminateIntegrationWorkflow(t *testing.T, c client.Client, workflowID stri
 // relative order (not necessarily contiguous).
 func assertOrder(t *testing.T, events []domain.Event, types ...string) {
 	t.Helper()
-	idx := 0
-	for _, e := range events {
-		if idx < len(types) && e.Type == types[idx] {
-			idx++
-		}
-	}
-	if idx != len(types) {
+	if !eventsHaveOrder(events, types...) {
 		t.Fatalf("events not in expected order %v; got %s", types, typeList(events))
 	}
 }
