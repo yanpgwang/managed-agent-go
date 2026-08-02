@@ -922,7 +922,11 @@ func (s *Store) completeTurn(
 				attemptState = domain.RunAttemptInterrupted
 				attemptError = nil
 			}
-			if outcome := session.ActiveOutcome(); outcome != nil {
+			// Outcome admission updates the Session projection before its queued
+			// evaluation turn starts. An interrupt that belongs to some earlier
+			// ordinary turn must not terminate that unrelated active outcome.
+			if activeReceiptProcessedOutcome(session, trigger.Type, triggerPayload) {
+				outcome := session.ActiveOutcome()
 				iteration := max(outcome.Iteration, interruptedOutcomeIteration)
 				outputDrafts = append(outputDrafts,
 					domain.EventDraft{

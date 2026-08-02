@@ -197,3 +197,96 @@ func TestOutcomeInterruptUsesEmptyStartIDAndPreservesCompletedRevision(t *testin
 		t.Fatalf("outcome projection = %+v", got)
 	}
 }
+
+func TestInterruptOrdinaryTurnDoesNotTerminateQueuedOutcome(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const sessionID = "sess_interrupt_before_outcome_turn"
+	messageTriggerID := journalTurn(t, store, sessionID)
+
+	outcomeAdmission, err := store.AdmitEvents(ctx, sessionID, []domain.EventDraft{{
+		Type: domain.EvUserDefineOutcome,
+		Payload: map[string]any{
+			"description": "produce report",
+			"rubric":      map[string]any{"type": "text", "content": "includes evidence"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("admit queued outcome: %v", err)
+	}
+	outcomeTrigger := outcomeAdmission.Events[0]
+	outcomeID, _ := outcomeTrigger.Payload["outcome_id"].(string)
+	if outcomeTrigger.ProcessedAt == nil {
+		t.Fatal("define_outcome was not stamped processed on receipt")
+	}
+	if _, err := store.AdmitEvents(ctx, sessionID, []domain.EventDraft{{
+		Type: domain.EvUserInterrupt, Payload: map[string]any{},
+	}}); err != nil {
+		t.Fatalf("admit interrupt: %v", err)
+	}
+
+	interrupted, err := store.CompleteWorkflowTurn(
+		ctx,
+		sessionID,
+		messageTriggerID,
+		nil,
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("complete interrupted message: %v", err)
+	}
+	for _, event := range interrupted.Events {
+		if event.Type == domain.EvSpanOutcomeEvaluationEnd {
+			t.Fatalf("ordinary interrupt terminated queued outcome: %+v", event)
+		}
+	}
+	active := interrupted.Session.ActiveOutcome()
+	if active == nil || active.OutcomeID != outcomeID || active.CompletedAt != nil {
+		t.Fatalf("queued outcome after unrelated interrupt = %+v", interrupted.Session.Outcomes)
+	}
+
+	completed, err := store.CompleteWorkflowTurn(
+		ctx,
+		sessionID,
+		outcomeTrigger.ID,
+		[]domain.EventDraft{
+			{
+				ID: "sevt_queued_eval_start", Type: domain.EvSpanOutcomeEvaluationStart,
+				Payload: map[string]any{"outcome_id": outcomeID, "iteration": 0},
+			},
+			{
+				ID: "sevt_queued_eval_end", Type: domain.EvSpanOutcomeEvaluationEnd,
+				Payload: map[string]any{
+					"outcome_evaluation_start_id": "sevt_queued_eval_start",
+					"outcome_id":                  outcomeID, "iteration": 0,
+					"result": "satisfied", "explanation": "rubric met",
+					"usage": map[string]any{},
+				},
+			},
+			{
+				Type:    domain.EvSessionStatusIdle,
+				Payload: map[string]any{"stop_reason": map[string]any{"type": "end_turn"}},
+			},
+		},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("complete queued outcome: %v", err)
+	}
+	if !completed.Applied {
+		t.Fatal("queued outcome was mistaken for an already-completed turn")
+	}
+	if got := completed.Session.Outcomes[0]; got.Result != "satisfied" || got.CompletedAt == nil {
+		t.Fatalf("completed queued outcome = %+v", got)
+	}
+}
