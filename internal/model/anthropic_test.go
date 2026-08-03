@@ -128,6 +128,42 @@ func TestDecodeMessageStream_AccumulatesUsage(t *testing.T) {
 	}
 }
 
+func TestDecodeMessageStream_PreservesThinkingContinuationBlocks(t *testing.T) {
+	stream := strings.NewReader(
+		"data: {\"type\":\"message_start\",\"message\":{\"usage\":{}}}\n\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\",\"signature\":\"\"}}\n\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"private reasoning\"}}\n\n" +
+			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_123\"}}\n\n" +
+			"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n" +
+			"data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"redacted_thinking\",\"data\":\"opaque_456\"}}\n\n" +
+			"data: {\"type\":\"content_block_stop\",\"index\":1}\n\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\n" +
+			"data: {\"type\":\"message_stop\"}\n\n",
+	)
+	response, err := decodeMessageStream(stream, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Content) != 2 {
+		t.Fatalf("content blocks = %d, want 2", len(response.Content))
+	}
+	var thinking map[string]any
+	if err := json.Unmarshal(response.Content[0].Raw, &thinking); err != nil {
+		t.Fatal(err)
+	}
+	if thinking["type"] != "thinking" || thinking["thinking"] != "private reasoning" ||
+		thinking["signature"] != "sig_123" {
+		t.Fatalf("thinking block = %#v", thinking)
+	}
+	var redacted map[string]any
+	if err := json.Unmarshal(response.Content[1].Raw, &redacted); err != nil {
+		t.Fatal(err)
+	}
+	if redacted["type"] != "redacted_thinking" || redacted["data"] != "opaque_456" {
+		t.Fatalf("redacted thinking block = %#v", redacted)
+	}
+}
+
 func TestAnthropic_InvalidTypedBlockFailsBeforeHTTPRequest(t *testing.T) {
 	requests := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

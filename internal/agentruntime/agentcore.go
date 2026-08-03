@@ -147,6 +147,13 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 			if err != nil {
 				return RunOutcome{}, err
 			}
+			if HasThinkingBlocks(resp.Content) {
+				if _, err := sink.Emit(ctx, []domain.EventDraft{{
+					Type: domain.EvAgentThinking, Payload: map[string]any{},
+				}}); err != nil {
+					return RunOutcome{}, err
+				}
+			}
 			if content := TextBlocksToContent(resp.Content); len(content) > 0 {
 				// A text turn that produced no deltas (e.g. a client that never
 				// streams) still needs a PreviewStart so the preview id is announced
@@ -171,6 +178,13 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 			})
 			if err != nil {
 				return RunOutcome{}, err
+			}
+			if HasThinkingBlocks(resp.Content) {
+				if _, err := sink.Emit(ctx, []domain.EventDraft{{
+					Type: domain.EvAgentThinking, Payload: map[string]any{},
+				}}); err != nil {
+					return RunOutcome{}, err
+				}
 			}
 			// Emit any assistant text as an agent.message (S1 behavior).
 			if content := TextBlocksToContent(resp.Content); len(content) > 0 {
@@ -656,6 +670,18 @@ func TextBlocksToContent(blocks []domain.ContentBlock) []any {
 		content = append(content, map[string]any{"type": "text", "text": b.Text})
 	}
 	return content
+}
+
+// HasThinkingBlocks reports whether the provider returned ordinary or redacted
+// extended-thinking content. Public history records only that thinking
+// occurred; the sensitive provider block remains in private continuation state.
+func HasThinkingBlocks(blocks []domain.ContentBlock) bool {
+	for _, block := range blocks {
+		if block.Type == "thinking" || block.Type == "redacted_thinking" {
+			return true
+		}
+	}
+	return false
 }
 
 // FlattenResultText extracts the concatenated text of a tool result's content

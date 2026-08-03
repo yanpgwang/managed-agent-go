@@ -1223,6 +1223,7 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 				ModelRequestStartID: modelRequestStartID,
 				ModelRequestEndID:   modelRequestEndID,
 				FatalError:          apiErr.Error(),
+				FatalErrorType:      terminalModelErrorType(apiErr.Kind),
 			}, nil
 		}
 		return CallModelResult{}, err
@@ -1234,6 +1235,7 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 	}
 	normalized := append([]domain.ContentBlock(nil), response.Content...)
 	hasText := false
+	hasThinking := false
 	for i := range normalized {
 		switch normalized[i].Type {
 		case "text":
@@ -1255,13 +1257,25 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 				ProviderToolUseID: normalized[i].ToolUseID,
 				ToolStepID:        a.ids.NewID(domain.PrefixToolStep),
 			})
+		case "thinking", "redacted_thinking":
+			hasThinking = true
 		}
 	}
 	result.Response.Content = normalized
 	if hasText {
 		result.MessageEventID = messageEventID
 	}
+	if hasThinking {
+		result.ThinkingEventID = a.ids.NewID(domain.PrefixEvent)
+	}
 	return result, nil
+}
+
+func terminalModelErrorType(kind model.ErrorKind) string {
+	if kind == model.ErrorBilling {
+		return "billing_error"
+	}
+	return "model_request_failed_error"
 }
 
 func modelRetryErrorType(kind model.ErrorKind) string {

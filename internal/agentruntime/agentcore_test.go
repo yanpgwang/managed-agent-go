@@ -3,6 +3,7 @@ package agentruntime
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -233,6 +234,49 @@ func (emptyClient) CreateMessage(_ context.Context, _ model.Request) (model.Resp
 
 func (c emptyClient) CreateMessageStream(ctx context.Context, req model.Request, _ func(index int, text string)) (model.Response, error) {
 	return c.CreateMessage(ctx, req)
+}
+
+type thinkingClient struct{}
+
+func (thinkingClient) CreateMessage(context.Context, model.Request) (model.Response, error) {
+	return model.Response{
+		StopReason: "end_turn",
+		Content: []domain.ContentBlock{
+			{Type: "thinking", Text: "must remain private"},
+			{Type: "text", Text: "public answer"},
+		},
+	}, nil
+}
+
+func (c thinkingClient) CreateMessageStream(
+	ctx context.Context,
+	req model.Request,
+	_ func(index int, text string),
+) (model.Response, error) {
+	return c.CreateMessage(ctx, req)
+}
+
+func TestAgentCore_PublishesPrivacyPreservingThinkingEvent(t *testing.T) {
+	core := NewAgentCore(thinkingClient{}, domain.NewSeqIDGen())
+	sink := &captureSink{}
+	system := "think"
+	_, err := core.Run(context.Background(), RunRequest{
+		SessionID:     "sesn_thinking",
+		Trigger:       domain.Event{Type: domain.EvUserMessage},
+		Messages:      []domain.Message{{Role: domain.RoleUser}},
+		AgentSnapshot: domain.Agent{Model: domain.Model{ID: "m"}, System: &system},
+	}, sink)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := draftTypes(sink); !slices.Equal(got, []string{
+		domain.EvAgentThinking, domain.EvAgentMessage,
+	}) {
+		t.Fatalf("draft types = %v", got)
+	}
+	if len(sink.drafts[0].Payload) != 0 {
+		t.Fatalf("thinking payload exposed private content: %#v", sink.drafts[0].Payload)
+	}
 }
 
 func TestAgentCore_NonUserTriggerIsNoop(t *testing.T) {

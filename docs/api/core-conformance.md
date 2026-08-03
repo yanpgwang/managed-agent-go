@@ -34,7 +34,7 @@ separate evidence.
 | Session | Update | `POST /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue race and next-turn visibility verification. |
 | Session | Archive | `POST /v1/sessions/{session_id}/archive` | Yes | Yes | Yes | None identified for the core idempotent archive path. |
 | Session | Delete | `DELETE /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue deletion-fence and restart verification. |
-| Session event | Send | `POST /v1/sessions/{session_id}/events` | Yes | Yes | Yes | Complete the documented core event union and legality checks. |
+| Session event | Send | `POST /v1/sessions/{session_id}/events` | Yes | Yes | Yes | Complete the remaining cross-turn legality checks. |
 | Session event | List | `GET /v1/sessions/{session_id}/events` | Yes | Yes | Yes | Verify ordering, timestamp-boundary, and restart behavior. |
 | Session event | Stream | `GET /v1/sessions/{session_id}/events/stream` | Yes | Yes | Yes | Verify reconnection, backpressure, restart, and preview-finish behavior. |
 

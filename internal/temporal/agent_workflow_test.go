@@ -3,6 +3,7 @@ package temporal
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -629,8 +630,60 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	errorPayload, ok := completed.Output[1].Payload["error"].(map[string]any)
 	require.True(t, ok)
 	require.Contains(t, errorPayload["message"], "invalid_request_error")
-	require.Equal(t, "unknown_error", errorPayload["type"])
+	require.Equal(t, "model_request_failed_error", errorPayload["type"])
 	require.Equal(t, "terminal", errorPayload["retry_status"].(map[string]any)["type"])
+}
+
+func TestWorkflowTurn_PublishesThinkingWithoutPrivateContent(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{Request: model.Request{Model: "test-model"}}, nil
+	}
+	callModel := func(context.Context, CallModelInput) (CallModelResult, error) {
+		return CallModelResult{
+			ThinkingEventID: "sevt_thinking",
+			MessageEventID:  "sevt_answer",
+			Response: model.Response{
+				StopReason: "end_turn",
+				Content: []domain.ContentBlock{
+					{Type: "thinking", Text: "must remain private"},
+					{Type: "text", Text: "public answer"},
+				},
+			},
+		}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
+	registerWorkflowTurnActivities(
+		env,
+		prepare,
+		callModel,
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{}, nil
+		},
+		complete,
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_thinking", TriggerEventID: "sevt_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, []string{
+		domain.EvAgentThinking,
+		domain.EvAgentMessage,
+		domain.EvSessionStatusIdle,
+	}, draftTypes(completed.Output))
+	require.Empty(t, completed.Output[0].Payload)
+	require.NotContains(t, completed.Output[0].Payload, "thinking")
+	for _, draft := range completed.Output {
+		require.NotContains(t, fmt.Sprint(draft.Payload), "must remain private")
+	}
 }
 
 func TestWorkflowTurn_PublishesModelRetryLifecycleAndRecovers(t *testing.T) {

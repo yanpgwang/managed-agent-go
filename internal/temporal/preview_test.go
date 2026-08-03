@@ -80,6 +80,52 @@ func TestCallModelPermanentAPIErrorBecomesFatalResult(t *testing.T) {
 	if result.FatalError == "" {
 		t.Fatal("CallModel returned no FatalError for permanent failure")
 	}
+	if result.FatalErrorType != "model_request_failed_error" {
+		t.Fatalf("FatalErrorType = %q", result.FatalErrorType)
+	}
+}
+
+func TestCallModelBillingErrorUsesDocumentedVariant(t *testing.T) {
+	client := model.NewFake()
+	client.SetError(&model.APIError{
+		Kind:       model.ErrorBilling,
+		StatusCode: 402,
+		Type:       "billing_error",
+		Message:    "credits exhausted",
+	})
+	activities := NewActivities(client, nil, nil, nil, domain.NewSeqIDGen())
+	result, err := activities.CallModel(context.Background(), CallModelInput{
+		SessionID: "sesn_billing", Request: model.Request{Model: "test-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FatalErrorType != "billing_error" || result.FatalError == "" {
+		t.Fatalf("billing result = %#v", result)
+	}
+}
+
+func TestCallModelAllocatesPublicThinkingEventWithoutExposingContent(t *testing.T) {
+	client := &outcomeModel{response: model.Response{
+		Content: []domain.ContentBlock{
+			{Type: "thinking", Text: "private reasoning"},
+			{Type: "text", Text: "public answer"},
+		},
+		StopReason: "end_turn",
+	}}
+	activities := NewActivities(client, nil, nil, nil, domain.NewSeqIDGen())
+	result, err := activities.CallModel(context.Background(), CallModelInput{
+		SessionID: "sesn_thinking", Request: model.Request{Model: "test-model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ThinkingEventID == "" {
+		t.Fatal("thinking response has no public event id")
+	}
+	if result.MessageEventID == "" {
+		t.Fatal("text response has no public message event id")
+	}
 }
 
 func TestCallModelTransientAPIErrorRemainsActivityError(t *testing.T) {

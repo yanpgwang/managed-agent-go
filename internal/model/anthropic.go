@@ -324,6 +324,9 @@ func (a *Anthropic) CreateMessageStream(ctx context.Context, req Request, onDelt
 type streamBlock struct {
 	typ         string
 	text        strings.Builder
+	thinking    strings.Builder
+	signature   strings.Builder
+	data        string
 	toolID      string
 	toolName    string
 	toolInput   map[string]any
@@ -336,15 +339,20 @@ type sseEvent struct {
 	Type         string `json:"type"`
 	Index        int    `json:"index"`
 	ContentBlock struct {
-		Type  string         `json:"type"`
-		Text  string         `json:"text"`
-		ID    string         `json:"id"`
-		Name  string         `json:"name"`
-		Input map[string]any `json:"input"`
+		Type      string         `json:"type"`
+		Text      string         `json:"text"`
+		Thinking  string         `json:"thinking"`
+		Signature string         `json:"signature"`
+		Data      string         `json:"data"`
+		ID        string         `json:"id"`
+		Name      string         `json:"name"`
+		Input     map[string]any `json:"input"`
 	} `json:"content_block"`
 	Delta struct {
 		Type        string `json:"type"`
 		Text        string `json:"text"`
+		Thinking    string `json:"thinking"`
+		Signature   string `json:"signature"`
 		PartialJSON string `json:"partial_json"`
 		StopReason  string `json:"stop_reason"`
 	} `json:"delta"`
@@ -417,6 +425,13 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 				b.toolName = ev.ContentBlock.Name
 				b.toolInput = ev.ContentBlock.Input
 			}
+			if b.typ == "thinking" {
+				b.thinking.WriteString(ev.ContentBlock.Thinking)
+				b.signature.WriteString(ev.ContentBlock.Signature)
+			}
+			if b.typ == "redacted_thinking" {
+				b.data = ev.ContentBlock.Data
+			}
 			if _, seen := blocks[ev.Index]; !seen {
 				order = append(order, ev.Index)
 			}
@@ -436,6 +451,10 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 				}
 			case "input_json_delta":
 				b.partialJSON.WriteString(ev.Delta.PartialJSON)
+			case "thinking_delta":
+				b.thinking.WriteString(ev.Delta.Thinking)
+			case "signature_delta":
+				b.signature.WriteString(ev.Delta.Signature)
 			}
 		case "content_block_stop":
 			finalize(ev.Index)
@@ -462,15 +481,31 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 	for _, idx := range order {
 		b := blocks[idx]
 		cb := domain.ContentBlock{Type: b.typ}
+		var raw json.RawMessage
+		var err error
 		switch b.typ {
 		case "tool_use":
 			cb.ToolUseID = b.toolID
 			cb.ToolName = b.toolName
 			cb.Input = b.toolInput
+		case "thinking":
+			cb.Text = b.thinking.String()
+			raw, err = json.Marshal(map[string]any{
+				"type":      "thinking",
+				"thinking":  b.thinking.String(),
+				"signature": b.signature.String(),
+			})
+		case "redacted_thinking":
+			raw, err = json.Marshal(map[string]any{
+				"type": "redacted_thinking",
+				"data": b.data,
+			})
 		default:
 			cb.Text = b.text.String()
 		}
-		raw, err := marshalTypedBlock(cb)
+		if raw == nil && err == nil {
+			raw, err = marshalTypedBlock(cb)
+		}
 		if err != nil {
 			return Response{}, fmt.Errorf("model: encode streamed content block: %w", err)
 		}

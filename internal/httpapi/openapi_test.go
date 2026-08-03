@@ -126,7 +126,7 @@ func TestOpenAPISessionEventContract(t *testing.T) {
 	assertOpenAPIEventUnion(t, doc, "SessionEvent", []string{
 		"user.message", "user.interrupt", "user.tool_confirmation",
 		"user.custom_tool_result", "user.tool_result", "user.define_outcome",
-		"system.message", "agent.message", "agent.custom_tool_use", "agent.tool_use",
+		"system.message", "agent.message", "agent.thinking", "agent.custom_tool_use", "agent.tool_use",
 		"agent.tool_result", "agent.mcp_tool_use", "agent.mcp_tool_result",
 		"session.status_idle", "session.status_running", "session.status_terminated",
 		"session.status_rescheduled", "session.error", "session.updated", "session.deleted",

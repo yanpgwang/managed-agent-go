@@ -148,6 +148,54 @@ func TestSDK_ModelRetryLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestSDK_ThinkingAndBillingEvents(t *testing.T) {
+	client, ts, sessions := sdkClientServerAndSessions(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "opus", "sys")
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: mustEnv(t, ts.URL),
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	sessions.mu.Lock()
+	sessions.appendEventLocked(session.ID, domain.EventDraft{
+		Type: domain.EvAgentThinking, Payload: map[string]any{},
+	})
+	sessions.appendEventLocked(session.ID, domain.EventDraft{
+		Type: domain.EvSessionError,
+		Payload: map[string]any{"error": map[string]any{
+			"type": "billing_error", "message": "credits exhausted",
+			"retry_status": map[string]any{"type": "terminal"},
+		}},
+	})
+	sessions.mu.Unlock()
+
+	page, err := client.Beta.Sessions.Events.List(ctx, session.ID,
+		anthropic.BetaSessionEventListParams{Types: []string{
+			domain.EvAgentThinking, domain.EvSessionError,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("list thinking and billing events: %v", err)
+	}
+	if len(page.Data) != 2 {
+		t.Fatalf("event count = %d, want 2", len(page.Data))
+	}
+	thinking := page.Data[0].AsAgentThinking()
+	if thinking.Type != anthropic.BetaManagedAgentsAgentThinkingEventTypeAgentThinking {
+		t.Fatalf("thinking event = %s", page.Data[0].RawJSON())
+	}
+	billing := page.Data[1].AsSessionError().Error.AsBillingError()
+	if billing.Type != anthropic.BetaManagedAgentsBillingErrorTypeBillingError ||
+		billing.Message != "credits exhausted" ||
+		billing.RetryStatus.AsTerminal().Type != "terminal" {
+		t.Fatalf("billing event = %s", page.Data[1].RawJSON())
+	}
+}
+
 func TestSDK_AgentLifecycle(t *testing.T) {
 	client, _ := sdkClientAndServer(t)
 	ctx := context.Background()

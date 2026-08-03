@@ -265,7 +265,7 @@ func runWorkflowTurnInternal(
 				if activityOutcome.Interrupted {
 					return turn.complete(nil)
 				}
-				return turn.terminate(failTurn(called.FatalError))
+				return turn.terminateTyped(called.FatalErrorType, called.FatalError)
 			}
 			if called.RetryError == nil {
 				break
@@ -328,6 +328,12 @@ func runWorkflowTurnInternal(
 					},
 				)
 			}
+		}
+		if called.ThinkingEventID != "" {
+			turn.output = append(turn.output, domain.EventDraft{
+				ID: called.ThinkingEventID, Type: domain.EvAgentThinking,
+				Payload: map[string]any{},
+			})
 		}
 
 		if content := agentruntime.TextBlocksToContent(called.Response.Content); len(content) > 0 {

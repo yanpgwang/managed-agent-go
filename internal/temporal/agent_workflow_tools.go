@@ -520,11 +520,20 @@ func (t *workflowTurnState) exhaustModelRetries(
 func (t *workflowTurnState) terminate(
 	failure turnFailure,
 ) (RunTurnResult, error) {
-	message := string(failure)
+	return t.terminateTyped("unknown_error", string(failure))
+}
+
+func (t *workflowTurnState) terminateTyped(
+	errorType string,
+	message string,
+) (RunTurnResult, error) {
 	errorPayload := map[string]any{"type": "api_error", "message": message}
 	if t.terminalSessionErrors {
+		if errorType == "" {
+			errorType = "unknown_error"
+		}
 		errorPayload = map[string]any{
-			"type":    "unknown_error",
+			"type":    errorType,
 			"message": message,
 			"retry_status": map[string]any{
 				"type": "terminal",

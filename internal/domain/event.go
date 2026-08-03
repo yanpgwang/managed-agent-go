@@ -17,6 +17,7 @@ const (
 
 	// Agent/server-emitted events (never accepted from clients).
 	EvAgentMessage       = "agent.message"
+	EvAgentThinking      = "agent.thinking"
 	EvAgentCustomToolUse = "agent.custom_tool_use"
 	EvAgentToolUse       = "agent.tool_use"
 	EvAgentToolResult    = "agent.tool_result"
