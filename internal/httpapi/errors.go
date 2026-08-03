@@ -56,6 +56,10 @@ func writeErrorEnvelope(w http.ResponseWriter, status int, typ, message string) 
 	})
 }
 
+// requestIDPrefix is the documented shape of the request-id header value. It is
+// unchanged by request-id propagation: an inbound client id must carry it too.
+const requestIDPrefix = "req_"
+
 func ensureRequestID(w http.ResponseWriter) string {
 	if id := w.Header().Get("request-id"); id != "" {
 		return id
@@ -64,11 +68,11 @@ func ensureRequestID(w http.ResponseWriter) string {
 	if _, err := rand.Read(b[:]); err != nil {
 		// crypto/rand failure is extraordinarily rare. Keep the contract intact
 		// without surfacing implementation details to the caller.
-		id := "req_unavailable"
+		id := requestIDPrefix + "unavailable"
 		w.Header().Set("request-id", id)
 		return id
 	}
-	id := fmt.Sprintf("req_%x", b[:])
+	id := fmt.Sprintf(requestIDPrefix+"%x", b[:])
 	w.Header().Set("request-id", id)
 	return id
 }
