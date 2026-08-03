@@ -16,6 +16,11 @@ import (
 // history forever.
 const maxWorkflowToolRounds = 20
 
+const (
+	liveModelSpanStartChangeID = "live-model-request-span-start"
+	liveModelSpanStartVersion  = 1
+)
+
 // runWorkflowTurn owns the plan-act-observe loop in deterministic Workflow
 // code. Every model call and every tool call is an Activity, so each completed
 // response/result is independently recorded in Temporal history and replay
@@ -70,6 +75,12 @@ func runWorkflowTurnInternal(
 		}
 		return RunTurnResult{Disposition: TurnCompleted}, nil
 	}
+	liveModelSpanStarts := workflow.GetVersion(
+		actx,
+		liveModelSpanStartChangeID,
+		workflow.DefaultVersion,
+		liveModelSpanStartVersion,
+	) == liveModelSpanStartVersion
 
 	turn := &workflowTurnState{
 		actx:                   actx,
@@ -114,6 +125,13 @@ func runWorkflowTurnInternal(
 	outcomeIteration := 0
 	outcomeFinished := false
 	for round := 0; round < maxRounds; round++ {
+		// A later model request must never overtake completed public progress
+		// from the preceding tool/outcome round in PostgreSQL receipt order.
+		if liveModelSpanStarts {
+			if err := turn.flushOutput(); err != nil {
+				return RunTurnResult{}, err
+			}
+		}
 		request := prepared.Request
 		request.Messages = messages
 		mappingCheckpoint := len(turn.toolUseMappings)
@@ -122,6 +140,11 @@ func runWorkflowTurnInternal(
 			triggerEventID,
 			round,
 		)
+		if liveModelSpanStarts {
+			if err := turn.startModelRequest(modelRequestStartID); err != nil {
+				return RunTurnResult{}, err
+			}
+		}
 
 		called, activityOutcome, err := turn.callModel(CallModelInput{
 			SessionID:           sessionID,
@@ -137,16 +160,20 @@ func runWorkflowTurnInternal(
 				ModelRequestStartID: modelRequestStartID,
 				ModelRequestEndID:   modelRequestEndID,
 			}
-			if start := modelRequestStartDraft(cancelled); start != nil {
-				turn.output = append(turn.output, *start)
+			if !liveModelSpanStarts {
+				if start := modelRequestStartDraft(cancelled); start != nil {
+					turn.output = append(turn.output, *start)
+				}
 			}
 			if end := modelRequestEndDraft(cancelled, true); end != nil {
 				turn.output = append(turn.output, *end)
 			}
 			return turn.complete(nil)
 		}
-		if start := modelRequestStartDraft(called); start != nil {
-			turn.output = append(turn.output, *start)
+		if !liveModelSpanStarts {
+			if start := modelRequestStartDraft(called); start != nil {
+				turn.output = append(turn.output, *start)
+			}
 		}
 		if called.FatalError != "" {
 			if end := modelRequestEndDraft(called, true); end != nil {
@@ -399,6 +426,18 @@ func modelRequestSpanIDs(sessionID, triggerEventID string, round int) (string, s
 		return domain.PrefixEvent + hex.EncodeToString(sum[:12])
 	}
 	return makeID("model_start"), makeID("model_end")
+}
+
+func workflowProgressEventID(
+	sessionID string,
+	triggerEventID string,
+	ordinal int,
+) string {
+	sum := sha256.Sum256([]byte(
+		sessionID + "\x00" + triggerEventID + "\x00progress\x00" +
+			strconv.Itoa(ordinal),
+	))
+	return domain.PrefixEvent + hex.EncodeToString(sum[:12])
 }
 
 func toolNameForProviderID(

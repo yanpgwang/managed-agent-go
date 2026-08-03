@@ -627,6 +627,152 @@ type TurnCompletion struct {
 	Parked  bool
 }
 
+// AppendWorkflowEvents commits a completed, non-terminal prefix of one active
+// turn without processing its trigger or changing the Session projection. It
+// is idempotent by explicit event ID so a retried Temporal Activity either
+// observes the whole existing batch or appends the whole batch once.
+func (s *Store) AppendWorkflowEvents(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	drafts []domain.EventDraft,
+) error {
+	if sessionID == "" || triggerEventID == "" || len(drafts) == 0 {
+		return domain.Validation("session, trigger, and workflow events are required")
+	}
+	seen := make(map[string]struct{}, len(drafts))
+	for _, draft := range drafts {
+		if draft.ID == "" {
+			return domain.Validation("workflow progress event id is required")
+		}
+		if _, duplicate := seen[draft.ID]; duplicate {
+			return domain.Validation("duplicate workflow progress event id")
+		}
+		seen[draft.ID] = struct{}{}
+		if domain.IsClientSubmittable(draft.Type) || isSessionProjectionEvent(draft.Type) {
+			return domain.Validation("workflow progress must contain non-terminal server events")
+		}
+	}
+
+	applied := false
+	err := s.withTx(ctx, func(q *pgstore.Queries) error {
+		row, err := q.LockSession(ctx, sessionID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("session not found")
+		}
+		if err != nil {
+			return err
+		}
+		if row.DeletingAt.Valid {
+			return domain.Conflict("session deletion is in progress")
+		}
+		session, err := sessionFromLockRow(row)
+		if err != nil {
+			return err
+		}
+		if session.Status != domain.StatusRunning {
+			return domain.Conflict("workflow progress requires a running session")
+		}
+		if _, err := q.GetEvent(ctx, pgstore.GetEventParams{
+			SessionID: sessionID,
+			ID:        triggerEventID,
+		}); errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("trigger event not found")
+		} else if err != nil {
+			return err
+		}
+
+		existing := 0
+		for _, draft := range drafts {
+			event, err := q.GetEvent(ctx, pgstore.GetEventParams{
+				SessionID: sessionID,
+				ID:        draft.ID,
+			})
+			switch {
+			case err == nil:
+				if !workflowEventMatches(event, triggerEventID, draft) {
+					return domain.Conflict("workflow progress event id already has different content")
+				}
+				existing++
+			case errors.Is(err, pgx.ErrNoRows):
+				// The batch is either wholly absent or wholly present because its
+				// first application uses this same transaction and Session lock.
+			default:
+				return err
+			}
+		}
+		if existing == len(drafts) {
+			return nil
+		}
+		if existing != 0 {
+			return domain.Conflict("workflow progress batch is only partially present")
+		}
+
+		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		if _, _, err := s.appendDrafts(
+			ctx,
+			q,
+			sessionID,
+			drafts,
+			maxSeq,
+			&triggerEventID,
+		); err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if applied {
+		s.notifySession(ctx, sessionID)
+	}
+	return nil
+}
+
+func isSessionProjectionEvent(eventType string) bool {
+	switch eventType {
+	case domain.EvSessionStatusIdle,
+		domain.EvSessionStatusRunning,
+		domain.EvSessionStatusRescheduling,
+		domain.EvSessionStatusTerminated,
+		domain.EvSessionUpdated,
+		domain.EvSessionDeleted:
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowEventMatches(
+	event pgstore.Event,
+	triggerEventID string,
+	draft domain.EventDraft,
+) bool {
+	if event.Type != draft.Type || event.TurnEventID == nil ||
+		*event.TurnEventID != triggerEventID {
+		return false
+	}
+	var existing map[string]any
+	if err := json.Unmarshal(event.Payload, &existing); err != nil {
+		return false
+	}
+	expected := draft.Payload
+	if expected == nil {
+		expected = map[string]any{}
+	}
+	existingJSON, err := json.Marshal(existing)
+	if err != nil {
+		return false
+	}
+	expectedJSON, err := json.Marshal(expected)
+	return err == nil && string(existingJSON) == string(expectedJSON)
+}
+
 // CompleteTurn atomically commits the authoritative output of one turn: it
 // appends the runtime's output events (tagged with the trigger id), marks the
 // trigger event processed, and updates the session projection to status. It is

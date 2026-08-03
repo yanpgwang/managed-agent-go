@@ -162,13 +162,17 @@ func runVerticalSliceEndToEnd(
 		t.Fatalf("terminal idle never committed; got: %s", typeList(events))
 	}
 
-	// Receipt order: user.message < status_running < agent.message < status_idle.
+	// Receipt order follows the CMA model request span around the buffered
+	// message: start is durable before provider work and end closes that request.
 	assertOrder(t, events,
 		domain.EvUserMessage,
 		domain.EvSessionStatusRunning,
+		domain.EvSpanModelRequestStart,
 		domain.EvAgentMessage,
+		domain.EvSpanModelRequestEnd,
 		domain.EvSessionStatusIdle,
 	)
+	assertModelRequestSpans(t, events, false)
 
 	// Session projected back to idle.
 	final, err := store.GetSession(ctx, sess.ID)
@@ -374,9 +378,12 @@ func TestVerticalSlice_InterruptCancelsModelActivity(t *testing.T) {
 	assertOrder(t, events,
 		domain.EvUserMessage,
 		domain.EvSessionStatusRunning,
+		domain.EvSpanModelRequestStart,
 		domain.EvUserInterrupt,
+		domain.EvSpanModelRequestEnd,
 		domain.EvSessionStatusIdle,
 	)
+	assertModelRequestSpans(t, events, true)
 	idleCount := 0
 	for _, event := range events {
 		switch event.Type {
@@ -663,9 +670,13 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 	expectedOrder := []string{
 		domain.EvUserMessage,
 		domain.EvSessionStatusRunning,
+		domain.EvSpanModelRequestStart,
+		domain.EvSpanModelRequestEnd,
 		domain.EvAgentToolUse,
 		domain.EvAgentToolResult,
+		domain.EvSpanModelRequestStart,
 		domain.EvAgentMessage,
+		domain.EvSpanModelRequestEnd,
 		domain.EvSessionStatusIdle,
 	}
 	deadline := time.Now().Add(tc.timeout)
@@ -690,6 +701,7 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 	}
 
 	assertOrder(t, events, expectedOrder...)
+	assertModelRequestSpans(t, events, false, false)
 	toolUses := eventsOfType(events, domain.EvAgentToolUse)
 	if len(toolUses) != 1 {
 		t.Fatalf("agent.tool_use count = %d, want exactly 1; got %s", len(toolUses), typeList(events))
@@ -866,6 +878,28 @@ func eventsOfType(events []domain.Event, eventType string) []domain.Event {
 		}
 	}
 	return matches
+}
+
+func assertModelRequestSpans(t *testing.T, events []domain.Event, errors ...bool) {
+	t.Helper()
+	starts := eventsOfType(events, domain.EvSpanModelRequestStart)
+	ends := eventsOfType(events, domain.EvSpanModelRequestEnd)
+	if len(starts) != len(errors) || len(ends) != len(errors) {
+		t.Fatalf(
+			"model request spans = %d starts/%d ends, want %d each; got %s",
+			len(starts), len(ends), len(errors), typeList(events),
+		)
+	}
+	for i := range errors {
+		startID, _ := ends[i].Payload["model_request_start_id"].(string)
+		if startID != starts[i].ID {
+			t.Fatalf("model request end %d references %q, want %q", i, startID, starts[i].ID)
+		}
+		isError, ok := ends[i].Payload["is_error"].(bool)
+		if !ok || isError != errors[i] {
+			t.Fatalf("model request end %d is_error = %#v, want %v", i, ends[i].Payload["is_error"], errors[i])
+		}
+	}
 }
 
 func typeList(events []domain.Event) string {

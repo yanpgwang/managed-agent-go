@@ -138,10 +138,12 @@ If generation is interrupted after preview delivery, the terminal
 `span.model_request_end` closes the preview even when no buffered
 `agent.message` is produced.
 
-Model request span IDs are allocated before provider execution and the durable
-start/end pair is committed with the turn result. The current stream therefore
-does not expose a live `span.model_request_start` before the provider call;
-only `agent.message` text has a best-effort live preview.
+Model request span IDs are allocated before provider execution. The durable
+`span.model_request_start` is appended before its provider call can publish a
+preview; the authoritative message and correlated `span.model_request_end`
+follow when that model round completes. If a preview arrives before its
+persisted-event wakeup, the stream reconciles its PostgreSQL cursor before
+forwarding the first preview frame.
 
 For an active outcome interrupted before an evaluation-start event was emitted,
 `span.outcome_evaluation_end.outcome_evaluation_start_id` is the documented

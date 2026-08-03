@@ -35,6 +35,8 @@ func NewWorkerOnTaskQueue(
 	w.RegisterActivityWithOptions(acts.LoadInterrupt, activity.RegisterOptions{Name: ActivityLoadInterrupt})
 	w.RegisterActivityWithOptions(acts.LoadPendingActions, activity.RegisterOptions{Name: ActivityLoadPendingActions})
 	w.RegisterActivityWithOptions(acts.PrepareTurn, activity.RegisterOptions{Name: ActivityPrepareTurn})
+	w.RegisterActivityWithOptions(acts.StartModelRequest, activity.RegisterOptions{Name: ActivityStartModelRequest})
+	w.RegisterActivityWithOptions(acts.AppendWorkflowEvents, activity.RegisterOptions{Name: ActivityAppendWorkflowEvents})
 	w.RegisterActivityWithOptions(acts.CallModel, activity.RegisterOptions{Name: ActivityCallModel})
 	w.RegisterActivityWithOptions(acts.EvaluateOutcome, activity.RegisterOptions{Name: ActivityEvaluateOutcome})
 	w.RegisterActivityWithOptions(acts.ExecuteTool, activity.RegisterOptions{Name: ActivityExecuteTool})

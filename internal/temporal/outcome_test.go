@@ -185,7 +185,6 @@ func TestWorkflowTurnEvaluatesOutcomeAndAccountsUsage(t *testing.T) {
 	})
 	require.NoError(t, env.GetWorkflowError())
 	require.Equal(t, []string{
-		domain.EvSpanModelRequestStart,
 		domain.EvAgentMessage,
 		domain.EvSpanModelRequestEnd,
 		domain.EvSpanOutcomeEvaluationStart,
@@ -194,10 +193,10 @@ func TestWorkflowTurnEvaluatesOutcomeAndAccountsUsage(t *testing.T) {
 	}, draftTypes(completed.Output))
 	require.Equal(t, int64(13), completed.Usage.InputTokens)
 	require.Equal(t, int64(6), completed.Usage.OutputTokens)
-	end := completed.Output[4].Payload
+	end := completed.Output[3].Payload
 	require.Equal(t, "sevt_eval_start", end["outcome_evaluation_start_id"])
 	require.Equal(t, "satisfied", end["result"])
 	require.Equal(t, "fast", end["usage"].(map[string]any)["speed"])
-	modelEnd := completed.Output[2].Payload["model_usage"].(map[string]any)
+	modelEnd := completed.Output[1].Payload["model_usage"].(map[string]any)
 	require.Equal(t, "standard", modelEnd["speed"])
 }

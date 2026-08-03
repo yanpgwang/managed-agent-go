@@ -35,6 +35,49 @@ type workflowTurnState struct {
 	transcriptDelta        []domain.Message
 	toolUseMappings        []domain.ProviderToolUseMapping
 	usage                  domain.TokenUsage
+	flushedEventCount      int
+}
+
+func (t *workflowTurnState) startModelRequest(startID string) error {
+	return workflow.ExecuteActivity(
+		t.actx,
+		ActivityStartModelRequest,
+		StartModelRequestInput{
+			SessionID:           t.sessionID,
+			TriggerEventID:      t.triggerEventID,
+			ModelRequestStartID: startID,
+		},
+	).Get(t.actx, nil)
+}
+
+func (t *workflowTurnState) flushOutput() error {
+	if len(t.output) == 0 {
+		return nil
+	}
+	drafts := append([]domain.EventDraft(nil), t.output...)
+	for i := range drafts {
+		if drafts[i].ID == "" {
+			drafts[i].ID = workflowProgressEventID(
+				t.sessionID,
+				t.triggerEventID,
+				t.flushedEventCount+i,
+			)
+		}
+	}
+	if err := workflow.ExecuteActivity(
+		t.actx,
+		ActivityAppendWorkflowEvents,
+		AppendWorkflowEventsInput{
+			SessionID:      t.sessionID,
+			TriggerEventID: t.triggerEventID,
+			Events:         drafts,
+		},
+	).Get(t.actx, nil); err != nil {
+		return err
+	}
+	t.flushedEventCount += len(drafts)
+	t.output = nil
+	return nil
 }
 
 func (t *workflowTurnState) callModel(
@@ -122,6 +165,9 @@ func outcomeEvaluationDrafts(
 	}
 }
 
+// modelRequestStartDraft is retained only for histories recorded before the
+// live-model-request-span-start Workflow patch. New histories publish the same
+// event through StartModelRequest before CallModel begins.
 func modelRequestStartDraft(called CallModelResult) *domain.EventDraft {
 	if called.ModelRequestStartID == "" {
 		return nil

@@ -199,6 +199,9 @@ func (s *Stream) tail(
 	}
 	ticker := time.NewTicker(s.reconcileInterval)
 	defer ticker.Stop()
+	previewPrepared := make(map[string]struct{})
+	closedPreviewEvents := make(map[string]struct{})
+	modelRequestClosed := false
 
 	reconcile := func() bool {
 		for {
@@ -208,6 +211,14 @@ func (s *Stream) tail(
 			}
 			for _, event := range events {
 				cursor = event.Sequence
+				switch event.Type {
+				case domain.EvSpanModelRequestStart:
+					modelRequestClosed = false
+				case domain.EvSpanModelRequestEnd:
+					modelRequestClosed = true
+				case domain.EvAgentMessage:
+					closedPreviewEvents[event.ID] = struct{}{}
+				}
 				current := event
 				select {
 				case frames <- app.Frame{Event: &current}:
@@ -261,6 +272,28 @@ func (s *Stream) tail(
 				continue
 			}
 			if !deltaOptIn[envelope.EventType] {
+				continue
+			}
+			if _, prepared := previewPrepared[envelope.EventID]; !prepared {
+				// StartModelRequest commits before CallModel can publish. Catch the
+				// authoritative cursor up before forwarding this event's first
+				// best-effort frame, even if select observed the preview subject
+				// before the persisted-event wakeup subject.
+				if !reconcile() {
+					return
+				}
+				previewPrepared[envelope.EventID] = struct{}{}
+			}
+			if _, closed := closedPreviewEvents[envelope.EventID]; closed {
+				// A delayed NATS frame must not appear after its authoritative
+				// buffered agent.message.
+				continue
+			}
+			if modelRequestClosed {
+				// Error and interrupt paths intentionally have no authoritative
+				// agent.message. Once their durable span end has reached this
+				// subscriber, it still closes any preview frames buffered on the
+				// separate NATS subject.
 				continue
 			}
 			preview := domain.PreviewFrame{
