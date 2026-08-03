@@ -40,7 +40,7 @@ func TestInterruptedTurnDrafts_KeepsCompletedMCPPair(t *testing.T) {
 		{Type: domain.EvSessionStatusIdle, Payload: map[string]any{}},
 	}
 
-	out, _ := interruptedTurnDrafts(drafts)
+	out, _, _ := interruptedTurnDrafts(drafts)
 
 	got := make([]string, 0, len(out))
 	for _, draft := range out {

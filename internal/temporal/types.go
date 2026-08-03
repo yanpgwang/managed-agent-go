@@ -124,14 +124,16 @@ type PrepareTurnResult struct {
 }
 
 type EvaluateOutcomeInput struct {
-	SessionID  string             `json:"session_id"`
-	Model      string             `json:"model"`
-	Effort     string             `json:"effort,omitempty"`
-	Speed      string             `json:"speed,omitempty"`
-	Outcome    domain.OutcomeSpec `json:"outcome"`
-	Candidate  []domain.Message   `json:"candidate"`
-	Iteration  int                `json:"iteration"`
-	FinalCycle bool               `json:"final_cycle"`
+	SessionID    string             `json:"session_id"`
+	StartEventID string             `json:"start_event_id,omitempty"`
+	EndEventID   string             `json:"end_event_id,omitempty"`
+	Model        string             `json:"model"`
+	Effort       string             `json:"effort,omitempty"`
+	Speed        string             `json:"speed,omitempty"`
+	Outcome      domain.OutcomeSpec `json:"outcome"`
+	Candidate    []domain.Message   `json:"candidate"`
+	Iteration    int                `json:"iteration"`
+	FinalCycle   bool               `json:"final_cycle"`
 }
 
 type EvaluateOutcomeResult struct {

@@ -64,6 +64,16 @@ func (w *turnInterruptWatcher) executeActivity(
 	input any,
 	output any,
 ) (interruptibleActivityOutcome, error) {
+	return w.executeActivityWithPulse(activityName, input, output, 0, nil)
+}
+
+func (w *turnInterruptWatcher) executeActivityWithPulse(
+	activityName string,
+	input any,
+	output any,
+	pulseInterval time.Duration,
+	pulse func() error,
+) (interruptibleActivityOutcome, error) {
 	// A Signal-With-Start wakeup can already have been coalesced by the outer
 	// Workflow loop before this turn begins. Check PostgreSQL once before the
 	// turn's first model/tool Activity so an already-durable interrupt cannot be
@@ -83,20 +93,7 @@ func (w *turnInterruptWatcher) executeActivity(
 	defer cancel()
 
 	future := workflow.ExecuteActivity(cctx, activityName, input)
-	selector := workflow.NewSelector(w.actx)
-	activityReady := false
-	wakeupReady := false
 	var activityErr error
-	selector.AddFuture(future, func(f workflow.Future) {
-		activityReady = true
-		activityErr = f.Get(w.actx, output)
-	})
-	selector.AddReceive(w.wakeupCh, func(ch workflow.ReceiveChannel, _ bool) {
-		var signal WakeupSignal
-		ch.Receive(w.actx, &signal)
-		wakeupReady = true
-	})
-
 	for {
 		// Prefer an already-recorded Activity result. PostgreSQL completion still
 		// performs the authoritative finish-vs-interrupt lock race afterward.
@@ -105,11 +102,43 @@ func (w *turnInterruptWatcher) executeActivity(
 			return interruptibleActivityOutcome{Completed: activityErr == nil}, activityErr
 		}
 
-		wakeupReady = false
+		selector := workflow.NewSelector(w.actx)
+		activityReady := false
+		wakeupReady := false
+		pulseReady := false
+		activityErr = nil
+		selector.AddFuture(future, func(f workflow.Future) {
+			activityReady = true
+			activityErr = f.Get(w.actx, output)
+		})
+		selector.AddReceive(w.wakeupCh, func(ch workflow.ReceiveChannel, _ bool) {
+			var signal WakeupSignal
+			ch.Receive(w.actx, &signal)
+			wakeupReady = true
+		})
+		timerCtx, cancelTimer := workflow.WithCancel(w.actx)
+		if pulse != nil && pulseInterval > 0 {
+			timer := workflow.NewTimer(timerCtx, pulseInterval)
+			selector.AddFuture(timer, func(workflow.Future) { pulseReady = true })
+		}
 		selector.Select(w.actx)
-		if activityReady {
+		if future.IsReady() {
+			cancelTimer()
+			if !activityReady {
+				activityErr = future.Get(w.actx, output)
+			}
 			return interruptibleActivityOutcome{Completed: activityErr == nil}, activityErr
 		}
+		if pulseReady {
+			cancelTimer()
+			if err := pulse(); err != nil {
+				cancel()
+				_ = future.Get(w.actx, output)
+				return interruptibleActivityOutcome{}, err
+			}
+			continue
+		}
+		cancelTimer()
 		if !wakeupReady {
 			continue
 		}

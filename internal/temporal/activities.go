@@ -879,9 +879,17 @@ func (a *Activities) EvaluateOutcome(
 	if in.FinalCycle && verdict == "needs_revision" {
 		verdict = "max_iterations_reached"
 	}
+	startEventID := in.StartEventID
+	if startEventID == "" {
+		startEventID = a.ids.NewID(domain.PrefixEvent)
+	}
+	endEventID := in.EndEventID
+	if endEventID == "" {
+		endEventID = a.ids.NewID(domain.PrefixEvent)
+	}
 	return EvaluateOutcomeResult{
-		StartEventID: a.ids.NewID(domain.PrefixEvent),
-		EndEventID:   a.ids.NewID(domain.PrefixEvent),
+		StartEventID: startEventID,
+		EndEventID:   endEventID,
 		Result:       verdict, Explanation: explanation, Usage: response.Usage,
 	}, nil
 }

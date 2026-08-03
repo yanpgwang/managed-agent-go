@@ -49,6 +49,9 @@ const (
 	// executions publish unknown_error with an explicit terminal retry status.
 	terminalSessionErrorChangeID = "terminal-session-error-contract"
 	terminalSessionErrorVersion  = 1
+
+	outcomeEvaluationHeartbeatChangeID = "outcome-evaluation-heartbeats"
+	outcomeEvaluationHeartbeatVersion  = 1
 )
 
 // runWorkflowTurn owns the plan-act-observe loop in deterministic Workflow
@@ -127,16 +130,24 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		terminalSessionErrorVersion,
 	) == terminalSessionErrorVersion
+	outcomeEvaluationHeartbeats := workflow.GetVersion(
+		actx,
+		outcomeEvaluationHeartbeatChangeID,
+		workflow.DefaultVersion,
+		outcomeEvaluationHeartbeatVersion,
+	) == outcomeEvaluationHeartbeatVersion
 
 	turn := &workflowTurnState{
-		actx:                   actx,
-		sessionID:              sessionID,
-		triggerEventID:         triggerEventID,
-		resolutionEventIDs:     resolutionEventIDs,
-		interrupts:             interrupts,
-		terminalSessionErrors:  terminalSessionErrors,
-		usesProviderTranscript: prepared.UsesProviderTranscript,
-		output:                 append([]domain.EventDraft(nil), prepared.PreludeEvents...),
+		actx:                     actx,
+		sessionID:                sessionID,
+		triggerEventID:           triggerEventID,
+		resolutionEventIDs:       resolutionEventIDs,
+		interrupts:               interrupts,
+		terminalSessionErrors:    terminalSessionErrors,
+		outcomeHeartbeats:        outcomeEvaluationHeartbeats,
+		outcomeHeartbeatInterval: outcomeEvaluationHeartbeatInterval,
+		usesProviderTranscript:   prepared.UsesProviderTranscript,
+		output:                   append([]domain.EventDraft(nil), prepared.PreludeEvents...),
 		transcriptDelta: append(
 			[]domain.Message(nil),
 			prepared.TranscriptDelta...,
@@ -291,16 +302,35 @@ func runWorkflowTurnInternal(
 				Role: domain.RoleAssistant, Content: called.Response.Content,
 			}})
 			finalCycle := outcomeIteration+1 >= prepared.Outcome.MaxIterations
+			evaluationStartID, evaluationEndID := outcomeEvaluationSpanIDs(
+				sessionID,
+				triggerEventID,
+				outcomeIteration,
+			)
+			if outcomeEvaluationHeartbeats {
+				turn.output = append(turn.output, outcomeEvaluationStartDraft(
+					*prepared.Outcome,
+					outcomeIteration,
+					evaluationStartID,
+				))
+				if err := turn.flushOutput(); err != nil {
+					return RunTurnResult{}, err
+				}
+				turn.activeOutcomeEvaluationStartID = evaluationStartID
+				turn.activeOutcomeIteration = outcomeIteration
+			}
 			evaluated, evaluationOutcome, err := turn.evaluateOutcome(
 				EvaluateOutcomeInput{
-					SessionID:  sessionID,
-					Model:      prepared.Request.Model,
-					Effort:     prepared.Request.Effort,
-					Speed:      prepared.Request.Speed,
-					Outcome:    *prepared.Outcome,
-					Candidate:  candidate,
-					Iteration:  outcomeIteration,
-					FinalCycle: finalCycle,
+					SessionID:    sessionID,
+					StartEventID: evaluationStartID,
+					EndEventID:   evaluationEndID,
+					Model:        prepared.Request.Model,
+					Effort:       prepared.Request.Effort,
+					Speed:        prepared.Request.Speed,
+					Outcome:      *prepared.Outcome,
+					Candidate:    candidate,
+					Iteration:    outcomeIteration,
+					FinalCycle:   finalCycle,
 				},
 			)
 			if err != nil {
@@ -313,16 +343,37 @@ func runWorkflowTurnInternal(
 				if evaluationOutcome.Interrupted {
 					return turn.complete(nil)
 				}
+				if outcomeEvaluationHeartbeats {
+					turn.output = append(turn.output, outcomeEvaluationFailureDraft(
+						*prepared.Outcome,
+						outcomeIteration,
+						evaluationStartID,
+						evaluationEndID,
+						evaluated,
+					))
+					turn.activeOutcomeEvaluationStartID = ""
+				}
 				return turn.terminate(failTurn(evaluated.FatalError))
 			}
-			turn.output = append(
-				turn.output,
-				outcomeEvaluationDrafts(
+			if outcomeEvaluationHeartbeats {
+				turn.output = append(turn.output, outcomeEvaluationEndDraft(
 					*prepared.Outcome,
 					outcomeIteration,
 					evaluated,
-				)...,
-			)
+				))
+				if !evaluationOutcome.Interrupted {
+					turn.activeOutcomeEvaluationStartID = ""
+				}
+			} else {
+				turn.output = append(
+					turn.output,
+					outcomeEvaluationDrafts(
+						*prepared.Outcome,
+						outcomeIteration,
+						evaluated,
+					)...,
+				)
+			}
 			if evaluationOutcome.Interrupted {
 				return turn.complete(nil)
 			}
@@ -474,6 +525,28 @@ func modelRequestSpanIDs(sessionID, triggerEventID string, round int) (string, s
 		return domain.PrefixEvent + hex.EncodeToString(sum[:12])
 	}
 	return makeID("model_start"), makeID("model_end")
+}
+
+func outcomeEvaluationSpanIDs(
+	sessionID string,
+	triggerEventID string,
+	iteration int,
+) (string, string) {
+	makeID := func(kind string) string {
+		sum := sha256.Sum256([]byte(
+			sessionID + "\x00" + triggerEventID + "\x00outcome\x00" +
+				strconv.Itoa(iteration) + "\x00" + kind,
+		))
+		return domain.PrefixEvent + hex.EncodeToString(sum[:12])
+	}
+	return makeID("evaluation_start"), makeID("evaluation_end")
+}
+
+func outcomeEvaluationHeartbeatID(startEventID string, ordinal int) string {
+	sum := sha256.Sum256([]byte(
+		startEventID + "\x00heartbeat\x00" + strconv.Itoa(ordinal),
+	))
+	return domain.PrefixEvent + hex.EncodeToString(sum[:12])
 }
 
 func workflowProgressEventID(

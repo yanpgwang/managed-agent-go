@@ -52,6 +52,8 @@ const (
 	InternalCompanionSystemEventID = "__companion_system_event_id"
 	InternalCompanionSystemContent = "__companion_system_content"
 	InternalToolExecutionOwner     = "__tool_execution_owner"
+	InternalOutcomeEvaluationStart = "__outcome_evaluation_start_id"
+	InternalOutcomeIteration       = "__outcome_evaluation_iteration"
 )
 
 // EventDraft is an event about to be persisted. Payload holds the type-specific
