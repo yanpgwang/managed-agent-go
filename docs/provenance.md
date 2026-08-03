@@ -52,6 +52,16 @@ Verified 2026-07-29.
   — filters, pagination envelope, and per-event shapes.
 - [Multiagent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration)
   — multiagent input shape and resolved-roster behavior.
+- [Managed Agents reference](https://platform.claude.com/docs/en/managed-agents/reference)
+  — the published per-organization rate limits (300 requests per minute for
+  create endpoints, 1,200 for read endpoints). Verified 2026-08-03. The
+  documentation states these as Anthropic organization policy and defines **no**
+  rate-limit response headers, so Mango emits none and implements no inbound
+  rate limiting. The same audit found that the documentation names `x-api-key`
+  and lists an `authentication_error` type but binds no HTTP status code to an
+  authentication failure; Mango's `401` for a missing or invalid key is
+  therefore a local choice, recorded in
+  [API overview](api/overview.md#authentication).
 
 ## Tool and sandbox sources
 

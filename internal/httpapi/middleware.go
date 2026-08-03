@@ -12,10 +12,24 @@ import (
 )
 
 type Config struct {
-	RequireBeta        bool
+	RequireBeta bool
+	// RequireAuth turns on API key authentication. When it is true every
+	// request outside the liveness/readiness probes must present a key that
+	// APIKeys accepts. A true RequireAuth with an empty APIKeys fails closed:
+	// nothing authenticates.
 	RequireAuth        bool
 	RequireVersion     bool
 	RequireContentType bool
+
+	// APIKeys is the set of accepted API keys. Keys are stored hashed and
+	// compared in constant time; see auth.go.
+	APIKeys *APIKeySet
+
+	// AllowAuthorizationHeader additionally accepts `authorization: Bearer
+	// <key>`. This is a non-upstream extension — the official documentation
+	// only describes `x-api-key` — so it is off by default and must be enabled
+	// explicitly.
+	AllowAuthorizationHeader bool
 }
 
 const betaValue = "managed-agents-2026-04-01"
@@ -37,14 +51,34 @@ func betaMiddleware(cfg Config, next http.Handler) http.Handler {
 	})
 }
 
+// authMiddleware validates the presented API key against the configured key
+// set and attaches the resolved Principal to the request context.
+//
+// Presence of a header is never sufficient: an unknown key is rejected exactly
+// like a missing one. Both rejections use 401 with the `authentication_error`
+// type. That status is a Mango local choice — upstream documents the
+// `authentication_error` type but binds no HTTP status code to it.
 func authMiddleware(cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if cfg.RequireAuth && r.Header.Get("x-api-key") == "" && r.Header.Get("authorization") == "" {
+		if !cfg.RequireAuth || isOperationalProbe(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		presented, ok := presentedAPIKey(r, cfg.AllowAuthorizationHeader)
+		if !ok {
 			writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
 				"missing x-api-key")
 			return
 		}
-		next.ServeHTTP(w, r)
+		principal, ok := cfg.APIKeys.Lookup(presented)
+		if !ok {
+			// Deliberately identical wording for an unknown key and a revoked
+			// one, and never an echo of the presented value.
+			writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
+				"invalid x-api-key")
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ContextWithPrincipal(r.Context(), principal)))
 	})
 }
 

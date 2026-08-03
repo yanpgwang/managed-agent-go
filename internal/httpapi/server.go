@@ -4,6 +4,7 @@ import (
 	"context"
 	_ "embed"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
@@ -62,12 +63,32 @@ type Server struct {
 	deps Deps
 	cfg  Config
 	mux  *http.ServeMux
+
+	// shutdown is closed once by BeginShutdown. Long-lived streaming handlers
+	// select on it so a draining process ends them cleanly instead of having
+	// their connections severed when the drain deadline expires.
+	shutdown     chan struct{}
+	shutdownOnce sync.Once
 }
 
 func NewServer(deps Deps, cfg Config) *Server {
-	s := &Server{deps: deps, cfg: cfg, mux: http.NewServeMux()}
+	s := &Server{deps: deps, cfg: cfg, mux: http.NewServeMux(), shutdown: make(chan struct{})}
 	s.routes()
 	return s
+}
+
+// BeginShutdown signals in-flight streaming handlers that the process is
+// draining. It is idempotent and safe to call concurrently.
+//
+// Callers invoke it immediately before http.Server.Shutdown. Without it, an
+// open SSE stream keeps its connection non-idle for the whole drain window and
+// is then killed at the deadline; with it, the stream handler returns, the
+// response ends at a frame boundary, and Shutdown completes promptly.
+//
+// It deliberately does not cancel per-request contexts: ordinary requests keep
+// the full drain window to finish.
+func (s *Server) BeginShutdown() {
+	s.shutdownOnce.Do(func() { close(s.shutdown) })
 }
 
 func (s *Server) routes() {

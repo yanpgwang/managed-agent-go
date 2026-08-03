@@ -26,7 +26,32 @@ func NewTestHandlerWithPreviews(t *testing.T) http.Handler {
 	return newTestHandler(t, Config{}, true)
 }
 
+// testAPIKeySecret is the key the compatibility suites present as x-api-key.
+const testAPIKeySecret = "sk-test"
+
+// testAPIKeyID is its stable non-secret id, which is what a Principal carries.
+const testAPIKeyID = "test-key"
+
+// testAPIKeys builds the key set that accepts testAPIKeySecret. Authenticated
+// suites configure it so their requests exercise real key validation rather
+// than header presence.
+func testAPIKeys(t *testing.T) *APIKeySet {
+	t.Helper()
+	keys, err := ParseAPIKeys(testAPIKeyID + ":" + testAPIKeySecret)
+	if err != nil {
+		t.Fatalf("ParseAPIKeys: %v", err)
+	}
+	return keys
+}
+
 func newTestHandler(t *testing.T, cfg Config, previews bool) http.Handler {
+	t.Helper()
+	return newTestAPIServer(t, cfg, previews).Handler()
+}
+
+// newTestAPIServer returns the *Server itself, for tests that need a
+// server-level seam such as BeginShutdown rather than only its http.Handler.
+func newTestAPIServer(t *testing.T, cfg Config, previews bool) *Server {
 	t.Helper()
 	ids := domain.NewSeqIDGen()
 	clock := domain.FixedClock{T: time.Unix(1000, 0).UTC()}
@@ -46,7 +71,7 @@ func newTestHandler(t *testing.T, cfg Config, previews bool) http.Handler {
 	return NewServer(Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
 		Events: sessions, Stream: hub,
-	}, cfg).Handler()
+	}, cfg)
 }
 
 type testAgentRepository struct {

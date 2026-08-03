@@ -14,7 +14,8 @@ import (
 // black-box compatibility client. The SDK's own request/response types are the
 // contract; if the SDK can construct a request and decode our response without
 // error, our wire shape matches what the SDK expects. The server runs in strict
-// mode so the SDK's automatic anthropic-beta header and x-api-key are exercised.
+// mode with a real configured API key, so the SDK's automatic anthropic-beta
+// header and its x-api-key are both validated rather than merely observed.
 //
 // SDK-expressible JSON is asserted here; wire details the SDK cannot express
 // (e.g. exact top-level event union flattening) are covered by the raw-HTTP
@@ -24,13 +25,14 @@ func sdkClientAndServer(t *testing.T) (anthropic.Client, *httptest.Server) {
 	t.Helper()
 	handler := newTestHandler(t, Config{
 		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		APIKeys: testAPIKeys(t),
 	}, false)
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
 	client := anthropic.NewClient(
 		option.WithBaseURL(ts.URL),
-		option.WithAPIKey("sk-test"),
+		option.WithAPIKey(testAPIKeySecret),
 	)
 	return client, ts
 }

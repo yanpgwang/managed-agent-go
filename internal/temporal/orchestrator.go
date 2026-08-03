@@ -147,12 +147,47 @@ func NewRuntimeOnTaskQueue(
 	taskQueue string,
 	previewPublisher ...PreviewPublisher,
 ) *Runtime {
+	return NewRuntimeWithOptions(c, store, modelClient, provider, ids, RuntimeOptions{
+		TaskQueue:         taskQueue,
+		Relay:             relayCfg,
+		PreviewPublishers: previewPublisher,
+	})
+}
+
+// RuntimeOptions groups the deployment tunables of an execution plane. Only
+// capacity and shutdown behavior live here; retry policies and task queue
+// semantics remain with the code that owns them.
+type RuntimeOptions struct {
+	// TaskQueue selects the Temporal task queue. Empty means TaskQueue.
+	TaskQueue string
+	// Worker bounds worker concurrency, polling, and shutdown drain.
+	Worker WorkerConfig
+	// Relay configures the PostgreSQL outbox relay.
+	Relay RelayConfig
+	// PreviewPublishers receive live model previews.
+	PreviewPublishers []PreviewPublisher
+}
+
+// NewRuntimeWithOptions is the full-fidelity constructor used by deployments
+// that need to bound worker concurrency and drain.
+func NewRuntimeWithOptions(
+	c client.Client,
+	store *pg.Store,
+	modelClient model.Client,
+	provider sandbox.Provider,
+	ids domain.IDGenerator,
+	opts RuntimeOptions,
+) *Runtime {
+	taskQueue := opts.TaskQueue
+	if taskQueue == "" {
+		taskQueue = TaskQueue
+	}
 	sandboxes := sandbox.NewSessionManager(provider, store)
 	src := storeSource{store: store} // satisfies both EventSource and JournalStore
-	acts := NewActivities(modelClient, src, src, sandboxes, ids, previewPublisher...)
-	w := NewWorkerOnTaskQueue(c, acts, taskQueue)
+	acts := NewActivities(modelClient, src, src, sandboxes, ids, opts.PreviewPublishers...)
+	w := NewWorkerOnTaskQueue(c, acts, taskQueue, opts.Worker)
 	signaler := NewSignalerOnTaskQueue(c, taskQueue)
-	relay := NewRelay(store, signaler, relayCfg)
+	relay := NewRelay(store, signaler, opts.Relay)
 	lifecycle := NewLifecycleReconciler(
 		store,
 		signaler,

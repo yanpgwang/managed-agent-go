@@ -39,17 +39,55 @@ The default development server accepts requests without compatibility headers.
 Run with `-strict` to require them:
 
 ```http
-x-api-key: any-non-empty-value
 anthropic-version: 2023-06-01
 anthropic-beta: managed-agents-2026-04-01
 content-type: application/json
 ```
 
-`authorization` may replace `x-api-key`. Strict mode currently validates header
-presence and version/beta values; it is not a production authentication system.
-
 Every response includes a `request-id` header. JSON request bodies are limited
 to 32 MiB and unknown top-level fields are rejected.
+
+## Authentication
+
+Authentication is configured with key material, not with `-strict`:
+
+```http
+x-api-key: <a key configured in MANAGED_AGENT_API_KEYS>
+```
+
+`MANAGED_AGENT_API_KEYS` holds a comma- or whitespace-separated list of
+`<key-id>:<secret>` entries. Multiple keys can be configured so a key can be
+rotated without a window where none is valid. Keys are stored as SHA-256
+digests and compared in constant time; the key id is a non-secret label and is
+the only part that appears in logs.
+
+- When at least one key is configured, every request outside `GET /healthz` and
+  `GET /readyz` must present an accepted key.
+- When no key is configured, authentication is **disabled**, the server logs a
+  warning at startup, and `-strict` refuses to start. This is the zero-config
+  local development path; see [Security](https://github.com/yanpgwang/managed-agent-go/blob/main/SECURITY.md).
+- A missing key and an unknown key are both rejected with `401` and
+  `authentication_error`. Header presence alone never authenticates.
+
+:::note[Local choice]
+
+The official Managed Agents documentation describes the `x-api-key` header and
+lists an `authentication_error` error type, but binds **no HTTP status code** to
+an authentication failure and draws no missing-versus-invalid distinction.
+Returning `401` with `authentication_error` is therefore Mango's local choice,
+not a reproduced contract.
+
+Upstream documents **no** rate-limit response headers, so Mango emits none
+(`retry-after`, `anthropic-ratelimit-*`, and `x-should-retry` are never set).
+The published Managed Agents rate limits — 300 requests per minute for create
+endpoints and 1,200 for read endpoints — are Anthropic organization policy;
+Mango does not implement inbound rate limiting.
+
+:::
+
+`authorization: Bearer <key>` is accepted only when
+`MANAGED_AGENT_AUTH_ALLOW_AUTHORIZATION_HEADER=true`. It is a non-upstream
+convenience extension and is off by default.
 
 ## Errors
 

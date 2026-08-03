@@ -317,22 +317,85 @@ func main() {
 func runServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "listen address (default binds to loopback; use e.g. :8080 to expose on all interfaces)")
-	strict := fs.Bool("strict", false, "require Claude API wire headers (auth, version, beta, content-type) to be present and valid; this is header validation, NOT authentication")
+	strict := fs.Bool("strict", false, "require the Claude API wire headers (version, beta, content-type) to be present and valid; authentication is configured separately with "+envAPIKeys)
 	_ = fs.Parse(os.Args[2:])
 
-	cfg := httpapi.Config{
-		RequireBeta: *strict, RequireAuth: *strict, RequireVersion: *strict, RequireContentType: *strict,
+	cfg, warning, err := apiConfigFromEnv(*strict)
+	if err != nil {
+		log.Fatalf("serve: %v", err)
 	}
-	runPostgresAPI(*addr, cfg)
+	if warning != "" {
+		log.Print(warning)
+	} else {
+		// Key ids are non-secret labels; key material is never logged.
+		log.Printf("serve: API key authentication enabled (%d key id(s): %s)",
+			cfg.APIKeys.Len(), strings.Join(cfg.APIKeys.IDs(), ", "))
+		if cfg.AllowAuthorizationHeader {
+			log.Printf("serve: accepting `authorization: Bearer` as well as x-api-key " +
+				"(non-upstream extension)")
+		}
+	}
+	shutdownTimeout, err := envDurationOr(envShutdownTimeout, defaultShutdownTimeout)
+	if err != nil {
+		log.Fatalf("serve: %v", err)
+	}
+	runPostgresAPI(*addr, cfg, shutdownTimeout)
 }
 
-func runPostgresAPI(addr string, cfg httpapi.Config) {
+// apiConfigFromEnv resolves the HTTP wire configuration.
+//
+// Authentication is driven by configured key material, not by -strict: a flag
+// cannot conjure credentials, and header presence is not authentication. Three
+// outcomes are possible:
+//
+//   - keys configured: authentication is enforced, with or without -strict.
+//   - no keys and no -strict: the zero-config local development path. Auth is
+//     disabled and a warning is returned for the caller to log.
+//   - no keys with -strict: an error. -strict is an explicit request for
+//     production-shaped behavior, and failing closed beats serving an
+//     unauthenticated API that looks hardened.
+func apiConfigFromEnv(strict bool) (cfg httpapi.Config, warning string, err error) {
+	apiKeys, err := httpapi.ParseAPIKeys(os.Getenv(envAPIKeys))
+	if err != nil {
+		return httpapi.Config{}, "", err
+	}
+	allowAuthorizationHeader, err := envBool(envAllowAuthorizationHeader)
+	if err != nil {
+		return httpapi.Config{}, "", err
+	}
+	cfg = httpapi.Config{
+		RequireBeta:              strict,
+		RequireVersion:           strict,
+		RequireContentType:       strict,
+		RequireAuth:              apiKeys.Len() > 0,
+		APIKeys:                  apiKeys,
+		AllowAuthorizationHeader: allowAuthorizationHeader,
+	}
+	if cfg.RequireAuth {
+		return cfg, "", nil
+	}
+	if strict {
+		return httpapi.Config{}, "", fmt.Errorf(
+			"-strict requires API keys; set %s to a list of \"<key-id>:<secret>\" entries, "+
+				"or drop -strict for local development", envAPIKeys)
+	}
+	return cfg, fmt.Sprintf(
+		"serve: WARNING authentication is DISABLED: %s is not set, so every request is "+
+			"served unauthenticated. This is the local development default; set %s before "+
+			"binding anything other than loopback.", envAPIKeys, envAPIKeys), nil
+}
+
+func runPostgresAPI(addr string, cfg httpapi.Config, shutdownTimeout time.Duration) {
 	databaseURL := os.Getenv(envDatabaseURL)
 	if databaseURL == "" {
 		log.Fatalf("serve: %s is required", envDatabaseURL)
 	}
+	poolCfg, err := poolConfigFromEnv()
+	if err != nil {
+		log.Fatalf("serve: %v", err)
+	}
 	ctx := context.Background()
-	pool, err := pg.Pool(ctx, databaseURL)
+	pool, err := pg.Pool(ctx, databaseURL, poolCfg)
 	if err != nil {
 		log.Fatalf("serve: postgres: %v", err)
 	}
@@ -376,16 +439,23 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	)
 	events := controlplane.NewEventService(pgStore)
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
-	handler := httpapi.NewServer(httpapi.Deps{
+	api := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
 		Events: events, Stream: stream,
-	}, cfg).Handler()
+	}, cfg)
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")
-	serveHTTP(addr, handler)
+	serveHTTP(addr, api, shutdownTimeout)
 }
 
-func serveHTTP(addr string, handler http.Handler) {
-	srv := newHTTPServer(addr, handler)
+// serveHTTP runs the API until SIGINT/SIGTERM, then drains.
+//
+// The drain has two steps. api.BeginShutdown tells long-lived SSE handlers to
+// end at a frame boundary, which turns their connections idle; srv.Shutdown then
+// waits out ordinary in-flight requests within shutdownTimeout. Without the
+// first step an open stream would hold the server non-idle for the whole window
+// and then be severed at the deadline.
+func serveHTTP(addr string, api *httpapi.Server, shutdownTimeout time.Duration) {
+	srv := newHTTPServer(addr, api.Handler())
 	go func() {
 		log.Printf("listening on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -396,7 +466,13 @@ func serveHTTP(addr string, handler http.Handler) {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	log.Printf("serve: draining for up to %s", shutdownTimeout)
+	api.BeginShutdown()
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
-	_ = srv.Shutdown(ctx)
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Printf("serve: drain incomplete after %s: %v", shutdownTimeout, err)
+		return
+	}
+	log.Printf("serve: drained")
 }

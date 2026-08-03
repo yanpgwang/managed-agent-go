@@ -494,6 +494,13 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-s.shutdown:
+			// The process is draining. End the response at a frame boundary so
+			// the client observes a clean end-of-stream and reconnects, instead
+			// of holding the connection open until the shutdown deadline kills
+			// it. No synthetic SSE frame is emitted: the event union is a
+			// documented contract and Mango does not add to it.
+			return
 		case f, open := <-ch:
 			if !open {
 				return // slow-consumer drop: client should reconnect
