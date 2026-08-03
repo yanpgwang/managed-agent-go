@@ -89,16 +89,23 @@ func validPermissionPolicy(policy PermissionPolicy) bool {
 	return policy.Type == "always_allow" || policy.Type == "always_ask"
 }
 
-// validateMCPServerFields keeps unsupported nested data out of immutable
-// Agent versions. Managed Agents MCP server definitions contain only type,
-// name, and URL; authentication belongs to Session vaults rather than the
-// reusable Agent definition.
-func validateMCPServerFields(value map[string]any) error {
+var (
+	builtinToolsetFields = []string{"configs", "default_config", "type"}
+	mcpToolsetFields     = []string{"configs", "default_config", "mcp_server_name", "type"}
+	customToolFields     = []string{"description", "input_schema", "name", "type"}
+	toolConfigFields     = []string{"enabled", "name", "permission_policy"}
+	defaultConfigFields  = []string{"enabled", "permission_policy"}
+	mcpServerFields      = []string{"name", "type", "url"}
+	policyFields         = []string{"type"}
+)
+
+// rejectUnknownFields keeps unsupported nested data out of immutable Agent
+// versions and Session snapshots. It names the unsupported key, never its
+// value, and sorts keys so the error is deterministic.
+func rejectUnknownFields(value map[string]any, context string, allowed []string) error {
 	var unknown []string
 	for key := range value {
-		switch key {
-		case "type", "name", "url":
-		default:
+		if !slices.Contains(allowed, key) {
 			unknown = append(unknown, key)
 		}
 	}
@@ -106,7 +113,75 @@ func validateMCPServerFields(value map[string]any) error {
 		return nil
 	}
 	slices.Sort(unknown)
-	return fmt.Errorf("mcp server does not support field %q", unknown[0])
+	return fmt.Errorf("%s does not support field %q", context, unknown[0])
+}
+
+// validateToolWireShape is the strict admission boundary for new public
+// requests. Runtime parsing remains tolerant of unknown historical fields so
+// persisted snapshots and Temporal replays survive upgrades.
+func validateToolWireShape(rawTools, rawServers []any) error {
+	for _, item := range rawTools {
+		tool, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		var context string
+		switch tool["type"] {
+		case BuiltinToolsetType:
+			context = "built-in toolset"
+			if err := rejectUnknownFields(tool, context, builtinToolsetFields); err != nil {
+				return err
+			}
+		case "mcp_toolset":
+			context = "mcp_toolset"
+			if err := rejectUnknownFields(tool, context, mcpToolsetFields); err != nil {
+				return err
+			}
+		case "custom":
+			if err := rejectUnknownFields(tool, "custom tool", customToolFields); err != nil {
+				return err
+			}
+			continue
+		default:
+			continue
+		}
+		if config, ok := tool["default_config"].(map[string]any); ok {
+			if err := rejectUnknownFields(config, context+" default_config", defaultConfigFields); err != nil {
+				return err
+			}
+			if policy, ok := config["permission_policy"].(map[string]any); ok {
+				if err := rejectUnknownFields(policy, context+" default permission_policy", policyFields); err != nil {
+					return err
+				}
+			}
+		}
+		if configs, ok := tool["configs"].([]any); ok {
+			for _, item := range configs {
+				config, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if err := rejectUnknownFields(config, context+" config", toolConfigFields); err != nil {
+					return err
+				}
+				if policy, ok := config["permission_policy"].(map[string]any); ok {
+					if err := rejectUnknownFields(policy, context+" permission_policy", policyFields); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	for _, item := range rawServers {
+		server, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if err := rejectUnknownFields(server, "mcp server", mcpServerFields); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func parsePolicy(raw any) *PermissionPolicy {
@@ -301,9 +376,6 @@ func ParseMCPServers(raw []any) (map[string]MCPServer, error) {
 		if !ok {
 			return nil, fmt.Errorf("mcp server entry must be an object")
 		}
-		if err := validateMCPServerFields(value); err != nil {
-			return nil, err
-		}
 		serverType, _ := value["type"].(string)
 		name, _ := value["name"].(string)
 		rawURL, _ := value["url"].(string)
@@ -343,6 +415,16 @@ func ParseMCPServers(raw []any) (map[string]MCPServer, error) {
 // internally inconsistent capabilities out of immutable Agent versions and
 // Session snapshots.
 func ValidateToolConfiguration(rawTools, rawServers []any) error {
+	if err := validateToolWireShape(rawTools, rawServers); err != nil {
+		return err
+	}
+	return ValidateStoredToolConfiguration(rawTools, rawServers)
+}
+
+// ValidateStoredToolConfiguration checks the executable semantics of an
+// already-persisted Agent snapshot while tolerating unknown historical fields.
+// Admission must use ValidateToolConfiguration instead.
+func ValidateStoredToolConfiguration(rawTools, rawServers []any) error {
 	toolSet, err := ParseTools(rawTools)
 	if err != nil {
 		return err
