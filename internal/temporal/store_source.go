@@ -75,6 +75,38 @@ func (s storeSource) AppendWorkflowEvents(
 	return s.store.AppendWorkflowEvents(ctx, sessionID, triggerEventID, drafts)
 }
 
+func (s storeSource) RecordWorkflowRetry(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	errorEventID string,
+	statusEventID string,
+	errorPayload map[string]any,
+) error {
+	return s.store.RecordWorkflowRetry(
+		ctx,
+		sessionID,
+		triggerEventID,
+		errorEventID,
+		statusEventID,
+		errorPayload,
+	)
+}
+
+func (s storeSource) ResumeWorkflowRetry(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	statusEventID string,
+) error {
+	return s.store.ResumeWorkflowRetry(
+		ctx,
+		sessionID,
+		triggerEventID,
+		statusEventID,
+	)
+}
+
 func (s storeSource) LoadProviderTranscript(
 	ctx context.Context,
 	sessionID string,

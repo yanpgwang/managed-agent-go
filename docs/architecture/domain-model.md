@@ -54,12 +54,14 @@ The public session status is a projection:
 
 - `idle` — waiting for input or a required client action;
 - `running` — accepted work is executing or queued;
-- `rescheduling` — reserved for automatic retry behavior;
+- `rescheduling` — an active model request is waiting for its next bounded
+  provider retry;
 - `terminated` — terminal failure or completion.
 
-Temporal may retry failed Activities internally without changing the public
-status. The public `rescheduling` transition is not implemented; an exhausted
-or terminal turn failure projects directly to `terminated`.
+Temporal may retry infrastructure-failed Activities internally without changing
+the public status. Retryable provider responses instead use the public
+`running -> rescheduling -> running` lifecycle. Exhausting that bounded budget
+returns the Session to `idle`; permanent failures project to `terminated`.
 
 ## Event
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
@@ -107,6 +108,41 @@ func TestCallModelTransientAPIErrorRemainsActivityError(t *testing.T) {
 	}
 	if result.FatalError != "" {
 		t.Fatalf("FatalError = %q, want empty for transient failure", result.FatalError)
+	}
+}
+
+func TestCallModelTransientAPIErrorBecomesRetryResultWhenOptedIn(t *testing.T) {
+	client := model.NewFake()
+	client.SetError(&model.APIError{
+		Kind:       model.ErrorRateLimit,
+		StatusCode: 429,
+		Type:       "rate_limit_error",
+		Message:    "slow down",
+		RetryAfter: 2500 * time.Millisecond,
+	})
+	activities := NewActivities(
+		client, nil, nil, nil, domain.NewSeqIDGen(),
+	)
+
+	result, err := activities.CallModel(context.Background(), CallModelInput{
+		SessionID:             "sesn_retry_result",
+		HandleRetryableErrors: true,
+		Request:               model.Request{Model: "test-model"},
+	})
+	if err != nil {
+		t.Fatalf("CallModel returned Activity error: %v", err)
+	}
+	if result.RetryError == nil {
+		t.Fatal("CallModel returned no RetryError")
+	}
+	if result.RetryError.Type != "model_rate_limited_error" {
+		t.Fatalf("RetryError.Type = %q", result.RetryError.Type)
+	}
+	if result.RetryError.RetryAfterMillis != 2500 {
+		t.Fatalf("RetryAfterMillis = %d", result.RetryError.RetryAfterMillis)
+	}
+	if result.ModelRequestStartID == "" || result.ModelRequestEndID == "" {
+		t.Fatal("retry result is missing model span correlation ids")
 	}
 }
 

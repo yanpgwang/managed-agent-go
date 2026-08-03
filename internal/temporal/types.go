@@ -190,10 +190,23 @@ type AppendWorkflowEventsInput struct {
 // CallModelInput is one plan/observe step. Each call is its own Activity so its
 // completed response is recorded independently in Workflow history.
 type CallModelInput struct {
-	SessionID           string        `json:"session_id"`
-	ModelRequestStartID string        `json:"model_request_start_id,omitempty"`
-	ModelRequestEndID   string        `json:"model_request_end_id,omitempty"`
-	Request             model.Request `json:"request"`
+	SessionID           string `json:"session_id"`
+	ModelRequestStartID string `json:"model_request_start_id,omitempty"`
+	ModelRequestEndID   string `json:"model_request_end_id,omitempty"`
+	// HandleRetryableErrors opts new Workflow histories into the public retry
+	// lifecycle. Older histories leave it false and retain Activity-level retry
+	// behavior, which keeps replay compatible across the rollout.
+	HandleRetryableErrors bool          `json:"handle_retryable_errors,omitempty"`
+	Request               model.Request `json:"request"`
+}
+
+// ModelRetryError is a provider failure that may succeed without changing the
+// logical request. It is an Activity result, not an Activity error, so the
+// Workflow can publish the documented retry lifecycle deterministically.
+type ModelRetryError struct {
+	Type             string `json:"type"`
+	Message          string `json:"message"`
+	RetryAfterMillis int64  `json:"retry_after_millis,omitempty"`
 }
 
 // PlannedToolStep binds one public tool-use event to its internal journal step.
@@ -216,6 +229,21 @@ type CallModelResult struct {
 	ModelRequestEndID   string            `json:"model_request_end_id,omitempty"`
 	ToolSteps           []PlannedToolStep `json:"tool_steps,omitempty"`
 	FatalError          string            `json:"fatal_error,omitempty"`
+	RetryError          *ModelRetryError  `json:"retry_error,omitempty"`
+}
+
+type RecordModelRetryInput struct {
+	SessionID      string          `json:"session_id"`
+	TriggerEventID string          `json:"trigger_event_id"`
+	ErrorEventID   string          `json:"error_event_id"`
+	StatusEventID  string          `json:"status_event_id"`
+	Error          ModelRetryError `json:"error"`
+}
+
+type ResumeModelRetryInput struct {
+	SessionID      string `json:"session_id"`
+	TriggerEventID string `json:"trigger_event_id"`
+	StatusEventID  string `json:"status_event_id"`
 }
 
 // ExecuteToolInput identifies one logical built-in tool step. ToolUseEventID is

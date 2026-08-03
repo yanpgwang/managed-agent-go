@@ -15,6 +15,9 @@ stateDiagram-v2
   [*] --> idle
   idle --> running: claimable input admitted
   running --> idle: turn completed or requires action
+  running --> rescheduling: retryable model failure
+  rescheduling --> running: retry delay elapsed
+  rescheduling --> idle: interrupted
   running --> terminated: terminal failure
   idle --> terminated: deleted or terminal operation
   terminated --> [*]
@@ -23,8 +26,8 @@ stateDiagram-v2
 - `idle` means the Session is waiting for ordinary input or a required client
   action.
 - `running` means accepted, claimable work is queued or executing.
-- `rescheduling` is reserved for a future public retry policy. Temporal
-  Activity retries remain private and do not use it.
+- `rescheduling` means an immutable model request is waiting for its next
+  bounded provider retry. Later input remains queued behind the active turn.
 - `terminated` is final.
 
 The status is a projection of committed events. It is not derived from worker
@@ -129,16 +132,21 @@ not supported.
 
 ## Failure and delivery semantics
 
-- Permanent model failures commit `session.error` and
-  `session.status_terminated`.
-- Retryable model and infrastructure failures remain Activity failures so
-  Temporal can apply its retry policy.
+- Permanent model failures commit `session.error` with `retry_status: terminal`
+  and `session.status_terminated`.
+- Retryable provider responses publish `session.error` with
+  `retry_status: retrying`, atomically move through
+  `session.status_rescheduled`, and publish `session.status_running` before the
+  next attempt. Exhaustion returns the Session to idle with
+  `stop_reason: retries_exhausted` and flushes later queued messages.
+- Infrastructure failures remain Activity failures so Temporal can recover
+  without spending the public provider retry budget.
 - Authoritative output is visible only after the PostgreSQL completion
   transaction commits.
 - NATS previews and wakeups are best-effort. Clients recover complete events
   from the PostgreSQL-backed event cursor.
-- Workflow and Activity retries are private implementation details and never
-  create duplicate public events.
+- Activity retries for infrastructure recovery remain private. Workflow-owned
+  provider retries use deterministic event IDs and never create duplicates.
 
 ## Session deletion
 

@@ -171,3 +171,220 @@ func TestAppendWorkflowEvents_IdempotentAndIncludedInCompletionReplay(t *testing
 		t.Fatal("mismatched idempotency payload unexpectedly succeeded")
 	}
 }
+
+func TestWorkflowRetryTransitionsAreAtomicIdempotentAndKeepQueuedInputBehindTurn(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sess_retry_transitions")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	admission, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserMessage, Payload: map[string]any{"content": "first"},
+	}})
+	if err != nil {
+		t.Fatalf("admit trigger: %v", err)
+	}
+	trigger := admission.Events[0]
+	errorPayload := map[string]any{
+		"type":    "model_overloaded_error",
+		"message": "provider overloaded",
+		"retry_status": map[string]any{
+			"type": "retrying",
+		},
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := store.RecordWorkflowRetry(
+			ctx,
+			session.ID,
+			trigger.ID,
+			"sevt_retry_error",
+			"sevt_retry_rescheduled",
+			errorPayload,
+		); err != nil {
+			t.Fatalf("record retry %d: %v", attempt+1, err)
+		}
+	}
+	projected, err := store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get rescheduling session: %v", err)
+	}
+	if projected.Status != domain.StatusRescheduling {
+		t.Fatalf("status = %s, want rescheduling", projected.Status)
+	}
+
+	queued, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserMessage, Payload: map[string]any{"content": "queued"},
+	}})
+	if err != nil {
+		t.Fatalf("queue later message: %v", err)
+	}
+	if queued.Session.Status != domain.StatusRescheduling {
+		t.Fatalf("queued admission status = %s, want rescheduling", queued.Session.Status)
+	}
+	if len(queued.Events) != 1 || queued.Events[0].Type != domain.EvUserMessage {
+		t.Fatalf("queued admission events = %v", eventTypes(queued.Events))
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := store.ResumeWorkflowRetry(
+			ctx, session.ID, trigger.ID, "sevt_retry_running",
+		); err != nil {
+			t.Fatalf("resume retry %d: %v", attempt+1, err)
+		}
+	}
+	projected, err = store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("get resumed session: %v", err)
+	}
+	if projected.Status != domain.StatusRunning {
+		t.Fatalf("status = %s, want running", projected.Status)
+	}
+	events, err := store.EventsAfter(ctx, session.ID, 0, 100)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if got := eventTypes(events); !slices.Equal(got, []string{
+		domain.EvUserMessage,
+		domain.EvSessionStatusRunning,
+		domain.EvSessionError,
+		domain.EvSessionStatusRescheduling,
+		domain.EvUserMessage,
+		domain.EvSessionStatusRunning,
+	}) {
+		t.Fatalf("event order = %v", got)
+	}
+}
+
+func TestRetriesExhaustedReturnsIdleAndFlushesQueuedMessages(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sess_retry_flush")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	first, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserMessage, Payload: map[string]any{"content": "first"},
+	}})
+	if err != nil {
+		t.Fatalf("admit first: %v", err)
+	}
+	queued, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{
+		{Type: domain.EvUserMessage, Payload: map[string]any{"content": "second"}},
+		{Type: domain.EvSystemMessage, Payload: map[string]any{"content": "context"}},
+	})
+	if err != nil {
+		t.Fatalf("admit queued pair: %v", err)
+	}
+	completion, err := store.CompleteWorkflowTurn(
+		ctx,
+		session.ID,
+		first.Events[0].ID,
+		[]domain.EventDraft{
+			{Type: domain.EvSessionError, Payload: map[string]any{"error": map[string]any{
+				"type":    "model_request_failed_error",
+				"message": "retry budget exhausted",
+				"retry_status": map[string]any{
+					"type": "exhausted",
+				},
+			}}},
+			{Type: domain.EvSessionStatusIdle, Payload: map[string]any{
+				"stop_reason": map[string]any{"type": "retries_exhausted"},
+			}},
+		},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("complete exhausted turn: %v", err)
+	}
+	if completion.Session.Status != domain.StatusIdle {
+		t.Fatalf("status = %s, want idle", completion.Session.Status)
+	}
+	queuedMessage, err := store.GetEvent(ctx, session.ID, queued.Events[0].ID)
+	if err != nil {
+		t.Fatalf("get queued message: %v", err)
+	}
+	if queuedMessage.ProcessedAt == nil {
+		t.Fatal("queued message was not flushed")
+	}
+	queuedSystem, err := store.GetEvent(ctx, session.ID, queued.Events[1].ID)
+	if err != nil {
+		t.Fatalf("get queued system message: %v", err)
+	}
+	if queuedSystem.ProcessedAt == nil {
+		t.Fatal("queued companion system message was not flushed")
+	}
+}
+
+func TestInterruptCanReturnAReschedulingSessionToIdle(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sess_retry_interrupt")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	admission, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserMessage, Payload: map[string]any{"content": "retry me"},
+	}})
+	if err != nil {
+		t.Fatalf("admit trigger: %v", err)
+	}
+	trigger := admission.Events[0]
+	if err := store.RecordWorkflowRetry(
+		ctx,
+		session.ID,
+		trigger.ID,
+		"sevt_interrupt_retry_error",
+		"sevt_interrupt_rescheduled",
+		map[string]any{
+			"type":    "model_request_failed_error",
+			"message": "temporary failure",
+			"retry_status": map[string]any{
+				"type": "retrying",
+			},
+		},
+	); err != nil {
+		t.Fatalf("record retry: %v", err)
+	}
+	interrupt, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserInterrupt, Payload: map[string]any{},
+	}})
+	if err != nil {
+		t.Fatalf("admit interrupt: %v", err)
+	}
+	completion, err := store.CompleteWorkflowTurn(
+		ctx,
+		session.ID,
+		trigger.ID,
+		[]domain.EventDraft{{
+			Type: domain.EvSessionStatusIdle,
+			Payload: map[string]any{
+				"stop_reason": map[string]any{"type": "end_turn"},
+			},
+		}},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("complete interrupted retry: %v", err)
+	}
+	if completion.Session.Status != domain.StatusIdle {
+		t.Fatalf("status = %s, want idle", completion.Session.Status)
+	}
+	storedInterrupt, err := store.GetEvent(ctx, session.ID, interrupt.Events[0].ID)
+	if err != nil {
+		t.Fatalf("get interrupt: %v", err)
+	}
+	if storedInterrupt.ProcessedAt == nil {
+		t.Fatal("interrupt was not acknowledged")
+	}
+}

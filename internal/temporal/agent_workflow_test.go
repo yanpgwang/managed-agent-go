@@ -633,6 +633,186 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	require.Equal(t, "terminal", errorPayload["retry_status"].(map[string]any)["type"])
 }
 
+func TestWorkflowTurn_PublishesModelRetryLifecycleAndRecovers(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	env.RegisterActivityWithOptions(
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{Request: model.Request{
+				Model: "test-model",
+				Messages: []domain.Message{{
+					Role:    domain.RoleUser,
+					Content: []domain.ContentBlock{{Type: "text", Text: "hello"}},
+				}},
+			}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	var starts []StartModelRequestInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in StartModelRequestInput) error {
+			starts = append(starts, in)
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityStartModelRequest},
+	)
+	var flushed []domain.EventDraft
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in AppendWorkflowEventsInput) error {
+			flushed = append(flushed, in.Events...)
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityAppendWorkflowEvents},
+	)
+	var calls []CallModelInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			calls = append(calls, in)
+			if len(calls) <= 2 {
+				return CallModelResult{
+					ModelRequestStartID: in.ModelRequestStartID,
+					ModelRequestEndID:   in.ModelRequestEndID,
+					RetryError: &ModelRetryError{
+						Type:    "model_overloaded_error",
+						Message: "provider overloaded",
+					},
+				}, nil
+			}
+			return CallModelResult{
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+				MessageEventID:      "sevt_retry_recovered",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content:    []domain.ContentBlock{{Type: "text", Text: "recovered"}},
+				},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	var retrying []RecordModelRetryInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in RecordModelRetryInput) error {
+			retrying = append(retrying, in)
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityRecordModelRetry},
+	)
+	var resumed []ResumeModelRetryInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in ResumeModelRetryInput) error {
+			resumed = append(resumed, in)
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityResumeModelRetry},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{}, errors.New("unexpected tool execution")
+		},
+		activity.RegisterOptions{Name: ActivityExecuteTool},
+	)
+	var completed CompleteWorkflowTurnInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			in.Output = append(append([]domain.EventDraft(nil), flushed...), in.Output...)
+			completed = in
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_retry_recovery", TriggerEventID: "sevt_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Len(t, calls, 3)
+	require.Len(t, starts, 3)
+	require.Len(t, retrying, 2)
+	require.Len(t, resumed, 2)
+	for _, call := range calls {
+		require.True(t, call.HandleRetryableErrors)
+	}
+	require.NotEqual(t, calls[0].ModelRequestStartID, calls[1].ModelRequestStartID)
+	require.NotEqual(t, calls[1].ModelRequestStartID, calls[2].ModelRequestStartID)
+	require.Equal(t, "model_overloaded_error", retrying[0].Error.Type)
+	require.NotEmpty(t, retrying[0].ErrorEventID)
+	require.NotEmpty(t, retrying[0].StatusEventID)
+	require.NotEmpty(t, resumed[0].StatusEventID)
+	require.Equal(t, domain.StatusIdle, completed.Status)
+	require.Equal(t, []string{
+		domain.EvSpanModelRequestEnd,
+		domain.EvSpanModelRequestEnd,
+		domain.EvAgentMessage,
+		domain.EvSpanModelRequestEnd,
+		domain.EvSessionStatusIdle,
+	}, draftTypes(completed.Output))
+}
+
+func TestWorkflowTurn_ExhaustsModelRetriesAndReturnsIdle(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{Request: model.Request{Model: "test-model"}}, nil
+	}
+	calls := 0
+	callModel := func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+		calls++
+		return CallModelResult{
+			ModelRequestStartID: in.ModelRequestStartID,
+			ModelRequestEndID:   in.ModelRequestEndID,
+			RetryError: &ModelRetryError{
+				Type:    "model_rate_limited_error",
+				Message: "rate limited",
+			},
+		}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
+	registerWorkflowTurnActivities(
+		env,
+		prepare,
+		callModel,
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{}, nil
+		},
+		complete,
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, RecordModelRetryInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityRecordModelRetry},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, ResumeModelRetryInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityResumeModelRetry},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_retry_exhausted", TriggerEventID: "sevt_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, maxModelRequestAttempts, calls)
+	require.Equal(t, domain.StatusIdle, completed.Status)
+	require.Equal(t, []string{
+		domain.EvSpanModelRequestEnd,
+		domain.EvSpanModelRequestEnd,
+		domain.EvSpanModelRequestEnd,
+		domain.EvSessionError,
+		domain.EvSessionStatusIdle,
+	}, draftTypes(completed.Output))
+	errorPayload := completed.Output[len(completed.Output)-2].Payload["error"].(map[string]any)
+	require.Equal(t, "exhausted", errorPayload["retry_status"].(map[string]any)["type"])
+	stopReason := completed.Output[len(completed.Output)-1].Payload["stop_reason"].(map[string]any)
+	require.Equal(t, "retries_exhausted", stopReason["type"])
+}
+
 func TestWorkflowTurn_MixedBatchExecutesBuiltinAndParksClientAction(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

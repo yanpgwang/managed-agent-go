@@ -93,6 +93,40 @@ func (q *Queries) FirstUnprocessedInterruptAfter(ctx context.Context, arg FirstU
 	return i, err
 }
 
+const flushQueuedUserMessages = `-- name: FlushQueuedUserMessages :exec
+WITH queued AS (
+    SELECT queued_event.id,
+           queued_event.payload->>'__companion_system_event_id' AS companion_id
+    FROM events AS queued_event
+    WHERE queued_event.session_id = $2
+      AND queued_event.type = 'user.message'
+      AND queued_event.processed_at IS NULL
+      AND queued_event.id <> $3
+), flushed_ids AS (
+    SELECT id FROM queued
+    UNION
+    SELECT companion_id FROM queued WHERE companion_id IS NOT NULL
+)
+UPDATE events AS target
+SET processed_at = COALESCE(target.processed_at, $1)
+WHERE target.session_id = $2
+  AND target.id IN (SELECT id FROM flushed_ids)
+`
+
+type FlushQueuedUserMessagesParams struct {
+	ProcessedAt pgtype.Timestamptz
+	SessionID   string
+	ExcludeID   string
+}
+
+// FlushQueuedUserMessages stamps every other queued user.message, plus its
+// optional companion system.message, when the active turn exhausts its retry
+// budget. The events remain in the ledger but can no longer start model work.
+func (q *Queries) FlushQueuedUserMessages(ctx context.Context, arg FlushQueuedUserMessagesParams) error {
+	_, err := q.db.Exec(ctx, flushQueuedUserMessages, arg.ProcessedAt, arg.SessionID, arg.ExcludeID)
+	return err
+}
+
 const getEvent = `-- name: GetEvent :one
 SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
 FROM events

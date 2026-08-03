@@ -9,6 +9,7 @@ func TestStatusTransitions(t *testing.T) {
 	ok := [][2]Status{
 		{StatusIdle, StatusRunning}, {StatusRunning, StatusIdle},
 		{StatusRunning, StatusRescheduling}, {StatusRescheduling, StatusRunning},
+		{StatusRescheduling, StatusIdle},
 		{StatusIdle, StatusTerminated}, {StatusRunning, StatusTerminated},
 	}
 	for _, p := range ok {

@@ -113,6 +113,28 @@ UPDATE events
 SET processed_at = COALESCE(processed_at, @processed_at)
 WHERE session_id = @session_id AND id = @id;
 
+-- FlushQueuedUserMessages stamps every other queued user.message, plus its
+-- optional companion system.message, when the active turn exhausts its retry
+-- budget. The events remain in the ledger but can no longer start model work.
+-- name: FlushQueuedUserMessages :exec
+WITH queued AS (
+    SELECT queued_event.id,
+           queued_event.payload->>'__companion_system_event_id' AS companion_id
+    FROM events AS queued_event
+    WHERE queued_event.session_id = @session_id
+      AND queued_event.type = 'user.message'
+      AND queued_event.processed_at IS NULL
+      AND queued_event.id <> @exclude_id
+), flushed_ids AS (
+    SELECT id FROM queued
+    UNION
+    SELECT companion_id FROM queued WHERE companion_id IS NOT NULL
+)
+UPDATE events AS target
+SET processed_at = COALESCE(target.processed_at, @processed_at)
+WHERE target.session_id = @session_id
+  AND target.id IN (SELECT id FROM flushed_ids);
+
 -- UpsertOutbox writes or coalesces the pending wakeup for a session. When a
 -- wakeup is already pending, it keeps the newer enqueue time and raises
 -- max_event_seq to the highest known receipt sequence rather than adding a row.

@@ -32,6 +32,8 @@ const (
 	ActivityPrepareTurn          = "PrepareTurn"
 	ActivityStartModelRequest    = "StartModelRequest"
 	ActivityAppendWorkflowEvents = "AppendWorkflowEvents"
+	ActivityRecordModelRetry     = "RecordModelRetry"
+	ActivityResumeModelRetry     = "ResumeModelRetry"
 	ActivityCallModel            = "CallModel"
 	ActivityEvaluateOutcome      = "EvaluateOutcome"
 	ActivityExecuteTool          = "ExecuteTool"
@@ -147,6 +149,25 @@ type WorkflowEventSource interface {
 		sessionID string,
 		triggerEventID string,
 		drafts []domain.EventDraft,
+	) error
+}
+
+// WorkflowRetrySource atomically publishes retry status events with the
+// corresponding Session projection transition.
+type WorkflowRetrySource interface {
+	RecordWorkflowRetry(
+		ctx context.Context,
+		sessionID string,
+		triggerEventID string,
+		errorEventID string,
+		statusEventID string,
+		errorPayload map[string]any,
+	) error
+	ResumeWorkflowRetry(
+		ctx context.Context,
+		sessionID string,
+		triggerEventID string,
+		statusEventID string,
 	) error
 }
 
@@ -397,6 +418,51 @@ func (a *Activities) AppendWorkflowEvents(
 	in AppendWorkflowEventsInput,
 ) error {
 	return a.appendWorkflowEvents(ctx, in)
+}
+
+// RecordModelRetry publishes the retrying error and rescheduled projection in
+// one PostgreSQL transaction. Keeping them together prevents observers from
+// seeing a retry error while the Session still claims to be running.
+func (a *Activities) RecordModelRetry(
+	ctx context.Context,
+	in RecordModelRetryInput,
+) error {
+	source, ok := a.source.(WorkflowRetrySource)
+	if !ok {
+		return fmt.Errorf("temporal: event source does not support workflow retries")
+	}
+	return source.RecordWorkflowRetry(
+		ctx,
+		in.SessionID,
+		in.TriggerEventID,
+		in.ErrorEventID,
+		in.StatusEventID,
+		map[string]any{
+			"type":    in.Error.Type,
+			"message": in.Error.Message,
+			"retry_status": map[string]any{
+				"type": "retrying",
+			},
+		},
+	)
+}
+
+// ResumeModelRetry publishes status_running at the same linearization point
+// that the Session projection returns to running.
+func (a *Activities) ResumeModelRetry(
+	ctx context.Context,
+	in ResumeModelRetryInput,
+) error {
+	source, ok := a.source.(WorkflowRetrySource)
+	if !ok {
+		return fmt.Errorf("temporal: event source does not support workflow retries")
+	}
+	return source.ResumeWorkflowRetry(
+		ctx,
+		in.SessionID,
+		in.TriggerEventID,
+		in.StatusEventID,
+	)
 }
 
 func (a *Activities) appendWorkflowEvents(
@@ -1136,6 +1202,17 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 	})
 	if err != nil {
 		var apiErr *model.APIError
+		if errors.As(err, &apiErr) && apiErr.Retryable() && in.HandleRetryableErrors {
+			return CallModelResult{
+				ModelRequestStartID: modelRequestStartID,
+				ModelRequestEndID:   modelRequestEndID,
+				RetryError: &ModelRetryError{
+					Type:             modelRetryErrorType(apiErr.Kind),
+					Message:          apiErr.Error(),
+					RetryAfterMillis: apiErr.RetryAfter.Milliseconds(),
+				},
+			}, nil
+		}
 		if errors.As(err, &apiErr) && !apiErr.Retryable() {
 			// Permanent provider failures cannot succeed while the immutable turn
 			// input and worker configuration remain unchanged. Return them through
@@ -1185,6 +1262,17 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 		result.MessageEventID = messageEventID
 	}
 	return result, nil
+}
+
+func modelRetryErrorType(kind model.ErrorKind) string {
+	switch kind {
+	case model.ErrorRateLimit:
+		return "model_rate_limited_error"
+	case model.ErrorOverloaded:
+		return "model_overloaded_error"
+	default:
+		return "model_request_failed_error"
+	}
 }
 
 // ExecuteTool runs one always-allow built-in behind the durable per-step

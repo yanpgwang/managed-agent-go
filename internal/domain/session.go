@@ -17,7 +17,7 @@ const (
 var allowed = map[Status]map[Status]bool{
 	StatusIdle:         {StatusRunning: true, StatusTerminated: true},
 	StatusRunning:      {StatusIdle: true, StatusRescheduling: true, StatusTerminated: true},
-	StatusRescheduling: {StatusRunning: true, StatusTerminated: true},
+	StatusRescheduling: {StatusIdle: true, StatusRunning: true, StatusTerminated: true},
 	StatusTerminated:   {},
 }
 

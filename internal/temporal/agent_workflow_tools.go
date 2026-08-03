@@ -114,6 +114,46 @@ func (t *workflowTurnState) callModel(
 	return called, outcome, err
 }
 
+func (t *workflowTurnState) recordModelRetry(
+	retry ModelRetryError,
+	errorEventID string,
+	statusEventID string,
+) error {
+	return workflow.ExecuteActivity(
+		t.actx,
+		ActivityRecordModelRetry,
+		RecordModelRetryInput{
+			SessionID:      t.sessionID,
+			TriggerEventID: t.triggerEventID,
+			ErrorEventID:   errorEventID,
+			StatusEventID:  statusEventID,
+			Error:          retry,
+		},
+	).Get(t.actx, nil)
+}
+
+func (t *workflowTurnState) resumeModelRetry(statusEventID string) error {
+	return workflow.ExecuteActivity(
+		t.actx,
+		ActivityResumeModelRetry,
+		ResumeModelRetryInput{
+			SessionID:      t.sessionID,
+			TriggerEventID: t.triggerEventID,
+			StatusEventID:  statusEventID,
+		},
+	).Get(t.actx, nil)
+}
+
+func (t *workflowTurnState) waitModelRetry(delay time.Duration) (bool, error) {
+	if t.interrupts != nil {
+		return t.interrupts.wait(delay)
+	}
+	if err := workflow.NewTimer(t.actx, delay).Get(t.actx, nil); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
 func (t *workflowTurnState) evaluateOutcome(
 	input EvaluateOutcomeInput,
 ) (EvaluateOutcomeResult, interruptibleActivityOutcome, error) {
@@ -423,6 +463,50 @@ func (t *workflowTurnState) complete(
 	}
 	if t.attemptID != "" {
 		input.AttemptState = domain.RunAttemptCompleted
+	}
+	var result RunTurnResult
+	err := workflow.ExecuteActivity(
+		t.actx,
+		ActivityCompleteWorkflowTurn,
+		input,
+	).Get(t.actx, &result)
+	return result, err
+}
+
+func (t *workflowTurnState) exhaustModelRetries(
+	retry ModelRetryError,
+) (RunTurnResult, error) {
+	output := append(t.output,
+		domain.EventDraft{Type: domain.EvSessionError, Payload: map[string]any{
+			"error": map[string]any{
+				"type":    retry.Type,
+				"message": retry.Message,
+				"retry_status": map[string]any{
+					"type": "exhausted",
+				},
+			},
+		}},
+		domain.EventDraft{Type: domain.EvSessionStatusIdle, Payload: map[string]any{
+			"stop_reason": map[string]any{"type": "retries_exhausted"},
+		}},
+	)
+	input := CompleteWorkflowTurnInput{
+		SessionID:          t.sessionID,
+		TriggerEventID:     t.triggerEventID,
+		Output:             output,
+		Status:             domain.StatusIdle,
+		AttemptID:          t.attemptID,
+		ResolutionEventIDs: t.resolutionEventIDs,
+		Usage:              t.usage,
+	}
+	if t.usesProviderTranscript {
+		input.TranscriptDelta = t.transcriptDelta
+		input.ToolUseMappings = t.toolUseMappings
+	}
+	if t.attemptID != "" {
+		message := retry.Message
+		input.AttemptState = domain.RunAttemptFailed
+		input.AttemptError = &message
 	}
 	var result RunTurnResult
 	err := workflow.ExecuteActivity(
