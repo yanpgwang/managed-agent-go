@@ -198,6 +198,75 @@ func TestOutcomeInterruptUsesEmptyStartIDAndPreservesCompletedRevision(t *testin
 	}
 }
 
+func TestOutcomeInterruptCorrelatesPrepublishedEvaluationStart(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sess_outcome_interrupt_started")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	admission, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserDefineOutcome,
+		Payload: map[string]any{
+			"description": "produce report",
+			"rubric":      map[string]any{"type": "text", "content": "includes evidence"},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("admit outcome: %v", err)
+	}
+	trigger := admission.Events[0]
+	outcomeID, _ := trigger.Payload["outcome_id"].(string)
+	const startID = "sevt_eval_started_before_interrupt"
+	if err := store.AppendWorkflowEvents(ctx, session.ID, trigger.ID, []domain.EventDraft{{
+		ID: startID, Type: domain.EvSpanOutcomeEvaluationStart,
+		Payload: map[string]any{"outcome_id": outcomeID, "iteration": 0},
+	}}); err != nil {
+		t.Fatalf("append evaluation start: %v", err)
+	}
+	if _, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserInterrupt, Payload: map[string]any{},
+	}}); err != nil {
+		t.Fatalf("admit interrupt: %v", err)
+	}
+
+	completion, err := store.CompleteWorkflowTurn(
+		ctx,
+		session.ID,
+		trigger.ID,
+		[]domain.EventDraft{{
+			Type: domain.EvSessionStatusIdle,
+			Payload: map[string]any{
+				"stop_reason":                         map[string]any{"type": "end_turn"},
+				domain.InternalOutcomeEvaluationStart: startID,
+				domain.InternalOutcomeIteration:       0,
+			},
+		}},
+		domain.StatusIdle,
+		"",
+		"",
+		nil,
+		nil,
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("complete interrupted outcome: %v", err)
+	}
+	if len(completion.Events) != 2 {
+		t.Fatalf("completion events = %+v", completion.Events)
+	}
+	interrupted := completion.Events[0]
+	if interrupted.Type != domain.EvSpanOutcomeEvaluationEnd ||
+		interrupted.Payload["outcome_evaluation_start_id"] != startID ||
+		interrupted.Payload["iteration"] != 0 ||
+		interrupted.Payload["result"] != "interrupted" {
+		t.Fatalf("interrupted outcome end = %+v", interrupted)
+	}
+	if got := completion.Session.Outcomes[0]; got.Result != "interrupted" || got.Iteration != 0 {
+		t.Fatalf("outcome projection = %+v", got)
+	}
+}
+
 func TestInterruptOrdinaryTurnDoesNotTerminateQueuedOutcome(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

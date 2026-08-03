@@ -2,12 +2,14 @@ package temporal
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
@@ -102,7 +104,12 @@ func TestEvaluateOutcomeUsesIsolatedGraderContext(t *testing.T) {
 	)
 
 	got, err := activities.EvaluateOutcome(context.Background(), EvaluateOutcomeInput{
-		SessionID: "sess_1", Model: "claude-sonnet", Effort: "high", Speed: "standard",
+		SessionID:    "sess_1",
+		StartEventID: "sevt_supplied_start",
+		EndEventID:   "sevt_supplied_end",
+		Model:        "claude-sonnet",
+		Effort:       "high",
+		Speed:        "standard",
 		Outcome: domain.OutcomeSpec{
 			OutcomeID: "outc_1", Description: "ship the report",
 			Rubric:        map[string]any{"type": "text", "content": "contains evidence"},
@@ -116,8 +123,8 @@ func TestEvaluateOutcomeUsesIsolatedGraderContext(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "satisfied", got.Result)
 	require.Equal(t, int64(17), got.Usage.InputTokens)
-	require.NotEmpty(t, got.StartEventID)
-	require.NotEmpty(t, got.EndEventID)
+	require.Equal(t, "sevt_supplied_start", got.StartEventID)
+	require.Equal(t, "sevt_supplied_end", got.EndEventID)
 
 	request := client.request
 	require.Equal(t, outcomeGraderSystem+" Return exactly one JSON object with "+
@@ -193,10 +200,171 @@ func TestWorkflowTurnEvaluatesOutcomeAndAccountsUsage(t *testing.T) {
 	}, draftTypes(completed.Output))
 	require.Equal(t, int64(13), completed.Usage.InputTokens)
 	require.Equal(t, int64(6), completed.Usage.OutputTokens)
+	start := completed.Output[2]
 	end := completed.Output[3].Payload
-	require.Equal(t, "sevt_eval_start", end["outcome_evaluation_start_id"])
+	require.NotEmpty(t, start.ID)
+	require.Equal(t, start.ID, end["outcome_evaluation_start_id"])
 	require.Equal(t, "satisfied", end["result"])
 	require.Equal(t, "fast", end["usage"].(map[string]any)["speed"])
 	modelEnd := completed.Output[1].Payload["model_usage"].(map[string]any)
 	require.Equal(t, "standard", modelEnd["speed"])
+}
+
+func TestWorkflowTurnClosesStartedOutcomeEvaluationOnFatalGraderResult(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{
+			Request: model.Request{
+				Model: "claude-sonnet",
+				Messages: []domain.Message{{
+					Role:    domain.RoleUser,
+					Content: []domain.ContentBlock{{Type: "text", Text: "produce report"}},
+				}},
+			},
+			Outcome: &domain.OutcomeSpec{
+				OutcomeID: "outc_failed", Description: "produce report",
+				Rubric:        map[string]any{"type": "text", "content": "has evidence"},
+				MaxIterations: 1,
+			},
+		}, nil
+	}
+	callModel := func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+		return CallModelResult{
+			MessageEventID:      "sevt_candidate",
+			ModelRequestStartID: in.ModelRequestStartID,
+			ModelRequestEndID:   in.ModelRequestEndID,
+			Response: model.Response{
+				Content: []domain.ContentBlock{{Type: "text", Text: "report"}},
+				Usage:   domain.TokenUsage{InputTokens: 5, OutputTokens: 2},
+			},
+		}, nil
+	}
+	evaluate := func(context.Context, EvaluateOutcomeInput) (EvaluateOutcomeResult, error) {
+		return EvaluateOutcomeResult{
+			FatalError: "grader returned an invalid verdict",
+			Usage:      domain.TokenUsage{InputTokens: 3, OutputTokens: 1},
+		}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnTerminated}, nil
+	}
+	registerWorkflowTurnActivities(
+		env,
+		prepare,
+		callModel,
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{}, nil
+		},
+		complete,
+	)
+	env.RegisterActivityWithOptions(evaluate, activity.RegisterOptions{Name: ActivityEvaluateOutcome})
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_failed_outcome", TriggerEventID: "sevt_outcome",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, domain.StatusTerminated, completed.Status)
+	require.Equal(t, []string{
+		domain.EvAgentMessage,
+		domain.EvSpanModelRequestEnd,
+		domain.EvSpanOutcomeEvaluationStart,
+		domain.EvSpanOutcomeEvaluationEnd,
+		domain.EvSessionError,
+		domain.EvSessionStatusTerminated,
+	}, draftTypes(completed.Output))
+	start := completed.Output[2]
+	end := completed.Output[3]
+	require.Equal(t, start.ID, end.Payload["outcome_evaluation_start_id"])
+	require.Equal(t, "failed", end.Payload["result"])
+	require.Equal(t, "grader returned an invalid verdict", end.Payload["explanation"])
+	require.Equal(t, int64(8), completed.Usage.InputTokens)
+	require.Equal(t, int64(3), completed.Usage.OutputTokens)
+}
+
+func outcomeHeartbeatHarness(
+	ctx workflow.Context,
+	input EvaluateOutcomeInput,
+) (EvaluateOutcomeResult, error) {
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Second,
+	})
+	turn := workflowTurnState{
+		actx:                     actx,
+		sessionID:                input.SessionID,
+		triggerEventID:           "sevt_outcome",
+		outcomeHeartbeats:        true,
+		outcomeHeartbeatInterval: 10 * time.Millisecond,
+	}
+	evaluated, _, err := turn.evaluateOutcome(input)
+	return evaluated, err
+}
+
+func TestEvaluateOutcomePublishesHeartbeatWhileGraderRuns(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.SetTestTimeout(5 * time.Second)
+	env.RegisterWorkflow(outcomeHeartbeatHarness)
+
+	releaseGrader := make(chan struct{})
+	var releaseOnce sync.Once
+	var mu sync.Mutex
+	var progress []domain.EventDraft
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in AppendWorkflowEventsInput) error {
+			mu.Lock()
+			progress = append(progress, in.Events...)
+			mu.Unlock()
+			for _, event := range in.Events {
+				if event.Type == domain.EvSpanOutcomeEvaluationOngoing {
+					releaseOnce.Do(func() { close(releaseGrader) })
+				}
+			}
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityAppendWorkflowEvents},
+	)
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in EvaluateOutcomeInput) (EvaluateOutcomeResult, error) {
+			select {
+			case <-releaseGrader:
+			case <-ctx.Done():
+				return EvaluateOutcomeResult{}, ctx.Err()
+			}
+			return EvaluateOutcomeResult{
+				StartEventID: in.StartEventID, EndEventID: in.EndEventID,
+				Result: "satisfied", Explanation: "rubric met",
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityEvaluateOutcome},
+	)
+
+	env.ExecuteWorkflow(outcomeHeartbeatHarness, EvaluateOutcomeInput{
+		SessionID:    "sess_heartbeat",
+		StartEventID: "sevt_eval_start",
+		EndEventID:   "sevt_eval_end",
+		Model:        "claude-sonnet",
+		Outcome: domain.OutcomeSpec{
+			OutcomeID: "outc_heartbeat", Description: "produce report",
+			Rubric: map[string]any{"type": "text", "content": "has evidence"},
+		},
+		Iteration: 2,
+	})
+	require.NoError(t, env.GetWorkflowError())
+	var evaluated EvaluateOutcomeResult
+	require.NoError(t, env.GetWorkflowResult(&evaluated))
+	require.Equal(t, "sevt_eval_start", evaluated.StartEventID)
+	require.Equal(t, "sevt_eval_end", evaluated.EndEventID)
+
+	mu.Lock()
+	committedProgress := append([]domain.EventDraft(nil), progress...)
+	mu.Unlock()
+	heartbeat := draftOfType(t, committedProgress, domain.EvSpanOutcomeEvaluationOngoing)
+	require.Equal(t, outcomeEvaluationHeartbeatID("sevt_eval_start", 0), heartbeat.ID)
+	require.Equal(t, "outc_heartbeat", heartbeat.Payload["outcome_id"])
+	require.Equal(t, float64(2), heartbeat.Payload["iteration"])
 }

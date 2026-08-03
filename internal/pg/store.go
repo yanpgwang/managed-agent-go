@@ -1054,7 +1054,9 @@ func (s *Store) completeTurn(
 			// idle/end_turn and never publishes requires_action, session.error, or
 			// terminated. A named attempt is fenced as interrupted below.
 			var interruptedOutcomeIteration int
-			outputDrafts, interruptedOutcomeIteration = interruptedTurnDrafts(outputDrafts)
+			var interruptedOutcomeStartID string
+			outputDrafts, interruptedOutcomeIteration, interruptedOutcomeStartID =
+				interruptedTurnDrafts(outputDrafts)
 			transcriptDelta = closeInterruptedProviderTranscript(
 				transcriptDelta,
 			)
@@ -1078,9 +1080,9 @@ func (s *Store) completeTurn(
 					domain.EventDraft{
 						Type: domain.EvSpanOutcomeEvaluationEnd,
 						Payload: map[string]any{
-							// Official outcome semantics use an empty correlation id
-							// when interruption happens before an evaluation-start event.
-							"outcome_evaluation_start_id": "",
+							// Correlate an interrupted evaluation when its start was
+							// published; otherwise the official contract uses an empty ID.
+							"outcome_evaluation_start_id": interruptedOutcomeStartID,
 							"outcome_id":                  outcome.OutcomeID,
 							"result":                      "interrupted",
 							"explanation":                 "Outcome work was interrupted by the user.",
@@ -1374,11 +1376,19 @@ func withoutTerminalIdle(drafts []domain.EventDraft) []domain.EventDraft {
 // interrupt while removing every competing terminal projection. The interrupt
 // completion transaction appends the one authoritative idle/end_turn after
 // this filtered prefix.
-func interruptedTurnDrafts(drafts []domain.EventDraft) ([]domain.EventDraft, int) {
+func interruptedTurnDrafts(drafts []domain.EventDraft) ([]domain.EventDraft, int, string) {
 	completedToolUses := make(map[string]struct{})
 	completedOutcomeStarts := make(map[string]struct{})
 	interruptedOutcomeIteration := 0
+	interruptedOutcomeStartID := ""
 	for _, draft := range drafts {
+		if startID, _ := draft.Payload[domain.InternalOutcomeEvaluationStart].(string); startID != "" {
+			interruptedOutcomeStartID = startID
+			interruptedOutcomeIteration = max(
+				interruptedOutcomeIteration,
+				intFromAny(draft.Payload[domain.InternalOutcomeIteration]),
+			)
+		}
 		switch draft.Type {
 		case domain.EvAgentToolResult, domain.EvAgentMcpToolResult:
 			if toolUseID, _ := domain.AgentToolResultReference(
@@ -1431,7 +1441,7 @@ func interruptedTurnDrafts(drafts []domain.EventDraft) ([]domain.EventDraft, int
 		}
 		out = append(out, draft)
 	}
-	return out, interruptedOutcomeIteration
+	return out, interruptedOutcomeIteration, interruptedOutcomeStartID
 }
 
 func turnEventsParked(events []domain.Event) bool {

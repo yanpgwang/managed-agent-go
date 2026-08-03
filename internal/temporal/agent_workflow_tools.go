@@ -2,12 +2,15 @@ package temporal
 
 import (
 	"encoding/json"
+	"time"
 
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
+
+const outcomeEvaluationHeartbeatInterval = 30 * time.Second
 
 // turnFailure is a typed terminal reason produced by deterministic turn logic.
 // It is deliberately distinct from error: errors retry an Activity, while a
@@ -23,20 +26,24 @@ func failTurn(message string) turnFailure {
 // manually passing the same session, trigger, output, attempt, and resolution
 // arguments in positional order.
 type workflowTurnState struct {
-	actx                   workflow.Context
-	sessionID              string
-	triggerEventID         string
-	resolutionEventIDs     []string
-	output                 []domain.EventDraft
-	attemptID              string
-	ordinal                int
-	interrupts             *turnInterruptWatcher
-	terminalSessionErrors  bool
-	usesProviderTranscript bool
-	transcriptDelta        []domain.Message
-	toolUseMappings        []domain.ProviderToolUseMapping
-	usage                  domain.TokenUsage
-	flushedEventCount      int
+	actx                           workflow.Context
+	sessionID                      string
+	triggerEventID                 string
+	resolutionEventIDs             []string
+	output                         []domain.EventDraft
+	attemptID                      string
+	ordinal                        int
+	interrupts                     *turnInterruptWatcher
+	terminalSessionErrors          bool
+	outcomeHeartbeats              bool
+	outcomeHeartbeatInterval       time.Duration
+	activeOutcomeEvaluationStartID string
+	activeOutcomeIteration         int
+	usesProviderTranscript         bool
+	transcriptDelta                []domain.Message
+	toolUseMappings                []domain.ProviderToolUseMapping
+	usage                          domain.TokenUsage
+	flushedEventCount              int
 }
 
 func (t *workflowTurnState) startModelRequest(startID string) error {
@@ -111,6 +118,45 @@ func (t *workflowTurnState) evaluateOutcome(
 	input EvaluateOutcomeInput,
 ) (EvaluateOutcomeResult, interruptibleActivityOutcome, error) {
 	var evaluated EvaluateOutcomeResult
+	if t.outcomeHeartbeats {
+		heartbeatInterval := t.outcomeHeartbeatInterval
+		if heartbeatInterval <= 0 {
+			heartbeatInterval = outcomeEvaluationHeartbeatInterval
+		}
+		heartbeatOrdinal := 0
+		emitHeartbeat := func() error {
+			err := t.appendOutcomeEvaluationHeartbeat(input, heartbeatOrdinal)
+			heartbeatOrdinal++
+			return err
+		}
+		if t.interrupts == nil {
+			err := t.evaluateOutcomeWithHeartbeats(
+				input,
+				&evaluated,
+				heartbeatInterval,
+				emitHeartbeat,
+			)
+			if err == nil {
+				evaluated.StartEventID = input.StartEventID
+				evaluated.EndEventID = input.EndEventID
+				t.usage.Add(evaluated.Usage)
+			}
+			return evaluated, interruptibleActivityOutcome{Completed: err == nil}, err
+		}
+		outcome, err := t.interrupts.executeActivityWithPulse(
+			ActivityEvaluateOutcome,
+			input,
+			&evaluated,
+			heartbeatInterval,
+			emitHeartbeat,
+		)
+		if err == nil && outcome.Completed {
+			evaluated.StartEventID = input.StartEventID
+			evaluated.EndEventID = input.EndEventID
+			t.usage.Add(evaluated.Usage)
+		}
+		return evaluated, outcome, err
+	}
 	if t.interrupts == nil {
 		err := workflow.ExecuteActivity(
 			t.actx,
@@ -133,11 +179,87 @@ func (t *workflowTurnState) evaluateOutcome(
 	return evaluated, outcome, err
 }
 
+func (t *workflowTurnState) evaluateOutcomeWithHeartbeats(
+	input EvaluateOutcomeInput,
+	evaluated *EvaluateOutcomeResult,
+	heartbeatInterval time.Duration,
+	emitHeartbeat func() error,
+) error {
+	future := workflow.ExecuteActivity(t.actx, ActivityEvaluateOutcome, input)
+	for {
+		if future.IsReady() {
+			return future.Get(t.actx, evaluated)
+		}
+		timerCtx, cancelTimer := workflow.WithCancel(t.actx)
+		timer := workflow.NewTimer(timerCtx, heartbeatInterval)
+		selector := workflow.NewSelector(t.actx)
+		timerReady := false
+		selector.AddFuture(future, func(workflow.Future) {})
+		selector.AddFuture(timer, func(workflow.Future) { timerReady = true })
+		selector.Select(t.actx)
+		if future.IsReady() {
+			cancelTimer()
+			return future.Get(t.actx, evaluated)
+		}
+		if timerReady {
+			if err := emitHeartbeat(); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (t *workflowTurnState) appendOutcomeEvaluationHeartbeat(
+	input EvaluateOutcomeInput,
+	ordinal int,
+) error {
+	return workflow.ExecuteActivity(
+		t.actx,
+		ActivityAppendWorkflowEvents,
+		AppendWorkflowEventsInput{
+			SessionID:      t.sessionID,
+			TriggerEventID: t.triggerEventID,
+			Events: []domain.EventDraft{{
+				ID:   outcomeEvaluationHeartbeatID(input.StartEventID, ordinal),
+				Type: domain.EvSpanOutcomeEvaluationOngoing,
+				Payload: map[string]any{
+					"outcome_id": input.Outcome.OutcomeID,
+					"iteration":  input.Iteration,
+				},
+			}},
+		},
+	).Get(t.actx, nil)
+}
+
 func outcomeEvaluationDrafts(
 	outcome domain.OutcomeSpec,
 	iteration int,
 	evaluated EvaluateOutcomeResult,
 ) []domain.EventDraft {
+	return []domain.EventDraft{
+		outcomeEvaluationStartDraft(outcome, iteration, evaluated.StartEventID),
+		outcomeEvaluationEndDraft(outcome, iteration, evaluated),
+	}
+}
+
+func outcomeEvaluationStartDraft(
+	outcome domain.OutcomeSpec,
+	iteration int,
+	startEventID string,
+) domain.EventDraft {
+	return domain.EventDraft{
+		ID: startEventID, Type: domain.EvSpanOutcomeEvaluationStart,
+		Payload: map[string]any{
+			"outcome_id": outcome.OutcomeID, "iteration": iteration,
+		},
+	}
+}
+
+func outcomeEvaluationEndDraft(
+	outcome domain.OutcomeSpec,
+	iteration int,
+	evaluated EvaluateOutcomeResult,
+) domain.EventDraft {
 	cacheCreation := evaluated.Usage.CacheCreation.Ephemeral1hInputTokens +
 		evaluated.Usage.CacheCreation.Ephemeral5mInputTokens
 	usage := map[string]any{
@@ -147,23 +269,29 @@ func outcomeEvaluationDrafts(
 		"output_tokens":               evaluated.Usage.OutputTokens,
 		"speed":                       nullableSpeed(evaluated.Usage.Speed),
 	}
-	return []domain.EventDraft{
-		{
-			ID: evaluated.StartEventID, Type: domain.EvSpanOutcomeEvaluationStart,
-			Payload: map[string]any{
-				"outcome_id": outcome.OutcomeID, "iteration": iteration,
-			},
-		},
-		{
-			ID: evaluated.EndEventID, Type: domain.EvSpanOutcomeEvaluationEnd,
-			Payload: map[string]any{
-				"outcome_evaluation_start_id": evaluated.StartEventID,
-				"outcome_id":                  outcome.OutcomeID, "iteration": iteration,
-				"result": evaluated.Result, "explanation": evaluated.Explanation,
-				"usage": usage,
-			},
+	return domain.EventDraft{
+		ID: evaluated.EndEventID, Type: domain.EvSpanOutcomeEvaluationEnd,
+		Payload: map[string]any{
+			"outcome_evaluation_start_id": evaluated.StartEventID,
+			"outcome_id":                  outcome.OutcomeID, "iteration": iteration,
+			"result": evaluated.Result, "explanation": evaluated.Explanation,
+			"usage": usage,
 		},
 	}
+}
+
+func outcomeEvaluationFailureDraft(
+	outcome domain.OutcomeSpec,
+	iteration int,
+	startEventID string,
+	endEventID string,
+	evaluated EvaluateOutcomeResult,
+) domain.EventDraft {
+	evaluated.StartEventID = startEventID
+	evaluated.EndEventID = endEventID
+	evaluated.Result = "failed"
+	evaluated.Explanation = evaluated.FatalError
+	return outcomeEvaluationEndDraft(outcome, iteration, evaluated)
 }
 
 // modelRequestStartDraft is retained only for histories recorded before the
@@ -273,6 +401,12 @@ func (t *workflowTurnState) complete(
 		Type:    domain.EvSessionStatusIdle,
 		Payload: map[string]any{"stop_reason": stopReason},
 	})
+	if t.activeOutcomeEvaluationStartID != "" {
+		output[len(output)-1].Payload[domain.InternalOutcomeEvaluationStart] =
+			t.activeOutcomeEvaluationStartID
+		output[len(output)-1].Payload[domain.InternalOutcomeIteration] =
+			t.activeOutcomeIteration
+	}
 	input := CompleteWorkflowTurnInput{
 		SessionID:             t.sessionID,
 		TriggerEventID:        t.triggerEventID,

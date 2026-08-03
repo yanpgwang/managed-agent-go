@@ -145,10 +145,14 @@ follow when that model round completes. If a preview arrives before its
 persisted-event wakeup, the stream reconciles its PostgreSQL cursor before
 forwarding the first preview frame.
 
-For an active outcome interrupted before an evaluation-start event was emitted,
-`span.outcome_evaluation_end.outcome_evaluation_start_id` is the documented
-empty string. Completed `needs_revision` evaluation pairs remain in history and
-the interrupt end uses the next zero-based iteration.
+An outcome evaluation durably publishes `span.outcome_evaluation_start` before
+the grader runs and emits periodic `span.outcome_evaluation_ongoing` events
+while it remains active. Its terminal `span.outcome_evaluation_end` references
+the start event. This correlation is preserved when an active grader is
+interrupted. If interruption happens before any evaluation start can be
+published, the documented `outcome_evaluation_start_id` is the empty string.
+Completed `needs_revision` evaluation pairs remain in history and the
+interrupt end uses the next zero-based iteration.
 
 `agent.thinking` is accepted as an opt-in value but no thinking previews are
 currently emitted.
