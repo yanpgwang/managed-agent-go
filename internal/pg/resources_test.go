@@ -55,6 +55,19 @@ func TestPostgresResourcesAndSessionDependencies(t *testing.T) {
 		persistedEnvironment.Metadata["team"] != "storage" || persistedEnvironment.Scope != "account" {
 		t.Fatalf("persisted environment = %#v", persistedEnvironment)
 	}
+	updatedName, updatedDescription := "local-v2", "updated durably"
+	updatedEnvironment, err := environments.Update(ctx, environment.ID, domain.EnvironmentPatch{
+		Name: &updatedName, Description: &updatedDescription,
+		Metadata: map[string]any{"team": "runtime"},
+	})
+	if err != nil {
+		t.Fatalf("update environment: %v", err)
+	}
+	if updatedEnvironment.Name != "local-v2" ||
+		updatedEnvironment.Description != "updated durably" ||
+		updatedEnvironment.Metadata["team"] != "runtime" {
+		t.Fatalf("updated environment = %#v", updatedEnvironment)
+	}
 	now := clock.Now().UTC()
 	session := domain.Session{
 		ID:            "sesn_api",
@@ -207,7 +220,8 @@ func TestActiveResourceLocksFenceConcurrentArchival(t *testing.T) {
 	ids := &seqIDGen{}
 	clock := fixedClock{}
 	agents := app.NewAgentService(NewAgentRepository(store), ids, clock)
-	environments := app.NewEnvironmentService(NewEnvironmentRepository(store), ids, clock)
+	environmentRepo := NewEnvironmentRepository(store)
+	environments := app.NewEnvironmentService(environmentRepo, ids, clock)
 
 	agent, err := agents.Create(ctx, domain.Agent{
 		Name: "coder", Model: domain.Model{ID: "claude-test"},
@@ -266,6 +280,16 @@ func TestActiveResourceLocksFenceConcurrentArchival(t *testing.T) {
 	}
 	if _, err := environments.Archive(ctx, environment.ID); err != nil {
 		t.Fatalf("archive environment after releasing lock: %v", err)
+	}
+	stale := environment
+	stale.Name = "must not revive"
+	stale.UpdatedAt = stale.UpdatedAt.Add(time.Second)
+	if _, err := environmentRepo.Update(ctx, stale); err == nil {
+		t.Fatal("stale update revived archived environment")
+	}
+	archived, err := environments.Get(ctx, environment.ID)
+	if err != nil || archived.ArchivedAt == nil || archived.Name == "must not revive" {
+		t.Fatalf("archived environment after stale update = %#v, err=%v", archived, err)
 	}
 }
 

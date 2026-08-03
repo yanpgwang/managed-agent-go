@@ -60,11 +60,13 @@ but existing session references remain intact.
 
 ## Update
 
-`POST /v1/environments/{id}` is the only missing operation in the 21-operation
-core HTTP inventory. Mango does not currently accept an Environment update
-because cloud networking and package configuration are not yet enforced by the
-runtime. Accepting and storing those fields without honoring them would create
-a false compatibility claim.
+`POST /v1/environments/{id}` updates `name`, `description`, metadata, explicit
+self-hosted `scope`, and the Environment type. Metadata is patched per key;
+`null` and empty string delete a key. Changing a self-hosted Environment to
+`cloud` clears its inapplicable scope. Archived Environments are read-only.
+
+`networking` and `packages` updates return `422` until the selected sandbox
+adapter can enforce them. They are never accepted as inert stored policy.
 
 ## Delete
 

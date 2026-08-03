@@ -238,6 +238,86 @@ func (r *EnvironmentRepository) Put(ctx context.Context, environment domain.Envi
 	})
 }
 
+// Update replaces the mutable Environment projection only while the resource
+// remains active. The archived_at predicate prevents a stale read followed by
+// an update from reviving an Environment that was archived concurrently.
+func (r *EnvironmentRepository) Update(
+	ctx context.Context,
+	environment domain.Environment,
+) (domain.Environment, error) {
+	body, err := json.Marshal(environment)
+	if err != nil {
+		return domain.Environment{}, err
+	}
+	row := r.store.pool.QueryRow(ctx, `
+UPDATE environments
+SET name = $2, config_type = $3, body = $4, updated_at = $5
+WHERE id = $1 AND archived_at IS NULL
+RETURNING id, name, config_type, body, created_at, updated_at, archived_at`,
+		environment.ID,
+		environment.Name,
+		environment.ConfigType,
+		body,
+		tsUTC(environment.UpdatedAt),
+	)
+	var stored pgstore.Environment
+	if err := row.Scan(
+		&stored.ID,
+		&stored.Name,
+		&stored.ConfigType,
+		&stored.Body,
+		&stored.CreatedAt,
+		&stored.UpdatedAt,
+		&stored.ArchivedAt,
+	); errors.Is(err, pgx.ErrNoRows) {
+		exists, existsErr := r.store.q.EnvironmentExists(ctx, environment.ID)
+		if existsErr != nil {
+			return domain.Environment{}, existsErr
+		}
+		if !exists {
+			return domain.Environment{}, domain.NotFound("environment not found")
+		}
+		return domain.Environment{}, domain.Validation("archived environment is read-only")
+	} else if err != nil {
+		return domain.Environment{}, err
+	}
+	return environmentFromRow(stored)
+}
+
+// Archive is idempotent and updates lifecycle columns without rewriting the
+// JSON resource body. It therefore serializes safely with Update instead of
+// allowing a stale read/Put pair to discard a concurrent field change.
+func (r *EnvironmentRepository) Archive(
+	ctx context.Context,
+	id string,
+	archivedAt time.Time,
+) (domain.Environment, error) {
+	row := r.store.pool.QueryRow(ctx, `
+UPDATE environments
+SET archived_at = COALESCE(archived_at, $2),
+    updated_at = CASE WHEN archived_at IS NULL THEN $2 ELSE updated_at END
+WHERE id = $1
+RETURNING id, name, config_type, body, created_at, updated_at, archived_at`,
+		id,
+		tsUTC(archivedAt),
+	)
+	var stored pgstore.Environment
+	if err := row.Scan(
+		&stored.ID,
+		&stored.Name,
+		&stored.ConfigType,
+		&stored.Body,
+		&stored.CreatedAt,
+		&stored.UpdatedAt,
+		&stored.ArchivedAt,
+	); errors.Is(err, pgx.ErrNoRows) {
+		return domain.Environment{}, domain.NotFound("environment not found")
+	} else if err != nil {
+		return domain.Environment{}, err
+	}
+	return environmentFromRow(stored)
+}
+
 func (r *EnvironmentRepository) Get(
 	ctx context.Context,
 	id string,
@@ -284,6 +364,11 @@ func environmentFromRow(row pgstore.Environment) (domain.Environment, error) {
 	if err := json.Unmarshal(row.Body, &environment); err != nil {
 		return domain.Environment{}, fmt.Errorf("pg: decode environment %s: %w", row.ID, err)
 	}
+	environment.ID = row.ID
+	environment.Name = row.Name
+	environment.ConfigType = row.ConfigType
+	environment.CreatedAt = row.CreatedAt.Time.UTC()
+	environment.UpdatedAt = row.UpdatedAt.Time.UTC()
 	environment.ArchivedAt = timePtr(row.ArchivedAt)
 	return environment, nil
 }

@@ -186,6 +186,43 @@ func (r *memoryEnvironmentRepository) Put(
 	return nil
 }
 
+func (r *memoryEnvironmentRepository) Update(
+	_ context.Context,
+	environment domain.Environment,
+) (domain.Environment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current, ok := r.values[environment.ID]
+	if !ok {
+		return domain.Environment{}, domain.NotFound("environment not found")
+	}
+	if current.ArchivedAt != nil {
+		return domain.Environment{}, domain.Validation("archived environment is read-only")
+	}
+	environment.ArchivedAt = current.ArchivedAt
+	r.values[environment.ID] = environment
+	return environment, nil
+}
+
+func (r *memoryEnvironmentRepository) Archive(
+	_ context.Context,
+	id string,
+	archivedAt time.Time,
+) (domain.Environment, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	environment, ok := r.values[id]
+	if !ok {
+		return domain.Environment{}, domain.NotFound("environment not found")
+	}
+	if environment.ArchivedAt == nil {
+		environment.ArchivedAt = &archivedAt
+		environment.UpdatedAt = archivedAt
+		r.values[id] = environment
+	}
+	return environment, nil
+}
+
 func (r *memoryEnvironmentRepository) Get(
 	_ context.Context,
 	id string,

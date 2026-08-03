@@ -131,6 +131,84 @@ func parseEnvironmentOptionalObject(raw json.RawMessage, field string) (map[stri
 	return value, nil
 }
 
+func (s *Server) updateEnvironment(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Name        json.RawMessage `json:"name"`
+		Description json.RawMessage `json:"description"`
+		Metadata    json.RawMessage `json:"metadata"`
+		Scope       json.RawMessage `json:"scope"`
+		Config      json.RawMessage `json:"config"`
+	}
+	if err := decodeJSONBody(r, &in); err != nil {
+		writeError(w, err)
+		return
+	}
+	name, err := parseEnvironmentUpdateString(in.Name, "name")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	description, err := parseEnvironmentUpdateString(in.Description, "description")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	scope, err := parseEnvironmentUpdateString(in.Scope, "scope")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	metadata, err := parseEnvironmentMetadataPatch(in.Metadata)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	config, err := parseEnvironmentOptionalObject(in.Config, "config")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	patch := domain.EnvironmentPatch{
+		Name: name, Description: description, Metadata: metadata, Scope: scope,
+	}
+	if len(bytes.TrimSpace(in.Config)) > 0 {
+		patch.Config = &config
+	}
+	updated, err := s.deps.Envs.Update(r.Context(), r.PathValue("id"), patch)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, envToJSON(updated))
+}
+
+func parseEnvironmentUpdateString(raw json.RawMessage, field string) (*string, error) {
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
+	}
+	value, err := parseEnvironmentOptionalString(raw, field)
+	if err != nil {
+		return nil, err
+	}
+	return &value, nil
+}
+
+func parseEnvironmentMetadataPatch(raw json.RawMessage) (map[string]any, error) {
+	metadata, err := parseEnvironmentOptionalObject(raw, "metadata")
+	if err != nil || metadata == nil {
+		return metadata, err
+	}
+	for _, value := range metadata {
+		if value == nil {
+			continue
+		}
+		if _, ok := value.(string); !ok {
+			return nil, domain.Validation("metadata values must be strings or null")
+		}
+	}
+	return metadata, nil
+}
+
 func (s *Server) getEnvironment(w http.ResponseWriter, r *http.Request) {
 	e, err := s.deps.Envs.Get(r.Context(), r.PathValue("id"))
 	if err != nil {
