@@ -31,7 +31,7 @@ Remaining M1 work is tracked by evidence rather than route count:
 
 - complete the core request validation, defaults, null, error, OpenAPI, and
   official SDK coverage sweep;
-- keep Environment networking and package requests gated on runtime enforcement
+- keep Environment networking requests gated on runtime enforcement
   across every sandbox adapter;
 - close the documented event, retry, terminal-state, heartbeat, SSE,
   interruption, and restart invariants;

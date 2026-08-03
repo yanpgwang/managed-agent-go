@@ -61,6 +61,24 @@ type Spec struct {
 	CPUs      string // e.g. "1.0"; empty uses the default
 	Network   string // "none" (default) or "bridge"
 	PidsLimit int    // max processes; 0 uses the default
+	// Packages are installed once while provisioning, before the durable
+	// sandbox binding becomes visible to tool execution.
+	Packages PackageSet
+}
+
+// PackageSet is the normalized Managed Agents Environment package plan.
+type PackageSet struct {
+	Apt   []string
+	Cargo []string
+	Gem   []string
+	Go    []string
+	NPM   []string
+	Pip   []string
+}
+
+func (p PackageSet) Empty() bool {
+	return len(p.Apt) == 0 && len(p.Cargo) == 0 && len(p.Gem) == 0 &&
+		len(p.Go) == 0 && len(p.NPM) == 0 && len(p.Pip) == 0
 }
 
 // Command is a single process invocation within a sandbox.
@@ -122,6 +140,13 @@ type Provider interface {
 	Name() string
 	Create(ctx context.Context, sessionKey string, spec Spec) (Ref, Sandbox, error)
 	Attach(ctx context.Context, sessionKey string, ref Ref, spec Spec) (Sandbox, error)
+}
+
+// PackageSetupProvider declares that package-manager commands execute inside
+// the provider's isolation boundary rather than on the worker host. Providers
+// must opt in explicitly; an unknown or local-process provider is denied.
+type PackageSetupProvider interface {
+	SupportsPackageSetup() bool
 }
 
 func validateSandbox(provider Provider, ref Ref, box Sandbox) error {

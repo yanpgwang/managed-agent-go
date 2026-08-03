@@ -21,10 +21,17 @@ const (
 // it is registered.
 type ProviderFactory func() (Provider, error)
 
+// ProviderCapabilities are admission-safe facts about an adapter. They can be
+// inspected without constructing the provider or loading its credentials.
+type ProviderCapabilities struct {
+	PackageSetup bool
+}
+
 // ProviderRegistration is one deployment-selectable sandbox adapter.
 type ProviderRegistration struct {
-	Name    string
-	Factory ProviderFactory
+	Name         string
+	Factory      ProviderFactory
+	Capabilities ProviderCapabilities
 }
 
 // ProviderRegistry resolves a deployment-level provider name to its adapter.
@@ -33,8 +40,9 @@ type ProviderRegistration struct {
 //
 // A registry is immutable after construction and safe for concurrent reads.
 type ProviderRegistry struct {
-	factories map[string]ProviderFactory
-	names     []string
+	factories    map[string]ProviderFactory
+	capabilities map[string]ProviderCapabilities
+	names        []string
 }
 
 // NewProviderRegistry validates and freezes the available provider set without
@@ -44,8 +52,9 @@ func NewProviderRegistry(registrations ...ProviderRegistration) (*ProviderRegist
 		return nil, errors.New("sandbox: provider registry requires at least one registration")
 	}
 	registry := &ProviderRegistry{
-		factories: make(map[string]ProviderFactory, len(registrations)),
-		names:     make([]string, 0, len(registrations)),
+		factories:    make(map[string]ProviderFactory, len(registrations)),
+		capabilities: make(map[string]ProviderCapabilities, len(registrations)),
+		names:        make([]string, 0, len(registrations)),
 	}
 	for _, registration := range registrations {
 		if err := validateProviderName(registration.Name); err != nil {
@@ -64,10 +73,28 @@ func NewProviderRegistry(registrations ...ProviderRegistration) (*ProviderRegist
 			)
 		}
 		registry.factories[registration.Name] = registration.Factory
+		registry.capabilities[registration.Name] = registration.Capabilities
 		registry.names = append(registry.names, registration.Name)
 	}
 	sort.Strings(registry.names)
 	return registry, nil
+}
+
+// Capabilities returns admission-safe adapter capabilities without invoking
+// the provider factory.
+func (r *ProviderRegistry) Capabilities(name string) (ProviderCapabilities, error) {
+	if r == nil {
+		return ProviderCapabilities{}, errors.New("sandbox: provider registry is required")
+	}
+	capabilities, ok := r.capabilities[name]
+	if !ok {
+		return ProviderCapabilities{}, fmt.Errorf(
+			"sandbox: unsupported provider %q (available: %s)",
+			name,
+			strings.Join(r.names, ", "),
+		)
+	}
+	return capabilities, nil
 }
 
 // Open constructs the selected provider and verifies that the adapter reports
@@ -96,6 +123,17 @@ func (r *ProviderRegistry) Open(name string) (Provider, error) {
 			"sandbox: provider registered as %q reports name %q",
 			name,
 			provider.Name(),
+		)
+	}
+	declared := r.capabilities[name].PackageSetup
+	capability, implementsCapability := provider.(PackageSetupProvider)
+	actual := implementsCapability && capability.SupportsPackageSetup()
+	if declared != actual {
+		return nil, fmt.Errorf(
+			"sandbox: provider %q package setup capability is registered as %t but reports %t",
+			name,
+			declared,
+			actual,
 		)
 	}
 	return provider, nil

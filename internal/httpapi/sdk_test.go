@@ -1092,6 +1092,34 @@ func TestSDK_EnvironmentExplicitCloudDefaults(t *testing.T) {
 	}
 }
 
+func TestSDK_EnvironmentPackagesRoundTrip(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	cloud := anthropic.BetaCloudConfigParams{
+		Packages: anthropic.BetaPackagesParams{
+			Apt:  []string{"git"},
+			Npm:  []string{"typescript@5.9.2"},
+			Pip:  []string{"httpx==0.28.1"},
+			Type: anthropic.BetaPackagesParamsTypePackages,
+		},
+	}
+
+	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
+		Name: "SDK package environment",
+		Config: anthropic.BetaEnvironmentNewParamsConfigUnion{
+			OfCloud: &cloud,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create package environment: %v", err)
+	}
+	if len(environment.Config.Packages.Apt) != 1 || environment.Config.Packages.Apt[0] != "git" ||
+		len(environment.Config.Packages.Npm) != 1 || environment.Config.Packages.Npm[0] != "typescript@5.9.2" ||
+		len(environment.Config.Packages.Pip) != 1 || environment.Config.Packages.Pip[0] != "httpx==0.28.1" {
+		t.Fatalf("created packages = %#v", environment.Config.Packages)
+	}
+}
+
 func TestSDK_SelfHostedEnvironmentScope(t *testing.T) {
 	client, _ := sdkClientAndServer(t)
 	ctx := context.Background()

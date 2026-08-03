@@ -27,10 +27,8 @@ func envToJSON(e domain.Environment) map[string]any {
 	return out
 }
 
-// environmentConfigToJSON resolves the documented response defaults without
-// mutating the stored request map. Cloud environments currently run with
-// unrestricted networking and no pre-installed packages unless a future
-// enforcement-capable admission path stores an explicit configuration.
+// environmentConfigToJSON resolves documented response defaults without
+// mutating the stored, enforcement-facing configuration.
 func environmentConfigToJSON(e domain.Environment) map[string]any {
 	if e.ConfigType == "self_hosted" {
 		return map[string]any{"type": "self_hosted"}
@@ -43,13 +41,22 @@ func environmentConfigToJSON(e domain.Environment) map[string]any {
 	if _, present := config["networking"]; !present {
 		config["networking"] = map[string]any{"type": "unrestricted"}
 	}
-	if _, present := config["packages"]; !present {
-		config["packages"] = map[string]any{
-			"type": "packages", "apt": []any{}, "cargo": []any{}, "gem": []any{},
-			"go": []any{}, "npm": []any{}, "pip": []any{},
+	config["packages"] = environmentPackagesToJSON(config["packages"])
+	return config
+}
+
+func environmentPackagesToJSON(raw any) map[string]any {
+	packages := map[string]any{
+		"type": "packages", "apt": []any{}, "cargo": []any{}, "gem": []any{},
+		"go": []any{}, "npm": []any{}, "pip": []any{},
+	}
+	configured, _ := raw.(map[string]any)
+	for _, manager := range []string{"apt", "cargo", "gem", "go", "npm", "pip"} {
+		if values, present := configured[manager]; present {
+			packages[manager] = values
 		}
 	}
-	return config
+	return packages
 }
 
 func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {

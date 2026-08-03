@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -202,14 +203,14 @@ func TestSandboxProvisioningIntentReconcilesCrashBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put provisioning intent: %v", err)
 	}
-	if authoritative != intent {
+	if !reflect.DeepEqual(authoritative, intent) {
 		t.Fatalf("intent = %+v, want %+v", authoritative, intent)
 	}
 	listed, err := store.ListSandboxProvisioningIntents(ctx, "docker", 10)
 	if err != nil {
 		t.Fatalf("list provisioning intents: %v", err)
 	}
-	if len(listed) != 1 || listed[0] != intent {
+	if len(listed) != 1 || !reflect.DeepEqual(listed[0], intent) {
 		t.Fatalf("listed intents = %+v, want [%+v]", listed, intent)
 	}
 

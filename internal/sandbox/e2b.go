@@ -192,6 +192,8 @@ func newE2BLikeProvider(
 
 func (p *e2bLikeProvider) Name() string { return p.name }
 
+func (*e2bLikeProvider) SupportsPackageSetup() bool { return true }
+
 func (p *e2bLikeProvider) Create(
 	ctx context.Context,
 	sessionKey string,

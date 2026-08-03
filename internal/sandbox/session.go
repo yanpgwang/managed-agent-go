@@ -17,7 +17,9 @@ var ErrProvisioningUnavailable = errors.New("sandbox: provisioning unavailable")
 
 // Binding is the durable association between a Managed Agents session and the
 // provider resource that owns its workspace. SpecHash is diagnostic drift
-// metadata; credentials and provider configuration must never be stored here.
+// metadata and, for non-empty package plans, evidence that setup completed for
+// the requested plan. Credentials and provider configuration must never be
+// stored here.
 type Binding struct {
 	SessionID string
 	Ref       Ref
@@ -80,7 +82,11 @@ type SessionManager struct {
 
 	mu    sync.Mutex
 	boxes map[string]Sandbox
-	locks map[string]*sessionMutex
+	// specHashes records the durable binding evidence associated with a cached
+	// client. It prevents a later non-empty package request from bypassing setup
+	// merely because the resource is already in process memory.
+	specHashes map[string]string
+	locks      map[string]*sessionMutex
 }
 
 type sessionMutex struct {
@@ -96,10 +102,11 @@ func NewSessionManager(provider Provider, bindings BindingStore) *SessionManager
 		panic("sandbox: binding store is required")
 	}
 	return &SessionManager{
-		provider: provider,
-		bindings: bindings,
-		boxes:    make(map[string]Sandbox),
-		locks:    make(map[string]*sessionMutex),
+		provider:   provider,
+		bindings:   bindings,
+		boxes:      make(map[string]Sandbox),
+		specHashes: make(map[string]string),
+		locks:      make(map[string]*sessionMutex),
 	}
 }
 
@@ -138,10 +145,26 @@ func (m *SessionManager) Acquire(
 	}
 	unlock := m.acquireSessionLock(sessionID)
 	defer unlock()
+	if !spec.Packages.Empty() {
+		capability, ok := m.provider.(PackageSetupProvider)
+		if !ok || !capability.SupportsPackageSetup() {
+			return nil, Permanent(fmt.Errorf(
+				"sandbox: provider %q does not support isolated package setup",
+				m.provider.Name(),
+			))
+		}
+	}
 
 	m.mu.Lock()
 	if box := m.boxes[sessionID]; box != nil {
+		boundSpecHash := m.specHashes[sessionID]
 		m.mu.Unlock()
+		if !spec.Packages.Empty() && boundSpecHash != specHash(spec) {
+			return nil, Permanent(fmt.Errorf(
+				"sandbox: session %s cached binding does not prove setup for the requested package plan",
+				sessionID,
+			))
+		}
 		return box, nil
 	}
 	m.mu.Unlock()
@@ -155,7 +178,7 @@ func (m *SessionManager) Acquire(
 		if err != nil {
 			return nil, err
 		}
-		m.cache(sessionID, box)
+		m.cache(sessionID, box, binding.SpecHash)
 		return box, nil
 	}
 
@@ -180,7 +203,7 @@ func (m *SessionManager) Acquire(
 				if attachErr != nil {
 					return nil, attachErr
 				}
-				m.cache(sessionID, box)
+				m.cache(sessionID, box, binding.SpecHash)
 				return box, nil
 			}
 			return nil, Permanent(fmt.Errorf(
@@ -214,6 +237,12 @@ func (m *SessionManager) Acquire(
 		_ = box.Destroy(context.WithoutCancel(ctx))
 		return nil, err
 	}
+	// A binding is evidence that provisioning, including package setup,
+	// completed. Run setup before publishing the binding so a crash or transient
+	// package-manager failure leaves the durable intent available for retry.
+	if err := initializeSandbox(ctx, box, spec); err != nil {
+		return nil, err
+	}
 	proposed := Binding{
 		SessionID: sessionID,
 		Ref:       ref,
@@ -234,7 +263,7 @@ func (m *SessionManager) Acquire(
 			return nil, err
 		}
 	}
-	m.cache(sessionID, box)
+	m.cache(sessionID, box, authoritative.SpecHash)
 	return box, nil
 }
 
@@ -243,6 +272,12 @@ func (m *SessionManager) attach(
 	binding Binding,
 	spec Spec,
 ) (Sandbox, error) {
+	if !spec.Packages.Empty() && binding.SpecHash != specHash(spec) {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: session %s binding does not prove setup for the requested package plan",
+			binding.SessionID,
+		))
+	}
 	if binding.Ref.Provider != m.provider.Name() {
 		return nil, Permanent(fmt.Errorf(
 			"sandbox: session %s is bound to provider %q, worker has %q",
@@ -261,9 +296,10 @@ func (m *SessionManager) attach(
 	return box, nil
 }
 
-func (m *SessionManager) cache(sessionID string, box Sandbox) {
+func (m *SessionManager) cache(sessionID string, box Sandbox, specHash string) {
 	m.mu.Lock()
 	m.boxes[sessionID] = box
+	m.specHashes[sessionID] = specHash
 	m.mu.Unlock()
 }
 
@@ -281,6 +317,7 @@ func (m *SessionManager) Release(ctx context.Context, sessionID string) error {
 	m.mu.Lock()
 	box := m.boxes[sessionID]
 	delete(m.boxes, sessionID)
+	delete(m.specHashes, sessionID)
 	m.mu.Unlock()
 
 	binding, found, err := m.bindings.GetSandboxBinding(ctx, sessionID)

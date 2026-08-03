@@ -9,10 +9,14 @@ import (
 )
 
 type registryTestProvider struct {
-	name string
+	name         string
+	packageSetup bool
 }
 
 func (p *registryTestProvider) Name() string { return p.name }
+func (p *registryTestProvider) SupportsPackageSetup() bool {
+	return p.packageSetup
+}
 
 func (*registryTestProvider) Create(
 	context.Context,
@@ -41,17 +45,19 @@ func TestProviderRegistry_OpensSelectedFactoryLazily(t *testing.T) {
 	var localCalls, dockerCalls int
 	registry, err := NewProviderRegistry(
 		ProviderRegistration{
-			Name: LocalProviderName,
+			Name:         LocalProviderName,
+			Capabilities: ProviderCapabilities{PackageSetup: false},
 			Factory: func() (Provider, error) {
 				localCalls++
 				return &registryTestProvider{name: LocalProviderName}, nil
 			},
 		},
 		ProviderRegistration{
-			Name: DockerProviderName,
+			Name:         DockerProviderName,
+			Capabilities: ProviderCapabilities{PackageSetup: true},
 			Factory: func() (Provider, error) {
 				dockerCalls++
-				return &registryTestProvider{name: DockerProviderName}, nil
+				return &registryTestProvider{name: DockerProviderName, packageSetup: true}, nil
 			},
 		},
 	)
@@ -60,6 +66,13 @@ func TestProviderRegistry_OpensSelectedFactoryLazily(t *testing.T) {
 	}
 	if localCalls != 0 || dockerCalls != 0 {
 		t.Fatal("registry construction invoked an optional provider factory")
+	}
+	capabilities, err := registry.Capabilities(DockerProviderName)
+	if err != nil || !capabilities.PackageSetup {
+		t.Fatalf("docker capabilities = %+v, err=%v", capabilities, err)
+	}
+	if localCalls != 0 || dockerCalls != 0 {
+		t.Fatal("capability lookup invoked a provider factory")
 	}
 
 	provider, err := registry.Open(LocalProviderName)
@@ -157,5 +170,20 @@ func TestProviderRegistry_RejectsUnknownAndBrokenFactories(t *testing.T) {
 	if _, err := registry.Open("alias"); err == nil ||
 		!strings.Contains(err.Error(), `registered as "alias" reports name "different"`) {
 		t.Fatalf("name mismatch error = %v", err)
+	}
+}
+
+func TestProviderRegistryRejectsCapabilityDrift(t *testing.T) {
+	registry, err := NewProviderRegistry(ProviderRegistration{
+		Name:         "isolated",
+		Capabilities: ProviderCapabilities{PackageSetup: true},
+		Factory:      registryFactory("isolated"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Open("isolated"); err == nil ||
+		!strings.Contains(err.Error(), "registered as true but reports false") {
+		t.Fatalf("capability drift error = %v", err)
 	}
 }

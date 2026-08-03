@@ -28,6 +28,11 @@ unknown name fails startup instead of falling back to host execution. Provider
 selection does not add fields to the Managed Agents Environment or Session
 APIs.
 
+The `serve` and `orchestrate` processes for one deployment must use the same
+`MANAGED_AGENT_SANDBOX` value. API admission reads that provider's declared
+capabilities without loading worker credentials; the worker verifies the same
+capability again before provisioning.
+
 ## Support levels
 
 - **Available**: implemented, documented, and exercised by repository tests.
@@ -83,8 +88,19 @@ not compatible with all executing built-ins yet.
 
 - The first tool-using run idempotently creates the provider resource and
   persists `{provider, external_id, spec_hash}` in PostgreSQL. Before calling
-  the provider it writes a non-secret provisioning intent; a worker reconciler
-  recovers and binds any resource left by a crash between those commits.
+  the provider it writes a non-secret provisioning intent, installs the
+  Session's snapshotted Environment packages, and publishes the binding only
+  after every package-manager command succeeds. A worker reconciler recovers
+  and completes any resource left by a crash between those commits.
+- Package configuration supports `apt`, `cargo`, `gem`, `go`, `npm`, and `pip`.
+  Commands use argument vectors rather than shell interpolation. The selected
+  image must contain each requested manager, and package validation remains the
+  caller's responsibility. An install failure leaves the provisioning intent
+  for retry and does not expose the sandbox to tool execution.
+- A deployment using the local-process backend rejects non-empty package
+  configuration at API admission because installing there would mutate the
+  worker host. Use Docker or a remote isolated backend for package-configured
+  cloud Environments.
 - Remote services receive a fixed-length hash of the session key as their
   ownership label; credentials and raw session identifiers are not persisted in
   the provider reference.

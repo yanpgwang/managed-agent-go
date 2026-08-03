@@ -32,9 +32,13 @@ type Session struct {
 	// stable even if the environment resource is later archived. Empty on older
 	// sessions means cloud.
 	EnvironmentType string
-	Status          Status
-	Title           string
-	Metadata        map[string]any
+	// EnvironmentConfig is the immutable sandbox configuration captured when
+	// the Session is created. It is internal execution state and is not exposed
+	// in the public Session response.
+	EnvironmentConfig map[string]any
+	Status            Status
+	Title             string
+	Metadata          map[string]any
 	// AgentSnapshot is the resolved agent definition captured at session
 	// creation time, after version pinning and any per-session overrides. It is
 	// the immutable public projection returned as the session's `agent` field.

@@ -1155,7 +1155,7 @@ components:
         propertyName: type
     PackagesInput:
       type: object
-      description: Empty package sets are accepted; any non-empty manager list currently returns 422.
+      description: Packages to install before a Session sandbox becomes available to tool execution. Non-empty lists require an isolated package-capable deployment backend.
       additionalProperties: false
       properties:
         type:

@@ -4,18 +4,35 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 type EnvironmentService struct {
-	env   EnvironmentRepository
-	ids   domain.IDGenerator
-	clock domain.Clock
+	env          EnvironmentRepository
+	ids          domain.IDGenerator
+	clock        domain.Clock
+	capabilities EnvironmentCapabilities
 }
 
-func NewEnvironmentService(env EnvironmentRepository, ids domain.IDGenerator, clock domain.Clock) *EnvironmentService {
-	return &EnvironmentService{env: env, ids: ids, clock: clock}
+// EnvironmentCapabilities describe policies the configured execution runtime
+// can enforce. The zero value fails closed for optional behavior.
+type EnvironmentCapabilities struct {
+	PackageSetup bool
+}
+
+func NewEnvironmentService(
+	env EnvironmentRepository,
+	ids domain.IDGenerator,
+	clock domain.Clock,
+	capabilities ...EnvironmentCapabilities,
+) *EnvironmentService {
+	service := &EnvironmentService{env: env, ids: ids, clock: clock}
+	if len(capabilities) > 0 {
+		service.capabilities = capabilities[0]
+	}
+	return service
 }
 
 func (s *EnvironmentService) Create(ctx context.Context, e domain.Environment) (domain.Environment, error) {
@@ -29,10 +46,12 @@ func (s *EnvironmentService) Create(ctx context.Context, e domain.Environment) (
 	if err := validateEnvironment(e); err != nil {
 		return domain.Environment{}, err
 	}
-	// Only persist the capability the runtime can currently honor. Explicit
-	// networking and package policies are rejected above rather than stored as
-	// inert configuration.
-	e.Config = map[string]any{"type": e.ConfigType}
+	if err := validateEnvironmentRuntimeConfig(e.Config, e.ConfigType, s.capabilities); err != nil {
+		return domain.Environment{}, err
+	}
+	// Keep the validated configuration so Sessions can snapshot and enforce it.
+	// Unsupported policies are still rejected by validation before this point.
+	e.Config = normalizeEnvironmentConfig(e.Config, e.ConfigType)
 	if e.Metadata == nil {
 		e.Metadata = map[string]any{}
 	}
@@ -60,7 +79,7 @@ func (s *EnvironmentService) Update(
 	}
 
 	if patch.Config != nil {
-		rawConfig := *patch.Config
+		rawConfig := cloneEnvironmentConfigValue(*patch.Config).(map[string]any)
 		configType, ok := rawConfig["type"].(string)
 		if !ok {
 			return domain.Environment{}, domain.Validation("config type must be cloud or self_hosted")
@@ -71,10 +90,26 @@ func (s *EnvironmentService) Update(
 		if value, present := rawConfig["packages"]; present && value == nil {
 			return domain.Environment{}, domain.Validation("environment package configuration cannot be null")
 		}
+		// Cloud config is a nested patch in the public contract: omitting
+		// networking or packages on update preserves that field. Changing the
+		// Environment type starts from the new type's defaults instead.
+		if configType == "cloud" && current.ConfigType == "cloud" {
+			for _, field := range []string{"networking", "packages"} {
+				if _, present := rawConfig[field]; present {
+					continue
+				}
+				if existing, present := current.Config[field]; present {
+					rawConfig[field] = cloneEnvironmentConfigValue(existing)
+				}
+			}
+		}
 		if err := validateEnvironmentConfig(rawConfig, configType); err != nil {
 			return domain.Environment{}, err
 		}
-		normalized := map[string]any{"type": configType}
+		if err := validateEnvironmentRuntimeConfig(rawConfig, configType, s.capabilities); err != nil {
+			return domain.Environment{}, err
+		}
+		normalized := normalizeEnvironmentConfig(rawConfig, configType)
 		patch.Config = &normalized
 		if configType == "cloud" && patch.Scope == nil {
 			clearedScope := ""
@@ -94,6 +129,30 @@ func (s *EnvironmentService) Update(
 	}
 	next.UpdatedAt = s.clock.Now().UTC()
 	return s.env.Update(ctx, next)
+}
+
+func validateEnvironmentRuntimeConfig(
+	config map[string]any,
+	configType string,
+	capabilities EnvironmentCapabilities,
+) error {
+	if configType != "cloud" || capabilities.PackageSetup {
+		return nil
+	}
+	packages, _ := config["packages"].(map[string]any)
+	for _, manager := range []string{"apt", "cargo", "gem", "go", "npm", "pip"} {
+		switch values := packages[manager].(type) {
+		case []string:
+			if len(values) > 0 {
+				return domain.Unsupported("environment package installation is unavailable for the configured sandbox provider")
+			}
+		case []any:
+			if len(values) > 0 {
+				return domain.Unsupported("environment package installation is unavailable for the configured sandbox provider")
+			}
+		}
+	}
+	return nil
 }
 
 func validateEnvironment(environment domain.Environment) error {
@@ -202,7 +261,6 @@ func validateEnvironmentPackages(value any) error {
 			return domain.Validation("environment package configuration type must be packages")
 		}
 	}
-	hasPackages := false
 	for _, manager := range []string{"apt", "cargo", "gem", "go", "npm", "pip"} {
 		value, present := packages[manager]
 		if !present {
@@ -211,17 +269,68 @@ func validateEnvironmentPackages(value any) error {
 		if err := validateEnvironmentStringList(value, "packages."+manager); err != nil {
 			return err
 		}
-		switch values := value.(type) {
-		case []string:
-			hasPackages = hasPackages || len(values) > 0
-		case []any:
-			hasPackages = hasPackages || len(values) > 0
+		if err := validateEnvironmentPackageNames(value, "packages."+manager); err != nil {
+			return err
 		}
 	}
-	if hasPackages {
-		return domain.Unsupported("environment package installation is not implemented")
+	return nil
+}
+
+func validateEnvironmentPackageNames(value any, field string) error {
+	var names []string
+	switch values := value.(type) {
+	case []string:
+		names = values
+	case []any:
+		names = make([]string, len(values))
+		for index, entry := range values {
+			names[index], _ = entry.(string)
+		}
+	}
+	for _, name := range names {
+		if strings.TrimSpace(name) == "" || strings.HasPrefix(name, "-") ||
+			strings.ContainsAny(name, "\r\n\x00") {
+			return domain.Validation(
+				fmt.Sprintf("environment %s contains an invalid package name", field),
+			)
+		}
 	}
 	return nil
+}
+
+func normalizeEnvironmentConfig(config map[string]any, configType string) map[string]any {
+	normalized := map[string]any{"type": configType}
+	if configType != "cloud" {
+		return normalized
+	}
+	if networking, present := config["networking"]; present {
+		normalized["networking"] = cloneEnvironmentConfigValue(networking)
+	}
+	if packages, present := config["packages"]; present {
+		normalized["packages"] = cloneEnvironmentConfigValue(packages)
+	}
+	return normalized
+}
+
+func cloneEnvironmentConfigValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		cloned := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			cloned[key] = cloneEnvironmentConfigValue(nested)
+		}
+		return cloned
+	case []any:
+		cloned := make([]any, len(typed))
+		for index, nested := range typed {
+			cloned[index] = cloneEnvironmentConfigValue(nested)
+		}
+		return cloned
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
 }
 
 func validateEnvironmentStringList(value any, field string) error {

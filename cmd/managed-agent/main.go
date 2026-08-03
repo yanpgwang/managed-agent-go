@@ -93,6 +93,9 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		},
 		sandbox.ProviderRegistration{
 			Name: sandbox.DockerProviderName,
+			Capabilities: sandbox.ProviderCapabilities{
+				PackageSetup: true,
+			},
 			Factory: func() (sandbox.Provider, error) {
 				return sandbox.NewDockerProvider(sandbox.DockerConfig{
 					DefaultImage: os.Getenv(sandboxImageEnv),
@@ -101,6 +104,9 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		},
 		sandbox.ProviderRegistration{
 			Name: sandbox.E2BProviderName,
+			Capabilities: sandbox.ProviderCapabilities{
+				PackageSetup: true,
+			},
 			Factory: func() (sandbox.Provider, error) {
 				idleTimeout, err := envDuration(e2bIdleTimeoutEnv)
 				if err != nil {
@@ -117,6 +123,9 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		},
 		sandbox.ProviderRegistration{
 			Name: sandbox.CubeProviderName,
+			Capabilities: sandbox.ProviderCapabilities{
+				PackageSetup: true,
+			},
 			Factory: func() (sandbox.Provider, error) {
 				proxyPort, err := envPositiveInt(cubeProxyPortEnv)
 				if err != nil {
@@ -140,6 +149,9 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		},
 		sandbox.ProviderRegistration{
 			Name: sandbox.OpenSandboxProviderName,
+			Capabilities: sandbox.ProviderCapabilities{
+				PackageSetup: true,
+			},
 			Factory: func() (sandbox.Provider, error) {
 				useProxy, err := envBool(openSandboxUseProxyEnv)
 				if err != nil {
@@ -158,6 +170,9 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		},
 		sandbox.ProviderRegistration{
 			Name: sandbox.DaytonaProviderName,
+			Capabilities: sandbox.ProviderCapabilities{
+				PackageSetup: true,
+			},
 			Factory: func() (sandbox.Provider, error) {
 				autoPauseMinutes, err := envPositiveInt(daytonaAutoPauseEnv)
 				if err != nil {
@@ -242,10 +257,7 @@ func firstNonEmpty(values ...string) string {
 // public API. Unknown names fail closed instead of silently falling back to
 // host execution.
 func resolveSandboxProvider() (p sandbox.Provider, isLocal bool, err error) {
-	name := strings.TrimSpace(os.Getenv(sandboxProviderEnv))
-	if name == "" {
-		name = sandbox.LocalProviderName
-	}
+	name := configuredSandboxProviderName()
 	registry, err := sandboxProviderRegistry()
 	if err != nil {
 		return nil, false, err
@@ -260,6 +272,14 @@ func resolveSandboxProvider() (p sandbox.Provider, isLocal bool, err error) {
 	}
 	log.Printf("sandbox: %s provider", name)
 	return provider, false, nil
+}
+
+func configuredSandboxProviderName() string {
+	name := strings.TrimSpace(os.Getenv(sandboxProviderEnv))
+	if name == "" {
+		return sandbox.LocalProviderName
+	}
+	return name
 }
 
 // guardModelSandbox refuses to start when a real, network-backed model is paired
@@ -353,7 +373,22 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	agentsRepo := pg.NewAgentRepository(pgStore)
 	environmentsRepo := pg.NewEnvironmentRepository(pgStore)
 	agents := app.NewAgentService(agentsRepo, ids, clock)
-	environments := app.NewEnvironmentService(environmentsRepo, ids, clock)
+	providerRegistry, err := sandboxProviderRegistry()
+	if err != nil {
+		log.Fatalf("serve: sandbox registry: %v", err)
+	}
+	providerCapabilities, err := providerRegistry.Capabilities(configuredSandboxProviderName())
+	if err != nil {
+		log.Fatalf("serve: sandbox: %v", err)
+	}
+	environments := app.NewEnvironmentService(
+		environmentsRepo,
+		ids,
+		clock,
+		app.EnvironmentCapabilities{
+			PackageSetup: providerCapabilities.PackageSetup,
+		},
+	)
 
 	temporalClient, err := temporalpkg.Dial(temporalpkg.ClientConfig{
 		HostPort:  os.Getenv(envTemporalHostPort),

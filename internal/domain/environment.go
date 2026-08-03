@@ -18,6 +18,42 @@ type Environment struct {
 	ArchivedAt  *time.Time
 }
 
+// SessionConfig returns an isolated JSON-shaped copy of the sandbox
+// configuration. A Session keeps this snapshot for its lifetime so a later
+// Environment update cannot change the package or network policy of an
+// already-running workspace.
+func (e Environment) SessionConfig() map[string]any {
+	return cloneEnvironmentObject(e.Config)
+}
+
+func cloneEnvironmentObject(source map[string]any) map[string]any {
+	if source == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(source))
+	for key, value := range source {
+		cloned[key] = cloneEnvironmentValue(value)
+	}
+	return cloned
+}
+
+func cloneEnvironmentValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneEnvironmentObject(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for index, nested := range typed {
+			cloned[index] = cloneEnvironmentValue(nested)
+		}
+		return cloned
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
+}
+
 // EnvironmentPatch is the domain form of POST /v1/environments/{id}. Nil
 // pointers preserve scalar fields. Metadata is a per-key patch: null and empty
 // string delete a key, matching the public Environment update contract.
@@ -58,7 +94,7 @@ func (e Environment) Apply(patch EnvironmentPatch) (Environment, bool) {
 		next.Scope = *patch.Scope
 	}
 	if patch.Config != nil {
-		next.Config = *patch.Config
+		next.Config = cloneEnvironmentObject(*patch.Config)
 	}
 	return next, !environmentFieldsEqual(e, next)
 }
