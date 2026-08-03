@@ -398,9 +398,13 @@ func runServe(logger *slog.Logger) {
 	strict := fs.Bool("strict", false, "require Claude API wire headers (auth, version, beta, content-type) to be present and valid; this is header validation, NOT authentication")
 	_ = fs.Parse(os.Args[2:])
 
+	keepAlive, err := envDuration(envSSEKeepAlive)
+	if err != nil {
+		fatal(logger, "invalid configuration", errAttr(err))
+	}
 	cfg := httpapi.Config{
 		RequireBeta: *strict, RequireAuth: *strict, RequireVersion: *strict,
-		RequireContentType: *strict,
+		RequireContentType: *strict, SSEKeepAlive: keepAlive,
 	}
 	runPostgresAPI(logger, *addr, cfg)
 }

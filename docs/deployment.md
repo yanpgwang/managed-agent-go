@@ -82,16 +82,55 @@ Set `VOLUMES=1` only when local data should be removed:
 make local-down VOLUMES=1
 ```
 
+## Observability
+
+Both roles emit structured `log/slog` records to stderr. The handler and
+minimum level are configuration:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MANAGED_AGENT_LOG_FORMAT` | `text` | `text` for development, `json` for production log pipelines |
+| `MANAGED_AGENT_LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
+
+Every record carries the process `role`, and request-scoped records carry the
+resolved `request_id` plus a `session_id` where one applies. The `request-id`
+response header is unchanged; a well-formed client-supplied `request-id` is now
+honored so a caller can stitch its traces to the server's. Records never
+include headers, query values, or request bodies.
+
+## Health and readiness
+
+Health endpoints are a Mango deployment choice. The Claude Managed Agents API
+documents no health, readiness, or status endpoint, so they are served outside
+`/v1` and are not part of the compatibility surface.
+
+| Endpoint | Meaning |
+| --- | --- |
+| `GET /healthz` | Liveness. Cheap, never probes a dependency, so an outage does not cause healthy processes to be restarted. |
+| `GET /readyz` | Readiness. Probes PostgreSQL, Temporal, and NATS, and returns `503` with a body naming the failing dependency. |
+
+The `orchestrate` worker serves the same two endpoints on its own listener
+(`MANAGED_AGENT_WORKER_HEALTH_ADDR`, default `127.0.0.1:8081`) because it has no
+other HTTP surface. Probe bounds are configurable with
+`MANAGED_AGENT_HEALTH_TIMEOUT` (default `2s`) and `MANAGED_AGENT_HEALTH_CACHE_TTL`
+(default `1s`); the cache keeps aggressive readiness polling from amplifying
+into dependency load.
+
+`MANAGED_AGENT_SSE_KEEPALIVE_INTERVAL` (default `15s`) sets the idle interval
+between SSE comment keepalives on the event stream.
+
 ## Production promotion gates
 
 A supported Docker or Kubernetes bundle requires:
 
 1. explicit, versioned schema migration;
-2. dependency-aware API and worker readiness;
-3. graceful API shutdown and worker draining;
-4. repeatable live conformance for remote sandbox adapters;
-5. real PostgreSQL, Temporal, NATS, and sandbox integration tests in CI;
-6. versioned images with upgrade and rollback documentation.
+2. graceful API shutdown and worker draining;
+3. repeatable live conformance for remote sandbox adapters;
+4. real PostgreSQL, Temporal, NATS, and sandbox integration tests in CI;
+5. versioned images with upgrade and rollback documentation.
+
+Dependency-aware API and worker readiness is implemented: `/readyz` probes
+PostgreSQL, Temporal, and NATS in both roles.
 
 Kubernetes packaging will use separate API and worker Deployments from the same
 image. Stateful services remain external by default. An Operator is not part

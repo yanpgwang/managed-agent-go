@@ -13,11 +13,19 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
+// Config is server configuration. The Require* flags gate Claude API wire
+// header validation; the remaining fields are operational transport settings
+// with no documented CMA contract.
 type Config struct {
 	RequireBeta        bool
 	RequireAuth        bool
 	RequireVersion     bool
 	RequireContentType bool
+
+	// SSEKeepAlive is the idle interval between SSE comment-frame keepalives on
+	// the event stream. Zero selects defaultSSEKeepAlive; a negative value
+	// disables keepalives entirely.
+	SSEKeepAlive time.Duration
 }
 
 const betaValue = "managed-agents-2026-04-01"

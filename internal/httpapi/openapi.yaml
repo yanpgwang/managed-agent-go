@@ -35,8 +35,15 @@ paths:
     post: { summary: Send events, responses: { "200": { description: ok } } }
     get: { summary: List event history, responses: { "200": { description: ok } } }
   /v1/sessions/{id}/events/stream:
-    get: { summary: "SSE event stream (no Last-Event-ID, no replay)", responses: { "200": { description: text/event-stream } } }
+    get: { summary: "SSE event stream (no Last-Event-ID, no replay, no id:/retry: frames; : comment keepalives only)", responses: { "200": { description: text/event-stream } } }
+  # Local operational endpoints. The Claude Managed Agents API documents no
+  # health, readiness, or status endpoint; these are Mango deployment surface
+  # and are deliberately kept outside /v1.
   /healthz:
-    get: { summary: liveness, responses: { "200": { description: ok } } }
+    get: { summary: "liveness (never probes a dependency)", responses: { "200": { description: ok } } }
   /readyz:
-    get: { summary: readiness, responses: { "200": { description: ok } } }
+    get:
+      summary: "readiness (probes PostgreSQL, Temporal, and NATS)"
+      responses:
+        "200": { description: ready }
+        "503": { description: "a dependency is unavailable; the body names it" }

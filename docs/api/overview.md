@@ -24,7 +24,12 @@ supported, limited, or not supported.
 | Environments | `POST/GET /v1/environments`, get, archive, delete |
 | Sessions | `POST/GET /v1/sessions`, get, update, archive, delete |
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
-| Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
+| Operations | `GET /healthz` (liveness), `GET /readyz` (dependency-aware readiness), `GET /openapi.yaml` |
+
+Operations endpoints are a Mango deployment choice, not part of the Claude
+Managed Agents contract, which documents no health, readiness, or status
+endpoint. They stay outside `/v1` and their bodies are not a compatibility
+surface. See [the deployment model](../deployment.md).
 
 Resource-specific request shapes are covered in:
 

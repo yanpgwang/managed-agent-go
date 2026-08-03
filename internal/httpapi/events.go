@@ -33,6 +33,25 @@ var deltaOptInTypes = map[string]bool{
 	"agent.thinking":      true,
 }
 
+// defaultSSEKeepAlive is the idle interval between SSE comment keepalives. It
+// sits comfortably under the 30-60s idle timeout common to reverse proxies and
+// load balancers.
+const defaultSSEKeepAlive = 15 * time.Second
+
+// sseKeepAliveFrame is a bare SSE comment frame. Conformant parsers ignore any
+// line starting with ":", and the data:-only parsers in the official
+// documentation never see it.
+const sseKeepAliveFrame = ": keepalive\n\n"
+
+// sseKeepAlive resolves the configured keepalive interval: zero selects the
+// default and a negative value disables keepalives.
+func (c Config) sseKeepAlive() time.Duration {
+	if c.SSEKeepAlive == 0 {
+		return defaultSSEKeepAlive
+	}
+	return c.SSEKeepAlive
+}
+
 // toDrafts converts raw event objects (top-level tagged union) into internal
 // drafts, flattening every field except "type" into the payload. It does not
 // validate; callers validate types separately.
@@ -489,11 +508,33 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 	flusher.Flush()
 
+	// Idle keepalives are SSE *comment* frames only. A comment line begins with
+	// ":" and is discarded by every conformant SSE parser, including the
+	// data:-only shell parsers the official documentation uses, so an idle
+	// stream survives a proxy idle timeout without adding a wire field.
+	//
+	// No "id:" line and no "retry:" directive is ever emitted. An "id:" line
+	// would make a browser EventSource replay it as Last-Event-ID on
+	// reconnect, advertising a resumption capability the Managed Agents
+	// contract does not define: the documented recovery procedure is to open a
+	// new stream, list history, and skip already-seen event ids.
+	var keepalive <-chan time.Time
+	if interval := s.cfg.sseKeepAlive(); interval > 0 {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		keepalive = ticker.C
+	}
+
 	ctx := r.Context()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-keepalive:
+			if _, err := w.Write([]byte(sseKeepAliveFrame)); err != nil {
+				return
+			}
+			flusher.Flush()
 		case f, open := <-ch:
 			if !open {
 				return // slow-consumer drop: client should reconnect

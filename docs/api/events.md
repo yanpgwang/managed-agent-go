@@ -99,6 +99,19 @@ data: {"id":"sevt_...","type":"agent.message","content":[...],"processed_at":"..
 The stream starts after the latest committed event at subscription time. It does
 not replay earlier history and does not implement `Last-Event-ID`.
 
+An idle stream also receives periodic SSE comment frames so a reverse proxy does
+not drop it:
+
+```text
+: keepalive
+```
+
+A comment line is discarded by conformant SSE parsers, including `data:`-only
+readers. The stream deliberately emits no `id:` line and no `retry:` directive:
+an `id:` line would make a browser `EventSource` replay it as `Last-Event-ID`
+on reconnect, advertising resumption this API does not provide. Use the
+procedure below instead.
+
 For reconnect without gaps:
 
 1. open a new stream;

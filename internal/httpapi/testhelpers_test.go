@@ -26,6 +26,14 @@ func NewTestHandlerWithPreviews(t *testing.T) http.Handler {
 	return newTestHandler(t, Config{}, true)
 }
 
+// newTestHandlerWithConfig builds the in-memory handler with explicit server
+// configuration, so transport settings such as the SSE keepalive interval can
+// be exercised without waiting for the production default.
+func newTestHandlerWithConfig(t *testing.T, cfg Config) http.Handler {
+	t.Helper()
+	return newTestHandler(t, cfg, false)
+}
+
 func newTestHandler(t *testing.T, cfg Config, previews bool) http.Handler {
 	t.Helper()
 	ids := domain.NewSeqIDGen()
