@@ -636,6 +636,89 @@ func TestSDK_EventListPaginationAndTypesFilter(t *testing.T) {
 	}
 }
 
+func TestSDK_AgentListParamsAndPaging(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	created := map[string]bool{}
+	for range 3 {
+		agent := mustAgent(t, client, "opus", "system")
+		created[agent.ID] = true
+	}
+
+	first, err := client.Beta.Agents.List(ctx, anthropic.BetaAgentListParams{
+		Limit:           anthropic.Int(2),
+		IncludeArchived: anthropic.Bool(false),
+		CreatedAtGte:    anthropic.Time(time.Unix(0, 0).UTC()),
+		CreatedAtLte:    anthropic.Time(time.Unix(1<<31, 0).UTC()),
+	})
+	if err != nil {
+		t.Fatalf("list agents page 1: %v", err)
+	}
+	if len(first.Data) != 2 || first.NextPage == "" {
+		t.Fatalf("page 1 = %d agents, next_page %q", len(first.Data), first.NextPage)
+	}
+	second, err := first.GetNextPage()
+	if err != nil {
+		t.Fatalf("follow agent next_page: %v", err)
+	}
+	if second == nil || len(second.Data) != 1 || second.NextPage != "" {
+		t.Fatalf("page 2 = %+v, want one terminal row", second)
+	}
+	for _, agent := range append(first.Data, second.Data...) {
+		if !created[agent.ID] {
+			t.Fatalf("unexpected agent %s", agent.ID)
+		}
+		delete(created, agent.ID)
+	}
+	if len(created) != 0 {
+		t.Fatalf("agents missing from paged SDK result: %v", created)
+	}
+	if _, err := client.Beta.Agents.List(ctx, anthropic.BetaAgentListParams{
+		Limit: anthropic.Int(101),
+	}); err == nil {
+		t.Fatal("limit=101 was accepted")
+	} else {
+		assertAPIStatus(t, err, 400)
+	}
+}
+
+func TestSDK_EnvironmentListParamsAndPaging(t *testing.T) {
+	client, server := sdkClientAndServer(t)
+	ctx := context.Background()
+	created := map[string]bool{}
+	for range 3 {
+		id := mustEnv(t, server.URL)
+		created[id] = true
+	}
+
+	first, err := client.Beta.Environments.List(ctx, anthropic.BetaEnvironmentListParams{
+		Limit:           anthropic.Int(2),
+		IncludeArchived: anthropic.Bool(false),
+	})
+	if err != nil {
+		t.Fatalf("list environments page 1: %v", err)
+	}
+	if len(first.Data) != 2 || first.NextPage == "" {
+		t.Fatalf("page 1 = %d environments, next_page %q", len(first.Data), first.NextPage)
+	}
+	second, err := first.GetNextPage()
+	if err != nil {
+		t.Fatalf("follow environment next_page: %v", err)
+	}
+	if second == nil || len(second.Data) != 1 || second.NextPage != "" {
+		t.Fatalf("page 2 = %+v, want one terminal row", second)
+	}
+	for _, environment := range append(first.Data, second.Data...) {
+		if !created[environment.ID] {
+			t.Fatalf("unexpected environment %s", environment.ID)
+		}
+		delete(created, environment.ID)
+	}
+	if len(created) != 0 {
+		t.Fatalf("environments missing from paged SDK result: %v", created)
+	}
+}
+
 func mustAgent(t *testing.T, client anthropic.Client, _ string, system string) *anthropic.BetaManagedAgentsAgent {
 	t.Helper()
 	agent, err := client.Beta.Agents.New(context.Background(), anthropic.BetaAgentNewParams{

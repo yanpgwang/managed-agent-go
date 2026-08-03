@@ -3,6 +3,7 @@ package httpapi
 import (
 	"net/http"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -56,16 +57,74 @@ func (s *Server) getEnvironment(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listEnvironments(w http.ResponseWriter, r *http.Request) {
-	es, err := s.deps.Envs.List(r.Context())
+	query, filter, err := parseEnvironmentListParams(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	out := make([]any, 0, len(es))
-	for _, e := range es {
+	page, err := s.deps.Envs.List(r.Context(), query)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	out := make([]any, 0, len(page.Environments))
+	for _, e := range page.Environments {
 		out = append(out, envToJSON(e))
 	}
-	writeJSON(w, 200, map[string]any{"data": out})
+	var nextPage any
+	if page.HasNext && len(page.Environments) > 0 {
+		last := page.Environments[len(page.Environments)-1]
+		nextPage = encodeResourceCursor(resourceCursor{
+			Kind:      environmentListCursorKind,
+			CreatedAt: last.CreatedAt.UTC().Format(timeFmt),
+			ID:        last.ID,
+			Filter:    filter.fingerprint(),
+		})
+	}
+	writeJSON(w, 200, map[string]any{"data": out, "next_page": nextPage})
+}
+
+func parseEnvironmentListParams(
+	r *http.Request,
+) (app.EnvironmentListQuery, environmentCursorFilter, error) {
+	values := r.URL.Query()
+	query := app.EnvironmentListQuery{Limit: app.DefaultEnvironmentListLimit}
+	filter := environmentCursorFilter{}
+
+	if values.Has("limit") {
+		limit, err := parseResourceListLimit(values.Get("limit"))
+		if err != nil {
+			return app.EnvironmentListQuery{}, environmentCursorFilter{}, err
+		}
+		if limit > app.MaxEnvironmentListLimit {
+			return app.EnvironmentListQuery{}, environmentCursorFilter{},
+				domain.Validation("limit must not exceed 1000")
+		}
+		query.Limit = limit
+	}
+	if values.Has("include_archived") {
+		include, err := parseResourceListBool(values.Get("include_archived"), "include_archived")
+		if err != nil {
+			return app.EnvironmentListQuery{}, environmentCursorFilter{}, err
+		}
+		query.IncludeArchived = include
+	}
+	filter.IncludeArchived = query.IncludeArchived
+
+	if values.Has("page") {
+		cursor, ok := decodeResourceCursor(values.Get("page"), environmentListCursorKind)
+		if !ok || cursor.Filter != filter.fingerprint() {
+			return app.EnvironmentListQuery{}, environmentCursorFilter{},
+				domain.Validation("invalid page cursor")
+		}
+		createdAt, ok := parseTimeParam(cursor.CreatedAt)
+		if !ok {
+			return app.EnvironmentListQuery{}, environmentCursorFilter{},
+				domain.Validation("invalid page cursor")
+		}
+		query.After = &app.ResourcePageBoundary{CreatedAt: createdAt.UTC(), ID: cursor.ID}
+	}
+	return query, filter, nil
 }
 
 func (s *Server) archiveEnvironment(w http.ResponseWriter, r *http.Request) {

@@ -110,18 +110,41 @@ func (r *memoryAgentRepository) Versions(
 	return append([]domain.Agent(nil), versions...), nil
 }
 
-func (r *memoryAgentRepository) List(_ context.Context) ([]domain.Agent, error) {
+func (r *memoryAgentRepository) ListLatest(
+	_ context.Context,
+	query AgentListQuery,
+) (AgentListPage, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	agents := make([]domain.Agent, 0, len(r.versions))
 	for _, versions := range r.versions {
-		agents = append(agents, versions[len(versions)-1])
+		latest := versions[len(versions)-1]
+		if !query.IncludeArchived && latest.ArchivedAt != nil {
+			continue
+		}
+		if query.CreatedAtGte != nil && latest.CreatedAt.Before(*query.CreatedAtGte) {
+			continue
+		}
+		if query.CreatedAtLte != nil && latest.CreatedAt.After(*query.CreatedAtLte) {
+			continue
+		}
+		if query.After != nil &&
+			(latest.CreatedAt.After(query.After.CreatedAt) ||
+				(latest.CreatedAt.Equal(query.After.CreatedAt) && latest.ID >= query.After.ID)) {
+			continue
+		}
+		agents = append(agents, latest)
 	}
 	sort.Slice(agents, func(i, j int) bool {
-		return agents[i].CreatedAt.Before(agents[j].CreatedAt) ||
-			(agents[i].CreatedAt.Equal(agents[j].CreatedAt) && agents[i].ID < agents[j].ID)
+		return agents[i].CreatedAt.After(agents[j].CreatedAt) ||
+			(agents[i].CreatedAt.Equal(agents[j].CreatedAt) && agents[i].ID > agents[j].ID)
 	})
-	return agents, nil
+	page := AgentListPage{Agents: agents}
+	if query.Limit > 0 && len(agents) > query.Limit {
+		page.Agents = agents[:query.Limit]
+		page.HasNext = true
+	}
+	return page, nil
 }
 
 type memoryEnvironmentRepository struct {
@@ -160,19 +183,36 @@ func (r *memoryEnvironmentRepository) Get(
 	return environment, nil
 }
 
-func (r *memoryEnvironmentRepository) List(_ context.Context) ([]domain.Environment, error) {
+func (r *memoryEnvironmentRepository) List(
+	_ context.Context,
+	query EnvironmentListQuery,
+) (EnvironmentListPage, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	environments := make([]domain.Environment, 0, len(r.values))
 	for _, environment := range r.values {
+		if !query.IncludeArchived && environment.ArchivedAt != nil {
+			continue
+		}
+		if query.After != nil &&
+			(environment.CreatedAt.After(query.After.CreatedAt) ||
+				(environment.CreatedAt.Equal(query.After.CreatedAt) &&
+					environment.ID >= query.After.ID)) {
+			continue
+		}
 		environments = append(environments, environment)
 	}
 	sort.Slice(environments, func(i, j int) bool {
-		return environments[i].CreatedAt.Before(environments[j].CreatedAt) ||
+		return environments[i].CreatedAt.After(environments[j].CreatedAt) ||
 			(environments[i].CreatedAt.Equal(environments[j].CreatedAt) &&
-				environments[i].ID < environments[j].ID)
+				environments[i].ID > environments[j].ID)
 	})
-	return environments, nil
+	page := EnvironmentListPage{Environments: environments}
+	if query.Limit > 0 && len(environments) > query.Limit {
+		page.Environments = environments[:query.Limit]
+		page.HasNext = true
+	}
+	return page, nil
 }
 
 func (r *memoryEnvironmentRepository) DeleteIfUnreferenced(

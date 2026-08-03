@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"time"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -64,12 +66,89 @@ func (s *Server) getAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request) {
-	as, err := s.deps.Agents.List(r.Context())
+	query, filter, err := parseAgentListParams(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"data": mapAgents(as), "next_page": nil})
+	page, err := s.deps.Agents.List(r.Context(), query)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var nextPage any
+	if page.HasNext && len(page.Agents) > 0 {
+		last := page.Agents[len(page.Agents)-1]
+		nextPage = encodeResourceCursor(resourceCursor{
+			Kind:      agentListCursorKind,
+			CreatedAt: last.CreatedAt.UTC().Format(timeFmt),
+			ID:        last.ID,
+			Filter:    filter.fingerprint(),
+		})
+	}
+	writeJSON(w, 200, map[string]any{
+		"data": mapAgents(page.Agents), "next_page": nextPage,
+	})
+}
+
+func parseAgentListParams(r *http.Request) (app.AgentListQuery, agentCursorFilter, error) {
+	values := r.URL.Query()
+	query := app.AgentListQuery{Limit: app.DefaultAgentListLimit}
+	filter := agentCursorFilter{}
+
+	if values.Has("limit") {
+		limit, err := parseResourceListLimit(values.Get("limit"))
+		if err != nil {
+			return app.AgentListQuery{}, agentCursorFilter{}, err
+		}
+		if limit > app.MaxAgentListLimit {
+			return app.AgentListQuery{}, agentCursorFilter{},
+				domain.Validation("limit must not exceed 100")
+		}
+		query.Limit = limit
+	}
+	if values.Has("include_archived") {
+		include, err := parseResourceListBool(values.Get("include_archived"), "include_archived")
+		if err != nil {
+			return app.AgentListQuery{}, agentCursorFilter{}, err
+		}
+		query.IncludeArchived = include
+	}
+	filter.IncludeArchived = query.IncludeArchived
+
+	for _, bound := range []struct {
+		key         string
+		destination **time.Time
+		normalized  *string
+	}{
+		{"created_at[gte]", &query.CreatedAtGte, &filter.CreatedAtGte},
+		{"created_at[lte]", &query.CreatedAtLte, &filter.CreatedAtLte},
+	} {
+		if !values.Has(bound.key) {
+			continue
+		}
+		parsed, ok := parseTimeParam(values.Get(bound.key))
+		if !ok {
+			return app.AgentListQuery{}, agentCursorFilter{},
+				domain.Validation(bound.key + " must be an RFC 3339 timestamp")
+		}
+		utc := parsed.UTC()
+		*bound.destination = &utc
+		*bound.normalized = utc.Format(timeFmt)
+	}
+
+	if values.Has("page") {
+		cursor, ok := decodeResourceCursor(values.Get("page"), agentListCursorKind)
+		if !ok || cursor.Filter != filter.fingerprint() {
+			return app.AgentListQuery{}, agentCursorFilter{}, domain.Validation("invalid page cursor")
+		}
+		createdAt, ok := parseTimeParam(cursor.CreatedAt)
+		if !ok {
+			return app.AgentListQuery{}, agentCursorFilter{}, domain.Validation("invalid page cursor")
+		}
+		query.After = &app.ResourcePageBoundary{CreatedAt: createdAt.UTC(), ID: cursor.ID}
+	}
+	return query, filter, nil
 }
 
 func (s *Server) listAgentVersions(w http.ResponseWriter, r *http.Request) {

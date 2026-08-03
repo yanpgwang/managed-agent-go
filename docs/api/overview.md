@@ -81,9 +81,10 @@ the [compatibility matrix](../compatibility.md) for parity limits.
 
 ## Pagination
 
-Session and event lists use opaque `page` tokens. A cursor is bound to its
-resource, sort order, and normalized filters. Reusing it with different filters
-returns `400`.
+Top-level Agent, Environment, and Session lists, plus Event lists, use opaque
+`page` tokens. A cursor is bound to its
+resource and normalized filters; session cursors are additionally bound to sort
+order. Reusing a cursor with different filters returns `400`.
 
 List responses use `data` and nullable cursor fields:
 
@@ -94,8 +95,8 @@ List responses use `data` and nullable cursor fields:
 }
 ```
 
-Session lists also include `prev_page`. Agent listing is currently single-page
-and always returns `next_page: null`.
+Session lists also include `prev_page`. Agent and Environment lists are
+forward-only and include `next_page`.
 
 ## OpenAPI
 

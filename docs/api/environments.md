@@ -34,13 +34,14 @@ GET /v1/environments/{id}
 GET /v1/environments
 ```
 
-The list response is:
+The list supports `include_archived`, `limit`, and the forward-only opaque
+`page` cursor. Mango uses a local default limit of `100` and maximum of `1000`
+because the public Environment list reference does not specify either bound.
+The response is:
 
 ```json
-{"data": []}
+{"data": [], "next_page": null}
 ```
-
-Environment pagination and filtering are not implemented.
 
 ## Archive
 
