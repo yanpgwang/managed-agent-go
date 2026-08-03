@@ -34,6 +34,8 @@ The object model form also preserves supported `effort` and `speed` values.
 `{"type":"high"}`; responses use the tagged object form.
 `multiagent` may be an object, but the server currently stores it opaquely and
 does not resolve or execute its topology.
+Optional collection and metadata fields may be omitted or supplied with their
+documented array/object shape; explicit `null` is not a create-time default.
 
 A successful create returns `200` and version `1`.
 
@@ -84,6 +86,7 @@ Field behavior:
   `null` to clear;
 - `multiagent` replaces the object and accepts `null` to clear;
 - metadata keys patch the map, and a `null` value removes a key;
+- `name`, `version`, and the `metadata` object itself cannot be `null`;
 - `model` may be replaced but cannot be `null`.
 
 An update with no material change returns the current version.
@@ -118,4 +121,5 @@ their stored snapshot.
 }
 ```
 
-Some nested validation and full upstream response semantics remain partial.
+Skills and multi-agent topology execution remain outside the supported core;
+accepted Agent tool and MCP shapes are validated before a version is stored.

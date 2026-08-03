@@ -54,6 +54,9 @@ does not replace it.
 
 Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.
+The optional `title`, `metadata`, `initial_events`, `resources`, and `vault_ids`
+fields must use their documented non-null shapes when present; omission supplies
+the empty/default value.
 Non-empty `resources` and `vault_ids` are currently unsupported by Mango at
 creation time. The `vault_ids` rejection is a Mango limitation: the official
 Create Session API accepts vault IDs.
@@ -85,6 +88,7 @@ The update body accepts `agent`, `metadata`, and `title`:
 
 - `metadata` is a per-key patch: a string upserts the key, `null` deletes it,
   and omitting the field preserves the whole bag.
+- `title` may be omitted or set to a string; `null` is not a no-op update.
 - `agent` updates only `tools` and `mcp_servers`, as a full replacement: the
   array you send becomes the new value, `[]` clears, and omitting preserves.
   `model`, `system`, and `skills` are fixed for the session's lifetime and are

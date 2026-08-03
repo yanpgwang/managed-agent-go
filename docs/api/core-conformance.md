@@ -16,10 +16,10 @@ separate evidence.
 
 | Resource | Operation | HTTP route | Route | Official SDK black box | Durable/service path | Remaining core gap |
 | --- | --- | --- | --- | --- | --- | --- |
-| Agent | Create | `POST /v1/agents` | Yes | Yes | Yes | Finish the cross-field default, null, and error-contract sweep. |
+| Agent | Create | `POST /v1/agents` | Yes | Yes | Yes | None identified for documented core fields, defaults, null handling, or errors. |
 | Agent | List | `GET /v1/agents` | Yes | Yes | Yes | None identified for the documented core filters and forward cursor. |
 | Agent | Get | `GET /v1/agents/{agent_id}` | Yes | Yes | Yes | None identified for the core resource projection. |
-| Agent | Update | `POST /v1/agents/{agent_id}` | Yes | Yes | Yes | Finish the cross-field default, null, and error-contract sweep. |
+| Agent | Update | `POST /v1/agents/{agent_id}` | Yes | Yes | Yes | None identified for documented core fields, defaults, null handling, or errors. |
 | Agent | List versions | `GET /v1/agents/{agent_id}/versions` | Yes | Yes | Yes | None identified for forward pagination. |
 | Agent | Archive | `POST /v1/agents/{agent_id}/archive` | Yes | Yes | Yes | None identified for the core idempotent archive path. |
 | Environment | Create | `POST /v1/environments` | Yes | Yes | Yes | Limited networking and non-empty package installation remain unsupported. |
@@ -28,7 +28,7 @@ separate evidence.
 | Environment | Update | `POST /v1/environments/{environment_id}` | Yes | Yes | Yes | Limited networking and non-empty package updates remain unsupported. |
 | Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | Yes | Yes | Limited networking and installed-package projections remain unsupported. |
 | Environment | Delete | `DELETE /v1/environments/{environment_id}` | Yes | Yes | Yes | None identified for the core unreferenced-delete path. |
-| Session | Create | `POST /v1/sessions` | Yes | Yes | Yes | Complete core validation/default/null coverage; unsupported product surfaces remain explicit. |
+| Session | Create | `POST /v1/sessions` | Yes | Yes | Yes | Core field/default/null behavior is covered; unsupported resources and vaults remain explicit. |
 | Session | List | `GET /v1/sessions` | Yes | Yes | Yes | None identified for the in-scope filters and bidirectional cursors. |
 | Session | Get | `GET /v1/sessions/{session_id}` | Yes | Yes | Yes | None identified for the in-scope resource projection. |
 | Session | Update | `POST /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue race and next-turn visibility verification. |
