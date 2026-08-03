@@ -37,7 +37,7 @@ type SessionService interface {
 	Get(context.Context, string) (domain.Session, error)
 	List(context.Context, app.ListPage) (app.SessionListPage, error)
 	SendEvent(context.Context, string, []domain.EventDraft) ([]domain.Event, error)
-	UpdateTitle(context.Context, string, string) (domain.Session, error)
+	Update(context.Context, string, domain.SessionUpdate) (domain.Session, error)
 	Archive(context.Context, string) (domain.Session, error)
 	Delete(context.Context, string) error
 }

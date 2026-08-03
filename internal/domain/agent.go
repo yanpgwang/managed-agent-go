@@ -159,6 +159,42 @@ func agentFieldsEqual(a, b Agent) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// SessionSnapshotJSON is the public resolved-agent projection embedded in a
+// Session (`session.agent`) and in a `session.updated` event. It omits the
+// agent-resource bookkeeping (created_at/updated_at/archived_at) that the
+// session agent object does not carry. It lives here because the HTTP layer and
+// the durable event ledger must publish exactly the same shape.
+func (a Agent) SessionSnapshotJSON() map[string]any {
+	model := map[string]any{"id": a.Model.ID}
+	if a.Model.Effort != "" {
+		model["effort"] = map[string]any{"type": a.Model.Effort}
+	}
+	if a.Model.Speed != "" {
+		model["speed"] = a.Model.Speed
+	}
+	system, description := "", ""
+	if a.System != nil {
+		system = *a.System
+	}
+	if a.Description != nil {
+		description = *a.Description
+	}
+	return map[string]any{
+		"id": a.ID, "type": "agent", "version": a.Version, "name": a.Name,
+		"model": model, "system": system, "description": description,
+		"multiagent": a.Multiagent,
+		"tools":      orEmptyList(a.Tools), "mcp_servers": orEmptyList(a.MCPServers),
+		"skills": orEmptyList(a.Skills),
+	}
+}
+
+func orEmptyList(values []any) []any {
+	if values == nil {
+		return []any{}
+	}
+	return values
+}
+
 // AgentOverrides expresses per-session agent configuration overrides
 // (agent_with_overrides). Each field is applied only when Set is true. For list
 // fields, a nil slice with Set=true clears the field; model is never clearable.

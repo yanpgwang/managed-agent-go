@@ -333,6 +333,112 @@ func TestSDK_SessionTitleUpdateEmitsChangedFieldsEvent(t *testing.T) {
 	}
 }
 
+func TestSDK_SessionAgentAndMetadataUpdate(t *testing.T) {
+	client, ts := sdkClientAndServer(t)
+	ctx := context.Background()
+
+	agent := mustAgent(t, client, "opus", "sys")
+	env := mustEnv(t, ts.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: env,
+		Metadata:      map[string]string{"keep": "yes"},
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	updated, err := client.Beta.Sessions.Update(ctx, session.ID, anthropic.BetaSessionUpdateParams{
+		Metadata: map[string]string{"added": "new"},
+		Agent: anthropic.BetaManagedAgentsSessionAgentUpdateParam{
+			Tools: []anthropic.BetaManagedAgentsSessionAgentUpdateToolUnionParam{
+				{
+					OfAgentToolset20260401: &anthropic.BetaManagedAgentsAgentToolset20260401Params{
+						Type: anthropic.BetaManagedAgentsAgentToolset20260401ParamsTypeAgentToolset20260401,
+					},
+				},
+				{
+					OfMCPToolset: &anthropic.BetaManagedAgentsMCPToolsetParams{
+						Type:          anthropic.BetaManagedAgentsMCPToolsetParamsTypeMCPToolset,
+						MCPServerName: "linear",
+					},
+				},
+			},
+			MCPServers: []anthropic.BetaManagedAgentsURLMCPServerParams{
+				{
+					Type: anthropic.BetaManagedAgentsURLMCPServerParamsTypeURL,
+					Name: "linear",
+					URL:  "https://mcp.example.com/sse",
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update session: %v", err)
+	}
+	if len(updated.Agent.Tools) != 2 || len(updated.Agent.MCPServers) != 1 {
+		t.Fatalf("updated snapshot tools=%d servers=%d, raw=%s",
+			len(updated.Agent.Tools), len(updated.Agent.MCPServers), updated.RawJSON())
+	}
+	if updated.Agent.Version != 1 {
+		t.Fatalf("session-local update renumbered the agent: %d", updated.Agent.Version)
+	}
+	if updated.Metadata["keep"] != "yes" || updated.Metadata["added"] != "new" {
+		t.Fatalf("metadata patch = %v", updated.Metadata)
+	}
+
+	// The underlying agent resource is unchanged.
+	resource, err := client.Beta.Agents.Get(ctx, agent.ID, anthropic.BetaAgentGetParams{})
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if resource.Version != 1 || len(resource.Tools) != 0 {
+		t.Fatalf("session update propagated to the agent: version=%d tools=%d",
+			resource.Version, len(resource.Tools))
+	}
+
+	page, err := client.Beta.Sessions.Events.List(ctx, session.ID,
+		anthropic.BetaSessionEventListParams{Types: []string{"session.updated"}})
+	if err != nil {
+		t.Fatalf("list update events: %v", err)
+	}
+	if len(page.Data) != 1 {
+		t.Fatalf("session.updated count = %d, want 1", len(page.Data))
+	}
+	event := page.Data[0].AsSessionUpdated()
+	if !event.JSON.Agent.Valid() || event.Agent.ID != agent.ID {
+		t.Fatalf("session.updated agent = %s", event.RawJSON())
+	}
+	if !event.JSON.Metadata.Valid() || event.Metadata["added"] != "new" {
+		t.Fatalf("session.updated metadata = %s", event.RawJSON())
+	}
+	if event.JSON.Title.Valid() {
+		t.Fatalf("session.updated carries an unchanged title: %s", event.RawJSON())
+	}
+}
+
+func TestSDK_SessionUpdateRejectsVaultIDs(t *testing.T) {
+	client, ts := sdkClientAndServer(t)
+	ctx := context.Background()
+
+	agent := mustAgent(t, client, "opus", "sys")
+	env := mustEnv(t, ts.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: env,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	_, err = client.Beta.Sessions.Update(ctx, session.ID, anthropic.BetaSessionUpdateParams{
+		VaultIDs: []string{"vlt_1"},
+	})
+	if err == nil {
+		t.Fatal("expected vault_ids to be rejected")
+	}
+	assertAPIStatus(t, err, 422)
+}
+
 func TestSDK_EventSendAndList(t *testing.T) {
 	client, ts := sdkClientAndServer(t)
 	ctx := context.Background()

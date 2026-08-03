@@ -163,12 +163,16 @@ func (s *SessionService) SendEvent(
 	return s.orchestrator.Admit(ctx, id, drafts)
 }
 
-func (s *SessionService) UpdateTitle(
+// Update applies the documented session update body. Validation of the merged
+// result and the idle precondition for mid-session agent changes both run
+// inside the store transaction that holds the session's admission lock, so a
+// concurrent turn admission cannot slip between the check and the write.
+func (s *SessionService) Update(
 	ctx context.Context,
 	id string,
-	title string,
+	update domain.SessionUpdate,
 ) (domain.Session, error) {
-	return s.store.UpdateSessionTitle(ctx, id, title)
+	return s.store.UpdateSession(ctx, id, update)
 }
 
 func (s *SessionService) Archive(ctx context.Context, id string) (domain.Session, error) {

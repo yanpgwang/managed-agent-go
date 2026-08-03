@@ -215,12 +215,19 @@ func oppositeSQLOrder(order string) string {
 	return "ASC"
 }
 
-// UpdateSessionTitle keeps the projection and session.updated event in one
-// transaction under the per-session admission lock.
-func (s *Store) UpdateSessionTitle(
+// UpdateSession applies the public session update and keeps the projection and
+// its session.updated event in one transaction under the per-session admission
+// lock.
+//
+// A mid-session agent configuration change requires an idle session: the turn
+// loop reads the resolved snapshot once when it prepares a turn, so replacing
+// tools while a turn is in flight would leave that turn running a configuration
+// no longer visible in the API. Holding the admission lock here also serializes
+// the update against a concurrent admission that would start a turn.
+func (s *Store) UpdateSession(
 	ctx context.Context,
 	sessionID string,
-	title string,
+	update domain.SessionUpdate,
 ) (domain.Session, error) {
 	var result domain.Session
 	err := s.withTx(ctx, func(q *pgstore.Queries) error {
@@ -238,28 +245,34 @@ func (s *Store) UpdateSessionTitle(
 		if err != nil {
 			return err
 		}
-		if session.Title == title {
+		if update.TouchesAgent() && session.Status != domain.StatusIdle {
+			return domain.Conflict(
+				"session must be idle to update agent configuration; interrupt it first",
+			)
+		}
+		next, change, err := session.ApplyUpdate(update)
+		if err != nil {
+			return err
+		}
+		if !change.Any() {
 			result = session
 			return nil
 		}
-		session.Title = title
-		session.UpdatedAt = s.clock.Now().UTC()
+		next.UpdatedAt = s.clock.Now().UTC()
 		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
 		if err != nil {
 			return err
 		}
 		if _, _, err := s.appendDrafts(ctx, q, sessionID, []domain.EventDraft{{
-			Type: domain.EvSessionUpdated,
-			Payload: map[string]any{
-				"title": title,
-			},
+			Type:    domain.EvSessionUpdated,
+			Payload: domain.SessionUpdatedPayload(next, change),
 		}}, maxSeq, nil); err != nil {
 			return err
 		}
-		if err := s.updateAPIProjection(ctx, q, session); err != nil {
+		if err := s.updateAPIProjection(ctx, q, next); err != nil {
 			return err
 		}
-		result = session
+		result = next
 		return nil
 	})
 	if err == nil {

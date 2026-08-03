@@ -42,7 +42,12 @@ Verified 2026-07-29.
 - [Create Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/create)
   — full session response and resolved snapshot.
 - [Session operations](https://platform.claude.com/docs/en/managed-agents/session-operations)
-  — statuses, pagination, archive, and delete behavior.
+  — statuses, pagination, archive, and delete behavior, plus the mid-session
+  agent configuration update: `tools`/`mcp_servers` only, full replacement,
+  session-local, and only while the session is `idle`.
+- [Update Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/update)
+  — the four body fields (`agent`, `metadata`, `title`, `vault_ids`), the
+  per-key metadata patch, and the documented rejection of `vault_ids`.
 - [Events and streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming)
   — event unions, content blocks, processing, and reconnect behavior.
 - [Events API Reference](https://platform.claude.com/docs/en/api/beta/sessions/events)

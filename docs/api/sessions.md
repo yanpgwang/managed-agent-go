@@ -54,7 +54,9 @@ does not replace it.
 
 Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.
-Non-empty `resources` and `vault_ids` are currently unsupported.
+Non-empty `resources` and `vault_ids` are currently unsupported by Mango at
+creation time. The `vault_ids` rejection is a Mango limitation: the official
+Create Session API accepts vault IDs.
 
 ## Get and update
 
@@ -63,14 +65,40 @@ GET /v1/sessions/{id}
 POST /v1/sessions/{id}
 ```
 
-Only title update is implemented:
+The update body accepts `agent`, `metadata`, and `title`:
 
 ```json
-{"title": "New title"}
+{
+  "title": "New title",
+  "metadata": {"owner": "sre", "stale": null},
+  "agent": {
+    "tools": [
+      {"type": "agent_toolset_20260401"},
+      {"type": "mcp_toolset", "mcp_server_name": "linear"}
+    ],
+    "mcp_servers": [
+      {"type": "url", "name": "linear", "url": "https://mcp.linear.app/sse"}
+    ]
+  }
+}
 ```
 
-A changed title and its `session.updated` event commit together. An omitted or
-unchanged title is a no-op.
+- `metadata` is a per-key patch: a string upserts the key, `null` deletes it,
+  and omitting the field preserves the whole bag.
+- `agent` updates only `tools` and `mcp_servers`, as a full replacement: the
+  array you send becomes the new value, `[]` clears, and omitting preserves.
+  `model`, `system`, and `skills` are fixed for the session's lifetime and are
+  rejected; set them with `agent_with_overrides` at create time instead.
+- An `agent` update is session-local. It never renumbers or mutates the agent
+  resource, and it applies from the next turn.
+- **An `agent` update requires an `idle` session.** A request that arrives while
+  a turn is in flight returns `409`; send an untargeted `user.interrupt` first.
+  `title` and `metadata` carry no such precondition.
+- `vault_ids` is rejected on update, matching the official Update Session API.
+
+Changed fields and their `session.updated` event commit together. The event
+carries only the fields the request actually changed; a request that changes
+nothing emits no event.
 
 ## List
 
@@ -127,5 +155,7 @@ The response embeds the resolved agent snapshot and includes `resources`,
 `stats` and `usage` are cumulative live projections, and
 `outcome_evaluations` reflects each admitted outcome. Non-empty resources and
 vaults are rejected at create time, so their required response arrays are
-truthfully empty; `deployment_id` is null because deployment-created sessions
-are not implemented. See [Claude API coverage](../compatibility.md).
+truthfully empty. Create-time vault rejection is a Mango limitation; update-time
+vault rejection matches the official API. `deployment_id` is null because
+deployment-created sessions are not implemented.
+See [Claude API coverage](../compatibility.md).

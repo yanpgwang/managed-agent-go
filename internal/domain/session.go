@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"reflect"
+	"time"
+)
 
 type Status string
 
@@ -47,6 +50,145 @@ type Session struct {
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 	ArchivedAt    *time.Time
+}
+
+// SessionUpdate is the domain form of the documented `POST
+// /v1/sessions/{session_id}` body. Each field carries its own tri-state so the
+// transport layer can distinguish "omitted" from "explicitly cleared" without
+// the state machine re-parsing JSON.
+//
+// `vault_ids` is intentionally absent: the official API documents it as
+// rejected, so it never reaches the domain.
+type SessionUpdate struct {
+	// Title replaces the human-readable title when non-nil.
+	Title *string
+	// Metadata is a per-key patch, not a replacement: a present key with a nil
+	// value deletes it and any other value upserts it. A nil map preserves the
+	// whole bag. This differs from the create-time metadata bag on purpose.
+	Metadata map[string]any
+	// AgentTools and AgentMCPServers are session-local full replacements of the
+	// resolved snapshot's lists. A non-nil pointer replaces (an empty or nil
+	// slice clears); a nil pointer preserves. They never touch the underlying
+	// Agent resource or its version.
+	AgentTools      *[]any
+	AgentMCPServers *[]any
+}
+
+// TouchesAgent reports whether the update carries a mid-session agent
+// configuration change, which the official contract only permits while the
+// Session is idle.
+func (u SessionUpdate) TouchesAgent() bool {
+	return u.AgentTools != nil || u.AgentMCPServers != nil
+}
+
+// IsEmpty reports whether the request carried no update fields at all. Such a
+// request is a plain read and never needs the session's admission lock.
+func (u SessionUpdate) IsEmpty() bool {
+	return u.Title == nil && u.Metadata == nil && !u.TouchesAgent()
+}
+
+// SessionChange records which public fields an update actually changed. The
+// `session.updated` event carries only those fields.
+type SessionChange struct {
+	Title    bool
+	Metadata bool
+	Agent    bool
+}
+
+func (c SessionChange) Any() bool { return c.Title || c.Metadata || c.Agent }
+
+// ApplyUpdate returns the Session that results from an update request together
+// with the set of fields it changed. It is pure so the storage layer can run it
+// inside the same transaction that holds the per-session admission lock.
+//
+// The agent portion changes only the Session's resolved snapshot. The stored
+// Agent version it was resolved from is never mutated, matching the documented
+// rule that session updates do not propagate back to the agent.
+func (s Session) ApplyUpdate(u SessionUpdate) (Session, SessionChange, error) {
+	next := s
+	var change SessionChange
+
+	if u.Title != nil && *u.Title != s.Title {
+		next.Title = *u.Title
+		change.Title = true
+	}
+
+	if u.Metadata != nil {
+		merged := make(map[string]any, len(s.Metadata)+len(u.Metadata))
+		for key, value := range s.Metadata {
+			merged[key] = value
+		}
+		for key, value := range u.Metadata {
+			if value == nil {
+				delete(merged, key)
+				continue
+			}
+			merged[key] = value
+		}
+		if err := ValidateMetadata(merged); err != nil {
+			return Session{}, SessionChange{}, err
+		}
+		if !metadataEqual(s.Metadata, merged) {
+			next.Metadata = merged
+			change.Metadata = true
+		}
+	}
+
+	if u.TouchesAgent() {
+		snapshot := s.AgentSnapshot
+		if u.AgentTools != nil {
+			snapshot.Tools = *u.AgentTools
+		}
+		if u.AgentMCPServers != nil {
+			snapshot.MCPServers = *u.AgentMCPServers
+		}
+		if err := ValidateToolConfiguration(snapshot.Tools, snapshot.MCPServers); err != nil {
+			return Session{}, SessionChange{}, Validation(
+				"invalid agent tool configuration: " + err.Error(),
+			)
+		}
+		if !reflect.DeepEqual(s.AgentSnapshot, snapshot) {
+			next.AgentSnapshot = snapshot
+			change.Agent = true
+		}
+	}
+
+	return next, change, nil
+}
+
+func metadataEqual(current, next map[string]any) bool {
+	if len(current) != len(next) {
+		return false
+	}
+	for key, value := range next {
+		existing, ok := current[key]
+		if !ok || existing != value {
+			return false
+		}
+	}
+	return true
+}
+
+// SessionUpdatedPayload builds the `session.updated` event payload for an
+// already-applied update. The documented event carries only the fields the
+// request changed; metadata is additionally omitted when the resulting bag is
+// empty.
+func SessionUpdatedPayload(s Session, change SessionChange) map[string]any {
+	payload := map[string]any{}
+	if change.Agent {
+		payload["agent"] = s.AgentSnapshot.SessionSnapshotJSON()
+	}
+	if change.Metadata && len(s.Metadata) > 0 {
+		metadata := make(map[string]any, len(s.Metadata))
+		for key, value := range s.Metadata {
+			metadata[key] = value
+		}
+		payload["metadata"] = metadata
+	}
+	if change.Title {
+		payload["title"] = s.Title
+	}
+	return payload
 }
 
 // OutcomeEvaluation is the Session-level projection for one define_outcome

@@ -119,7 +119,8 @@ func TestPostgresSessionLifecyclePaginationAndEventQuery(t *testing.T) {
 		t.Fatalf("second cursors = prev:%v next:%v", second.HasPrev, second.HasNext)
 	}
 
-	updated, err := store.UpdateSessionTitle(ctx, ids[0], "new title")
+	title := "new title"
+	updated, err := store.UpdateSession(ctx, ids[0], domain.SessionUpdate{Title: &title})
 	if err != nil || updated.Title != "new title" {
 		t.Fatalf("update title = %+v, err=%v", updated, err)
 	}

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
@@ -11,6 +12,15 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
+
+// vaultIDsUpdateRejectedMessage describes the Update Session contract only.
+// Managed Agents accepts vault_ids when a Session is created, but documents the
+// update field as reserved and rejects requests that set it.
+const vaultIDsUpdateRejectedMessage = "vault_ids is reserved for future use on session update and is " +
+	"rejected by the Managed Agents API; omit it"
+
+const vaultIDsCreateUnsupportedMessage = "session vault_ids are not implemented; " +
+	"the Managed Agents API accepts vault_ids when creating a session"
 
 func (s *Server) registerSessionRoutes() {
 	s.mux.HandleFunc("POST /v1/sessions", s.createSession)
@@ -168,8 +178,12 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if len(in.Resources) > 0 || len(in.VaultIDs) > 0 {
-		writeError(w, domain.Unsupported("session resources and vault_ids are not implemented"))
+	if len(in.Resources) > 0 {
+		writeError(w, domain.Unsupported("session resources are not implemented"))
+		return
+	}
+	if len(in.VaultIDs) > 0 {
+		writeError(w, domain.Unsupported(vaultIDsCreateUnsupportedMessage))
 		return
 	}
 
@@ -404,28 +418,108 @@ func parseSessionListParams(r *http.Request) (app.ListPage, sessionCursorFilter,
 	return params, filter, nil
 }
 
+// updateSession implements the documented four-field update body: `agent`
+// (mid-session tools/mcp_servers replacement), `metadata` (per-key patch),
+// `title`, and `vault_ids` (rejected, as upstream rejects it too).
 func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Title *string `json:"title"`
+		Agent    json.RawMessage `json:"agent"`
+		Metadata json.RawMessage `json:"metadata"`
+		Title    *string         `json:"title"`
+		VaultIDs json.RawMessage `json:"vault_ids"`
 	}
 	if err := decodeJSONBody(r, &in); err != nil {
 		writeError(w, err)
 		return
 	}
-	var (
-		sess domain.Session
-		err  error
-	)
-	if in.Title == nil {
+	if len(bytes.TrimSpace(in.VaultIDs)) > 0 {
+		writeError(w, domain.Unsupported(vaultIDsUpdateRejectedMessage))
+		return
+	}
+	update := domain.SessionUpdate{Title: in.Title}
+	metadata, err := parseSessionMetadataPatch(in.Metadata)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	update.Metadata = metadata
+	if update.AgentTools, update.AgentMCPServers, err = parseSessionAgentUpdate(in.Agent); err != nil {
+		writeError(w, err)
+		return
+	}
+	var sess domain.Session
+	if update.IsEmpty() {
+		// A body with no update fields is a plain read; do not take the
+		// session's admission lock for it.
 		sess, err = s.deps.Sessions.Get(r.Context(), r.PathValue("id"))
 	} else {
-		sess, err = s.deps.Sessions.UpdateTitle(r.Context(), r.PathValue("id"), *in.Title)
+		sess, err = s.deps.Sessions.Update(r.Context(), r.PathValue("id"), update)
 	}
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	writeJSON(w, 200, sessionToJSON(sess))
+}
+
+// parseSessionMetadataPatch decodes the session metadata patch. Omitted
+// preserves the whole bag, a string upserts one key, and an explicit null
+// deletes one key. This is deliberately not shared with any replacement-style
+// metadata handling: the session update contract patches per key.
+func parseSessionMetadataPatch(raw json.RawMessage) (map[string]any, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	var patch map[string]any
+	if err := json.Unmarshal(trimmed, &patch); err != nil || patch == nil {
+		return nil, domain.Validation("metadata must be an object")
+	}
+	for _, value := range patch {
+		if value == nil {
+			continue
+		}
+		if _, ok := value.(string); !ok {
+			return nil, domain.Validation("metadata values must be strings or null")
+		}
+	}
+	return patch, nil
+}
+
+// parseSessionAgentUpdate decodes the mid-session `agent` object. Only `tools`
+// and `mcp_servers` are updatable; `model`, `system`, and `skills` are fixed
+// for the session's lifetime and are rejected with a pointer at the create-time
+// override that does support them.
+func parseSessionAgentUpdate(raw json.RawMessage) (tools, mcpServers *[]any, err error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, nil, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &fields); err != nil || fields == nil {
+		return nil, nil, domain.Validation("agent must be an object")
+	}
+	for key := range fields {
+		switch key {
+		case "tools", "mcp_servers":
+		case "model", "system", "skills":
+			return nil, nil, domain.Validation(
+				"agent " + key + " cannot be updated mid-session; " +
+					"supply it as an agent_with_overrides field when creating the session",
+			)
+		default:
+			return nil, nil, domain.Validation(
+				fmt.Sprintf("unknown agent update field %q", key),
+			)
+		}
+	}
+	if tools, err = parseOptionalArray(fields["tools"], "agent tools"); err != nil {
+		return nil, nil, err
+	}
+	if mcpServers, err = parseOptionalArray(fields["mcp_servers"], "agent mcp_servers"); err != nil {
+		return nil, nil, err
+	}
+	return tools, mcpServers, nil
 }
 
 func (s *Server) archiveSession(w http.ResponseWriter, r *http.Request) {
