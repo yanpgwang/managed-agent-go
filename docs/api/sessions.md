@@ -54,9 +54,9 @@ does not replace it.
 
 Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.
-Non-empty `resources` are currently unsupported. `vault_ids` is rejected because
-the official API documents it as reserved for future use and rejects requests
-that set it.
+Non-empty `resources` and `vault_ids` are currently unsupported by Mango at
+creation time. The `vault_ids` rejection is a Mango limitation: the official
+Create Session API accepts vault IDs.
 
 ## Get and update
 
@@ -94,7 +94,7 @@ The update body accepts `agent`, `metadata`, and `title`:
 - **An `agent` update requires an `idle` session.** A request that arrives while
   a turn is in flight returns `409`; send an untargeted `user.interrupt` first.
   `title` and `metadata` carry no such precondition.
-- `vault_ids` is rejected.
+- `vault_ids` is rejected on update, matching the official Update Session API.
 
 Changed fields and their `session.updated` event commit together. The event
 carries only the fields the request actually changed; a request that changes
@@ -153,8 +153,9 @@ Delete removes the session and persisted history, sends a final
 The response embeds the resolved agent snapshot and includes `resources`,
 `vault_ids`, `outcome_evaluations`, `stats`, `usage`, and `deployment_id`.
 `stats` and `usage` are cumulative live projections, and
-`outcome_evaluations` reflects each admitted outcome. Non-empty resources are
-rejected at create time and `vault_ids` is rejected on create and update, so
-their required response arrays are truthfully empty; `deployment_id` is null
-because deployment-created sessions are not implemented.
+`outcome_evaluations` reflects each admitted outcome. Non-empty resources and
+vaults are rejected at create time, so their required response arrays are
+truthfully empty. Create-time vault rejection is a Mango limitation; update-time
+vault rejection matches the official API. `deployment_id` is null because
+deployment-created sessions are not implemented.
 See [Claude API coverage](../compatibility.md).

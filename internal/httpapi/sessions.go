@@ -13,11 +13,14 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
-// vaultIDsRejectedMessage matches the official contract rather than describing
-// a Mango gap: the Managed Agents API documents `vault_ids` as reserved for
-// future use and rejects requests that set it, on create and on update alike.
-const vaultIDsRejectedMessage = "vault_ids is reserved for future use and is " +
+// vaultIDsUpdateRejectedMessage describes the Update Session contract only.
+// Managed Agents accepts vault_ids when a Session is created, but documents the
+// update field as reserved and rejects requests that set it.
+const vaultIDsUpdateRejectedMessage = "vault_ids is reserved for future use on session update and is " +
 	"rejected by the Managed Agents API; omit it"
+
+const vaultIDsCreateUnsupportedMessage = "session vault_ids are not implemented; " +
+	"the Managed Agents API accepts vault_ids when creating a session"
 
 func (s *Server) registerSessionRoutes() {
 	s.mux.HandleFunc("POST /v1/sessions", s.createSession)
@@ -180,7 +183,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(in.VaultIDs) > 0 {
-		writeError(w, domain.Unsupported(vaultIDsRejectedMessage))
+		writeError(w, domain.Unsupported(vaultIDsCreateUnsupportedMessage))
 		return
 	}
 
@@ -423,14 +426,14 @@ func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 		Agent    json.RawMessage `json:"agent"`
 		Metadata json.RawMessage `json:"metadata"`
 		Title    *string         `json:"title"`
-		VaultIDs []string        `json:"vault_ids"`
+		VaultIDs json.RawMessage `json:"vault_ids"`
 	}
 	if err := decodeJSONBody(r, &in); err != nil {
 		writeError(w, err)
 		return
 	}
-	if len(in.VaultIDs) > 0 {
-		writeError(w, domain.Unsupported(vaultIDsRejectedMessage))
+	if len(bytes.TrimSpace(in.VaultIDs)) > 0 {
+		writeError(w, domain.Unsupported(vaultIDsUpdateRejectedMessage))
 		return
 	}
 	update := domain.SessionUpdate{Title: in.Title}
