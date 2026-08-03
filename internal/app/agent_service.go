@@ -36,7 +36,12 @@ func (s *AgentService) Get(ctx context.Context, id string) (domain.Agent, error)
 	return s.repo.Latest(ctx, id)
 }
 
-func (s *AgentService) List(ctx context.Context) ([]domain.Agent, error) { return s.repo.List(ctx) }
+func (s *AgentService) List(ctx context.Context, query AgentListQuery) (AgentListPage, error) {
+	if query.Limit <= 0 {
+		query.Limit = DefaultAgentListLimit
+	}
+	return s.repo.ListLatest(ctx, query)
+}
 
 func (s *AgentService) Versions(ctx context.Context, id string) ([]domain.Agent, error) {
 	return s.repo.Versions(ctx, id)

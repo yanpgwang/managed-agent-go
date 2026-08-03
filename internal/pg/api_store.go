@@ -215,6 +215,174 @@ func oppositeSQLOrder(order string) string {
 	return "ASC"
 }
 
+// Agent and Environment lists are forward-only and ordered newest-first by a
+// stable (created_at, id) key. The public API does not expose an order
+// parameter for either endpoint, so the order is an internal consistency
+// choice rather than a new wire field.
+const resourceListOrder = ` ORDER BY created_at DESC, id DESC`
+
+func forwardResourceBoundary(
+	args []any,
+	boundary *app.ResourcePageBoundary,
+) (string, []any) {
+	args = append(args, boundary.CreatedAt, boundary.ID)
+	createdAtPosition := len(args) - 1
+	idPosition := len(args)
+	return fmt.Sprintf(
+		`(created_at < $%d OR (created_at = $%d AND id < $%d))`,
+		createdAtPosition,
+		createdAtPosition,
+		idPosition,
+	), args
+}
+
+// ListAgents pages over the latest version of each Agent. The underlying table
+// is append-only by (id, version), so the DISTINCT ON subquery prevents older
+// versions from leaking into the resource list.
+func (s *Store) ListAgents(
+	ctx context.Context,
+	query app.AgentListQuery,
+) (app.AgentListPage, error) {
+	if query.Limit <= 0 {
+		query.Limit = app.DefaultAgentListLimit
+	}
+	var clauses []string
+	var args []any
+	if !query.IncludeArchived {
+		clauses = append(clauses, `archived_at IS NULL`)
+	}
+	if query.CreatedAtGte != nil {
+		args = append(args, *query.CreatedAtGte)
+		clauses = append(clauses, fmt.Sprintf(`created_at >= $%d`, len(args)))
+	}
+	if query.CreatedAtLte != nil {
+		args = append(args, *query.CreatedAtLte)
+		clauses = append(clauses, fmt.Sprintf(`created_at <= $%d`, len(args)))
+	}
+	if query.After != nil {
+		var boundary string
+		boundary, args = forwardResourceBoundary(args, query.After)
+		clauses = append(clauses, boundary)
+	}
+
+	statement := `SELECT id, body, created_at, archived_at FROM (
+    SELECT DISTINCT ON (id) id, body, created_at, archived_at
+    FROM agents
+    ORDER BY id, version DESC
+) AS latest`
+	if len(clauses) > 0 {
+		statement += ` WHERE ` + strings.Join(clauses, ` AND `)
+	}
+	args = append(args, query.Limit+1)
+	statement += resourceListOrder + fmt.Sprintf(` LIMIT $%d`, len(args))
+
+	rows, err := s.pool.Query(ctx, statement, args...)
+	if err != nil {
+		return app.AgentListPage{}, err
+	}
+	defer rows.Close()
+	agents := make([]domain.Agent, 0, query.Limit+1)
+	for rows.Next() {
+		var (
+			id         string
+			body       []byte
+			createdAt  time.Time
+			archivedAt *time.Time
+		)
+		if err := rows.Scan(&id, &body, &createdAt, &archivedAt); err != nil {
+			return app.AgentListPage{}, err
+		}
+		var agent domain.Agent
+		if err := json.Unmarshal(body, &agent); err != nil {
+			return app.AgentListPage{}, fmt.Errorf("pg: decode agent %s: %w", id, err)
+		}
+		agent.CreatedAt = createdAt.UTC()
+		agent.ArchivedAt = utcTimePtr(archivedAt)
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return app.AgentListPage{}, err
+	}
+	page := app.AgentListPage{Agents: agents}
+	if len(agents) > query.Limit {
+		page.Agents = agents[:query.Limit]
+		page.HasNext = true
+	}
+	return page, nil
+}
+
+// ListEnvironments implements the documented include_archived, limit, and
+// page surface. It intentionally has no created_at filters.
+func (s *Store) ListEnvironments(
+	ctx context.Context,
+	query app.EnvironmentListQuery,
+) (app.EnvironmentListPage, error) {
+	if query.Limit <= 0 {
+		query.Limit = app.DefaultEnvironmentListLimit
+	}
+	var clauses []string
+	var args []any
+	if !query.IncludeArchived {
+		clauses = append(clauses, `archived_at IS NULL`)
+	}
+	if query.After != nil {
+		var boundary string
+		boundary, args = forwardResourceBoundary(args, query.After)
+		clauses = append(clauses, boundary)
+	}
+
+	statement := `SELECT id, body, created_at, archived_at FROM environments`
+	if len(clauses) > 0 {
+		statement += ` WHERE ` + strings.Join(clauses, ` AND `)
+	}
+	args = append(args, query.Limit+1)
+	statement += resourceListOrder + fmt.Sprintf(` LIMIT $%d`, len(args))
+
+	rows, err := s.pool.Query(ctx, statement, args...)
+	if err != nil {
+		return app.EnvironmentListPage{}, err
+	}
+	defer rows.Close()
+	environments := make([]domain.Environment, 0, query.Limit+1)
+	for rows.Next() {
+		var (
+			id         string
+			body       []byte
+			createdAt  time.Time
+			archivedAt *time.Time
+		)
+		if err := rows.Scan(&id, &body, &createdAt, &archivedAt); err != nil {
+			return app.EnvironmentListPage{}, err
+		}
+		var environment domain.Environment
+		if err := json.Unmarshal(body, &environment); err != nil {
+			return app.EnvironmentListPage{}, fmt.Errorf(
+				"pg: decode environment %s: %w", id, err,
+			)
+		}
+		environment.CreatedAt = createdAt.UTC()
+		environment.ArchivedAt = utcTimePtr(archivedAt)
+		environments = append(environments, environment)
+	}
+	if err := rows.Err(); err != nil {
+		return app.EnvironmentListPage{}, err
+	}
+	page := app.EnvironmentListPage{Environments: environments}
+	if len(environments) > query.Limit {
+		page.Environments = environments[:query.Limit]
+		page.HasNext = true
+	}
+	return page, nil
+}
+
+func utcTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	utc := value.UTC()
+	return &utc
+}
+
 // UpdateSession applies the public session update and keeps the projection and
 // its session.updated event in one transaction under the per-session admission
 // lock.

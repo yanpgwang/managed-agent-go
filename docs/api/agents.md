@@ -48,8 +48,11 @@ GET /v1/agents/{id}/versions
 `GET /v1/agents/{id}` returns the latest version. The versions route returns all
 stored versions in a `data` array.
 
-Agent list pagination and filtering are not implemented. The list response
-contains `next_page: null`.
+The Agent list supports the documented `created_at[gte]`, `created_at[lte]`,
+`include_archived`, `limit`, and `page` parameters. `limit` defaults to `20` and
+has a maximum of `100`. Results contain only the latest version of each Agent,
+are ordered newest-first by a stable `(created_at, id)` key, and use a
+forward-only opaque `next_page` cursor.
 
 ## Update
 

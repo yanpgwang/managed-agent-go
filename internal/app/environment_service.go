@@ -37,8 +37,14 @@ func (s *EnvironmentService) Get(ctx context.Context, id string) (domain.Environ
 	return s.env.Get(ctx, id)
 }
 
-func (s *EnvironmentService) List(ctx context.Context) ([]domain.Environment, error) {
-	return s.env.List(ctx)
+func (s *EnvironmentService) List(
+	ctx context.Context,
+	query EnvironmentListQuery,
+) (EnvironmentListPage, error) {
+	if query.Limit <= 0 {
+		query.Limit = DefaultEnvironmentListLimit
+	}
+	return s.env.List(ctx, query)
 }
 
 func (s *EnvironmentService) Archive(ctx context.Context, id string) (domain.Environment, error) {

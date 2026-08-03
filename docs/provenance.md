@@ -37,6 +37,14 @@ Verified 2026-07-29.
   model configuration, initial `version`, and response shape.
 - [Update Agent](https://platform.claude.com/docs/en/api/beta/agents/update) —
   optimistic concurrency and update-field semantics.
+- [List Agents](https://platform.claude.com/docs/en/api/beta/agents/list) —
+  `created_at[gte]`, `created_at[lte]`, `include_archived`, `limit`, and `page`;
+  the documented Agent limit default of 20 and maximum of 100. Verified
+  2026-08-03 against the API reference and official Go SDK v1.61.0 types.
+- [List Environments](https://platform.claude.com/docs/en/api/beta/environments/list) —
+  `include_archived`, `limit`, and `page`, with a forward cursor response and no
+  documented created-at filters or limit bounds. Verified 2026-08-03 against
+  the API reference and official Go SDK v1.61.0 types.
 - [Start a session](https://platform.claude.com/docs/en/managed-agents/sessions)
   — agent reference forms, initial events, and resolved snapshot.
 - [Create Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/create)
