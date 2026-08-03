@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"sort"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
@@ -26,11 +28,45 @@ func (s *EnvironmentService) Create(ctx context.Context, e domain.Environment) (
 	if e.ConfigType != "cloud" && e.ConfigType != "self_hosted" {
 		return domain.Environment{}, domain.Validation("config type must be cloud or self_hosted")
 	}
+	if err := validateEnvironmentConfig(e.Config, e.ConfigType); err != nil {
+		return domain.Environment{}, err
+	}
+	// Only persist the capability the runtime can currently honor. Explicit
+	// networking and package policies are rejected above rather than stored as
+	// inert configuration.
+	e.Config = map[string]any{"type": e.ConfigType}
 	now := s.clock.Now().UTC()
 	e.ID = s.ids.NewID(domain.PrefixEnv)
 	e.CreatedAt = now
 	e.UpdatedAt = now
 	return e, s.env.Put(ctx, e)
+}
+
+func validateEnvironmentConfig(config map[string]any, configType string) error {
+	if value, present := config["type"]; present {
+		valueType, ok := value.(string)
+		if !ok || valueType != configType {
+			return domain.Validation("config type must be cloud or self_hosted")
+		}
+	}
+	if value, present := config["networking"]; present && value != nil {
+		return domain.Unsupported("environment networking configuration is not implemented")
+	}
+	if value, present := config["packages"]; present && value != nil {
+		return domain.Unsupported("environment package configuration is not implemented")
+	}
+
+	unknown := make([]string, 0)
+	for key := range config {
+		if key != "type" && key != "networking" && key != "packages" {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) > 0 {
+		sort.Strings(unknown)
+		return domain.Validation(fmt.Sprintf("unknown environment config field %q", unknown[0]))
+	}
+	return nil
 }
 
 func (s *EnvironmentService) Get(ctx context.Context, id string) (domain.Environment, error) {

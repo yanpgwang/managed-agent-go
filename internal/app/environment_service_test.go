@@ -62,3 +62,35 @@ func TestEnvironmentService_DeleteMissingReturnsNotFound(t *testing.T) {
 		t.Fatalf("expected DomainError KindNotFound, got %v", err)
 	}
 }
+
+func TestEnvironmentService_RejectsUnenforcedConfiguration(t *testing.T) {
+	svc := newEnvService(t)
+	ctx := context.Background()
+	cases := []map[string]any{
+		{"type": "cloud", "networking": map[string]any{"type": "limited"}},
+		{"type": "cloud", "packages": map[string]any{"pip": []any{"requests"}}},
+		{"type": "cloud", "future_policy": true},
+		{"type": 42},
+	}
+	for _, config := range cases {
+		_, err := svc.Create(ctx, domain.Environment{
+			Name: "unsupported", ConfigType: "cloud", Config: config,
+		})
+		if err == nil {
+			t.Fatalf("unsupported config was accepted: %#v", config)
+		}
+	}
+}
+
+func TestEnvironmentService_NormalizesSupportedConfiguration(t *testing.T) {
+	svc := newEnvService(t)
+	created, err := svc.Create(context.Background(), domain.Environment{
+		Name: "cloud", Config: map[string]any{"networking": nil, "packages": nil},
+	})
+	if err != nil {
+		t.Fatalf("create default cloud environment: %v", err)
+	}
+	if created.ConfigType != "cloud" || len(created.Config) != 1 || created.Config["type"] != "cloud" {
+		t.Fatalf("normalized config = %#v", created.Config)
+	}
+}

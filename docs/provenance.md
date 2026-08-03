@@ -49,6 +49,10 @@ Verified 2026-07-29.
   `include_archived`, `limit`, and `page`, with a forward cursor response and no
   documented created-at filters or limit bounds. Verified 2026-08-03 against
   the API reference and official Go SDK v1.61.0 types.
+- [Environments](https://platform.claude.com/docs/en/api/beta/environments) —
+  required resource fields, resolved default cloud configuration, lifecycle
+  methods, and the `environment_deleted` response. Verified 2026-08-03 against
+  the API reference and official Go SDK v1.61.0 types.
 - [Start a session](https://platform.claude.com/docs/en/managed-agents/sessions)
   — agent reference forms, initial events, and resolved snapshot.
 - [Create Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/create)
