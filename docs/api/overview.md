@@ -105,12 +105,11 @@ lists are forward-only and include `next_page`.
 ## OpenAPI
 
 The running server exposes `/openapi.yaml`, sourced from
-`internal/httpapi/openapi.yaml`. Agent, Environment, and Session lifecycle
-operations define stable operation IDs, path and query parameters, request and
-response schemas, list envelopes, and shared error responses. Repository tests
-keep all local references resolvable and preserve the 21-operation core
-inventory.
+`internal/httpapi/openapi.yaml`. All 21 core operations define stable operation
+IDs, path and query parameters, request and response schemas, list envelopes,
+and shared error responses. The Session Event contract includes the seven
+client-submittable variants, the 25 persisted core variants, and the ephemeral
+SSE `event_start` and `event_delta` preview frames.
 
-The Session Event routes are present, but their complete tagged event union and
-SSE preview-frame schemas are still being added. Use the event guide alongside
-the OpenAPI document for that surface.
+Repository tests keep all local references resolvable and lock both the core
+operation inventory and the event unions.

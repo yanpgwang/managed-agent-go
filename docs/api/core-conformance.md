@@ -52,7 +52,7 @@ separate evidence.
   `internal/controlplane/integration_test.go`,
   `internal/controlplane/session_update_test.go`, and the replay/runtime suites
   under `internal/temporal`.
-- OpenAPI resource-lifecycle schema and reference invariants:
+- OpenAPI lifecycle, Session Event union, and reference invariants:
   `internal/httpapi/openapi_test.go`.
 
 The user-facing support claim remains the
