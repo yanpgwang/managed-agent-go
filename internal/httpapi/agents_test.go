@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -310,6 +311,129 @@ func TestAgents_MetadataValidationUsesResultingBag(t *testing.T) {
 	gotMetadata := updated["metadata"].(map[string]any)
 	if len(gotMetadata) != 16 || gotMetadata["replacement"] != "v" {
 		t.Fatalf("metadata patch result = %#v", gotMetadata)
+	}
+}
+
+// A client that sends an upstream-shaped but undocumented nested field must
+// get a 400 rather than have it stored in the immutable agent version and
+// echoed back. The MCP connector guide is explicit that no authentication
+// material is supplied at configuration time, so `authorization_token` is the
+// canonical credential-leak case.
+func TestAgents_RejectsUndocumentedNestedConfigOnCreate(t *testing.T) {
+	srv := newTestServer(t)
+	const secret = "sk-leaked-authorization-token"
+	rec := do(srv, "POST", "/v1/agents",
+		`{"name":"Agent","model":"claude-opus-4-8",`+
+			`"tools":[{"type":"mcp_toolset","mcp_server_name":"x"}],`+
+			`"mcp_servers":[{"name":"x","type":"url","url":"https://e.com",`+
+			`"authorization_token":"`+secret+`"}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+	var failure map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &failure); err != nil {
+		t.Fatalf("decode error body: %v", err)
+	}
+	errorBody, _ := failure["error"].(map[string]any)
+	if errorBody["type"] != "invalid_request_error" {
+		t.Fatalf("error type = %#v, want invalid_request_error", failure)
+	}
+	assertNoSecret(t, "create response", rec.Body.String(), secret)
+
+	// The rejected agent must not exist at all, and no listing may leak it.
+	for _, path := range []string{"/v1/agents"} {
+		listed := do(srv, "GET", path, "")
+		assertNoSecret(t, path, listed.Body.String(), secret)
+	}
+}
+
+func TestAgents_RejectsUndocumentedNestedConfigOnUpdate(t *testing.T) {
+	srv := newTestServer(t)
+	const secret = "sk-leaked-authorization-token"
+	rec := do(srv, "POST", "/v1/agents",
+		`{"name":"Agent","model":"claude-opus-4-8",`+
+			`"tools":[{"type":"mcp_toolset","mcp_server_name":"x"}],`+
+			`"mcp_servers":[{"name":"x","type":"url","url":"https://e.com"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	id := created["id"].(string)
+
+	for name, patch := range map[string]string{
+		"mcp_servers": `{"mcp_servers":[{"name":"x","type":"url",` +
+			`"url":"https://e.com","authorization_token":"` + secret + `"}]}`,
+		"tools": `{"tools":[{"type":"mcp_toolset","mcp_server_name":"x",` +
+			`"authorization_token":"` + secret + `"}]}`,
+		"skills": `{"skills":[{"type":"anthropic","skill_id":"xlsx",` +
+			`"authorization_token":"` + secret + `"}]}`,
+		"multiagent": `{"multiagent":{"type":"coordinator",` +
+			`"agents":["agent_01ABC"],"authorization_token":"` + secret + `"}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := do(srv, "POST", "/v1/agents/"+id, patch)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("update status = %d, want 400: %s", rec.Code, rec.Body)
+			}
+			assertNoSecret(t, "update response", rec.Body.String(), secret)
+		})
+	}
+
+	// Every read path that echoes stored agent configuration must stay clean.
+	for _, path := range []string{
+		"/v1/agents/" + id,
+		"/v1/agents/" + id + "/versions",
+		"/v1/agents",
+	} {
+		read := do(srv, "GET", path, "")
+		if read.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d: %s", path, read.Code, read.Body)
+		}
+		assertNoSecret(t, path, read.Body.String(), secret)
+	}
+
+	// The rejected updates must not have produced a new version either.
+	versions := do(srv, "GET", "/v1/agents/"+id+"/versions", "")
+	var page map[string]any
+	if err := json.Unmarshal(versions.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode versions response: %v", err)
+	}
+	if data, _ := page["data"].([]any); len(data) != 1 {
+		t.Fatalf("rejected updates created versions: %#v", page["data"])
+	}
+}
+
+func TestAgents_AcceptsFullyDocumentedNestedConfig(t *testing.T) {
+	srv := newTestServer(t)
+	rec := do(srv, "POST", "/v1/agents",
+		`{"name":"Agent","model":"claude-opus-4-8",`+
+			`"tools":[`+
+			`{"type":"agent_toolset_20260401","default_config":{"enabled":true,`+
+			`"permission_policy":{"type":"always_allow"}},`+
+			`"configs":[{"name":"bash","enabled":true,`+
+			`"permission_policy":{"type":"always_ask"}}]},`+
+			`{"type":"custom","name":"get_weather","description":"d",`+
+			`"input_schema":{"type":"object","properties":{"city":{"type":"string"}},`+
+			`"required":["city"]}},`+
+			`{"type":"mcp_toolset","mcp_server_name":"x",`+
+			`"default_config":{"enabled":true},`+
+			`"configs":[{"name":"list_issues","enabled":false}]}],`+
+			`"mcp_servers":[{"name":"x","type":"url","url":"https://e.com"}],`+
+			`"skills":[{"type":"anthropic","skill_id":"xlsx","version":"latest"}],`+
+			`"multiagent":{"type":"coordinator","agents":["agent_01ABC",`+
+			`{"type":"agent","id":"agent_01DEF","version":2},{"type":"self"}]}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("documented configuration status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
+func assertNoSecret(t *testing.T, where, body, secret string) {
+	t.Helper()
+	if strings.Contains(body, secret) {
+		t.Fatalf("%s leaked the rejected credential: %s", where, body)
 	}
 }
 

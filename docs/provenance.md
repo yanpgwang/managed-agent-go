@@ -52,6 +52,9 @@ Verified 2026-07-29.
   — filters, pagination envelope, and per-event shapes.
 - [Multiagent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration)
   — multiagent input shape and resolved-roster behavior.
+- [Agent skills](https://platform.claude.com/docs/en/managed-agents/skills) —
+  the `{skill_id, type, version}` reference shape carried on an Agent.
+  Verified 2026-08-03.
 
 ## Tool and sandbox sources
 

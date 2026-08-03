@@ -90,12 +90,16 @@ func (s *SessionService) Create(
 	if input.Overrides != nil {
 		snapshot = agent.WithOverrides(*input.Overrides)
 	}
-	if err := domain.ValidateToolConfiguration(
+	// Overrides replace whole capability arrays, so the resolved snapshot is
+	// re-validated here rather than trusting the base Agent version.
+	if err := domain.ValidateAgentCapabilities(
 		snapshot.Tools,
 		snapshot.MCPServers,
+		snapshot.Skills,
+		snapshot.Multiagent,
 	); err != nil {
 		return domain.Session{}, domain.Validation(
-			"invalid agent tool configuration: " + err.Error(),
+			"invalid agent configuration: " + err.Error(),
 		)
 	}
 	metadata := input.Metadata

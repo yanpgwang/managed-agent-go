@@ -72,8 +72,13 @@ func validateAgent(a domain.Agent) error {
 	if err := domain.ValidateModel(a.Model); err != nil {
 		return err
 	}
-	if err := domain.ValidateToolConfiguration(a.Tools, a.MCPServers); err != nil {
-		return domain.Validation("invalid tool configuration: " + err.Error())
+	if err := domain.ValidateAgentCapabilities(
+		a.Tools,
+		a.MCPServers,
+		a.Skills,
+		a.Multiagent,
+	); err != nil {
+		return domain.Validation("invalid agent configuration: " + err.Error())
 	}
 	return validateMetadata(a.Metadata)
 }

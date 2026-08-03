@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -88,16 +89,202 @@ func validPermissionPolicy(policy PermissionPolicy) bool {
 	return policy.Type == "always_allow" || policy.Type == "always_ask"
 }
 
-func parsePolicy(raw any) *PermissionPolicy {
+// Documented field sets for the nested capability objects the public wire
+// accepts. Mango stores tools, mcp_servers, and skills as opaque JSON and
+// echoes them verbatim from GET /v1/agents/{id} and the version list, so an
+// undocumented nested key would be persisted in an immutable agent version and
+// replayed to every reader. Anything secret-shaped a client sends by mistake --
+// an upstream Messages-style `authorization_token` on an MCP server, for
+// example -- must therefore be refused at admission rather than absorbed.
+// See docs/_upstream/claude-managed-agents/snapshot/api-reference/agents/
+// {create,update}.md and guides/{tools,mcp-connector,permission-policies}.md.
+var (
+	builtinToolsetFields = []string{"configs", "default_config", "type"}
+	mcpToolsetFields     = []string{"configs", "default_config", "mcp_server_name", "type"}
+	customToolFields     = []string{"description", "input_schema", "name", "type"}
+	toolConfigFields     = []string{"enabled", "name", "permission_policy"}
+	defaultConfigFields  = []string{"enabled", "permission_policy"}
+	mcpServerFields      = []string{"name", "type", "url"}
+	policyFields         = []string{"type"}
+)
+
+// rejectUnknownFields fails on the first (lexicographically lowest, for a
+// deterministic message) key that the documented object shape does not define.
+func rejectUnknownFields(value map[string]any, context string, allowed []string) error {
+	var unknown []string
+	for key := range value {
+		if !slices.Contains(allowed, key) {
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	slices.Sort(unknown)
+	return fmt.Errorf("%s does not support field %q", context, unknown[0])
+}
+
+// optionalObject reads a documented optional object field. An absent field and
+// an explicit null both mean "not configured"; any other non-object is a client
+// error rather than something to silently ignore.
+func optionalObject(
+	value map[string]any,
+	key, context string,
+) (map[string]any, bool, error) {
+	raw, present := value[key]
+	if !present || raw == nil {
+		return nil, false, nil
+	}
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return nil, false, fmt.Errorf("%s %s must be an object", context, key)
+	}
+	return object, true, nil
+}
+
+// optionalBool reads a documented optional boolean field with the same
+// absent/null handling as optionalObject.
+func optionalBool(value map[string]any, key, context string) (*bool, error) {
+	raw, present := value[key]
+	if !present || raw == nil {
+		return nil, nil
+	}
+	flag, ok := raw.(bool)
+	if !ok {
+		return nil, fmt.Errorf("%s %s must be a boolean", context, key)
+	}
+	return &flag, nil
+}
+
+func parsePolicy(raw any, context string) (PermissionPolicy, error) {
 	m, ok := raw.(map[string]any)
 	if !ok {
+		return PermissionPolicy{}, fmt.Errorf(
+			"%s permission_policy must be an object",
+			context,
+		)
+	}
+	if err := rejectUnknownFields(
+		m,
+		context+" permission_policy",
+		policyFields,
+	); err != nil {
+		return PermissionPolicy{}, err
+	}
+	policy := PermissionPolicy{}
+	policy.Type, _ = m["type"].(string)
+	if !validPermissionPolicy(policy) {
+		return PermissionPolicy{}, fmt.Errorf(
+			"%s permission_policy must be always_allow or always_ask",
+			context,
+		)
+	}
+	return policy, nil
+}
+
+// parseDefaultConfig applies a documented `default_config` object onto the
+// caller's resolved defaults, leaving them untouched when the field is absent.
+func parseDefaultConfig(
+	tool map[string]any,
+	context string,
+	enabled *bool,
+	policy *PermissionPolicy,
+) error {
+	config, present, err := optionalObject(tool, "default_config", context)
+	if err != nil {
+		return err
+	}
+	if !present {
 		return nil
 	}
-	t, _ := m["type"].(string)
-	if t == "" {
-		return nil
+	if err := rejectUnknownFields(
+		config,
+		context+" default_config",
+		defaultConfigFields,
+	); err != nil {
+		return err
 	}
-	return &PermissionPolicy{Type: t}
+	flag, err := optionalBool(config, "enabled", context+" default_config")
+	if err != nil {
+		return err
+	}
+	if flag != nil {
+		*enabled = *flag
+	}
+	if raw, present := config["permission_policy"]; present && raw != nil {
+		parsed, err := parsePolicy(raw, context+" default")
+		if err != nil {
+			return err
+		}
+		*policy = parsed
+	}
+	return nil
+}
+
+// parseToolConfigs applies the documented `configs` array shared by the
+// built-in and MCP toolset variants. checkName enforces the variant's naming
+// rule (built-in enum membership versus a free-form MCP tool name).
+func parseToolConfigs(
+	tool map[string]any,
+	context string,
+	checkName func(string) error,
+) ([]BuiltinConfig, error) {
+	raw, present := tool["configs"]
+	if !present || raw == nil {
+		return nil, nil
+	}
+	entries, ok := raw.([]any)
+	if !ok {
+		return nil, fmt.Errorf("%s configs must be an array", context)
+	}
+	configured := make(map[string]struct{}, len(entries))
+	parsed := make([]BuiltinConfig, 0, len(entries))
+	for _, entry := range entries {
+		value, ok := entry.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("%s config must be an object", context)
+		}
+		if err := rejectUnknownFields(
+			value,
+			context+" config",
+			toolConfigFields,
+		); err != nil {
+			return nil, err
+		}
+		name, _ := value["name"].(string)
+		if name == "" {
+			return nil, fmt.Errorf("%s config requires name", context)
+		}
+		if err := checkName(name); err != nil {
+			return nil, err
+		}
+		if _, duplicate := configured[name]; duplicate {
+			return nil, fmt.Errorf("duplicate %s config %q", context, name)
+		}
+		configured[name] = struct{}{}
+		config := BuiltinConfig{Name: name}
+		if raw, present := value["permission_policy"]; present && raw != nil {
+			policy, err := parsePolicy(
+				raw,
+				fmt.Sprintf("%s %q", context, name),
+			)
+			if err != nil {
+				return nil, err
+			}
+			config.Policy = &policy
+		}
+		enabled, err := optionalBool(
+			value,
+			"enabled",
+			fmt.Sprintf("%s config %q", context, name),
+		)
+		if err != nil {
+			return nil, err
+		}
+		config.Enabled = enabled
+		parsed = append(parsed, config)
+	}
+	return parsed, nil
 }
 
 func ParseTools(raw []any) (ToolSet, error) {
@@ -114,53 +301,45 @@ func ParseTools(raw []any) (ToolSet, error) {
 			if ts.Builtin != nil {
 				return ToolSet{}, fmt.Errorf("only one built-in toolset may be configured")
 			}
+			if err := rejectUnknownFields(
+				m,
+				BuiltinToolsetType,
+				builtinToolsetFields,
+			); err != nil {
+				return ToolSet{}, err
+			}
 			bt := &BuiltinToolset{DefaultEnabled: true, DefaultPolicy: PermissionPolicy{Type: "always_allow"}}
-			if dc, ok := m["default_config"].(map[string]any); ok {
-				if en, ok := dc["enabled"].(bool); ok {
-					bt.DefaultEnabled = en
-				}
-				if rawPolicy, present := dc["permission_policy"]; present {
-					p := parsePolicy(rawPolicy)
-					if p == nil || !validPermissionPolicy(*p) {
-						return ToolSet{}, fmt.Errorf("built-in default permission_policy must be always_allow or always_ask")
-					}
-					bt.DefaultPolicy = *p
-				}
+			if err := parseDefaultConfig(
+				m,
+				"built-in toolset",
+				&bt.DefaultEnabled,
+				&bt.DefaultPolicy,
+			); err != nil {
+				return ToolSet{}, err
 			}
-			configuredNames := make(map[string]struct{})
-			if cfgs, ok := m["configs"].([]any); ok {
-				for _, c := range cfgs {
-					cm, ok := c.(map[string]any)
-					if !ok {
-						return ToolSet{}, fmt.Errorf("toolset config must be an object")
-					}
-					name, _ := cm["name"].(string)
-					if name == "" {
-						return ToolSet{}, fmt.Errorf("toolset config requires name")
-					}
+			configs, err := parseToolConfigs(
+				m,
+				"built-in tool",
+				func(name string) error {
 					if !containsBuiltinTool(name) {
-						return ToolSet{}, fmt.Errorf("unknown built-in tool %q", name)
+						return fmt.Errorf("unknown built-in tool %q", name)
 					}
-					if _, duplicate := configuredNames[name]; duplicate {
-						return ToolSet{}, fmt.Errorf("duplicate built-in tool config %q", name)
-					}
-					configuredNames[name] = struct{}{}
-					bc := BuiltinConfig{Name: name}
-					if rawPolicy, present := cm["permission_policy"]; present {
-						p := parsePolicy(rawPolicy)
-						if p == nil || !validPermissionPolicy(*p) {
-							return ToolSet{}, fmt.Errorf("built-in tool %q permission_policy must be always_allow or always_ask", name)
-						}
-						bc.Policy = p
-					}
-					if en, ok := cm["enabled"].(bool); ok {
-						bc.Enabled = &en
-					}
-					bt.Configs = append(bt.Configs, bc)
-				}
+					return nil
+				},
+			)
+			if err != nil {
+				return ToolSet{}, err
 			}
+			bt.Configs = configs
 			ts.Builtin = bt
 		case "custom":
+			if err := rejectUnknownFields(
+				m,
+				"custom tool",
+				customToolFields,
+			); err != nil {
+				return ToolSet{}, err
+			}
 			name, _ := m["name"].(string)
 			if name == "" {
 				return ToolSet{}, fmt.Errorf("custom tool requires name")
@@ -176,10 +355,44 @@ func ParseTools(raw []any) (ToolSet, error) {
 			}
 			customNames[name] = struct{}{}
 			ct := CustomTool{Name: name}
-			ct.Description, _ = m["description"].(string)
-			ct.InputSchema, _ = m["input_schema"].(map[string]any)
+			if raw, present := m["description"]; present && raw != nil {
+				description, ok := raw.(string)
+				if !ok {
+					return ToolSet{}, fmt.Errorf(
+						"custom tool %q description must be a string",
+						name,
+					)
+				}
+				ct.Description = description
+			}
+			schema, present, err := optionalObject(
+				m,
+				"input_schema",
+				fmt.Sprintf("custom tool %q", name),
+			)
+			if err != nil {
+				return ToolSet{}, err
+			}
+			// input_schema is a caller-authored JSON Schema. Only the documented
+			// wrapper is checked; its properties stay opaque by design.
+			if present {
+				if schemaType, _ := schema["type"].(string); schemaType != "object" {
+					return ToolSet{}, fmt.Errorf(
+						"custom tool %q input_schema type must be object",
+						name,
+					)
+				}
+				ct.InputSchema = schema
+			}
 			ts.Custom = append(ts.Custom, ct)
 		case "mcp_toolset":
+			if err := rejectUnknownFields(
+				m,
+				"mcp_toolset",
+				mcpToolsetFields,
+			); err != nil {
+				return ToolSet{}, err
+			}
 			sn, _ := m["mcp_server_name"].(string)
 			if sn == "" {
 				return ToolSet{}, fmt.Errorf("mcp_toolset requires mcp_server_name")
@@ -195,47 +408,23 @@ func ParseTools(raw []any) (ToolSet, error) {
 					Type: "always_ask",
 				},
 			}
-			if dc, ok := m["default_config"].(map[string]any); ok {
-				if en, ok := dc["enabled"].(bool); ok {
-					mt.DefaultEnabled = en
-				}
-				if rawPolicy, present := dc["permission_policy"]; present {
-					p := parsePolicy(rawPolicy)
-					if p == nil || !validPermissionPolicy(*p) {
-						return ToolSet{}, fmt.Errorf("mcp server %q default permission_policy must be always_allow or always_ask", sn)
-					}
-					mt.DefaultPolicy = *p
-				}
+			if err := parseDefaultConfig(
+				m,
+				fmt.Sprintf("mcp server %q", sn),
+				&mt.DefaultEnabled,
+				&mt.DefaultPolicy,
+			); err != nil {
+				return ToolSet{}, err
 			}
-			configuredNames := make(map[string]struct{})
-			if cfgs, ok := m["configs"].([]any); ok {
-				for _, c := range cfgs {
-					cm, ok := c.(map[string]any)
-					if !ok {
-						return ToolSet{}, fmt.Errorf("mcp toolset config must be an object")
-					}
-					name, _ := cm["name"].(string)
-					if name == "" {
-						return ToolSet{}, fmt.Errorf("mcp toolset config requires name")
-					}
-					if _, duplicate := configuredNames[name]; duplicate {
-						return ToolSet{}, fmt.Errorf("duplicate mcp tool config %q for server %q", name, sn)
-					}
-					configuredNames[name] = struct{}{}
-					cfg := BuiltinConfig{Name: name}
-					if rawPolicy, present := cm["permission_policy"]; present {
-						p := parsePolicy(rawPolicy)
-						if p == nil || !validPermissionPolicy(*p) {
-							return ToolSet{}, fmt.Errorf("mcp tool %s/%s permission_policy must be always_allow or always_ask", sn, name)
-						}
-						cfg.Policy = p
-					}
-					if en, ok := cm["enabled"].(bool); ok {
-						cfg.Enabled = &en
-					}
-					mt.Configs = append(mt.Configs, cfg)
-				}
+			configs, err := parseToolConfigs(
+				m,
+				fmt.Sprintf("mcp tool for server %q", sn),
+				func(string) error { return nil },
+			)
+			if err != nil {
+				return ToolSet{}, err
 			}
+			mt.Configs = configs
 			ts.MCP = append(ts.MCP, mt)
 		default:
 			return ToolSet{}, fmt.Errorf("unknown tool type %v", m["type"])
@@ -279,6 +468,12 @@ func ParseMCPServers(raw []any) (map[string]MCPServer, error) {
 		value, ok := item.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("mcp server entry must be an object")
+		}
+		// The MCP connector guide is explicit that no authentication material is
+		// supplied at configuration time, so an upstream-shaped credential field
+		// here is refused instead of being stored and echoed back in plaintext.
+		if err := rejectUnknownFields(value, "mcp server", mcpServerFields); err != nil {
+			return nil, err
 		}
 		serverType, _ := value["type"].(string)
 		name, _ := value["name"].(string)

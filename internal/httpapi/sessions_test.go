@@ -161,6 +161,55 @@ func TestCreateSession_RejectsInvalidAgentReferences(t *testing.T) {
 	}
 }
 
+// Session overrides land in the Session's immutable agent snapshot and are
+// echoed by GET /v1/sessions/{id}, so they get the same admission gate as the
+// Agent resource.
+func TestCreateSession_RejectsUndocumentedOverrideConfig(t *testing.T) {
+	h := NewTestHandler(t)
+	ag := createID(t, h, "POST", "/v1/agents", `{"name":"a","model":"claude-opus-4-8"}`)
+	env := createID(t, h, "POST", "/v1/environments", `{"name":"e","config":{"type":"cloud"}}`)
+	const secret = "sk-leaked-authorization-token"
+	for name, override := range map[string]string{
+		"mcp_servers": `"mcp_servers":[{"name":"x","type":"url",` +
+			`"url":"https://e.com","authorization_token":"` + secret + `"}]`,
+		"tools": `"tools":[{"type":"mcp_toolset","mcp_server_name":"x",` +
+			`"authorization_token":"` + secret + `"}]`,
+		"skills": `"skills":[{"type":"anthropic","skill_id":"xlsx",` +
+			`"authorization_token":"` + secret + `"}]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := do(h, "POST", "/v1/sessions",
+				`{"agent":{"type":"agent_with_overrides","id":"`+ag+`",`+
+					override+`},"environment_id":"`+env+`"}`)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body)
+			}
+			assertNoSecret(t, "session create response", rec.Body.String(), secret)
+		})
+	}
+
+	listed := do(h, "GET", "/v1/sessions", "")
+	assertNoSecret(t, "session list", listed.Body.String(), secret)
+}
+
+// A tools-only override still resolves against the Agent's inherited
+// mcp_servers, so shape validation must not apply the pairing rule early.
+func TestCreateSession_AcceptsDocumentedPartialOverride(t *testing.T) {
+	h := NewTestHandler(t)
+	ag := createID(t, h, "POST", "/v1/agents",
+		`{"name":"a","model":"claude-opus-4-8",`+
+			`"tools":[{"type":"mcp_toolset","mcp_server_name":"x"}],`+
+			`"mcp_servers":[{"name":"x","type":"url","url":"https://e.com"}]}`)
+	env := createID(t, h, "POST", "/v1/environments", `{"name":"e","config":{"type":"cloud"}}`)
+	rec := do(h, "POST", "/v1/sessions",
+		`{"agent":{"type":"agent_with_overrides","id":"`+ag+`",`+
+			`"tools":[{"type":"mcp_toolset","mcp_server_name":"x",`+
+			`"default_config":{"enabled":false}}]},"environment_id":"`+env+`"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("partial override status = %d, want 200: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestStreamEvents_NotFound(t *testing.T) {
 	h := NewTestHandler(t)
 	rec := do(h, "GET", "/v1/sessions/nope/events/stream", "")

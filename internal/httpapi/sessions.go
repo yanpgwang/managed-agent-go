@@ -149,6 +149,19 @@ func parseAgentRef(raw json.RawMessage) (agentRef, error) {
 		if ov.Skills, err = parseOptionalArray(obj.Skills, "agent override skills"); err != nil {
 			return agentRef{}, err
 		}
+		// Overrides are stored in the Session's immutable agent snapshot and
+		// echoed back by GET /v1/sessions/{id}, so undocumented nested keys are
+		// rejected here rather than absorbed. Cross-field rules wait for the
+		// resolved snapshot, since an override may replace only one array.
+		if err := domain.ValidateCapabilityShapes(
+			derefArray(ov.Tools),
+			derefArray(ov.MCPServers),
+			derefArray(ov.Skills),
+		); err != nil {
+			return agentRef{}, domain.Validation(
+				"invalid agent override configuration: " + err.Error(),
+			)
+		}
 		ref.Overrides = ov
 	}
 	return ref, nil

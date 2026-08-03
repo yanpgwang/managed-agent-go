@@ -208,6 +208,15 @@ func parseOptionalArray(raw json.RawMessage, field string) (*[]any, error) {
 	return &values, nil
 }
 
+// derefArray reads an optional replacement array as a plain slice so the
+// domain shape validators can inspect it without caring about the tri-state.
+func derefArray(values *[]any) []any {
+	if values == nil {
+		return nil
+	}
+	return *values
+}
+
 func mapAgents(as []domain.Agent) []any {
 	out := make([]any, 0, len(as))
 	for _, a := range as {
