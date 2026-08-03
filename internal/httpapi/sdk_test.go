@@ -797,6 +797,51 @@ func TestSDK_EnvironmentLifecycle(t *testing.T) {
 	}
 }
 
+func TestSDK_EnvironmentExplicitCloudDefaults(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	networking := anthropic.NewBetaUnrestrictedNetworkParam()
+	cloud := anthropic.BetaCloudConfigParams{
+		Networking: anthropic.BetaCloudConfigParamsNetworkingUnion{
+			OfUnrestricted: &networking,
+		},
+		Packages: anthropic.BetaPackagesParams{
+			Type: anthropic.BetaPackagesParamsTypePackages,
+		},
+	}
+
+	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
+		Name: "Explicit cloud defaults",
+		Config: anthropic.BetaEnvironmentNewParamsConfigUnion{
+			OfCloud: &cloud,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create environment with explicit defaults: %v", err)
+	}
+	if environment.Config.Networking.Type != "unrestricted" ||
+		len(environment.Config.Packages.Pip) != 0 {
+		t.Fatalf("created environment config = %#v", environment.Config)
+	}
+
+	updated, err := client.Beta.Environments.Update(
+		ctx,
+		environment.ID,
+		anthropic.BetaEnvironmentUpdateParams{
+			Config: anthropic.BetaEnvironmentUpdateParamsConfigUnion{
+				OfCloud: &cloud,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("update environment with explicit defaults: %v", err)
+	}
+	if updated.Config.Networking.Type != "unrestricted" ||
+		len(updated.Config.Packages.Pip) != 0 {
+		t.Fatalf("updated environment config = %#v", updated.Config)
+	}
+}
+
 func TestSDK_SelfHostedEnvironmentScope(t *testing.T) {
 	client, _ := sdkClientAndServer(t)
 	ctx := context.Background()

@@ -51,6 +51,25 @@ func TestEnvironments_RejectsUnenforcedConfiguration(t *testing.T) {
 	}
 }
 
+func TestEnvironments_AcceptsExplicitCloudDefaults(t *testing.T) {
+	srv := newTestServer(t)
+	rec := do(srv, http.MethodPost, "/v1/environments", `{
+		"name":"explicit defaults",
+		"config":{
+			"type":"cloud",
+			"networking":{"type":"unrestricted"},
+			"packages":{"type":"packages","apt":[],"cargo":[],"gem":[],"go":[],"npm":[],"pip":[]}
+		}
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body)
+	}
+	config := decodeBody(t, rec.Body.Bytes())["config"].(map[string]any)
+	if config["networking"].(map[string]any)["type"] != "unrestricted" {
+		t.Fatalf("networking = %#v", config["networking"])
+	}
+}
+
 func TestEnvironments_ResourceFieldsRoundTrip(t *testing.T) {
 	srv := newTestServer(t)
 	rec := do(srv, http.MethodPost, "/v1/environments", `{
@@ -109,6 +128,10 @@ func TestEnvironments_RejectsMalformedOptionalFields(t *testing.T) {
 		`{"name":"bad","scope":"account"}`,
 		`{"name":"bad","config":null}`,
 		`{"name":"bad","config":[]}`,
+		`{"name":"bad","config":{"type":"cloud","networking":null}}`,
+		`{"name":"bad","config":{"type":"cloud","networking":{"type":"unrestricted","future":true}}}`,
+		`{"name":"bad","config":{"type":"cloud","packages":{"apt":null}}}`,
+		`{"name":"bad","config":{"type":"cloud","packages":{"pip":[1]}}}`,
 	} {
 		rec := do(srv, http.MethodPost, "/v1/environments", body)
 		if rec.Code != http.StatusBadRequest {

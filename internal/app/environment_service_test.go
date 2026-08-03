@@ -86,7 +86,12 @@ func TestEnvironmentService_NormalizesSupportedConfiguration(t *testing.T) {
 	svc := newEnvService(t)
 	created, err := svc.Create(context.Background(), domain.Environment{
 		Name: "cloud", Description: "analysis", Metadata: map[string]any{"team": "data"},
-		Config: map[string]any{"networking": nil, "packages": nil},
+		Config: map[string]any{
+			"networking": map[string]any{"type": "unrestricted"},
+			"packages": map[string]any{
+				"type": "packages", "apt": []any{}, "pip": []string{},
+			},
+		},
 	})
 	if err != nil {
 		t.Fatalf("create default cloud environment: %v", err)
@@ -104,6 +109,34 @@ func TestEnvironmentService_NormalizesSupportedConfiguration(t *testing.T) {
 	}
 	if defaults.Description != "" || defaults.Scope != "" || defaults.Metadata == nil || len(defaults.Metadata) != 0 {
 		t.Fatalf("default resource fields = %#v", defaults)
+	}
+}
+
+func TestEnvironmentService_RejectsMalformedConfiguration(t *testing.T) {
+	svc := newEnvService(t)
+	cases := []map[string]any{
+		{"type": "cloud", "networking": nil},
+		{"type": "cloud", "networking": "unrestricted"},
+		{"type": "cloud", "networking": map[string]any{}},
+		{"type": "cloud", "networking": map[string]any{"type": "future"}},
+		{"type": "cloud", "networking": map[string]any{"type": "unrestricted", "future": true}},
+		{"type": "cloud", "networking": map[string]any{"type": "limited", "allowed_hosts": []any{1}}},
+		{"type": "cloud", "networking": map[string]any{"type": "limited", "allow_mcp_servers": "yes"}},
+		{"type": "cloud", "packages": nil},
+		{"type": "cloud", "packages": []any{}},
+		{"type": "cloud", "packages": map[string]any{"type": "future"}},
+		{"type": "cloud", "packages": map[string]any{"apt": nil}},
+		{"type": "cloud", "packages": map[string]any{"apt": []any{1}}},
+		{"type": "cloud", "packages": map[string]any{"apt": []any{"curl"}, "pip": []any{1}}},
+		{"type": "cloud", "packages": map[string]any{"future": []any{}}},
+		{"type": "self_hosted", "networking": map[string]any{"type": "unrestricted"}},
+	}
+	for _, config := range cases {
+		if _, err := svc.Create(context.Background(), domain.Environment{
+			Name: "invalid", Config: config,
+		}); err == nil {
+			t.Fatalf("malformed config was accepted: %#v", config)
+		}
 	}
 }
 
