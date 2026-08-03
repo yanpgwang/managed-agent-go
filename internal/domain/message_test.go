@@ -240,6 +240,60 @@ func TestProjectMessages_ReProjectionUsesCommittedID(t *testing.T) {
 	}
 }
 
+// An MCP round projects exactly like a built-in round even though it uses its
+// own event types and its own correlation field (mcp_tool_use_id).
+func TestProjectMessages_MCPToolUseAndResultPairing(t *testing.T) {
+	events := []Event{
+		ev(EvUserMessage, "list issues"),
+		{ID: "evt_mcp", Type: EvAgentMcpToolUse, Payload: map[string]any{
+			"name": "list_issues", "mcp_server_name": "github",
+			"input": map[string]any{"repo": "mango"}}},
+		{Type: EvAgentMcpToolResult, Payload: map[string]any{
+			"mcp_tool_use_id": "evt_mcp",
+			"content":         []any{map[string]any{"type": "text", "text": "#1, #2"}}}},
+	}
+	got := ProjectMessages(events)
+	if len(got) != 3 {
+		t.Fatalf("want 3 messages, got %d: %#v", len(got), got)
+	}
+	use := got[1].Content[0]
+	result := got[2].Content[0]
+	if use.Type != "tool_use" || use.ToolUseID != "evt_mcp" {
+		t.Fatalf("mcp tool_use = %#v", use)
+	}
+	if result.Type != "tool_result" || result.ToolResultFor != "evt_mcp" {
+		t.Fatalf("mcp tool_result = %#v", result)
+	}
+	if result.Text != "#1, #2" {
+		t.Fatalf("mcp result text = %q", result.Text)
+	}
+}
+
+// A dangling agent.mcp_tool_use (parked on a confirmation that never resolved)
+// must be dropped, exactly like a dangling agent.tool_use, or the projected
+// request would be illegal.
+func TestProjectMessages_DropsDanglingMCPToolUse(t *testing.T) {
+	events := []Event{
+		ev(EvUserMessage, "list issues"),
+		{ID: "evt_mcp_park", Type: EvAgentMcpToolUse, Payload: map[string]any{
+			"name": "list_issues", "mcp_server_name": "github",
+			"input": map[string]any{}, "evaluated_permission": "ask"}},
+	}
+	got := ProjectMessages(events)
+	if len(got) != 1 || got[0].Role != RoleUser {
+		t.Fatalf("dangling mcp tool_use was not dropped: %#v", got)
+	}
+	// Symmetrically, an orphan result referencing no committed use is dropped.
+	orphan := ProjectMessages([]Event{
+		ev(EvUserMessage, "list issues"),
+		{Type: EvAgentMcpToolResult, Payload: map[string]any{
+			"mcp_tool_use_id": "evt_missing"}},
+	})
+	if len(orphan) != 1 {
+		t.Fatalf("orphan mcp tool_result was not dropped: %#v", orphan)
+	}
+}
+
 func TestProjectMessages_CustomToolResultPairing(t *testing.T) {
 	events := []Event{
 		ev(EvUserMessage, "weather?"),

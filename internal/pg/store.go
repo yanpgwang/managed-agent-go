@@ -1380,8 +1380,11 @@ func interruptedTurnDrafts(drafts []domain.EventDraft) ([]domain.EventDraft, int
 	interruptedOutcomeIteration := 0
 	for _, draft := range drafts {
 		switch draft.Type {
-		case domain.EvAgentToolResult:
-			if toolUseID, _ := draft.Payload["tool_use_id"].(string); toolUseID != "" {
+		case domain.EvAgentToolResult, domain.EvAgentMcpToolResult:
+			if toolUseID, _ := domain.AgentToolResultReference(
+				draft.Type,
+				draft.Payload,
+			); toolUseID != "" {
 				completedToolUses[toolUseID] = struct{}{}
 			}
 		case domain.EvSpanOutcomeEvaluationEnd:
@@ -1416,7 +1419,8 @@ func interruptedTurnDrafts(drafts []domain.EventDraft) ([]domain.EventDraft, int
 			if result, _ := draft.Payload["result"].(string); result != "needs_revision" {
 				continue
 			}
-		case domain.EvAgentToolUse, domain.EvAgentCustomToolUse:
+		case domain.EvAgentToolUse, domain.EvAgentCustomToolUse,
+			domain.EvAgentMcpToolUse:
 			// An interrupted turn cannot publish a new client-action wait. Keep a
 			// tool-use only when its result durably completed in the same output;
 			// otherwise the public ledger would contain an orphan call that cannot
