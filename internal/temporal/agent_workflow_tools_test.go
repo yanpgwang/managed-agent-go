@@ -62,6 +62,7 @@ func TestPlanToolBatch_ClassifiesWholeRoundBeforeExecution(t *testing.T) {
 		stepID:        "tstep_builtin",
 		definition:    tools["bash"],
 	}}, plan.executable)
+	require.Equal(t, "allow", plan.actionDrafts[1].Payload["evaluated_permission"])
 	require.Equal(
 		t,
 		"ask",

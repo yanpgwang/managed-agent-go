@@ -124,6 +124,7 @@ func TestWorkflowTurn_MCPToolRoundPublishesMcpEventPair(t *testing.T) {
 		"the public event reports the bare server-side tool name, not the alias")
 	require.Equal(t, "github", use.Payload["mcp_server_name"])
 	require.Equal(t, map[string]any{"repo": "mango"}, use.Payload["input"])
+	require.Equal(t, "allow", use.Payload["evaluated_permission"])
 
 	result := draftOfType(t, completed.Output, domain.EvAgentMcpToolResult)
 	require.Equal(t, "sevt_mcp_use", result.Payload["mcp_tool_use_id"])

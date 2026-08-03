@@ -642,6 +642,10 @@ func planToolBatch(
 			)
 		default:
 			draft.Type = serverToolUseType(definition, mcpToolEvents)
+			// The public field reports the result of permission evaluation, not
+			// merely a barrier. An always_allow call has already evaluated to
+			// allow even though it proceeds directly to server execution.
+			draft.Payload["evaluated_permission"] = "allow"
 			plan.executable = append(plan.executable, plannedToolUse{
 				use:           use,
 				publicEventID: planned.ToolUseEventID,
