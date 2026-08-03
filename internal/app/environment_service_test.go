@@ -130,3 +130,67 @@ func TestEnvironmentService_ValidatesMetadataAndScope(t *testing.T) {
 		t.Fatalf("scope = %q", created.Scope)
 	}
 }
+
+func TestEnvironmentService_UpdateResourceFieldsAndConfigType(t *testing.T) {
+	svc := newEnvService(t)
+	created, err := svc.Create(context.Background(), domain.Environment{
+		Name: "local", Description: "old", Metadata: map[string]any{
+			"keep": "old", "drop": "value",
+		}, Scope: "account", ConfigType: "self_hosted",
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	name, description := "renamed", "new"
+	cloud := map[string]any{"type": "cloud"}
+	updated, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{
+		Name: &name, Description: &description,
+		Metadata: map[string]any{"keep": "updated", "drop": "", "add": "value"},
+		Config:   &cloud,
+	})
+	if err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if updated.Name != "renamed" || updated.Description != "new" ||
+		updated.ConfigType != "cloud" || updated.Scope != "" {
+		t.Fatalf("updated environment = %#v", updated)
+	}
+	if len(updated.Metadata) != 2 || updated.Metadata["keep"] != "updated" ||
+		updated.Metadata["add"] != "value" {
+		t.Fatalf("updated metadata = %#v", updated.Metadata)
+	}
+
+	noOp, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{})
+	if err != nil || noOp.UpdatedAt != updated.UpdatedAt {
+		t.Fatalf("no-op update = %#v, err=%v", noOp, err)
+	}
+}
+
+func TestEnvironmentService_UpdateRejectsInvalidOrArchivedChanges(t *testing.T) {
+	svc := newEnvService(t)
+	created, err := svc.Create(context.Background(), domain.Environment{Name: "cloud"})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	limited := map[string]any{
+		"type": "cloud", "networking": map[string]any{"type": "limited"},
+	}
+	if _, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{
+		Config: &limited,
+	}); err == nil {
+		t.Fatal("limited networking update was accepted")
+	}
+	badMetadata := map[string]any{"bad": 1}
+	if _, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{
+		Metadata: badMetadata,
+	}); err == nil {
+		t.Fatal("non-string metadata update was accepted")
+	}
+	if _, err := svc.Archive(context.Background(), created.ID); err != nil {
+		t.Fatalf("archive: %v", err)
+	}
+	name := "after archive"
+	if _, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{Name: &name}); err == nil {
+		t.Fatal("archived environment update was accepted")
+	}
+}

@@ -803,7 +803,9 @@ func TestSDK_SelfHostedEnvironmentScope(t *testing.T) {
 	config := anthropic.NewBetaSelfHostedConfigParams()
 
 	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
-		Name: "Self-hosted SDK environment",
+		Name:        "Self-hosted SDK environment",
+		Description: anthropic.String("before update"),
+		Metadata:    map[string]string{"keep": "old", "drop": "value"},
 		Config: anthropic.BetaEnvironmentNewParamsConfigUnion{
 			OfSelfHosted: &config,
 		},
@@ -818,11 +820,34 @@ func TestSDK_SelfHostedEnvironmentScope(t *testing.T) {
 	}
 	assertRawObjectHasFields(t, environment.RawJSON(), "scope")
 
+	updated, err := client.Beta.Environments.Update(
+		ctx,
+		environment.ID,
+		anthropic.BetaEnvironmentUpdateParams{
+			Name:        anthropic.String("Updated SDK environment"),
+			Description: anthropic.String("after update"),
+			Metadata:    map[string]string{"keep": "updated", "drop": ""},
+			Scope:       anthropic.BetaEnvironmentUpdateParamsScopeOrganization,
+			Config: anthropic.BetaEnvironmentUpdateParamsConfigUnion{
+				OfSelfHosted: &config,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("update self-hosted environment: %v", err)
+	}
+	if updated.Name != "Updated SDK environment" || updated.Description != "after update" ||
+		updated.Scope != anthropic.BetaEnvironmentScopeOrganization ||
+		len(updated.Metadata) != 1 || updated.Metadata["keep"] != "updated" {
+		t.Fatalf("updated self-hosted environment = %#v", updated)
+	}
+
 	got, err := client.Beta.Environments.Get(ctx, environment.ID, anthropic.BetaEnvironmentGetParams{})
 	if err != nil {
 		t.Fatalf("get self-hosted environment: %v", err)
 	}
-	if got.Config.Type != "self_hosted" || got.Scope != anthropic.BetaEnvironmentScopeAccount {
+	if got.Config.Type != "self_hosted" || got.Name != updated.Name ||
+		got.Scope != anthropic.BetaEnvironmentScopeOrganization || got.Metadata["keep"] != "updated" {
 		t.Fatalf("retrieved self-hosted environment = %#v", got)
 	}
 }

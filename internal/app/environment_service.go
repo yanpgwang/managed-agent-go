@@ -19,25 +19,14 @@ func NewEnvironmentService(env EnvironmentRepository, ids domain.IDGenerator, cl
 }
 
 func (s *EnvironmentService) Create(ctx context.Context, e domain.Environment) (domain.Environment, error) {
-	if e.Name == "" {
-		return domain.Environment{}, domain.Validation("name is required")
-	}
 	if e.ConfigType == "" {
-		e.ConfigType = "cloud"
+		if configType, ok := e.Config["type"].(string); ok {
+			e.ConfigType = configType
+		} else {
+			e.ConfigType = "cloud"
+		}
 	}
-	if e.ConfigType != "cloud" && e.ConfigType != "self_hosted" {
-		return domain.Environment{}, domain.Validation("config type must be cloud or self_hosted")
-	}
-	if e.Scope != "" && e.Scope != "organization" && e.Scope != "account" {
-		return domain.Environment{}, domain.Validation("scope must be organization or account")
-	}
-	if e.ConfigType == "cloud" && e.Scope != "" {
-		return domain.Environment{}, domain.Validation("scope is only supported for self_hosted environments")
-	}
-	if err := validateMetadata(e.Metadata); err != nil {
-		return domain.Environment{}, err
-	}
-	if err := validateEnvironmentConfig(e.Config, e.ConfigType); err != nil {
+	if err := validateEnvironment(e); err != nil {
 		return domain.Environment{}, err
 	}
 	// Only persist the capability the runtime can currently honor. Explicit
@@ -52,6 +41,78 @@ func (s *EnvironmentService) Create(ctx context.Context, e domain.Environment) (
 	e.CreatedAt = now
 	e.UpdatedAt = now
 	return e, s.env.Put(ctx, e)
+}
+
+func (s *EnvironmentService) Update(
+	ctx context.Context,
+	id string,
+	patch domain.EnvironmentPatch,
+) (domain.Environment, error) {
+	current, err := s.env.Get(ctx, id)
+	if err != nil {
+		return domain.Environment{}, err
+	}
+	if current.ArchivedAt != nil {
+		return domain.Environment{}, domain.Validation("archived environment is read-only")
+	}
+	if patch.Scope != nil && *patch.Scope == "" {
+		return domain.Environment{}, domain.Validation("scope must be organization or account")
+	}
+
+	if patch.Config != nil {
+		rawConfig := *patch.Config
+		configType, ok := rawConfig["type"].(string)
+		if !ok {
+			return domain.Environment{}, domain.Validation("config type must be cloud or self_hosted")
+		}
+		if value, present := rawConfig["networking"]; present && value == nil {
+			return domain.Environment{}, domain.Validation("environment networking configuration cannot be null")
+		}
+		if value, present := rawConfig["packages"]; present && value == nil {
+			return domain.Environment{}, domain.Validation("environment package configuration cannot be null")
+		}
+		if err := validateEnvironmentConfig(rawConfig, configType); err != nil {
+			return domain.Environment{}, err
+		}
+		normalized := map[string]any{"type": configType}
+		patch.Config = &normalized
+		if configType == "cloud" && patch.Scope == nil {
+			clearedScope := ""
+			patch.Scope = &clearedScope
+		}
+	}
+
+	next, changed := current.Apply(patch)
+	if patch.Config != nil {
+		next.ConfigType = (*patch.Config)["type"].(string)
+	}
+	if err := validateEnvironment(next); err != nil {
+		return domain.Environment{}, err
+	}
+	if !changed {
+		return current, nil
+	}
+	next.UpdatedAt = s.clock.Now().UTC()
+	return s.env.Update(ctx, next)
+}
+
+func validateEnvironment(environment domain.Environment) error {
+	if environment.Name == "" {
+		return domain.Validation("name is required")
+	}
+	if environment.ConfigType != "cloud" && environment.ConfigType != "self_hosted" {
+		return domain.Validation("config type must be cloud or self_hosted")
+	}
+	if environment.Scope != "" && environment.Scope != "organization" && environment.Scope != "account" {
+		return domain.Validation("scope must be organization or account")
+	}
+	if environment.ConfigType == "cloud" && environment.Scope != "" {
+		return domain.Validation("scope is only supported for self_hosted environments")
+	}
+	if err := validateMetadata(environment.Metadata); err != nil {
+		return err
+	}
+	return validateEnvironmentConfig(environment.Config, environment.ConfigType)
 }
 
 func validateEnvironmentConfig(config map[string]any, configType string) error {
@@ -96,17 +157,7 @@ func (s *EnvironmentService) List(
 }
 
 func (s *EnvironmentService) Archive(ctx context.Context, id string) (domain.Environment, error) {
-	e, err := s.env.Get(ctx, id)
-	if err != nil {
-		return domain.Environment{}, err
-	}
-	if e.ArchivedAt != nil {
-		return e, nil
-	}
-	now := s.clock.Now().UTC()
-	e.ArchivedAt = &now
-	e.UpdatedAt = now
-	return e, s.env.Put(ctx, e)
+	return s.env.Archive(ctx, id, s.clock.Now().UTC())
 }
 
 func (s *EnvironmentService) Delete(ctx context.Context, id string) error {

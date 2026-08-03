@@ -25,7 +25,7 @@ separate evidence.
 | Environment | Create | `POST /v1/environments` | Yes | Yes | Yes | Configured cloud networking and package fields remain unsupported. |
 | Environment | List | `GET /v1/environments` | Yes | Yes | Yes | Configured cloud networking and package projections remain unsupported. |
 | Environment | Get | `GET /v1/environments/{environment_id}` | Yes | Yes | Yes | Configured cloud networking and package projections remain unsupported. |
-| Environment | Update | `POST /v1/environments/{environment_id}` | **No** | No | No | Implement update with real networking and package enforcement. |
+| Environment | Update | `POST /v1/environments/{environment_id}` | Yes | Yes | Yes | Configured cloud networking and package updates remain unsupported. |
 | Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | Yes | Yes | Configured cloud networking and package projections remain unsupported. |
 | Environment | Delete | `DELETE /v1/environments/{environment_id}` | Yes | Yes | Yes | None identified for the core unreferenced-delete path. |
 | Session | Create | `POST /v1/sessions` | Yes | Yes | Yes | Complete core validation/default/null coverage; unsupported product surfaces remain explicit. |

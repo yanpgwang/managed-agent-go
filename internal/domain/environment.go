@@ -1,6 +1,9 @@
 package domain
 
-import "time"
+import (
+	"reflect"
+	"time"
+)
 
 type Environment struct {
 	ID          string
@@ -13,4 +16,54 @@ type Environment struct {
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 	ArchivedAt  *time.Time
+}
+
+// EnvironmentPatch is the domain form of POST /v1/environments/{id}. Nil
+// pointers preserve scalar fields. Metadata is a per-key patch: null and empty
+// string delete a key, matching the public Environment update contract.
+type EnvironmentPatch struct {
+	Name        *string
+	Description *string
+	Metadata    map[string]any
+	Scope       *string
+	Config      *map[string]any
+}
+
+func (e Environment) Apply(patch EnvironmentPatch) (Environment, bool) {
+	next := e
+	if e.Metadata != nil {
+		next.Metadata = make(map[string]any, len(e.Metadata))
+		for key, value := range e.Metadata {
+			next.Metadata[key] = value
+		}
+	}
+	if patch.Name != nil {
+		next.Name = *patch.Name
+	}
+	if patch.Description != nil {
+		next.Description = *patch.Description
+	}
+	for key, value := range patch.Metadata {
+		text, isString := value.(string)
+		if value == nil || (isString && text == "") {
+			delete(next.Metadata, key)
+			continue
+		}
+		if next.Metadata == nil {
+			next.Metadata = map[string]any{}
+		}
+		next.Metadata[key] = value
+	}
+	if patch.Scope != nil {
+		next.Scope = *patch.Scope
+	}
+	if patch.Config != nil {
+		next.Config = *patch.Config
+	}
+	return next, !environmentFieldsEqual(e, next)
+}
+
+func environmentFieldsEqual(left, right Environment) bool {
+	left.UpdatedAt, right.UpdatedAt = time.Time{}, time.Time{}
+	return reflect.DeepEqual(left, right)
 }

@@ -331,7 +331,7 @@ func (s *Store) ListEnvironments(
 		clauses = append(clauses, boundary)
 	}
 
-	statement := `SELECT id, body, created_at, archived_at FROM environments`
+	statement := `SELECT id, body, created_at, updated_at, archived_at FROM environments`
 	if len(clauses) > 0 {
 		statement += ` WHERE ` + strings.Join(clauses, ` AND `)
 	}
@@ -349,9 +349,10 @@ func (s *Store) ListEnvironments(
 			id         string
 			body       []byte
 			createdAt  time.Time
+			updatedAt  time.Time
 			archivedAt *time.Time
 		)
-		if err := rows.Scan(&id, &body, &createdAt, &archivedAt); err != nil {
+		if err := rows.Scan(&id, &body, &createdAt, &updatedAt, &archivedAt); err != nil {
 			return app.EnvironmentListPage{}, err
 		}
 		var environment domain.Environment
@@ -361,6 +362,7 @@ func (s *Store) ListEnvironments(
 			)
 		}
 		environment.CreatedAt = createdAt.UTC()
+		environment.UpdatedAt = updatedAt.UTC()
 		environment.ArchivedAt = utcTimePtr(archivedAt)
 		environments = append(environments, environment)
 	}

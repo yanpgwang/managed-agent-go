@@ -26,6 +26,7 @@ type AgentService interface {
 
 type EnvironmentService interface {
 	Create(context.Context, domain.Environment) (domain.Environment, error)
+	Update(context.Context, string, domain.EnvironmentPatch) (domain.Environment, error)
 	Get(context.Context, string) (domain.Environment, error)
 	List(context.Context, app.EnvironmentListQuery) (app.EnvironmentListPage, error)
 	Archive(context.Context, string) (domain.Environment, error)
@@ -88,6 +89,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/environments", s.createEnvironment)
 	s.mux.HandleFunc("GET /v1/environments", s.listEnvironments)
 	s.mux.HandleFunc("GET /v1/environments/{id}", s.getEnvironment)
+	s.mux.HandleFunc("POST /v1/environments/{id}", s.updateEnvironment)
 	s.mux.HandleFunc("POST /v1/environments/{id}/archive", s.archiveEnvironment)
 	s.mux.HandleFunc("DELETE /v1/environments/{id}", s.deleteEnvironment)
 

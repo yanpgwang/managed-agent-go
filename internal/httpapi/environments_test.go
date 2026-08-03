@@ -116,3 +116,79 @@ func TestEnvironments_RejectsMalformedOptionalFields(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvironments_UpdateRoundTrip(t *testing.T) {
+	srv := newTestServer(t)
+	created := do(srv, http.MethodPost, "/v1/environments", `{
+		"name":"local","description":"old","metadata":{"keep":"old","drop":"value"},
+		"scope":"account","config":{"type":"self_hosted"}
+	}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", created.Code, created.Body)
+	}
+	id := decodeBody(t, created.Body.Bytes())["id"].(string)
+
+	updated := do(srv, http.MethodPost, "/v1/environments/"+id, `{
+		"name":"renamed","description":"new","metadata":{
+			"keep":"updated","drop":null,"empty_delete":""
+		},"scope":"organization","config":{"type":"self_hosted"}
+	}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update status = %d: %s", updated.Code, updated.Body)
+	}
+	body := decodeBody(t, updated.Body.Bytes())
+	if body["name"] != "renamed" || body["description"] != "new" ||
+		body["scope"] != "organization" {
+		t.Fatalf("updated environment = %#v", body)
+	}
+	metadata := body["metadata"].(map[string]any)
+	if len(metadata) != 1 || metadata["keep"] != "updated" {
+		t.Fatalf("updated metadata = %#v", metadata)
+	}
+
+	got := do(srv, http.MethodGet, "/v1/environments/"+id, "")
+	if got.Code != http.StatusOK || decodeBody(t, got.Body.Bytes())["name"] != "renamed" {
+		t.Fatalf("persisted update status = %d: %s", got.Code, got.Body)
+	}
+}
+
+func TestEnvironments_UpdateRejectsMalformedOrUnenforcedFields(t *testing.T) {
+	srv := newTestServer(t)
+	created := do(srv, http.MethodPost, "/v1/environments", `{"name":"stable"}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", created.Code, created.Body)
+	}
+	id := decodeBody(t, created.Body.Bytes())["id"].(string)
+
+	for _, body := range []string{
+		`{"name":null}`,
+		`{"description":null}`,
+		`{"metadata":null}`,
+		`{"metadata":{"bad":1}}`,
+		`{"scope":null}`,
+		`{"scope":""}`,
+		`{"config":null}`,
+		`{"config":{}}`,
+		`{"config":{"type":"cloud","networking":null}}`,
+		`{"config":{"type":"cloud","packages":null}}`,
+		`{"future":true}`,
+	} {
+		rec := do(srv, http.MethodPost, "/v1/environments/"+id, body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s status = %d, want 400: %s", body, rec.Code, rec.Body)
+		}
+	}
+	for _, body := range []string{
+		`{"config":{"type":"cloud","networking":{"type":"limited"}}}`,
+		`{"config":{"type":"cloud","packages":{"pip":["requests"]}}}`,
+	} {
+		rec := do(srv, http.MethodPost, "/v1/environments/"+id, body)
+		if rec.Code != http.StatusUnprocessableEntity {
+			t.Errorf("body %s status = %d, want 422: %s", body, rec.Code, rec.Body)
+		}
+	}
+	got := do(srv, http.MethodGet, "/v1/environments/"+id, "")
+	if got.Code != http.StatusOK || decodeBody(t, got.Body.Bytes())["name"] != "stable" {
+		t.Fatalf("rejected update mutated environment: %d %s", got.Code, got.Body)
+	}
+}

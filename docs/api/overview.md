@@ -23,7 +23,7 @@ current test evidence.
 | Resource | Endpoints |
 | --- | --- |
 | Agents | `POST/GET /v1/agents`, `GET/POST /v1/agents/{id}`, versions, archive |
-| Environments | `POST/GET /v1/environments`, get, archive, delete; update is not implemented |
+| Environments | `POST/GET /v1/environments`, get, update, archive, delete |
 | Sessions | `POST/GET /v1/sessions`, get, update, archive, delete |
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |

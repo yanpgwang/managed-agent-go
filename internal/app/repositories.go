@@ -28,6 +28,8 @@ type AgentRepository interface {
 // resources. DeleteIfUnreferenced must make the delete/reference check atomic.
 type EnvironmentRepository interface {
 	Put(context.Context, domain.Environment) error
+	Update(context.Context, domain.Environment) (domain.Environment, error)
+	Archive(context.Context, string, time.Time) (domain.Environment, error)
 	Get(context.Context, string) (domain.Environment, error)
 	List(context.Context, EnvironmentListQuery) (EnvironmentListPage, error)
 	DeleteIfUnreferenced(context.Context, string) error

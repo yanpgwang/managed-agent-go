@@ -19,6 +19,7 @@ paths:
     get: { summary: List environments, responses: { "200": { description: ok } } }
   /v1/environments/{id}:
     get: { summary: Get environment, responses: { "200": { description: ok } } }
+    post: { summary: Update environment, responses: { "200": { description: ok }, "422": { description: unenforced configuration } } }
     delete: { summary: Delete environment, responses: { "200": { description: ok }, "409": { description: referenced } } }
   /v1/environments/{id}/archive:
     post: { summary: Archive environment, responses: { "200": { description: ok } } }
