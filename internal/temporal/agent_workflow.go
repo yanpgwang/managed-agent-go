@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"strconv"
+	"time"
 
 	"go.temporal.io/sdk/workflow"
 
@@ -11,10 +12,19 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
-// maxWorkflowToolRounds is the deterministic safety bound for one public turn.
-// It prevents a model that continually requests tools from growing Workflow
-// history forever.
-const maxWorkflowToolRounds = 20
+const (
+	// maxWorkflowToolRounds is the deterministic safety bound for one public
+	// turn. It prevents a model that continually requests tools from growing
+	// Workflow history forever.
+	maxWorkflowToolRounds = 20
+
+	// maxModelRequestAttempts bounds provider-level retries for one immutable
+	// model request. Infrastructure failures remain Activity errors and retain
+	// Temporal's unbounded recovery policy.
+	maxModelRequestAttempts = 3
+	modelRetryInitialDelay  = time.Second
+	modelRetryMaximumDelay  = time.Minute
+)
 
 const (
 	liveModelSpanStartChangeID = "live-model-request-span-start"
@@ -52,6 +62,9 @@ const (
 
 	outcomeEvaluationHeartbeatChangeID = "outcome-evaluation-heartbeats"
 	outcomeEvaluationHeartbeatVersion  = 1
+
+	modelRetryLifecycleChangeID = "public-model-retry-lifecycle"
+	modelRetryLifecycleVersion  = 1
 )
 
 // runWorkflowTurn owns the plan-act-observe loop in deterministic Workflow
@@ -136,6 +149,12 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		outcomeEvaluationHeartbeatVersion,
 	) == outcomeEvaluationHeartbeatVersion
+	modelRetryLifecycle := workflow.GetVersion(
+		actx,
+		modelRetryLifecycleChangeID,
+		workflow.DefaultVersion,
+		modelRetryLifecycleVersion,
+	) == modelRetryLifecycleVersion
 
 	turn := &workflowTurnState{
 		actx:                     actx,
@@ -193,54 +212,96 @@ func runWorkflowTurnInternal(
 		request := prepared.Request
 		request.Messages = messages
 		mappingCheckpoint := len(turn.toolUseMappings)
-		modelRequestStartID, modelRequestEndID := modelRequestSpanIDs(
-			sessionID,
-			triggerEventID,
-			round,
-		)
-		if liveModelSpanStarts {
-			if err := turn.startModelRequest(modelRequestStartID); err != nil {
+		var called CallModelResult
+		var activityOutcome interruptibleActivityOutcome
+		for attempt := 0; ; attempt++ {
+			modelRequestStartID, modelRequestEndID := modelRequestAttemptSpanIDs(
+				sessionID,
+				triggerEventID,
+				round,
+				attempt,
+			)
+			if liveModelSpanStarts {
+				if err := turn.startModelRequest(modelRequestStartID); err != nil {
+					return RunTurnResult{}, err
+				}
+			}
+
+			var err error
+			called, activityOutcome, err = turn.callModel(CallModelInput{
+				SessionID:             sessionID,
+				ModelRequestStartID:   modelRequestStartID,
+				ModelRequestEndID:     modelRequestEndID,
+				HandleRetryableErrors: modelRetryLifecycle,
+				Request:               request,
+			})
+			if err != nil {
 				return RunTurnResult{}, err
 			}
-		}
-
-		called, activityOutcome, err := turn.callModel(CallModelInput{
-			SessionID:           sessionID,
-			ModelRequestStartID: modelRequestStartID,
-			ModelRequestEndID:   modelRequestEndID,
-			Request:             request,
-		})
-		if err != nil {
-			return RunTurnResult{}, err
-		}
-		if activityOutcome.Interrupted && !activityOutcome.Completed {
-			cancelled := CallModelResult{
-				ModelRequestStartID: modelRequestStartID,
-				ModelRequestEndID:   modelRequestEndID,
+			if activityOutcome.Interrupted && !activityOutcome.Completed {
+				cancelled := CallModelResult{
+					ModelRequestStartID: modelRequestStartID,
+					ModelRequestEndID:   modelRequestEndID,
+				}
+				if !liveModelSpanStarts {
+					if start := modelRequestStartDraft(cancelled); start != nil {
+						turn.output = append(turn.output, *start)
+					}
+				}
+				if end := modelRequestEndDraft(cancelled, true); end != nil {
+					turn.output = append(turn.output, *end)
+				}
+				return turn.complete(nil)
 			}
 			if !liveModelSpanStarts {
-				if start := modelRequestStartDraft(cancelled); start != nil {
+				if start := modelRequestStartDraft(called); start != nil {
 					turn.output = append(turn.output, *start)
 				}
 			}
-			if end := modelRequestEndDraft(cancelled, true); end != nil {
-				turn.output = append(turn.output, *end)
+			if called.FatalError != "" {
+				if end := modelRequestEndDraft(called, true); end != nil {
+					turn.output = append(turn.output, *end)
+				}
+				if activityOutcome.Interrupted {
+					return turn.complete(nil)
+				}
+				return turn.terminate(failTurn(called.FatalError))
 			}
-			return turn.complete(nil)
-		}
-		if !liveModelSpanStarts {
-			if start := modelRequestStartDraft(called); start != nil {
-				turn.output = append(turn.output, *start)
+			if called.RetryError == nil {
+				break
 			}
-		}
-		if called.FatalError != "" {
 			if end := modelRequestEndDraft(called, true); end != nil {
 				turn.output = append(turn.output, *end)
 			}
 			if activityOutcome.Interrupted {
 				return turn.complete(nil)
 			}
-			return turn.terminate(failTurn(called.FatalError))
+			if attempt+1 >= maxModelRequestAttempts {
+				return turn.exhaustModelRetries(*called.RetryError)
+			}
+			if err := turn.flushOutput(); err != nil {
+				return RunTurnResult{}, err
+			}
+			errorEventID, rescheduledEventID, runningEventID := modelRetryEventIDs(
+				sessionID, triggerEventID, round, attempt,
+			)
+			if err := turn.recordModelRetry(
+				*called.RetryError, errorEventID, rescheduledEventID,
+			); err != nil {
+				return RunTurnResult{}, err
+			}
+			interrupted, err := turn.waitModelRetry(
+				modelRetryDelay(*called.RetryError, attempt),
+			)
+			if err != nil {
+				return RunTurnResult{}, err
+			}
+			if interrupted {
+				return turn.complete(nil)
+			}
+			if err := turn.resumeModelRetry(runningEventID); err != nil {
+				return RunTurnResult{}, err
+			}
 		}
 		if prepared.UsesProviderTranscript {
 			turn.transcriptDelta = agentruntime.AppendMerging(
@@ -525,6 +586,56 @@ func modelRequestSpanIDs(sessionID, triggerEventID string, round int) (string, s
 		return domain.PrefixEvent + hex.EncodeToString(sum[:12])
 	}
 	return makeID("model_start"), makeID("model_end")
+}
+
+func modelRequestAttemptSpanIDs(
+	sessionID string,
+	triggerEventID string,
+	round int,
+	attempt int,
+) (string, string) {
+	if attempt == 0 {
+		return modelRequestSpanIDs(sessionID, triggerEventID, round)
+	}
+	makeID := func(kind string) string {
+		sum := sha256.Sum256([]byte(
+			sessionID + "\x00" + triggerEventID + "\x00" + strconv.Itoa(round) +
+				"\x00retry\x00" + strconv.Itoa(attempt) + "\x00" + kind,
+		))
+		return domain.PrefixEvent + hex.EncodeToString(sum[:12])
+	}
+	return makeID("model_start"), makeID("model_end")
+}
+
+func modelRetryEventIDs(
+	sessionID string,
+	triggerEventID string,
+	round int,
+	attempt int,
+) (string, string, string) {
+	makeID := func(kind string) string {
+		sum := sha256.Sum256([]byte(
+			sessionID + "\x00" + triggerEventID + "\x00" + strconv.Itoa(round) +
+				"\x00retry_state\x00" + strconv.Itoa(attempt) + "\x00" + kind,
+		))
+		return domain.PrefixEvent + hex.EncodeToString(sum[:12])
+	}
+	return makeID("error"), makeID("rescheduled"), makeID("running")
+}
+
+func modelRetryDelay(retry ModelRetryError, attempt int) time.Duration {
+	if retry.RetryAfterMillis > 0 {
+		delay := time.Duration(retry.RetryAfterMillis) * time.Millisecond
+		if delay > modelRetryMaximumDelay {
+			return modelRetryMaximumDelay
+		}
+		return delay
+	}
+	delay := modelRetryInitialDelay * time.Duration(1<<attempt)
+	if delay > modelRetryMaximumDelay {
+		return modelRetryMaximumDelay
+	}
+	return delay
 }
 
 func outcomeEvaluationSpanIDs(

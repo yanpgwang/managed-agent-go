@@ -320,13 +320,15 @@ func (s *Store) admitLocked(
 		return admission, nil
 	}
 
-	// Reopen to running when a trigger arrives and the session is not already
-	// running. An interrupt-only admission is a control wakeup, not new work, so
-	// it deliberately emits no synthetic running transition while idle.
+	// Reopen an idle Session when runnable work arrives. A rescheduling Session
+	// already owns an active turn: later input is queued behind it and must not
+	// publish status_running before the retry actually resumes. An interrupt-only
+	// admission is a control wakeup, not new work, so it deliberately emits no
+	// synthetic running transition while idle.
 	if workRunnable {
 		session.MarkActiveOutcomeRunning()
 	}
-	if workRunnable && session.Status != domain.StatusRunning {
+	if workRunnable && session.Status == domain.StatusIdle {
 		session.TransitionStatus(domain.StatusRunning, s.clock.Now().UTC())
 		statusEvents, newMax, err := s.appendDrafts(ctx, q, session.ID,
 			[]domain.EventDraft{{Type: domain.EvSessionStatusRunning, Payload: map[string]any{}}},
@@ -732,6 +734,180 @@ func (s *Store) AppendWorkflowEvents(
 		s.notifySession(ctx, sessionID)
 	}
 	return nil
+}
+
+// RecordWorkflowRetry atomically appends the documented retrying error and
+// status_rescheduled event while moving the Session projection to
+// rescheduling. Explicit event IDs make an Activity retry replay-safe.
+func (s *Store) RecordWorkflowRetry(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	errorEventID string,
+	statusEventID string,
+	errorPayload map[string]any,
+) error {
+	if sessionID == "" || triggerEventID == "" || errorEventID == "" ||
+		statusEventID == "" || errorEventID == statusEventID {
+		return domain.Validation("session, trigger, and distinct retry event ids are required")
+	}
+	drafts := []domain.EventDraft{
+		{ID: errorEventID, Type: domain.EvSessionError, Payload: map[string]any{"error": errorPayload}},
+		{ID: statusEventID, Type: domain.EvSessionStatusRescheduling, Payload: map[string]any{}},
+	}
+	applied := false
+	err := s.withTx(ctx, func(q *pgstore.Queries) error {
+		session, err := s.lockWorkflowTrigger(ctx, q, sessionID, triggerEventID)
+		if err != nil {
+			return err
+		}
+		existing, err := workflowDraftsExisting(ctx, q, sessionID, triggerEventID, drafts)
+		if err != nil || existing {
+			return err
+		}
+		if session.Status != domain.StatusRunning {
+			return domain.Conflict("workflow retry requires a running session")
+		}
+		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		if _, _, err := s.appendDrafts(ctx, q, sessionID, drafts, maxSeq, &triggerEventID); err != nil {
+			return err
+		}
+		now := s.clock.Now().UTC()
+		session.TransitionStatus(domain.StatusRescheduling, now)
+		if err := s.putProjection(ctx, q, session); err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if applied {
+		s.notifySession(ctx, sessionID)
+	}
+	return nil
+}
+
+// ResumeWorkflowRetry publishes status_running together with the projection
+// transition immediately before the Workflow schedules the next model call.
+func (s *Store) ResumeWorkflowRetry(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	statusEventID string,
+) error {
+	if sessionID == "" || triggerEventID == "" || statusEventID == "" {
+		return domain.Validation("session, trigger, and retry status event id are required")
+	}
+	draft := domain.EventDraft{
+		ID: statusEventID, Type: domain.EvSessionStatusRunning, Payload: map[string]any{},
+	}
+	applied := false
+	err := s.withTx(ctx, func(q *pgstore.Queries) error {
+		session, err := s.lockWorkflowTrigger(ctx, q, sessionID, triggerEventID)
+		if err != nil {
+			return err
+		}
+		existing, err := workflowDraftsExisting(
+			ctx, q, sessionID, triggerEventID, []domain.EventDraft{draft},
+		)
+		if err != nil || existing {
+			return err
+		}
+		if session.Status != domain.StatusRescheduling {
+			return domain.Conflict("workflow retry resume requires a rescheduling session")
+		}
+		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		if _, _, err := s.appendDrafts(
+			ctx, q, sessionID, []domain.EventDraft{draft}, maxSeq, &triggerEventID,
+		); err != nil {
+			return err
+		}
+		now := s.clock.Now().UTC()
+		session.TransitionStatus(domain.StatusRunning, now)
+		if err := s.putProjection(ctx, q, session); err != nil {
+			return err
+		}
+		applied = true
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if applied {
+		s.notifySession(ctx, sessionID)
+	}
+	return nil
+}
+
+func (s *Store) lockWorkflowTrigger(
+	ctx context.Context,
+	q *pgstore.Queries,
+	sessionID string,
+	triggerEventID string,
+) (domain.Session, error) {
+	row, err := q.LockSession(ctx, sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, domain.NotFound("session not found")
+	}
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if row.DeletingAt.Valid {
+		return domain.Session{}, domain.Conflict("session deletion is in progress")
+	}
+	session, err := sessionFromLockRow(row)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	trigger, err := q.GetEvent(ctx, pgstore.GetEventParams{SessionID: sessionID, ID: triggerEventID})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, domain.NotFound("trigger event not found")
+	}
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if trigger.ProcessedAt.Valid {
+		return domain.Session{}, domain.Conflict("workflow trigger is already processed")
+	}
+	return session, nil
+}
+
+// workflowDraftsExisting validates an idempotent retry batch. It returns true
+// only when every event already exists with exactly the expected turn and
+// payload; a partial or conflicting batch is rejected.
+func workflowDraftsExisting(
+	ctx context.Context,
+	q *pgstore.Queries,
+	sessionID string,
+	triggerEventID string,
+	drafts []domain.EventDraft,
+) (bool, error) {
+	existing := 0
+	for _, draft := range drafts {
+		event, err := q.GetEvent(ctx, pgstore.GetEventParams{SessionID: sessionID, ID: draft.ID})
+		switch {
+		case err == nil:
+			if !workflowEventMatches(event, triggerEventID, draft) {
+				return false, domain.Conflict("workflow retry event id already has different content")
+			}
+			existing++
+		case errors.Is(err, pgx.ErrNoRows):
+		default:
+			return false, err
+		}
+	}
+	if existing != 0 && existing != len(drafts) {
+		return false, domain.Conflict("workflow retry event batch is only partially present")
+	}
+	return existing == len(drafts), nil
 }
 
 func isSessionProjectionEvent(eventType string) bool {
@@ -1162,6 +1338,7 @@ func (s *Store) completeTurn(
 		// (e.g. still running by the caller's choice) is left as-is.
 		effectiveStatus := status
 		drafts := outputDrafts
+		retriesExhausted := turnRetriesExhausted(outputDrafts)
 		var remaining int32
 		if interrupt != nil {
 			remaining, err = q.CountUnprocessedUserMessages(
@@ -1185,7 +1362,7 @@ func (s *Store) completeTurn(
 					Payload: map[string]any{},
 				})
 			}
-		} else if status == domain.StatusIdle && !gatedAfterCompletion {
+		} else if status == domain.StatusIdle && !gatedAfterCompletion && !retriesExhausted {
 			remaining, err = q.CountUnprocessedUserMessages(ctx, pgstore.CountUnprocessedUserMessagesParams{
 				SessionID: sessionID,
 				ExcludeID: triggerEventID,
@@ -1272,6 +1449,18 @@ func (s *Store) completeTurn(
 				SessionID:   sessionID,
 				ID:          eventID,
 			}); err != nil {
+				return err
+			}
+		}
+		if retriesExhausted {
+			if err := q.FlushQueuedUserMessages(
+				ctx,
+				pgstore.FlushQueuedUserMessagesParams{
+					SessionID:   sessionID,
+					ExcludeID:   triggerEventID,
+					ProcessedAt: tsUTC(now),
+				},
+			); err != nil {
 				return err
 			}
 		}
@@ -1451,6 +1640,19 @@ func turnEventsParked(events []domain.Event) bool {
 		}
 		stopReason, _ := event.Payload["stop_reason"].(map[string]any)
 		if stopReason["type"] == "requires_action" {
+			return true
+		}
+	}
+	return false
+}
+
+func turnRetriesExhausted(drafts []domain.EventDraft) bool {
+	for _, draft := range drafts {
+		if draft.Type != domain.EvSessionStatusIdle {
+			continue
+		}
+		stopReason, _ := draft.Payload["stop_reason"].(map[string]any)
+		if stopReason["type"] == "retries_exhausted" {
 			return true
 		}
 	}

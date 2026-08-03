@@ -88,6 +88,66 @@ func TestSDK_TerminalSessionErrorEvent(t *testing.T) {
 	}
 }
 
+func TestSDK_ModelRetryLifecycleEvents(t *testing.T) {
+	client, ts, sessions := sdkClientServerAndSessions(t)
+	ctx := context.Background()
+
+	agent := mustAgent(t, client, "opus", "sys")
+	environmentID := mustEnv(t, ts.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: environmentID,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	sessions.mu.Lock()
+	sessions.appendEventLocked(session.ID, domain.EventDraft{
+		Type: domain.EvSessionError,
+		Payload: map[string]any{"error": map[string]any{
+			"type": "model_rate_limited_error", "message": "slow down",
+			"retry_status": map[string]any{"type": "retrying"},
+		}},
+	})
+	sessions.appendEventLocked(session.ID, domain.EventDraft{
+		Type: domain.EvSessionStatusRescheduling, Payload: map[string]any{},
+	})
+	sessions.appendEventLocked(session.ID, domain.EventDraft{
+		Type: domain.EvSessionStatusRunning, Payload: map[string]any{},
+	})
+	sessions.mu.Unlock()
+
+	page, err := client.Beta.Sessions.Events.List(
+		ctx,
+		session.ID,
+		anthropic.BetaSessionEventListParams{Types: []string{
+			domain.EvSessionError,
+			domain.EvSessionStatusRescheduling,
+			domain.EvSessionStatusRunning,
+		}},
+	)
+	if err != nil {
+		t.Fatalf("list retry lifecycle: %v", err)
+	}
+	if len(page.Data) != 3 {
+		t.Fatalf("retry lifecycle event count = %d, want 3", len(page.Data))
+	}
+	retry := page.Data[0].AsSessionError().Error.AsModelRateLimitedError()
+	if retry.Type != anthropic.BetaManagedAgentsModelRateLimitedErrorTypeModelRateLimitedError ||
+		retry.Message != "slow down" || retry.RetryStatus.AsRetrying().Type != "retrying" {
+		t.Fatalf("retry event = %s", page.Data[0].RawJSON())
+	}
+	if page.Data[1].AsSessionStatusRescheduled().Type !=
+		anthropic.BetaManagedAgentsSessionStatusRescheduledEventTypeSessionStatusRescheduled {
+		t.Fatalf("rescheduled event = %s", page.Data[1].RawJSON())
+	}
+	if page.Data[2].AsSessionStatusRunning().Type !=
+		anthropic.BetaManagedAgentsSessionStatusRunningEventTypeSessionStatusRunning {
+		t.Fatalf("running event = %s", page.Data[2].RawJSON())
+	}
+}
+
 func TestSDK_AgentLifecycle(t *testing.T) {
 	client, _ := sdkClientAndServer(t)
 	ctx := context.Background()

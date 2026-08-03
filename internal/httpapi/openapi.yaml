@@ -2195,7 +2195,16 @@ components:
         type:
           type: string
           description: api_error may appear only in histories written before the terminal Session error contract.
-          enum: [unknown_error, mcp_connection_failed_error, api_error]
+          enum:
+            - unknown_error
+            - model_overloaded_error
+            - model_rate_limited_error
+            - model_request_failed_error
+            - mcp_connection_failed_error
+            - mcp_authentication_failed_error
+            - billing_error
+            - credential_host_unreachable_error
+            - api_error
         message: {type: string}
         retry_status:
           type: object

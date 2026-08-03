@@ -117,3 +117,49 @@ func TestTurnInterruptWatcher_PreflightFindsAlreadyDurableInterrupt(t *testing.T
 	require.False(t, outcome.Completed)
 	require.Zero(t, activityCalls.Load())
 }
+
+func retryWaitHarness(ctx workflow.Context) (bool, error) {
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+		RetryPolicy: &temporalsdk.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	})
+	watcher := newTurnInterruptWatcher(
+		actx,
+		workflow.GetSignalChannel(ctx, WakeupSignalName),
+		"sess_retry_wait",
+		1,
+	)
+	return watcher.wait(time.Hour)
+}
+
+func TestTurnInterruptWatcher_InterruptsModelRetryDelay(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(retryWaitHarness)
+	var reads atomic.Int32
+	env.RegisterActivityWithOptions(
+		func(context.Context, LoadInterruptInput) (LoadInterruptResult, error) {
+			if reads.Add(1) == 1 {
+				return LoadInterruptResult{}, nil
+			}
+			return LoadInterruptResult{Interrupt: &EventRef{
+				ID: "sevt_interrupt", Seq: 2, Type: "user.interrupt",
+			}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadInterrupt},
+	)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(
+			WakeupSignalName,
+			WakeupSignal{MaxEventSeq: 2},
+		)
+	}, time.Millisecond)
+
+	env.ExecuteWorkflow(retryWaitHarness)
+	require.NoError(t, env.GetWorkflowError())
+	var interrupted bool
+	require.NoError(t, env.GetWorkflowResult(&interrupted))
+	require.True(t, interrupted)
+}

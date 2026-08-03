@@ -166,6 +166,56 @@ func (w *turnInterruptWatcher) executeActivityWithPulse(
 	}
 }
 
+// wait sleeps for a Workflow retry delay while preserving the same durable
+// interrupt semantics used by long-running Activities.
+func (w *turnInterruptWatcher) wait(delay time.Duration) (bool, error) {
+	pending, err := loadInterruptAfter(w.actx, w.sessionID, w.afterSeq)
+	if err != nil {
+		return false, err
+	}
+	if pending.Interrupt != nil {
+		return true, nil
+	}
+	deadline := workflow.Now(w.actx).Add(delay)
+	for {
+		remaining := deadline.Sub(workflow.Now(w.actx))
+		if remaining <= 0 {
+			return false, nil
+		}
+		timerCtx, cancelTimer := workflow.WithCancel(w.actx)
+		timer := workflow.NewTimer(timerCtx, remaining)
+		timerReady := false
+		wakeupReady := false
+		selector := workflow.NewSelector(w.actx)
+		selector.AddFuture(timer, func(workflow.Future) { timerReady = true })
+		selector.AddReceive(w.wakeupCh, func(ch workflow.ReceiveChannel, _ bool) {
+			var signal WakeupSignal
+			ch.Receive(w.actx, &signal)
+			wakeupReady = true
+		})
+		selector.Select(w.actx)
+		if timerReady {
+			cancelTimer()
+			pending, err := loadInterruptAfter(w.actx, w.sessionID, w.afterSeq)
+			if err != nil {
+				return false, err
+			}
+			return pending.Interrupt != nil, nil
+		}
+		cancelTimer()
+		if !wakeupReady {
+			continue
+		}
+		pending, err := loadInterruptAfter(w.actx, w.sessionID, w.afterSeq)
+		if err != nil {
+			return false, err
+		}
+		if pending.Interrupt != nil {
+			return true, nil
+		}
+	}
+}
+
 func loadInterruptAfter(
 	actx workflow.Context,
 	sessionID string,
