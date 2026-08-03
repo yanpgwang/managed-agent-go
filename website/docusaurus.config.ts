@@ -32,6 +32,11 @@ const config: Config = {
       'classic',
       {
         docs: {
+          // `docs/_upstream/` holds a vendored snapshot of the official CMA
+          // documentation (160+ Markdown pages). It is kept out of the site by
+          // Docusaurus's default `exclude`, which ignores `**/_*/**`. Do not
+          // set `exclude` here without re-adding that pattern: overriding it
+          // replaces the defaults and would publish the whole snapshot.
           path: '../docs',
           routeBasePath: '/',
           sidebarPath: './sidebars.ts',
