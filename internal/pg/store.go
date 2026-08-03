@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -50,10 +50,10 @@ func (s *Store) notifySession(ctx context.Context, sessionID string) {
 		return
 	}
 	if err := s.notifier.NotifySession(ctx, sessionID); err != nil {
-		log.Printf(
-			"pg: live event notification failed session_id=%s (ledger remains authoritative): %v",
-			sessionID,
-			err,
+		slog.WarnContext(ctx, "live event notification failed; ledger remains authoritative",
+			slog.String("component", "pg"),
+			slog.String("session_id", sessionID),
+			slog.String("error", err.Error()),
 		)
 	}
 }

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 )
 
@@ -103,7 +103,12 @@ func (r *LifecycleReconciler) Run(ctx context.Context) error {
 
 		result, err := r.RunOnce(ctx)
 		if err != nil && ctx.Err() == nil {
-			log.Printf("lifecycle reconciler: cycle error: %v", err)
+			slog.ErrorContext(ctx, "lifecycle reconciler cycle failed",
+				slog.String("component", "lifecycle_reconciler"),
+				slog.Int("provisioning_completed", result.Provisioning),
+				slog.Int("deletions_completed", result.Deletions),
+				slog.String("error", err.Error()),
+			)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()

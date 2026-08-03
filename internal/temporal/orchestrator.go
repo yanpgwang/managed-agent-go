@@ -2,7 +2,7 @@ package temporal
 
 import (
 	"context"
-	"log"
+	"log/slog"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
@@ -11,6 +11,20 @@ import (
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 )
+
+// logFastPathSignalFailure records a best-effort Signal-With-Start failure.
+// The wakeup is already durable in the PostgreSQL outbox, so this is a latency
+// event, not a correctness event: warn, never error. The session id doubles as
+// the SessionWorkflow id, so one field correlates the log record with both
+// PostgreSQL and Temporal.
+func logFastPathSignalFailure(ctx context.Context, sessionID string, err error) {
+	slog.WarnContext(ctx, "fast-path session signal failed; outbox relay will deliver",
+		slog.String("component", "orchestrator"),
+		slog.String("session_id", sessionID),
+		slog.String("workflow_id", sessionID),
+		slog.String("error", err.Error()),
+	)
+}
 
 // Orchestrator bridges PostgreSQL admission to Temporal. It makes a best-effort
 // post-commit fast-path signal to reduce latency and relies on the durable
@@ -38,7 +52,7 @@ func (o *Orchestrator) Admit(ctx context.Context, sessionID string, drafts []dom
 	if adm.Enqueued && o.signaler != nil {
 		// Best-effort latency optimization. The relay is the source of correctness.
 		if sigErr := o.signaler.Wake(ctx, sessionID, adm.MaxSeq); sigErr != nil {
-			log.Printf("orchestrator: fast-path signal failed session_id=%s (relay will deliver): %v", sessionID, sigErr)
+			logFastPathSignalFailure(ctx, sessionID, sigErr)
 		}
 	}
 	// Echo only the caller-submitted events; orchestration-generated events are
@@ -65,7 +79,7 @@ func (o *Orchestrator) CreateSession(ctx context.Context, session domain.Session
 	}
 	if adm.Enqueued && o.signaler != nil {
 		if sigErr := o.signaler.Wake(ctx, session.ID, adm.MaxSeq); sigErr != nil {
-			log.Printf("orchestrator: fast-path signal failed session_id=%s (relay will deliver): %v", session.ID, sigErr)
+			logFastPathSignalFailure(ctx, session.ID, sigErr)
 		}
 	}
 	return adm.Session, adm.Events, nil
@@ -85,11 +99,7 @@ func (o *Orchestrator) CreateAPISession(
 	}
 	if adm.Enqueued && o.signaler != nil {
 		if sigErr := o.signaler.Wake(ctx, session.ID, adm.MaxSeq); sigErr != nil {
-			log.Printf(
-				"orchestrator: fast-path signal failed session_id=%s (relay will deliver): %v",
-				session.ID,
-				sigErr,
-			)
+			logFastPathSignalFailure(ctx, session.ID, sigErr)
 		}
 	}
 	return adm.Session, adm.Events, nil

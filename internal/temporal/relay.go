@@ -2,7 +2,7 @@ package temporal
 
 import (
 	"context"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
@@ -69,7 +69,10 @@ func (r *Relay) Run(ctx context.Context) error {
 	for {
 		delivered, err := r.RunOnce(ctx)
 		if err != nil && ctx.Err() == nil {
-			log.Printf("relay: cycle error: %v", err)
+			slog.ErrorContext(ctx, "outbox relay cycle failed",
+				slog.String("component", "relay"),
+				slog.String("error", err.Error()),
+			)
 		}
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -113,7 +116,12 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 			// property that lets the control plane accept input while execution
 			// workers are down.
 			if recErr := r.store.RecordAttempt(ctx, w.SessionID, err.Error()); recErr != nil {
-				log.Printf("relay: record attempt failed session_id=%s: %v", w.SessionID, recErr)
+				slog.WarnContext(ctx, "recording relay delivery attempt failed",
+					slog.String("component", "relay"),
+					slog.String("session_id", w.SessionID),
+					slog.String("workflow_id", w.SessionID),
+					slog.String("error", recErr.Error()),
+				)
 			}
 			continue
 		}
@@ -122,7 +130,12 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 		// mismatch leaves the row so the newer sequence is delivered next cycle.
 		ok, err := r.store.DeleteWakeupIfUnchanged(ctx, w.SessionID, w.MaxEventSeq)
 		if err != nil {
-			log.Printf("relay: delete wakeup failed session_id=%s: %v", w.SessionID, err)
+			slog.WarnContext(ctx, "deleting delivered outbox wakeup failed",
+				slog.String("component", "relay"),
+				slog.String("session_id", w.SessionID),
+				slog.String("workflow_id", w.SessionID),
+				slog.String("error", err.Error()),
+			)
 			continue
 		}
 		if ok {
