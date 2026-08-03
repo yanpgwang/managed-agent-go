@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -24,6 +25,8 @@ const maxPageLimit = 1000
 // maxDeltaOptIn bounds the number of event_deltas[] opt-in values a stream
 // request may carry.
 const maxDeltaOptIn = 100
+
+const maxOutcomeRubricCharacters = 262144
 
 // deltaOptInTypes is the closed set of event types a client may opt into for
 // preview frames. Only agent.message previews are currently emitted, but the
@@ -281,23 +284,8 @@ func validateClientEvent(event map[string]any) error {
 			if !allowedTypes[blockType] {
 				return domain.Validation(fmt.Sprintf("content block type %q is not allowed for %s", blockType, t))
 			}
-			if blockType == "text" {
-				if _, ok := block["text"].(string); !ok {
-					return domain.Validation("text content blocks require text")
-				}
-			}
-			if blockType == "image" || blockType == "document" {
-				source, ok := block["source"].(map[string]any)
-				if !ok {
-					return domain.Validation(blockType + " content blocks require a source")
-				}
-				sourceType, _ := source["type"].(string)
-				if sourceType == "" {
-					return domain.Validation(blockType + " content source type is required")
-				}
-				if sourceType == "file" {
-					return domain.Unsupported("file-sourced content requires the Files API")
-				}
+			if err := validateClientContentBlock(block); err != nil {
+				return err
 			}
 		}
 		return nil
@@ -355,10 +343,26 @@ func validateClientEvent(event map[string]any) error {
 		}
 		switch rubric["type"] {
 		case "text":
+			if err := validateObjectFields(
+				rubric,
+				map[string]bool{"type": true, "content": true},
+				"text rubric",
+			); err != nil {
+				return err
+			}
 			if value, ok := rubric["content"].(string); !ok || value == "" {
 				return domain.Validation("text rubric requires content")
+			} else if utf8.RuneCountInString(value) > maxOutcomeRubricCharacters {
+				return domain.Validation("text rubric content must contain at most 262144 characters")
 			}
 		case "file":
+			if err := validateObjectFields(
+				rubric,
+				map[string]bool{"type": true, "file_id": true},
+				"file rubric",
+			); err != nil {
+				return err
+			}
 			if value, ok := rubric["file_id"].(string); !ok || value == "" {
 				return domain.Validation("file rubric requires file_id")
 			}
@@ -381,6 +385,175 @@ func validateClientEvent(event map[string]any) error {
 	if raw, present := event["is_error"]; present {
 		if _, ok := raw.(bool); !ok {
 			return domain.Validation("is_error must be a boolean")
+		}
+	}
+	return nil
+}
+
+func validateClientContentBlock(block map[string]any) error {
+	blockType, _ := block["type"].(string)
+	switch blockType {
+	case "text":
+		if err := validateObjectFields(
+			block,
+			map[string]bool{"type": true, "text": true},
+			"text content block",
+		); err != nil {
+			return err
+		}
+		if _, ok := block["text"].(string); !ok {
+			return domain.Validation("text content blocks require text")
+		}
+	case "image":
+		if err := validateObjectFields(
+			block,
+			map[string]bool{"type": true, "source": true},
+			"image content block",
+		); err != nil {
+			return err
+		}
+		return validateClientContentSource(block, "image")
+	case "document":
+		if err := validateObjectFields(
+			block,
+			map[string]bool{
+				"type": true, "source": true, "context": true, "title": true,
+			},
+			"document content block",
+		); err != nil {
+			return err
+		}
+		for _, key := range []string{"context", "title"} {
+			if err := optionalString(block, key); err != nil {
+				return err
+			}
+		}
+		return validateClientContentSource(block, "document")
+	case "search_result":
+		return validateSearchResultBlock(block)
+	default:
+		return domain.Validation("content block type is required")
+	}
+	return nil
+}
+
+func validateClientContentSource(block map[string]any, blockType string) error {
+	source, ok := block["source"].(map[string]any)
+	if !ok {
+		return domain.Validation(blockType + " content blocks require a source")
+	}
+	sourceType, _ := source["type"].(string)
+	if sourceType == "" {
+		return domain.Validation(blockType + " content source type is required")
+	}
+
+	allowed := map[string]bool{"type": true}
+	requiredStrings := []string(nil)
+	switch sourceType {
+	case "base64":
+		allowed["data"] = true
+		allowed["media_type"] = true
+		requiredStrings = []string{"data", "media_type"}
+	case "url":
+		allowed["url"] = true
+		requiredStrings = []string{"url"}
+	case "text":
+		if blockType != "document" {
+			return domain.Validation("image content source type must be base64, url, or file")
+		}
+		allowed["data"] = true
+		allowed["media_type"] = true
+		requiredStrings = []string{"data", "media_type"}
+	case "file":
+		allowed["file_id"] = true
+		requiredStrings = []string{"file_id"}
+	default:
+		if blockType == "document" {
+			return domain.Validation("document content source type must be base64, text, url, or file")
+		}
+		return domain.Validation("image content source type must be base64, url, or file")
+	}
+	if err := validateObjectFields(source, allowed, blockType+" content source"); err != nil {
+		return err
+	}
+	for _, key := range requiredStrings {
+		if _, ok := source[key].(string); !ok {
+			return domain.Validation(fmt.Sprintf(
+				"%s content source %s is required",
+				blockType,
+				key,
+			))
+		}
+	}
+	if sourceType == "text" && source["media_type"] != "text/plain" {
+		return domain.Validation("text document source media_type must be text/plain")
+	}
+	if sourceType == "file" {
+		if source["file_id"] == "" {
+			return domain.Validation(blockType + " file source requires file_id")
+		}
+		return domain.Unsupported("file-sourced content requires the Files API")
+	}
+	return nil
+}
+
+func validateSearchResultBlock(block map[string]any) error {
+	if err := validateObjectFields(
+		block,
+		map[string]bool{
+			"type": true, "source": true, "title": true,
+			"citations": true, "content": true,
+		},
+		"search_result content block",
+	); err != nil {
+		return err
+	}
+	for _, key := range []string{"source", "title"} {
+		if _, ok := block[key].(string); !ok {
+			return domain.Validation("search_result content blocks require " + key)
+		}
+	}
+	citations, ok := block["citations"].(map[string]any)
+	if !ok {
+		return domain.Validation("search_result content blocks require citations")
+	}
+	if err := validateObjectFields(
+		citations,
+		map[string]bool{"enabled": true},
+		"search_result citations",
+	); err != nil {
+		return err
+	}
+	if _, ok := citations["enabled"].(bool); !ok {
+		return domain.Validation("search_result citations require enabled")
+	}
+	content, ok := block["content"].([]any)
+	if !ok {
+		return domain.Validation("search_result content must be an array")
+	}
+	for _, raw := range content {
+		text, ok := raw.(map[string]any)
+		if !ok {
+			return domain.Validation("search_result content blocks must be objects")
+		}
+		if text["type"] != "text" {
+			return domain.Validation("search_result content only accepts text blocks")
+		}
+		if err := validateClientContentBlock(text); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateObjectFields(
+	object map[string]any,
+	allowed map[string]bool,
+	objectName string,
+) error {
+	for key := range object {
+		if !allowed[key] {
+			return domain.Validation(fmt.Sprintf("unknown field %q for %s", key, objectName))
 		}
 	}
 	return nil

@@ -603,6 +603,74 @@ func TestSDK_EventSendAndList(t *testing.T) {
 	}
 }
 
+func TestSDK_EventSendRichContentShapes(t *testing.T) {
+	client, ts := sdkClientAndServer(t)
+	ctx := context.Background()
+
+	agent := mustAgent(t, client, "opus", "sys")
+	env := mustEnv(t, ts.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: env,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	sent, err := client.Beta.Sessions.Events.Send(ctx, session.ID, anthropic.BetaSessionEventSendParams{
+		Events: []anthropic.BetaManagedAgentsEventParamsUnion{{
+			OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
+				Type: anthropic.BetaManagedAgentsUserMessageEventParamsTypeUserMessage,
+				Content: []anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{
+					{
+						OfImage: &anthropic.BetaManagedAgentsImageBlockParam{
+							Type: anthropic.BetaManagedAgentsImageBlockTypeImage,
+							Source: anthropic.BetaManagedAgentsImageBlockSourceUnionParam{
+								OfURL: &anthropic.BetaManagedAgentsURLImageSourceParam{
+									Type: anthropic.BetaManagedAgentsURLImageSourceTypeURL,
+									URL:  "https://example.com/image.png",
+								},
+							},
+						},
+					},
+					{
+						OfDocument: &anthropic.BetaManagedAgentsDocumentBlockParam{
+							Type:    anthropic.BetaManagedAgentsDocumentBlockTypeDocument,
+							Title:   anthropic.String("Evidence"),
+							Context: anthropic.String("Supporting material"),
+							Source: anthropic.BetaManagedAgentsDocumentBlockSourceUnionParam{
+								OfText: &anthropic.BetaManagedAgentsPlainTextDocumentSourceParam{
+									Type:      anthropic.BetaManagedAgentsPlainTextDocumentSourceTypeText,
+									MediaType: anthropic.BetaManagedAgentsPlainTextDocumentSourceMediaTypeTextPlain,
+									Data:      "evidence",
+								},
+							},
+						},
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("send rich event: %v", err)
+	}
+	if len(sent.Data) != 1 {
+		t.Fatalf("send echoed %d events, want 1", len(sent.Data))
+	}
+	message := sent.Data[0].AsUserMessage()
+	if len(message.Content) != 2 {
+		t.Fatalf("echoed content = %+v", message.Content)
+	}
+	if got := message.Content[0].AsImage().Source.AsURL().URL; got != "https://example.com/image.png" {
+		t.Fatalf("echoed image URL = %q", got)
+	}
+	document := message.Content[1].AsDocument()
+	if document.Title != "Evidence" || document.Context != "Supporting material" ||
+		document.Source.AsText().Data != "evidence" {
+		t.Fatalf("echoed document = %+v", document)
+	}
+}
+
 func TestSDK_EventStream(t *testing.T) {
 	client, ts := sdkClientAndServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
