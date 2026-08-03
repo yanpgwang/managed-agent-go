@@ -122,24 +122,144 @@ func validateEnvironmentConfig(config map[string]any, configType string) error {
 			return domain.Validation("config type must be cloud or self_hosted")
 		}
 	}
-	if value, present := config["networking"]; present && value != nil {
-		return domain.Unsupported("environment networking configuration is not implemented")
+	allowed := map[string]struct{}{"type": {}}
+	if configType == "cloud" {
+		allowed["networking"] = struct{}{}
+		allowed["packages"] = struct{}{}
 	}
-	if value, present := config["packages"]; present && value != nil {
-		return domain.Unsupported("environment package configuration is not implemented")
+	if err := rejectUnknownEnvironmentFields(config, allowed, "config"); err != nil {
+		return err
 	}
+	if value, present := config["networking"]; present {
+		if err := validateEnvironmentNetworking(value); err != nil {
+			return err
+		}
+	}
+	if value, present := config["packages"]; present {
+		if err := validateEnvironmentPackages(value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
+func validateEnvironmentNetworking(value any) error {
+	networking, ok := value.(map[string]any)
+	if !ok || networking == nil {
+		return domain.Validation("environment networking configuration must be an object")
+	}
+	typeValue, ok := networking["type"].(string)
+	if !ok {
+		return domain.Validation("environment networking type must be unrestricted or limited")
+	}
+	if typeValue == "limited" {
+		allowed := map[string]struct{}{
+			"type": {}, "allow_mcp_servers": {}, "allow_package_managers": {}, "allowed_hosts": {},
+		}
+		if err := rejectUnknownEnvironmentFields(networking, allowed, "networking"); err != nil {
+			return err
+		}
+		for _, field := range []string{"allow_mcp_servers", "allow_package_managers"} {
+			if fieldValue, present := networking[field]; present {
+				if _, ok := fieldValue.(bool); !ok {
+					return domain.Validation(
+						fmt.Sprintf("environment networking.%s must be a boolean", field),
+					)
+				}
+			}
+		}
+		if hosts, present := networking["allowed_hosts"]; present {
+			if err := validateEnvironmentStringList(hosts, "networking.allowed_hosts"); err != nil {
+				return err
+			}
+		}
+		return domain.Unsupported("limited environment networking is not implemented")
+	}
+	if typeValue != "unrestricted" {
+		return domain.Validation("environment networking type must be unrestricted or limited")
+	}
+	return rejectUnknownEnvironmentFields(
+		networking,
+		map[string]struct{}{"type": {}},
+		"networking",
+	)
+}
+
+func validateEnvironmentPackages(value any) error {
+	packages, ok := value.(map[string]any)
+	if !ok || packages == nil {
+		return domain.Validation("environment package configuration must be an object")
+	}
+	allowed := map[string]struct{}{
+		"type": {}, "apt": {}, "cargo": {}, "gem": {}, "go": {}, "npm": {}, "pip": {},
+	}
+	if err := rejectUnknownEnvironmentFields(packages, allowed, "packages"); err != nil {
+		return err
+	}
+	if value, present := packages["type"]; present {
+		packageType, ok := value.(string)
+		if !ok || packageType != "packages" {
+			return domain.Validation("environment package configuration type must be packages")
+		}
+	}
+	hasPackages := false
+	for _, manager := range []string{"apt", "cargo", "gem", "go", "npm", "pip"} {
+		value, present := packages[manager]
+		if !present {
+			continue
+		}
+		if err := validateEnvironmentStringList(value, "packages."+manager); err != nil {
+			return err
+		}
+		switch values := value.(type) {
+		case []string:
+			hasPackages = hasPackages || len(values) > 0
+		case []any:
+			hasPackages = hasPackages || len(values) > 0
+		}
+	}
+	if hasPackages {
+		return domain.Unsupported("environment package installation is not implemented")
+	}
+	return nil
+}
+
+func validateEnvironmentStringList(value any, field string) error {
+	switch values := value.(type) {
+	case []string:
+		return nil
+	case []any:
+		for _, entry := range values {
+			if _, ok := entry.(string); !ok {
+				return domain.Validation(
+					fmt.Sprintf("environment %s values must be strings", field),
+				)
+			}
+		}
+		return nil
+	default:
+		return domain.Validation(
+			fmt.Sprintf("environment %s must be an array", field),
+		)
+	}
+}
+
+func rejectUnknownEnvironmentFields(
+	values map[string]any,
+	allowed map[string]struct{},
+	object string,
+) error {
 	unknown := make([]string, 0)
-	for key := range config {
-		if key != "type" && key != "networking" && key != "packages" {
+	for key := range values {
+		if _, ok := allowed[key]; !ok {
 			unknown = append(unknown, key)
 		}
 	}
-	if len(unknown) > 0 {
-		sort.Strings(unknown)
-		return domain.Validation(fmt.Sprintf("unknown environment config field %q", unknown[0]))
+	if len(unknown) == 0 {
+		return nil
 	}
-	return nil
+	sort.Strings(unknown)
+	return domain.Validation(fmt.Sprintf("unknown environment %s field %q", object, unknown[0]))
 }
 
 func (s *EnvironmentService) Get(ctx context.Context, id string) (domain.Environment, error) {
