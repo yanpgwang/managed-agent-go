@@ -31,6 +31,7 @@ type workflowTurnState struct {
 	attemptID              string
 	ordinal                int
 	interrupts             *turnInterruptWatcher
+	terminalSessionErrors  bool
 	usesProviderTranscript bool
 	transcriptDelta        []domain.Message
 	toolUseMappings        []domain.ProviderToolUseMapping
@@ -302,9 +303,19 @@ func (t *workflowTurnState) terminate(
 	failure turnFailure,
 ) (RunTurnResult, error) {
 	message := string(failure)
+	errorPayload := map[string]any{"type": "api_error", "message": message}
+	if t.terminalSessionErrors {
+		errorPayload = map[string]any{
+			"type":    "unknown_error",
+			"message": message,
+			"retry_status": map[string]any{
+				"type": "terminal",
+			},
+		}
+	}
 	output := append(t.output,
 		domain.EventDraft{Type: domain.EvSessionError, Payload: map[string]any{
-			"error": map[string]any{"type": "api_error", "message": message},
+			"error": errorPayload,
 		}},
 		domain.EventDraft{Type: domain.EvSessionStatusTerminated, Payload: map[string]any{}},
 	)
