@@ -141,15 +141,30 @@ func (r *AgentRepository) GetVersion(
 	return agentFromRow(row)
 }
 
-func (r *AgentRepository) Versions(ctx context.Context, id string) ([]domain.Agent, error) {
-	rows, err := r.store.q.ListAgentVersions(ctx, id)
+func (r *AgentRepository) Versions(
+	ctx context.Context,
+	id string,
+	query app.AgentVersionListQuery,
+) (app.AgentVersionListPage, error) {
+	if query.Limit <= 0 {
+		query.Limit = app.DefaultAgentListLimit
+	}
+	rows, err := r.store.q.ListAgentVersions(ctx, pgstore.ListAgentVersionsParams{
+		ID: id, AfterVersion: int32(query.AfterVersion), RowLimit: int32(query.Limit + 1),
+	})
 	if err != nil {
-		return nil, err
+		return app.AgentVersionListPage{}, err
 	}
-	if len(rows) == 0 {
-		return []domain.Agent{}, nil
+	versions, err := agentsFromRows(rows)
+	if err != nil {
+		return app.AgentVersionListPage{}, err
 	}
-	return agentsFromRows(rows)
+	page := app.AgentVersionListPage{Versions: versions}
+	if len(versions) > query.Limit {
+		page.Versions = versions[:query.Limit]
+		page.HasNext = true
+	}
+	return page, nil
 }
 
 func (r *AgentRepository) ListLatest(

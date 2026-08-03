@@ -41,6 +41,10 @@ Verified 2026-07-29.
   `created_at[gte]`, `created_at[lte]`, `include_archived`, `limit`, and `page`;
   the documented Agent limit default of 20 and maximum of 100. Verified
   2026-08-03 against the API reference and official Go SDK v1.61.0 types.
+- [List Agent Versions](https://platform.claude.com/docs/en/api/beta/agents/versions/list) —
+  `limit`, `page`, the nullable `next_page` response cursor, and the documented
+  default of 20 and maximum of 100. Verified 2026-08-03 against the API
+  reference and official Go SDK v1.61.0 types.
 - [List Environments](https://platform.claude.com/docs/en/api/beta/environments/list) —
   `include_archived`, `limit`, and `page`, with a forward cursor response and no
   documented created-at filters or limit bounds. Verified 2026-08-03 against

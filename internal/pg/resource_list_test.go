@@ -120,6 +120,68 @@ func TestPostgresListAgentsFiltersAndOrder(t *testing.T) {
 	}
 }
 
+func TestPostgresListAgentVersionsPaginationAndArchiveProjection(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	agents := app.NewAgentService(NewAgentRepository(store), &seqIDGen{}, fixedClock{})
+
+	agent, err := agents.Create(ctx, domain.Agent{
+		Name: "coder v1", Model: domain.Model{ID: "claude-test"},
+	})
+	if err != nil {
+		t.Fatalf("create Agent: %v", err)
+	}
+	for version := 2; version <= 5; version++ {
+		name := "coder v" + itoa(int64(version))
+		agent, err = agents.Update(ctx, agent.ID, domain.AgentPatch{Name: &name})
+		if err != nil {
+			t.Fatalf("create version %d: %v", version, err)
+		}
+	}
+
+	var got []int
+	afterVersion := 0
+	for pageNumber := 0; ; pageNumber++ {
+		if pageNumber > 5 {
+			t.Fatal("version pagination did not terminate")
+		}
+		page, err := agents.Versions(ctx, agent.ID, app.AgentVersionListQuery{
+			AfterVersion: afterVersion, Limit: 2,
+		})
+		if err != nil {
+			t.Fatalf("list versions: %v", err)
+		}
+		for _, version := range page.Versions {
+			got = append(got, version.Version)
+		}
+		if !page.HasNext {
+			break
+		}
+		afterVersion = page.Versions[len(page.Versions)-1].Version
+	}
+	if len(got) != 5 {
+		t.Fatalf("listed versions = %v, want [1 2 3 4 5]", got)
+	}
+	for index, version := range got {
+		if version != index+1 {
+			t.Fatalf("listed versions = %v, want [1 2 3 4 5]", got)
+		}
+	}
+
+	if _, err := agents.Archive(ctx, agent.ID); err != nil {
+		t.Fatalf("archive Agent: %v", err)
+	}
+	page, err := agents.Versions(ctx, agent.ID, app.AgentVersionListQuery{Limit: 2})
+	if err != nil {
+		t.Fatalf("list archived versions: %v", err)
+	}
+	for _, version := range page.Versions {
+		if version.ArchivedAt == nil {
+			t.Fatalf("archived Agent version %d has no archived_at", version.Version)
+		}
+	}
+}
+
 func TestPostgresListEnvironmentsPaginationAndArchiveFilter(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

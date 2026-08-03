@@ -21,6 +21,18 @@ type AgentListPage struct {
 	HasNext bool
 }
 
+// AgentVersionListQuery pages forward through one Agent's immutable version
+// history. Versions are returned in ascending numeric order.
+type AgentVersionListQuery struct {
+	AfterVersion int
+	Limit        int
+}
+
+type AgentVersionListPage struct {
+	Versions []domain.Agent
+	HasNext  bool
+}
+
 // EnvironmentListQuery exposes only the parameters documented for
 // GET /v1/environments: include_archived, limit, and page.
 type EnvironmentListQuery struct {
@@ -42,7 +54,8 @@ type ResourcePageBoundary struct {
 }
 
 const (
-	// The Agent list bounds are documented by the public API and official SDK.
+	// The Agent and Agent Version list bounds are documented by the public API
+	// and official SDK.
 	DefaultAgentListLimit = 20
 	MaxAgentListLimit     = 100
 

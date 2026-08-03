@@ -95,14 +95,14 @@ func TestAgentService_ArchiveIdempotent(t *testing.T) {
 	if ar1.Version != current.Version {
 		t.Fatalf("archive changed version: got %d want %d", ar1.Version, current.Version)
 	}
-	versions, err := s.Versions(ctx, a.ID)
+	versionPage, err := s.Versions(ctx, a.ID, AgentVersionListQuery{})
 	if err != nil {
 		t.Fatalf("versions after archive: %v", err)
 	}
-	if len(versions) != 2 {
-		t.Fatalf("archive appended configuration history: got %d versions, want 2", len(versions))
+	if len(versionPage.Versions) != 2 {
+		t.Fatalf("archive appended configuration history: got %d versions, want 2", len(versionPage.Versions))
 	}
-	for _, version := range versions {
+	for _, version := range versionPage.Versions {
 		if version.ArchivedAt == nil {
 			t.Fatalf("version %d did not reflect resource archival", version.Version)
 		}
@@ -297,12 +297,12 @@ func TestAgentService_ConcurrentExpectedVersionOnlyOneCommits(t *testing.T) {
 	if successes != 1 || conflicts != 1 {
 		t.Fatalf("concurrent results: successes=%d conflicts=%d, want 1/1", successes, conflicts)
 	}
-	versions, err := s.Versions(ctx, agent.ID)
+	versionPage, err := s.Versions(ctx, agent.ID, AgentVersionListQuery{})
 	if err != nil {
 		t.Fatalf("versions: %v", err)
 	}
-	if len(versions) != 2 || versions[1].Version != 2 {
-		t.Fatalf("version history after concurrent update = %#v", versions)
+	if len(versionPage.Versions) != 2 || versionPage.Versions[1].Version != 2 {
+		t.Fatalf("version history after concurrent update = %#v", versionPage.Versions)
 	}
 }
 
@@ -356,13 +356,13 @@ func TestAgentService_UpdateArchiveRaceCannotResurrectAgent(t *testing.T) {
 		if latest.ArchivedAt == nil {
 			t.Fatalf("iteration %d race left latest v%d unarchived", i, latest.Version)
 		}
-		versions, err := s.Versions(ctx, agent.ID)
+		versionPage, err := s.Versions(ctx, agent.ID, AgentVersionListQuery{})
 		if err != nil {
 			t.Fatalf("iteration %d versions: %v", i, err)
 		}
-		for _, version := range versions {
+		for _, version := range versionPage.Versions {
 			if version.ArchivedAt == nil {
-				t.Fatalf("iteration %d race left v%d unarchived: %#v", i, version.Version, versions)
+				t.Fatalf("iteration %d race left v%d unarchived: %#v", i, version.Version, versionPage.Versions)
 			}
 		}
 	}

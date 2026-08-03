@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"math"
 	"strconv"
 	"strings"
 
@@ -21,8 +22,16 @@ type resourceCursor struct {
 	Filter    string `json:"filter"`
 }
 
+type agentVersionCursor struct {
+	Version      int    `json:"v"`
+	Kind         string `json:"kind"`
+	AgentID      string `json:"agent_id"`
+	AfterVersion int    `json:"after_version"`
+}
+
 const (
 	agentListCursorKind       = "agent_list"
+	agentVersionCursorKind    = "agent_version_list"
 	environmentListCursorKind = "environment_list"
 	resourceCursorPrefix      = "page_"
 )
@@ -31,6 +40,35 @@ func encodeResourceCursor(cursor resourceCursor) string {
 	cursor.Version = 1
 	body, _ := json.Marshal(cursor)
 	return resourceCursorPrefix + base64.RawURLEncoding.EncodeToString(body)
+}
+
+func encodeAgentVersionCursor(agentID string, afterVersion int) string {
+	body, _ := json.Marshal(agentVersionCursor{
+		Version: 1, Kind: agentVersionCursorKind,
+		AgentID: agentID, AfterVersion: afterVersion,
+	})
+	return resourceCursorPrefix + base64.RawURLEncoding.EncodeToString(body)
+}
+
+func decodeAgentVersionCursor(token, agentID string) (int, bool) {
+	encoded, ok := strings.CutPrefix(token, resourceCursorPrefix)
+	if !ok {
+		return 0, false
+	}
+	body, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return 0, false
+	}
+	var cursor agentVersionCursor
+	if err := json.Unmarshal(body, &cursor); err != nil {
+		return 0, false
+	}
+	if cursor.Version != 1 || cursor.Kind != agentVersionCursorKind ||
+		cursor.AgentID != agentID || cursor.AfterVersion < 1 ||
+		cursor.AfterVersion > math.MaxInt32 {
+		return 0, false
+	}
+	return cursor.AfterVersion, true
 }
 
 func decodeResourceCursor(token, kind string) (resourceCursor, bool) {
