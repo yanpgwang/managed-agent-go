@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -476,6 +477,51 @@ func TestAgents_RejectsInvalidCustomToolContractWithoutCreatingVersion(t *testin
 	}
 	if data, _ := page["data"].([]any); len(data) != 1 {
 		t.Fatalf("rejected updates created Agent versions: %#v", page["data"])
+	}
+}
+
+func TestAgents_RejectsToolCollectionAboveLimitWithoutCreatingVersion(t *testing.T) {
+	srv := newTestServer(t)
+	tools := make([]map[string]any, 129)
+	for index := range tools {
+		tools[index] = map[string]any{
+			"type": "custom", "name": fmt.Sprintf("tool_%d", index), "description": "d",
+			"input_schema": map[string]any{"type": "object"},
+		}
+	}
+	encodedTools, err := json.Marshal(tools)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := do(srv, "POST", "/v1/agents", `{"name":"Agent","model":"claude-opus-4-8",`+
+		`"tools":`+string(encodedTools)+`}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit create status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+
+	rec = do(srv, "POST", "/v1/agents", `{"name":"Agent","model":"claude-opus-4-8"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id := created["id"].(string)
+
+	rec = do(srv, "POST", "/v1/agents/"+id, `{"tools":`+string(encodedTools)+`}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit update status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+
+	versions := do(srv, "GET", "/v1/agents/"+id+"/versions", "")
+	var page map[string]any
+	if err := json.Unmarshal(versions.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := page["data"].([]any); len(data) != 1 {
+		t.Fatalf("rejected update created an Agent version: %#v", page["data"])
 	}
 }
 

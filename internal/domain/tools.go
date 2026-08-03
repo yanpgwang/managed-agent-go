@@ -11,6 +11,8 @@ import (
 
 const BuiltinToolsetType = "agent_toolset_20260401"
 
+const maxAgentToolEntries = 128
+
 var BuiltinToolNames = []string{"bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search"}
 
 type PermissionPolicy struct{ Type string }
@@ -131,6 +133,9 @@ func validateOptionalBool(value map[string]any, key, context string) error {
 // requests. Runtime parsing remains tolerant of unknown historical fields so
 // persisted snapshots and Temporal replays survive upgrades.
 func validateToolWireShape(rawTools, rawServers []any) error {
+	if len(rawTools) > maxAgentToolEntries {
+		return fmt.Errorf("an agent may configure at most 128 tool entries")
+	}
 	for _, item := range rawTools {
 		tool, ok := item.(map[string]any)
 		if !ok {
@@ -204,6 +209,12 @@ func validateToolWireShape(rawTools, rawServers []any) error {
 				}
 				if err := rejectUnknownFields(config, context+" config", toolConfigFields); err != nil {
 					return err
+				}
+				if context == "mcp_toolset" {
+					name, ok := config["name"].(string)
+					if !ok || utf8.RuneCountInString(name) < 1 || utf8.RuneCountInString(name) > 128 {
+						return fmt.Errorf("mcp tool config name must contain 1 to 128 characters")
+					}
 				}
 				if err := validateOptionalBool(config, "enabled", context+" config"); err != nil {
 					return err
