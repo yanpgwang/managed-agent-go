@@ -17,7 +17,18 @@ import (
 
 var liveSchemaSequence atomic.Int64
 
-func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
+type liveTestFixture struct {
+	ctx     context.Context
+	pool    *pgxpool.Pool
+	broker  *Broker
+	store   *pg.Store
+	ids     *liveIDs
+	clock   *liveClock
+	natsURL string
+}
+
+func newLiveTestFixture(t *testing.T) *liveTestFixture {
+	t.Helper()
 	databaseURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
 	natsURL := os.Getenv("MANAGED_AGENT_TEST_NATS_URL")
 	if databaseURL == "" || natsURL == "" {
@@ -52,11 +63,24 @@ func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer broker.Close()
+	t.Cleanup(broker.Close)
 	ids := &liveIDs{}
 	clock := &liveClock{}
 	store := pg.NewStore(pool, ids, clock)
 	store.SetEventNotifier(broker)
+	return &liveTestFixture{
+		ctx: ctx, pool: pool, broker: broker, store: store,
+		ids: ids, clock: clock, natsURL: natsURL,
+	}
+}
+
+func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
+	fixture := newLiveTestFixture(t)
+	ctx := fixture.ctx
+	broker := fixture.broker
+	store := fixture.store
+	ids := fixture.ids
+	clock := fixture.clock
 	session := domain.Session{
 		ID: "sesn_live", Status: domain.StatusIdle, Metadata: map[string]any{},
 		CreatedAt: clock.Now(), UpdatedAt: clock.Now(),

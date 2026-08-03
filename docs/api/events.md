@@ -176,4 +176,7 @@ PostgreSQL remains authoritative. Each subscriber periodically reconciles its
 durable PostgreSQL cursor, so a lost wakeup delays a persisted event but does
 not lose it. The output buffer is bounded: a slow subscriber is disconnected
 and should reconnect using the open-stream-then-list procedure above. Preview
-frames are ephemeral and can be lost.
+frames are ephemeral and can be lost. A replacement API process opens a new
+subscription after the latest committed event; listing history after that
+stream is open fills the process-restart gap without replaying old events on the
+stream itself.
