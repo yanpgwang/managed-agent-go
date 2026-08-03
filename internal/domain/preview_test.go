@@ -6,7 +6,10 @@ import (
 )
 
 func TestPreviewFrame_WireJSON_Start(t *testing.T) {
-	f := PreviewFrame{Kind: PreviewEventStart, EventID: "sevt_1", EventType: "agent.message"}
+	f := PreviewFrame{
+		Kind: PreviewEventStart, EventID: "sevt_1", EventType: "agent.message",
+		ModelRequestStartID: "sevt_model_start",
+	}
 	got := f.WireJSON()
 	want := map[string]any{
 		"type":  "event_start",
@@ -18,7 +21,10 @@ func TestPreviewFrame_WireJSON_Start(t *testing.T) {
 }
 
 func TestPreviewFrame_WireJSON_Delta(t *testing.T) {
-	f := PreviewFrame{Kind: PreviewEventDelta, EventID: "sevt_1", Index: 0, Text: "Hi"}
+	f := PreviewFrame{
+		Kind: PreviewEventDelta, EventID: "sevt_1", Index: 0, Text: "Hi",
+		ModelRequestStartID: "sevt_model_start",
+	}
 	got := f.WireJSON()
 	want := map[string]any{
 		"type":     "event_delta",

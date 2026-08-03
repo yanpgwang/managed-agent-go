@@ -40,7 +40,8 @@ func TestCallModelPublishesCorrelatedPreviewFrames(t *testing.T) {
 	}
 	if frames[0].sessionID != "sesn_1" ||
 		frames[0].frame.Kind != domain.PreviewEventStart ||
-		frames[0].frame.EventID != result.MessageEventID {
+		frames[0].frame.EventID != result.MessageEventID ||
+		frames[0].frame.ModelRequestStartID != result.ModelRequestStartID {
 		t.Fatalf("start frame = %+v, result id=%s", frames[0], result.MessageEventID)
 	}
 	var text strings.Builder
@@ -50,6 +51,13 @@ func TestCallModelPublishesCorrelatedPreviewFrames(t *testing.T) {
 		}
 		if frame.frame.EventID != result.MessageEventID {
 			t.Fatalf("delta id = %s, want %s", frame.frame.EventID, result.MessageEventID)
+		}
+		if frame.frame.ModelRequestStartID != result.ModelRequestStartID {
+			t.Fatalf(
+				"delta model request id = %s, want %s",
+				frame.frame.ModelRequestStartID,
+				result.ModelRequestStartID,
+			)
 		}
 		text.WriteString(frame.frame.Text)
 	}
