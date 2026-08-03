@@ -66,6 +66,15 @@ func (s storeSource) UnresolvedPendingActions(
 	return s.store.UnresolvedPendingActions(ctx, sessionID)
 }
 
+func (s storeSource) AppendWorkflowEvents(
+	ctx context.Context,
+	sessionID string,
+	triggerEventID string,
+	drafts []domain.EventDraft,
+) error {
+	return s.store.AppendWorkflowEvents(ctx, sessionID, triggerEventID, drafts)
+}
+
 func (s storeSource) LoadProviderTranscript(
 	ctx context.Context,
 	sessionID string,

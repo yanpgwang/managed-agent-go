@@ -261,6 +261,14 @@ func registerCurrentTurnActivities(
 		activity.RegisterOptions{Name: ActivityPrepareTurn},
 	)
 	env.RegisterActivityWithOptions(
+		func(context.Context, StartModelRequestInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityStartModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, AppendWorkflowEventsInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityAppendWorkflowEvents},
+	)
+	env.RegisterActivityWithOptions(
 		func(context.Context, CallModelInput) (CallModelResult, error) {
 			return CallModelResult{Response: model.Response{StopReason: "end_turn"}}, nil
 		},
@@ -370,6 +378,14 @@ func TestSessionWorkflow_ParksUntilFullBarrierThenPreservesQueuedMessage(t *test
 			return PrepareTurnResult{Request: model.Request{Model: "fake"}}, nil
 		},
 		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, StartModelRequestInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityStartModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, AppendWorkflowEventsInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityAppendWorkflowEvents},
 	)
 	env.RegisterActivityWithOptions(
 		func(context.Context, CallModelInput) (CallModelResult, error) {

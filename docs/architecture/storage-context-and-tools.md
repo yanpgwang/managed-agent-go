@@ -378,21 +378,24 @@ lifecycle.
 
 ## Provider-round transaction model
 
-Intermediate model/tool rounds must survive an Activity retry without being
-published prematurely.
+Intermediate model/tool rounds must survive Activity retries while preserving
+their public receipt order.
 
 1. A turn starts from the committed Provider Transcript.
-2. `CallModel` retains the complete provider response blocks in the turn's
+2. The Workflow durably appends `span.model_request_start` before `CallModel`.
+3. `CallModel` retains the complete provider response blocks in the turn's
    private transcript delta.
-3. A tool Activity journals execution and adds its model projection to that
+4. A tool Activity journals execution and adds its model projection to that
    delta.
-4. Turn completion atomically commits the transcript delta with public events,
-   marks the trigger processed, and updates Session status.
-5. A later turn loads the private transcript instead of reconstructing provider
+5. Before another provider round begins, its predecessor's completed public
+   model/tool events are appended idempotently with deterministic IDs.
+6. Turn completion atomically commits the remaining public events and transcript
+   delta, marks the trigger processed, and updates Session status.
+7. A later turn loads the private transcript instead of reconstructing provider
    context from public events.
 
-This model avoids both premature public events and loss of provider-native
-conversation state.
+This model exposes completed progress without allowing a later model request to
+overtake it, while keeping provider-native conversation state lossless.
 
 ## Temporal boundary
 

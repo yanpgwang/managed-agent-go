@@ -41,10 +41,185 @@ func registerWorkflowTurnActivities(
 	executeTool func(context.Context, ExecuteToolInput) (ExecuteToolResult, error),
 	complete func(context.Context, CompleteWorkflowTurnInput) (RunTurnResult, error),
 ) {
+	var flushedMu sync.Mutex
+	var flushed []domain.EventDraft
 	env.RegisterActivityWithOptions(prepare, activity.RegisterOptions{Name: ActivityPrepareTurn})
+	env.RegisterActivityWithOptions(
+		func(context.Context, StartModelRequestInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityStartModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in AppendWorkflowEventsInput) error {
+			flushedMu.Lock()
+			defer flushedMu.Unlock()
+			flushed = append(flushed, in.Events...)
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityAppendWorkflowEvents},
+	)
 	env.RegisterActivityWithOptions(callModel, activity.RegisterOptions{Name: ActivityCallModel})
 	env.RegisterActivityWithOptions(executeTool, activity.RegisterOptions{Name: ActivityExecuteTool})
-	env.RegisterActivityWithOptions(complete, activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn})
+	env.RegisterActivityWithOptions(
+		func(ctx context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			// Most tests assert the logical public turn rather than the physical
+			// Activity batch. Recombine intermediate prefixes for those assertions.
+			flushedMu.Lock()
+			prefix := append([]domain.EventDraft(nil), flushed...)
+			flushedMu.Unlock()
+			in.Output = append(prefix, in.Output...)
+			return complete(ctx, in)
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+}
+
+func TestWorkflowTurn_PersistsEachModelStartBeforeCallAndPreservesRoundOrder(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	var mu sync.Mutex
+	var operations []string
+	var starts []StartModelRequestInput
+	var calls []CallModelInput
+	var flushed []domain.EventDraft
+	var completed CompleteWorkflowTurnInput
+	record := func(operation string) {
+		mu.Lock()
+		defer mu.Unlock()
+		operations = append(operations, operation)
+	}
+
+	env.RegisterActivityWithOptions(
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{
+				AttemptID: "ratm_span_order",
+				Request: model.Request{
+					Model: "test-model",
+					Messages: []domain.Message{{
+						Role: domain.RoleUser,
+						Content: []domain.ContentBlock{{
+							Type: "text", Text: "use the tool",
+						}},
+					}},
+					Tools: []model.ToolSchema{{Name: "read"}},
+				},
+				Tools: []TurnTool{{
+					Name: "read", Kind: TurnToolBuiltin,
+					Permission: domain.PermissionPolicy{Type: "always_allow"},
+				}},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in StartModelRequestInput) error {
+			record("start")
+			mu.Lock()
+			defer mu.Unlock()
+			starts = append(starts, in)
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityStartModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			record("call")
+			mu.Lock()
+			calls = append(calls, in)
+			call := len(calls)
+			mu.Unlock()
+			if call == 1 {
+				return CallModelResult{
+					ModelRequestStartID: in.ModelRequestStartID,
+					ModelRequestEndID:   in.ModelRequestEndID,
+					ToolSteps: []PlannedToolStep{{
+						ToolUseEventID: "sevt_tool_order",
+						ToolStepID:     "tstep_order",
+					}},
+					Response: model.Response{
+						StopReason: "tool_use",
+						Content: []domain.ContentBlock{{
+							Type: "tool_use", ToolUseID: "sevt_tool_order",
+							ToolName: "read", Input: map[string]any{"path": "a.txt"},
+						}},
+					},
+				}, nil
+			}
+			return CallModelResult{
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+				MessageEventID:      "sevt_final_order",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content:    []domain.ContentBlock{{Type: "text", Text: "done"}},
+				},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			record("tool")
+			return ExecuteToolResult{Result: domain.ToolStepResult{
+				Content: []any{map[string]any{"type": "text", "text": "contents"}},
+			}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityExecuteTool},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in AppendWorkflowEventsInput) error {
+			record("append")
+			mu.Lock()
+			defer mu.Unlock()
+			flushed = append(flushed, in.Events...)
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityAppendWorkflowEvents},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			record("complete")
+			mu.Lock()
+			defer mu.Unlock()
+			completed = in
+			return RunTurnResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_span_order", TriggerEventID: "sevt_trigger_order",
+	})
+	require.NoError(t, env.GetWorkflowError())
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{
+		"start", "call", "tool", "append", "start", "call", "complete",
+	}, operations)
+	require.Len(t, starts, 2)
+	require.Len(t, calls, 2)
+	require.NotEmpty(t, starts[0].ModelRequestStartID)
+	require.NotEqual(t, starts[0].ModelRequestStartID, starts[1].ModelRequestStartID)
+	for i := range starts {
+		require.Equal(t, "sess_span_order", starts[i].SessionID)
+		require.Equal(t, "sevt_trigger_order", starts[i].TriggerEventID)
+		require.Equal(t, starts[i].ModelRequestStartID, calls[i].ModelRequestStartID)
+	}
+	require.Equal(t, []string{
+		domain.EvSpanModelRequestEnd,
+		domain.EvAgentToolUse,
+		domain.EvAgentToolResult,
+	}, draftTypes(flushed))
+	for _, draft := range flushed {
+		require.NotEmpty(t, draft.ID)
+	}
+	require.Equal(t, []string{
+		domain.EvAgentMessage,
+		domain.EvSpanModelRequestEnd,
+		domain.EvSessionStatusIdle,
+	}, draftTypes(completed.Output))
 }
 
 func TestWorkflowTurn_PreservesTextAndMultipleTools(t *testing.T) {
@@ -447,12 +622,11 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	require.Zero(t, executions, "permanent model failure must not execute a tool")
 	require.Equal(t, domain.StatusTerminated, completed.Status)
 	require.Equal(t, []string{
-		domain.EvSpanModelRequestStart,
 		domain.EvSpanModelRequestEnd,
 		domain.EvSessionError,
 		domain.EvSessionStatusTerminated,
 	}, draftTypes(completed.Output))
-	errorPayload, ok := completed.Output[2].Payload["error"].(map[string]any)
+	errorPayload, ok := completed.Output[1].Payload["error"].(map[string]any)
 	require.True(t, ok)
 	require.Contains(t, errorPayload["message"], "invalid_request_error")
 }

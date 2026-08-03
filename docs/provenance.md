@@ -102,7 +102,7 @@ Beta header for all Managed Agents routes covered here:
 
 ## Streaming sources
 
-Verified 2026-07-26. These inform the opt-in shape and event correlation used
+Verified 2026-08-03. These inform the opt-in shape and event correlation used
 by stream-only previews.
 
 - [Events and streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming)

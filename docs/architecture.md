@@ -105,10 +105,13 @@ accepted input without a durable path to orchestration. A direct
 Signal-With-Start is only a latency optimization; the relay is the correctness
 path.
 
-Model and tool calls happen as Temporal Activities outside SQL transactions. At
-turn completion, authoritative output, trigger `processed_at`, the final Session
-status, and optional attempt finalization commit together. PostgreSQL then emits
-a best-effort NATS wakeup; SSE subscribers read the committed rows by sequence.
+Model and tool calls happen as Temporal Activities outside SQL transactions.
+Before each provider call, PostgreSQL durably appends its model-request start;
+completed intermediate model/tool rounds are appended idempotently before a
+later provider call can start. Turn completion atomically commits the remaining
+output, provider transcript, trigger `processed_at`, final Session status, and
+optional attempt finalization. PostgreSQL emits best-effort NATS wakeups after
+each commit; SSE subscribers read the committed rows by sequence.
 
 Physical session deletion is a small saga: PostgreSQL first marks the row as
 deleting under the admission lock, the API terminates its Session Workflow, a

@@ -18,8 +18,8 @@ Implemented in the current M1 slice:
 
 - effective model ID, effort, speed, session override, usage, and timing stats;
 - all single-agent input event variants, companion system context, correlated
-  model spans, live message deltas, durable confirmation/custom/self-hosted
-  result barriers, and cross-process interrupt;
+  model spans whose durable starts precede live message deltas, durable
+  confirmation/custom/self-hosted result barriers, and cross-process interrupt;
 - text-rubric outcome work with an isolated grader, revisions, terminal Session
   projection, usage, and interruption;
 - lossless provider transcript plus conservative token-aware request projection,
@@ -29,14 +29,15 @@ Implemented in the current M1 slice:
 
 Remaining M1 conformance work is deliberately narrow:
 
-1. repeatable black-box comparison against the hosted Managed Agents API when a
-   Managed Agents-capable credential is available;
-2. public periodic `span.outcome_evaluation_ongoing` events during long grader
+1. public periodic `span.outcome_evaluation_ongoing` events during long grader
    calls and Files-backed outcome rubrics;
-3. live publication of `span.model_request_start` before message preview deltas
-   (the durable pair is currently committed at the turn boundary);
-4. `agent.thinking` preview production and exact endpoint/model context-window
+2. `agent.thinking` preview production and exact endpoint/model context-window
    profiles where a provider exposes them.
+
+Repeatable black-box comparison against the hosted Managed Agents API remains
+useful optional validation when a Managed Agents-capable credential is
+available. It is not a blocker for implementing behavior documented by the
+public API contract.
 
 ## Runtime integrations
 

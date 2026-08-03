@@ -161,6 +161,22 @@ type ResumeAction struct {
 	ProviderToolUseID string                   `json:"provider_tool_use_id,omitempty"`
 }
 
+// StartModelRequestInput identifies one logical provider request span. The
+// Workflow derives the ID from Session, trigger, and model-round ordinal.
+type StartModelRequestInput struct {
+	SessionID           string `json:"session_id"`
+	TriggerEventID      string `json:"trigger_event_id"`
+	ModelRequestStartID string `json:"model_request_start_id"`
+}
+
+// AppendWorkflowEventsInput carries a completed non-terminal event prefix that
+// must become visible before another model request begins.
+type AppendWorkflowEventsInput struct {
+	SessionID      string              `json:"session_id"`
+	TriggerEventID string              `json:"trigger_event_id"`
+	Events         []domain.EventDraft `json:"events"`
+}
+
 // CallModelInput is one plan/observe step. Each call is its own Activity so its
 // completed response is recorded independently in Workflow history.
 type CallModelInput struct {

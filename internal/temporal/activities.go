@@ -30,6 +30,8 @@ const (
 	ActivityLoadInterrupt        = "LoadInterrupt"
 	ActivityLoadPendingActions   = "LoadPendingActions"
 	ActivityPrepareTurn          = "PrepareTurn"
+	ActivityStartModelRequest    = "StartModelRequest"
+	ActivityAppendWorkflowEvents = "AppendWorkflowEvents"
 	ActivityCallModel            = "CallModel"
 	ActivityEvaluateOutcome      = "EvaluateOutcome"
 	ActivityExecuteTool          = "ExecuteTool"
@@ -133,6 +135,19 @@ type ProviderTranscriptUsageCompletionSource interface {
 		toolUseMappings []domain.ProviderToolUseMapping,
 		usage domain.TokenUsage,
 	) (TurnCompletionResult, error)
+}
+
+// WorkflowEventSource appends already-completed public progress without
+// processing the turn trigger or changing the Session projection. PostgreSQL
+// implements it idempotently by explicit event ID; the Workflow uses it to
+// make model-span starts and completed intermediate rounds visible in order.
+type WorkflowEventSource interface {
+	AppendWorkflowEvents(
+		ctx context.Context,
+		sessionID string,
+		triggerEventID string,
+		drafts []domain.EventDraft,
+	) error
 }
 
 // MCPDiscoveryStore pins the discovered tool surface for each Session/server.
@@ -346,6 +361,56 @@ func (a *Activities) LoadPendingActions(
 		return result.Actions[i].ActionEventSeq < result.Actions[j].ActionEventSeq
 	})
 	return result, nil
+}
+
+// StartModelRequest durably publishes the span start before the long-running
+// CallModel Activity can emit any best-effort preview. The explicit Workflow-
+// owned ID makes Activity retries harmless.
+func (a *Activities) StartModelRequest(
+	ctx context.Context,
+	in StartModelRequestInput,
+) error {
+	if in.ModelRequestStartID == "" {
+		return domain.Validation("model request start id is required")
+	}
+	return a.appendWorkflowEvents(ctx, AppendWorkflowEventsInput{
+		SessionID:      in.SessionID,
+		TriggerEventID: in.TriggerEventID,
+		Events: []domain.EventDraft{{
+			ID:      in.ModelRequestStartID,
+			Type:    domain.EvSpanModelRequestStart,
+			Payload: map[string]any{},
+		}},
+	})
+}
+
+// AppendWorkflowEvents publishes a completed, non-terminal prefix before the
+// next model request starts. Final status, pending barriers, usage, attempts,
+// and provider transcript still commit through CompleteWorkflowTurn.
+func (a *Activities) AppendWorkflowEvents(
+	ctx context.Context,
+	in AppendWorkflowEventsInput,
+) error {
+	return a.appendWorkflowEvents(ctx, in)
+}
+
+func (a *Activities) appendWorkflowEvents(
+	ctx context.Context,
+	in AppendWorkflowEventsInput,
+) error {
+	source, ok := a.source.(WorkflowEventSource)
+	if !ok {
+		return errors.New("temporal: event source cannot append workflow progress")
+	}
+	if in.SessionID == "" || in.TriggerEventID == "" || len(in.Events) == 0 {
+		return domain.Validation("session, trigger, and workflow events are required")
+	}
+	return source.AppendWorkflowEvents(
+		ctx,
+		in.SessionID,
+		in.TriggerEventID,
+		in.Events,
+	)
 }
 
 // PrepareTurn reads one turn's immutable starting state from PostgreSQL. The

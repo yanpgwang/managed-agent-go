@@ -61,10 +61,12 @@ waits; outcome evaluation; eight built-ins; provider-native Web Search/Fetch;
 unauthenticated remote MCP tools; token-aware provider context; local and Docker
 sandboxes; and opt-in assistant text previews.
 
-The remaining M1 closure work is repeatable hosted black-box conformance,
-outcome evaluation heartbeat events, Files-backed rubrics, and thinking
-previews. Deployment-managed MCP authentication, skills/memory/vaults,
-multi-agent orchestration, schedules, and webhooks remain future work.
+The remaining M1 closure work is outcome evaluation heartbeat events,
+Files-backed rubrics, thinking previews, and exact endpoint/model context
+profiles. Hosted black-box comparison remains optional validation when a
+Managed Agents-capable credential is available. Deployment-managed MCP
+authentication, skills/memory/vaults, multi-agent orchestration, schedules, and
+webhooks remain future work.
 
 The runtime is the product; Claude API compatibility is an integration surface.
 Public behavior is derived from official documentation and tested through raw
