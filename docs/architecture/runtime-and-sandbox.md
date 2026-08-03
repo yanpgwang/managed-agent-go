@@ -96,7 +96,9 @@ untrusted input or in production.
 
 Set `MANAGED_AGENT_SANDBOX=docker` to run each sandbox in a container. The
 provider uses a separate filesystem, Linux namespaces/cgroups, configurable
-resource limits, and `--network none` by default. This is the recommended
+resource limits, and `--network none` for direct provider calls. The Managed
+Agents cloud Environment path explicitly requests `bridge` networking because
+the public Environment default is unrestricted. This is the recommended
 sandbox for a real model, and it satisfies the startup guard without the unsafe
 override.
 
