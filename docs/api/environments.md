@@ -20,6 +20,11 @@ An environment is a named session execution configuration.
 `name` is required. If `config.type` is omitted, the stored type defaults to
 `cloud`.
 
+Explicit `networking` and `packages` configuration is rejected until the
+selected sandbox adapter can enforce it. The current supported cloud default is
+unrestricted networking with no requested packages; Mango does not persist
+unenforced policy as inert configuration.
+
 The runtime accepts `cloud` and `self_hosted` sessions. In `cloud`, enabled
 built-in sandbox tools execute on the configured worker sandbox. In
 `self_hosted`, the same `agent.tool_use` parks the Session with
@@ -67,7 +72,7 @@ An unreferenced environment can be deleted:
 ```json
 {
   "id": "env_...",
-  "deleted": true
+  "type": "environment_deleted"
 }
 ```
 
@@ -80,14 +85,25 @@ Deleting an environment referenced by a session returns `409`.
   "id": "env_...",
   "type": "environment",
   "name": "local",
-  "config": {"type": "cloud"},
+  "description": "",
+  "metadata": {},
+  "config": {
+    "type": "cloud",
+    "networking": {"type": "unrestricted"},
+    "packages": {
+      "type": "packages",
+      "apt": [], "cargo": [], "gem": [], "go": [], "npm": [], "pip": []
+    }
+  },
   "created_at": "2026-07-27T00:00:00Z",
   "updated_at": "2026-07-27T00:00:00Z",
   "archived_at": null
 }
 ```
 
-The current response does not yet include the official SDK's `description`,
-`metadata`, and `scope` fields. The [core conformance
-matrix](core-conformance.md) tracks that projection gap separately from route
-presence.
+The default cloud response includes the official SDK's required empty
+`description` and `metadata` fields plus resolved unrestricted-network and
+empty-package defaults. Accepting and persisting optional description,
+metadata, scope, networking, and package request fields remains incomplete.
+The [core conformance matrix](core-conformance.md) tracks those gaps separately
+from route presence.

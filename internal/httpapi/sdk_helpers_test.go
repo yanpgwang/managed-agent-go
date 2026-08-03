@@ -12,9 +12,9 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 )
 
-// mustEnv creates an environment via the existing environments endpoint. The
-// environments wire is not part of the Batch 1 SDK compatibility target, so it
-// is created with a raw request rather than through the SDK.
+// mustEnv creates a fixture with a raw request so Session SDK tests remain
+// focused on the Session operation under test. Environment SDK lifecycle
+// coverage lives in TestSDK_EnvironmentLifecycle.
 func mustEnv(t *testing.T, serverURL string) string {
 	t.Helper()
 	req, _ := http.NewRequestWithContext(context.Background(), "POST",

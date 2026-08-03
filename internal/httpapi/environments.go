@@ -10,11 +10,9 @@ import (
 func envToJSON(e domain.Environment) map[string]any {
 	out := map[string]any{
 		"id": e.ID, "type": "environment", "name": e.Name,
-		"config":     map[string]any{"type": e.ConfigType},
+		"description": "", "metadata": map[string]any{},
+		"config":     environmentConfigToJSON(e),
 		"created_at": e.CreatedAt.Format(timeFmt), "updated_at": e.UpdatedAt.Format(timeFmt),
-	}
-	if len(e.Config) > 0 {
-		out["config"] = e.Config
 	}
 	if e.ArchivedAt != nil {
 		out["archived_at"] = e.ArchivedAt.Format(timeFmt)
@@ -22,6 +20,31 @@ func envToJSON(e domain.Environment) map[string]any {
 		out["archived_at"] = nil
 	}
 	return out
+}
+
+// environmentConfigToJSON resolves the documented response defaults without
+// mutating the stored request map. Cloud environments currently run with
+// unrestricted networking and no pre-installed packages unless a future
+// enforcement-capable admission path stores an explicit configuration.
+func environmentConfigToJSON(e domain.Environment) map[string]any {
+	if e.ConfigType == "self_hosted" {
+		return map[string]any{"type": "self_hosted"}
+	}
+	config := make(map[string]any, len(e.Config)+2)
+	for key, value := range e.Config {
+		config[key] = value
+	}
+	config["type"] = "cloud"
+	if _, present := config["networking"]; !present {
+		config["networking"] = map[string]any{"type": "unrestricted"}
+	}
+	if _, present := config["packages"]; !present {
+		config["packages"] = map[string]any{
+			"type": "packages", "apt": []any{}, "cargo": []any{}, "gem": []any{},
+			"go": []any{}, "npm": []any{}, "pip": []any{},
+		}
+	}
+	return config
 }
 
 func (s *Server) createEnvironment(w http.ResponseWriter, r *http.Request) {
@@ -141,5 +164,7 @@ func (s *Server) deleteEnvironment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"id": r.PathValue("id"), "deleted": true})
+	writeJSON(w, 200, map[string]any{
+		"id": r.PathValue("id"), "type": "environment_deleted",
+	})
 }

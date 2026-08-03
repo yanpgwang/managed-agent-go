@@ -22,12 +22,12 @@ separate evidence.
 | Agent | Update | `POST /v1/agents/{agent_id}` | Yes | Yes | Yes | Finish the cross-field default, null, and error-contract sweep. |
 | Agent | List versions | `GET /v1/agents/{agent_id}/versions` | Yes | Yes | Yes | None identified for forward pagination. |
 | Agent | Archive | `POST /v1/agents/{agent_id}/archive` | Yes | Yes | Yes | None identified for the core idempotent archive path. |
-| Environment | Create | `POST /v1/environments` | Yes | No | Yes | Align the current SDK resource fields and enforce cloud networking/packages. |
-| Environment | List | `GET /v1/environments` | Yes | Yes | Yes | Returned Environment objects still need the complete current SDK projection. |
-| Environment | Get | `GET /v1/environments/{environment_id}` | Yes | No | Yes | Add SDK coverage and the complete current SDK projection. |
+| Environment | Create | `POST /v1/environments` | Yes | Yes | Yes | Persist description, metadata, and scope; validate configured cloud fields. |
+| Environment | List | `GET /v1/environments` | Yes | Yes | Yes | Persisted optional resource fields and configured cloud projections remain incomplete. |
+| Environment | Get | `GET /v1/environments/{environment_id}` | Yes | Yes | Yes | Persisted optional resource fields and configured cloud projections remain incomplete. |
 | Environment | Update | `POST /v1/environments/{environment_id}` | **No** | No | No | Implement update with real networking and package enforcement. |
-| Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | No | Yes | Add SDK coverage and the complete current SDK projection. |
-| Environment | Delete | `DELETE /v1/environments/{environment_id}` | Yes | No | Yes | Add SDK coverage and align the current delete response shape. |
+| Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | Yes | Yes | Persisted optional resource fields and configured cloud projections remain incomplete. |
+| Environment | Delete | `DELETE /v1/environments/{environment_id}` | Yes | Yes | Yes | None identified for the core unreferenced-delete path. |
 | Session | Create | `POST /v1/sessions` | Yes | Yes | Yes | Complete core validation/default/null coverage; unsupported product surfaces remain explicit. |
 | Session | List | `GET /v1/sessions` | Yes | Yes | Yes | None identified for the in-scope filters and bidirectional cursors. |
 | Session | Get | `GET /v1/sessions/{session_id}` | Yes | Yes | Yes | None identified for the in-scope resource projection. |
@@ -64,4 +64,3 @@ registered route as compatibility.
 - [Environments](https://platform.claude.com/docs/en/api/beta/environments)
 - [Sessions](https://platform.claude.com/docs/en/api/beta/sessions)
 - [Session events](https://platform.claude.com/docs/en/api/beta/sessions/events)
-

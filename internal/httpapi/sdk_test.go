@@ -740,6 +740,57 @@ func TestSDK_AgentVersionListParamsAndPaging(t *testing.T) {
 	}
 }
 
+func TestSDK_EnvironmentLifecycle(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+
+	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
+		Name: "SDK environment",
+	})
+	if err != nil {
+		t.Fatalf("create environment: %v", err)
+	}
+	if environment.ID == "" || environment.Type != "environment" ||
+		environment.Name != "SDK environment" || environment.Description != "" ||
+		environment.Config.Type != "cloud" || environment.Config.Networking.Type != "unrestricted" {
+		t.Fatalf("created environment = %#v", environment)
+	}
+	assertRawObjectHasFields(t, environment.RawJSON(),
+		"id", "archived_at", "config", "created_at", "description", "metadata", "name", "type", "updated_at")
+	assertRawObjectHasFields(t, environment.Config.RawJSON(), "type", "networking", "packages")
+	assertRawObjectHasFields(t, environment.Config.Packages.RawJSON(),
+		"type", "apt", "cargo", "gem", "go", "npm", "pip")
+
+	got, err := client.Beta.Environments.Get(ctx, environment.ID, anthropic.BetaEnvironmentGetParams{})
+	if err != nil {
+		t.Fatalf("get environment: %v", err)
+	}
+	if got.ID != environment.ID || got.Config.Networking.Type != "unrestricted" {
+		t.Fatalf("retrieved environment = %#v", got)
+	}
+
+	archived, err := client.Beta.Environments.Archive(
+		ctx, environment.ID, anthropic.BetaEnvironmentArchiveParams{},
+	)
+	if err != nil {
+		t.Fatalf("archive environment: %v", err)
+	}
+	if archived.ArchivedAt == "" {
+		t.Fatal("archived environment has empty archived_at")
+	}
+
+	deleted, err := client.Beta.Environments.Delete(
+		ctx, environment.ID, anthropic.BetaEnvironmentDeleteParams{},
+	)
+	if err != nil {
+		t.Fatalf("delete environment: %v", err)
+	}
+	if deleted.ID != environment.ID ||
+		deleted.Type != anthropic.BetaEnvironmentDeleteResponseTypeEnvironmentDeleted {
+		t.Fatalf("delete response = %#v", deleted)
+	}
+}
+
 func TestSDK_EnvironmentListParamsAndPaging(t *testing.T) {
 	client, server := sdkClientAndServer(t)
 	ctx := context.Background()
