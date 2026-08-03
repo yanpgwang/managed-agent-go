@@ -32,10 +32,14 @@ type workflowTurnState struct {
 	ordinal                int
 	interrupts             *turnInterruptWatcher
 	usesProviderTranscript bool
-	transcriptDelta        []domain.Message
-	toolUseMappings        []domain.ProviderToolUseMapping
-	usage                  domain.TokenUsage
-	flushedEventCount      int
+	// mcpToolEvents is the resolved value of the mcp-tool-event-types Workflow
+	// version gate for this turn. False replays a history recorded before the
+	// change and keeps MCP calls on agent.tool_use / agent.tool_result.
+	mcpToolEvents     bool
+	transcriptDelta   []domain.Message
+	toolUseMappings   []domain.ProviderToolUseMapping
+	usage             domain.TokenUsage
+	flushedEventCount int
 }
 
 func (t *workflowTurnState) startModelRequest(startID string) error {
@@ -453,25 +457,23 @@ func resumeWorkflowTurn(
 				content = executed.Result.Content
 				isError = executed.Result.IsError
 				if activityOutcome.Interrupted {
-					turn.output = append(turn.output, domain.EventDraft{
-						Type: domain.EvAgentToolResult,
-						Payload: map[string]any{
-							"tool_use_id": action.ActionEventID,
-							"content":     content,
-							"is_error":    isError,
-						},
-					})
+					turn.output = append(turn.output, toolResultDraft(
+						definition,
+						turn.mcpToolEvents,
+						action.ActionEventID,
+						content,
+						isError,
+					))
 					return nil, true, "", nil
 				}
 			}
-			turn.output = append(turn.output, domain.EventDraft{
-				Type: domain.EvAgentToolResult,
-				Payload: map[string]any{
-					"tool_use_id": action.ActionEventID,
-					"content":     content,
-					"is_error":    isError,
-				},
-			})
+			turn.output = append(turn.output, toolResultDraft(
+				definition,
+				turn.mcpToolEvents,
+				action.ActionEventID,
+				content,
+				isError,
+			))
 		default:
 			return nil, false, failTurn("unknown pending action kind"), nil
 		}
@@ -515,6 +517,50 @@ type toolBatchPlan struct {
 	pendingActionEventIDs []string
 }
 
+// serverToolUseType picks the documented tool-use variant for a server-executed
+// call. An MCP call is its own event type carrying a required mcp_server_name;
+// every other server-executed tool stays on agent.tool_use. mcpToolEvents is the
+// Workflow version gate: a history recorded before the change keeps the legacy
+// spelling so replay stays deterministic.
+func serverToolUseType(definition TurnTool, mcpToolEvents bool) string {
+	if mcpToolEvents && definition.Kind == TurnToolMCP {
+		return domain.EvAgentMcpToolUse
+	}
+	return domain.EvAgentToolUse
+}
+
+// toolResultDraft builds the result event that answers one server-executed tool
+// call. agent.mcp_tool_result correlates through mcp_tool_use_id and carries no
+// mcp_server_name: upstream documents attribution as a join back to the
+// agent.mcp_tool_use event, so inventing a server name here would be a field
+// the contract does not have.
+func toolResultDraft(
+	definition TurnTool,
+	mcpToolEvents bool,
+	toolUseEventID string,
+	content []any,
+	isError bool,
+) domain.EventDraft {
+	if mcpToolEvents && definition.Kind == TurnToolMCP {
+		return domain.EventDraft{
+			Type: domain.EvAgentMcpToolResult,
+			Payload: map[string]any{
+				"mcp_tool_use_id": toolUseEventID,
+				"content":         content,
+				"is_error":        isError,
+			},
+		}
+	}
+	return domain.EventDraft{
+		Type: domain.EvAgentToolResult,
+		Payload: map[string]any{
+			"tool_use_id": toolUseEventID,
+			"content":     content,
+			"is_error":    isError,
+		},
+	}
+}
+
 // planToolBatch is the pure classification boundary for one model tool-use
 // round. It validates the complete batch before any side effect and then
 // separates server-executed built-ins from client-action barriers.
@@ -522,6 +568,7 @@ func planToolBatch(
 	toolUses []domain.ContentBlock,
 	toolsByName map[string]TurnTool,
 	stepsByProviderID map[string]PlannedToolStep,
+	mcpToolEvents bool,
 ) (toolBatchPlan, turnFailure) {
 	for _, use := range toolUses {
 		if stepsByProviderID[use.ToolUseID].ToolStepID == "" {
@@ -559,6 +606,10 @@ func planToolBatch(
 			},
 		}
 		if definition.Kind == TurnToolMCP {
+			// The public event reports the bare tool name the server published.
+			// use.ToolName is the namespaced model-facing alias and stays private
+			// to the provider request; mcp_server_name is what lets the alias be
+			// reconstructed on resume.
 			draft.Payload["name"] = definition.MCPToolName
 			draft.Payload["mcp_server_name"] = definition.MCPServer.Name
 		}
@@ -578,14 +629,14 @@ func planToolBatch(
 				planned.ToolUseEventID,
 			)
 		case definition.Permission.Type == "always_ask":
-			draft.Type = domain.EvAgentToolUse
+			draft.Type = serverToolUseType(definition, mcpToolEvents)
 			draft.Payload["evaluated_permission"] = "ask"
 			plan.pendingActionEventIDs = append(
 				plan.pendingActionEventIDs,
 				planned.ToolUseEventID,
 			)
 		default:
-			draft.Type = domain.EvAgentToolUse
+			draft.Type = serverToolUseType(definition, mcpToolEvents)
 			plan.executable = append(plan.executable, plannedToolUse{
 				use:           use,
 				publicEventID: planned.ToolUseEventID,
@@ -700,14 +751,13 @@ func executeToolBatch(
 					"the side effect will not be retried",
 			), nil
 		}
-		execution.resultDrafts = append(execution.resultDrafts, domain.EventDraft{
-			Type: domain.EvAgentToolResult,
-			Payload: map[string]any{
-				"tool_use_id": planned.publicEventID,
-				"content":     executed.Result.Content,
-				"is_error":    executed.Result.IsError,
-			},
-		})
+		execution.resultDrafts = append(execution.resultDrafts, toolResultDraft(
+			planned.definition,
+			turn.mcpToolEvents,
+			planned.publicEventID,
+			executed.Result.Content,
+			executed.Result.IsError,
+		))
 		execution.resultBlocks = append(execution.resultBlocks, domain.ContentBlock{
 			Type:          "tool_result",
 			ToolResultFor: planned.use.ToolUseID,

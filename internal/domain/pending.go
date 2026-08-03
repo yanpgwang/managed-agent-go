@@ -47,13 +47,15 @@ const PrefixPendingAction = "pact_"
 // An agent.tool_use only parks when its evaluated permission is "ask": an
 // always_allow built-in call is executed inline and its always_deny/missing
 // counterpart is not a confirmation gate, so both share the agent.tool_use type
-// but must never become a PendingToolConfirmation. agent.custom_tool_use always
-// parks regardless of payload.
+// but must never become a PendingToolConfirmation. agent.mcp_tool_use follows
+// the same rule — the documented confirmation path is identical and the client
+// still answers with a user.tool_confirmation carrying tool_use_id.
+// agent.custom_tool_use always parks regardless of payload.
 func PendingActionKindForEvent(eventType string, payload map[string]any) (PendingActionKind, bool) {
 	switch eventType {
 	case EvAgentCustomToolUse:
 		return PendingCustomToolResult, true
-	case EvAgentToolUse:
+	case EvAgentToolUse, EvAgentMcpToolUse:
 		if owner, _ := payload[InternalToolExecutionOwner].(string); owner == "self_hosted" {
 			return PendingToolResult, true
 		}
@@ -70,6 +72,10 @@ func PendingActionKindForEvent(eventType string, payload map[string]any) (Pendin
 // referenced id lives in a type-specific payload field (custom_tool_use_id for
 // user.custom_tool_result, tool_use_id for user.tool_confirmation); a resolution
 // event missing that field returns ok=false.
+//
+// user.tool_confirmation keeps tool_use_id for both agent.tool_use and
+// agent.mcp_tool_use parks: the documented confirmation input has exactly one id
+// field and never a separate MCP spelling.
 func ResolutionReference(eventType string, payload map[string]any) (actionEventID string, kind PendingActionKind, ok bool) {
 	switch eventType {
 	case EvUserCustomToolResult:

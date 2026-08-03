@@ -135,8 +135,9 @@ Worker Versioning and promotion of remote sandbox adapters through repeatable
 live conformance are still required before production rolling deployments.
 
 Workflow changes use Temporal version markers where replay compatibility
-requires them. Production rolling deployments still need Worker Versioning and
-explicit replay coverage.
+requires them, and `internal/temporal` carries an offline `worker.WorkflowReplayer`
+harness that replays synthetic pre-change histories against the current code.
+Production rolling deployments still need Worker Versioning.
 
 ## Current implementation boundaries
 

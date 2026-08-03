@@ -19,6 +19,15 @@ const maxWorkflowToolRounds = 20
 const (
 	liveModelSpanStartChangeID = "live-model-request-span-start"
 	liveModelSpanStartVersion  = 1
+
+	// mcpToolEventsChangeID gates the wire-breaking move of MCP tool calls from
+	// agent.tool_use/agent.tool_result onto the documented
+	// agent.mcp_tool_use/agent.mcp_tool_result pair. A Workflow that recorded no
+	// marker for this change keeps emitting the legacy pair for its whole run, so
+	// an in-flight turn replays deterministically and its already-published
+	// public ledger stays internally consistent.
+	mcpToolEventsChangeID = "mcp-tool-event-types"
+	mcpToolEventsVersion  = 1
 )
 
 // runWorkflowTurn owns the plan-act-observe loop in deterministic Workflow
@@ -81,6 +90,15 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		liveModelSpanStartVersion,
 	) == liveModelSpanStartVersion
+	// Evaluated before any tool draft is built so both the resume round and every
+	// model round of this turn agree on one naming scheme. Ordering relative to
+	// the gate above is part of replay history and must not change.
+	mcpToolEvents := workflow.GetVersion(
+		actx,
+		mcpToolEventsChangeID,
+		workflow.DefaultVersion,
+		mcpToolEventsVersion,
+	) == mcpToolEventsVersion
 
 	turn := &workflowTurnState{
 		actx:                   actx,
@@ -89,6 +107,7 @@ func runWorkflowTurnInternal(
 		resolutionEventIDs:     resolutionEventIDs,
 		interrupts:             interrupts,
 		usesProviderTranscript: prepared.UsesProviderTranscript,
+		mcpToolEvents:          mcpToolEvents,
 		output:                 append([]domain.EventDraft(nil), prepared.PreludeEvents...),
 		transcriptDelta: append(
 			[]domain.Message(nil),
@@ -338,6 +357,7 @@ func runWorkflowTurnInternal(
 			toolUses,
 			toolsByName,
 			stepsByProviderID,
+			mcpToolEvents,
 		)
 		if failure != "" {
 			if activityOutcome.Interrupted {
