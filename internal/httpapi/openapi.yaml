@@ -27,7 +27,7 @@ paths:
     get: { summary: List sessions, responses: { "200": { description: ok } } }
   /v1/sessions/{id}:
     get: { summary: Get session, responses: { "200": { description: ok } } }
-    post: { summary: Update session title, responses: { "200": { description: ok } } }
+    post: { summary: "Update session (title, metadata patch, agent tools/mcp_servers; agent requires idle)", responses: { "200": { description: ok }, "409": { description: not idle } } }
     delete: { summary: Delete session, responses: { "200": { description: ok }, "409": { description: running } } }
   /v1/sessions/{id}/archive:
     post: { summary: Archive session, responses: { "200": { description: ok }, "409": { description: running } } }

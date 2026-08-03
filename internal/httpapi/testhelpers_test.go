@@ -28,6 +28,19 @@ func NewTestHandlerWithPreviews(t *testing.T) http.Handler {
 
 func newTestHandler(t *testing.T, cfg Config, previews bool) http.Handler {
 	t.Helper()
+	handler, _ := newTestHandlerWithSessions(t, cfg, previews)
+	return handler
+}
+
+// newTestHandlerWithSessions also exposes the session fake so a test can force
+// a status the fake runtime never produces on its own, such as a session that
+// is mid-turn.
+func newTestHandlerWithSessions(
+	t *testing.T,
+	cfg Config,
+	previews bool,
+) (http.Handler, *testSessionService) {
+	t.Helper()
 	ids := domain.NewSeqIDGen()
 	clock := domain.FixedClock{T: time.Unix(1000, 0).UTC()}
 	agentsRepo := newTestAgentRepository()
@@ -46,7 +59,7 @@ func newTestHandler(t *testing.T, cfg Config, previews bool) http.Handler {
 	return NewServer(Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
 		Events: sessions, Stream: hub,
-	}, cfg).Handler()
+	}, cfg).Handler(), sessions
 }
 
 type testAgentRepository struct {
@@ -495,10 +508,24 @@ func (s *testSessionService) SendEvent(
 	return committed, nil
 }
 
-func (s *testSessionService) UpdateTitle(
+// forceStatus drives the fake into a status its scripted runtime never reaches
+// on its own, so preconditions such as "the session must be idle" are testable
+// at the wire boundary.
+func (s *testSessionService) forceStatus(id string, status domain.Status) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.sessions[id]
+	session.Status = status
+	s.sessions[id] = session
+}
+
+// Update mirrors the durable backend: the idle precondition, the domain apply,
+// and the session.updated event all happen while the fake holds its session
+// lock.
+func (s *testSessionService) Update(
 	_ context.Context,
 	id string,
-	title string,
+	update domain.SessionUpdate,
 ) (domain.Session, error) {
 	s.mu.Lock()
 	session, ok := s.sessions[id]
@@ -506,19 +533,30 @@ func (s *testSessionService) UpdateTitle(
 		s.mu.Unlock()
 		return domain.Session{}, domain.NotFound("session not found")
 	}
-	if session.Title == title {
+	if update.TouchesAgent() && session.Status != domain.StatusIdle {
+		s.mu.Unlock()
+		return domain.Session{}, domain.Conflict(
+			"session must be idle to update agent configuration; interrupt it first",
+		)
+	}
+	next, change, err := session.ApplyUpdate(update)
+	if err != nil {
+		s.mu.Unlock()
+		return domain.Session{}, err
+	}
+	if !change.Any() {
 		s.mu.Unlock()
 		return session, nil
 	}
-	session.Title = title
-	session.UpdatedAt = s.clock.Now().UTC()
-	s.sessions[id] = session
+	next.UpdatedAt = s.clock.Now().UTC()
+	s.sessions[id] = next
 	event := s.appendEventLocked(id, domain.EventDraft{
-		Type: domain.EvSessionUpdated, Payload: map[string]any{"title": title},
+		Type:    domain.EvSessionUpdated,
+		Payload: domain.SessionUpdatedPayload(next, change),
 	})
 	s.mu.Unlock()
 	s.hub.Publish(id, event)
-	return session, nil
+	return next, nil
 }
 
 func (s *testSessionService) Archive(

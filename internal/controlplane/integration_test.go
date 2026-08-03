@@ -80,6 +80,15 @@ func newPostgresFixture(t *testing.T) postgresFixture {
 
 func postgresHandler(t *testing.T) http.Handler {
 	t.Helper()
+	handler, _ := postgresHandlerWithFixture(t)
+	return handler
+}
+
+// postgresHandlerWithFixture also returns the fixture so a test can drive the
+// durable store or a Temporal Activity directly against the same data the HTTP
+// surface just wrote.
+func postgresHandlerWithFixture(t *testing.T) (http.Handler, postgresFixture) {
+	t.Helper()
 	fixture := newPostgresFixture(t)
 	ids := fixture.ids
 	clock := fixture.clock
@@ -97,7 +106,7 @@ func postgresHandler(t *testing.T) http.Handler {
 		Events:   NewEventService(store),
 		Stream:   app.NewHub(64),
 	}, httpapi.Config{})
-	return server.Handler()
+	return server.Handler(), fixture
 }
 
 func TestPostgresHTTPResourceSessionAndEventPath(t *testing.T) {

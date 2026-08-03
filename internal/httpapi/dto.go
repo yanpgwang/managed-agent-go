@@ -111,28 +111,11 @@ func agentToJSON(a domain.Agent) map[string]any {
 // agentSnapshotJSON builds the resolved public agent snapshot embedded in a
 // session's `agent` field. It omits agent-resource-level bookkeeping
 // (created_at/updated_at/archived_at) that the session agent object does not
-// carry, matching BetaManagedAgentsSessionAgent.
+// carry, matching BetaManagedAgentsSessionAgent. The projection itself lives in
+// the domain because `session.updated` events must publish the same shape from
+// the durable ledger.
 func agentSnapshotJSON(a domain.Agent) map[string]any {
-	model := map[string]any{"id": a.Model.ID}
-	if a.Model.Effort != "" {
-		model["effort"] = map[string]any{"type": a.Model.Effort}
-	}
-	if a.Model.Speed != "" {
-		model["speed"] = a.Model.Speed
-	}
-	return map[string]any{
-		"id": a.ID, "type": "agent", "version": a.Version, "name": a.Name,
-		"model": model, "system": derefStr(a.System), "description": derefStr(a.Description),
-		"multiagent": a.Multiagent,
-		"tools":      orEmpty(a.Tools), "mcp_servers": orEmpty(a.MCPServers), "skills": orEmpty(a.Skills),
-	}
-}
-
-func derefStr(s *string) string {
-	if s == nil {
-		return ""
-	}
-	return *s
+	return a.SessionSnapshotJSON()
 }
 
 func orEmpty(v []any) []any {
