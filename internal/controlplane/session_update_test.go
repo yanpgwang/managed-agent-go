@@ -142,3 +142,37 @@ func TestPostgresSessionUpdateAppliesToTheNextTurn(t *testing.T) {
 		t.Fatalf("mid-turn update = %#v", updated)
 	}
 }
+
+func TestPostgresSessionSnapshotsEnvironmentPackages(t *testing.T) {
+	handler, fixture := postgresHandlerWithFixture(t)
+	ctx := context.Background()
+
+	agentID := createResource(t, handler, "/v1/agents",
+		`{"name":"coder","model":"claude-test"}`)
+	environmentID := createResource(t, handler, "/v1/environments",
+		`{"name":"cloud","config":{"type":"cloud","packages":{"pip":["httpx==0.28.1"]}}}`)
+	firstSessionID := createResource(t, handler, "/v1/sessions",
+		`{"agent":"`+agentID+`","environment_id":"`+environmentID+`"}`)
+
+	response := request(t, handler, http.MethodPost, "/v1/environments/"+environmentID,
+		`{"config":{"type":"cloud","packages":{"pip":["httpx==0.29.0"]}}}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("update environment -> %d: %s", response.Code, response.Body.String())
+	}
+	secondSessionID := createResource(t, handler, "/v1/sessions",
+		`{"agent":"`+agentID+`","environment_id":"`+environmentID+`"}`)
+
+	first, err := fixture.store.GetSession(ctx, firstSessionID)
+	if err != nil {
+		t.Fatalf("load first session: %v", err)
+	}
+	second, err := fixture.store.GetSession(ctx, secondSessionID)
+	if err != nil {
+		t.Fatalf("load second session: %v", err)
+	}
+	firstPip := first.EnvironmentConfig["packages"].(map[string]any)["pip"].([]any)
+	secondPip := second.EnvironmentConfig["packages"].(map[string]any)["pip"].([]any)
+	if firstPip[0] != "httpx==0.28.1" || secondPip[0] != "httpx==0.29.0" {
+		t.Fatalf("session package snapshots = first %#v, second %#v", firstPip, secondPip)
+	}
+}

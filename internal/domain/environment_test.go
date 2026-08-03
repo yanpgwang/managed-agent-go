@@ -34,3 +34,20 @@ func TestEnvironmentApplyPatchesFieldsAndMetadata(t *testing.T) {
 		t.Fatal("empty patch changed an empty metadata bag")
 	}
 }
+
+func TestEnvironmentSessionConfigIsDeeplyDetached(t *testing.T) {
+	environment := Environment{Config: map[string]any{
+		"type": "cloud",
+		"packages": map[string]any{
+			"pip": []any{"httpx", map[string]any{"future": []any{"value"}}},
+		},
+	}}
+	snapshot := environment.SessionConfig()
+	snapshotPackages := snapshot["packages"].(map[string]any)
+	snapshotPackages["pip"].([]any)[1].(map[string]any)["future"].([]any)[0] = "changed"
+
+	original := environment.Config["packages"].(map[string]any)["pip"].([]any)[1].(map[string]any)["future"].([]any)[0]
+	if original != "value" {
+		t.Fatalf("Session config mutated Environment: %#v", original)
+	}
+}

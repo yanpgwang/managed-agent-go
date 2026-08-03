@@ -1399,10 +1399,15 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	// Provisioning happens before Start: a transient sandbox failure cannot turn
 	// a never-executed tool into an ambiguous side effect. MCP also uses the
 	// Session sandbox to materialize binary and oversized results.
-	box, err := a.sandboxes.Acquire(ctx, in.SessionID, sandbox.Spec{
-		Timeout: sandboxTurnTimeout,
-		Network: defaultCloudSandboxNetwork,
-	})
+	session, err := a.source.GetSession(ctx, in.SessionID)
+	if err != nil {
+		return ExecuteToolResult{}, err
+	}
+	spec, err := sandboxSpecForSession(session)
+	if err != nil {
+		return ExecuteToolResult{}, err
+	}
+	box, err := a.sandboxes.Acquire(ctx, in.SessionID, spec)
 	if err != nil {
 		return ExecuteToolResult{}, err
 	}
@@ -1475,6 +1480,62 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	}
 	out.Result = workflowToolResult(out.Result)
 	return out, nil
+}
+
+func sandboxSpecForSession(session domain.Session) (sandbox.Spec, error) {
+	spec := sandbox.Spec{
+		Timeout: sandboxTurnTimeout,
+		Network: defaultCloudSandboxNetwork,
+	}
+	rawPackages, present := session.EnvironmentConfig["packages"]
+	if !present {
+		return spec, nil
+	}
+	packages, ok := rawPackages.(map[string]any)
+	if !ok || packages == nil {
+		return sandbox.Spec{}, domain.Validation("session environment packages must be an object")
+	}
+	managers := []struct {
+		name        string
+		destination *[]string
+	}{
+		{name: "apt", destination: &spec.Packages.Apt},
+		{name: "cargo", destination: &spec.Packages.Cargo},
+		{name: "gem", destination: &spec.Packages.Gem},
+		{name: "go", destination: &spec.Packages.Go},
+		{name: "npm", destination: &spec.Packages.NPM},
+		{name: "pip", destination: &spec.Packages.Pip},
+	}
+	for _, manager := range managers {
+		values, err := environmentPackageList(packages[manager.name], manager.name)
+		if err != nil {
+			return sandbox.Spec{}, err
+		}
+		*manager.destination = values
+	}
+	return spec, nil
+}
+
+func environmentPackageList(raw any, manager string) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	switch values := raw.(type) {
+	case []string:
+		return append([]string(nil), values...), nil
+	case []any:
+		result := make([]string, len(values))
+		for index, value := range values {
+			text, ok := value.(string)
+			if !ok {
+				return nil, domain.Validation("session environment packages." + manager + " must contain strings")
+			}
+			result[index] = text
+		}
+		return result, nil
+	default:
+		return nil, domain.Validation("session environment packages." + manager + " must be an array")
+	}
 }
 
 // workflowToolResult is the bounded model/public projection returned through

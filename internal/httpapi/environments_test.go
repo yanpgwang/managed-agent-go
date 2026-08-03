@@ -40,14 +40,38 @@ func TestEnvironments_DefaultCloudWireShape(t *testing.T) {
 
 func TestEnvironments_RejectsUnenforcedConfiguration(t *testing.T) {
 	srv := newTestServer(t)
-	for _, body := range []string{
-		`{"name":"limited","config":{"type":"cloud","networking":{"type":"limited"}}}`,
-		`{"name":"packages","config":{"type":"cloud","packages":{"pip":["requests"]}}}`,
-	} {
-		rec := do(srv, http.MethodPost, "/v1/environments", body)
-		if rec.Code != http.StatusUnprocessableEntity {
-			t.Fatalf("unsupported config status = %d, want 422: %s", rec.Code, rec.Body)
-		}
+	rec := do(srv, http.MethodPost, "/v1/environments",
+		`{"name":"limited","config":{"type":"cloud","networking":{"type":"limited"}}}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("unsupported config status = %d, want 422: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestEnvironments_PackagesRoundTrip(t *testing.T) {
+	srv := newTestServer(t)
+	created := do(srv, http.MethodPost, "/v1/environments", `{
+		"name":"packages",
+		"config":{"type":"cloud","packages":{"apt":["git"],"pip":["httpx==0.28.1"]}}
+	}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", created.Code, created.Body)
+	}
+	body := decodeBody(t, created.Body.Bytes())
+	packages := body["config"].(map[string]any)["packages"].(map[string]any)
+	if packages["type"] != "packages" || packages["apt"].([]any)[0] != "git" ||
+		packages["pip"].([]any)[0] != "httpx==0.28.1" || len(packages["npm"].([]any)) != 0 {
+		t.Fatalf("created packages = %#v", packages)
+	}
+
+	id := body["id"].(string)
+	updated := do(srv, http.MethodPost, "/v1/environments/"+id,
+		`{"config":{"type":"cloud","packages":{"npm":["typescript@5.9.2"]}}}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update status = %d: %s", updated.Code, updated.Body)
+	}
+	packages = decodeBody(t, updated.Body.Bytes())["config"].(map[string]any)["packages"].(map[string]any)
+	if packages["npm"].([]any)[0] != "typescript@5.9.2" || len(packages["pip"].([]any)) != 0 {
+		t.Fatalf("updated packages = %#v", packages)
 	}
 }
 
@@ -203,7 +227,6 @@ func TestEnvironments_UpdateRejectsMalformedOrUnenforcedFields(t *testing.T) {
 	}
 	for _, body := range []string{
 		`{"config":{"type":"cloud","networking":{"type":"limited"}}}`,
-		`{"config":{"type":"cloud","packages":{"pip":["requests"]}}}`,
 	} {
 		rec := do(srv, http.MethodPost, "/v1/environments/"+id, body)
 		if rec.Code != http.StatusUnprocessableEntity {

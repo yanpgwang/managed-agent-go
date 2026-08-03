@@ -328,7 +328,7 @@ func TestExecuteTool_MCPJournalsRawAndProjectsModelContent(t *testing.T) {
 	}}
 	activities := NewActivities(
 		nil,
-		nil,
+		&mcpPrepareSource{session: domain.Session{ID: "sess_mcp"}},
 		journal,
 		lease,
 		&testIDGen{},

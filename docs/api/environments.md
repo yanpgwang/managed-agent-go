@@ -23,10 +23,15 @@ An environment is a named session execution configuration.
 `cloud`. `description` and `metadata` are optional. `scope` accepts `account` or
 `organization` for `self_hosted` environments and is rejected for `cloud`.
 
-The current supported cloud policy is unrestricted networking with no requested
-packages. It may be omitted or supplied explicitly. Limited networking and any
-non-empty package list are rejected until the selected sandbox adapter can
-enforce them; Mango does not persist unenforced policy as inert configuration.
+Cloud environments accept package lists for `apt`, `cargo`, `gem`, `go`, `npm`,
+and `pip`. The first sandbox-using turn installs those packages before the
+Session's durable sandbox binding becomes visible. Package names are passed
+directly to the corresponding package manager; the caller is responsible for
+valid names and versions. Package setup requires Docker or a remote isolated
+backend; a deployment using the host-process `local` backend rejects non-empty
+package configuration at admission.
+Limited networking is still rejected because the runtime does not persist
+unenforced policy as inert configuration.
 
 The runtime accepts `cloud` and `self_hosted` sessions. In `cloud`, enabled
 built-in sandbox tools execute on the configured worker sandbox. In
@@ -65,10 +70,11 @@ self-hosted `scope`, and the Environment type. Metadata is patched per key;
 `null` and empty string delete a key. Changing a self-hosted Environment to
 `cloud` clears its inapplicable scope. Archived Environments are read-only.
 
-Explicit unrestricted networking and empty package lists are accepted.
-`limited` networking and non-empty package lists return `422` until the selected
-sandbox adapter can enforce them. They are never accepted as inert stored
-policy.
+Explicit unrestricted networking and package lists are accepted. Omitting
+`networking` or `packages` from a cloud config update preserves its existing
+value. An update affects Sessions created afterward; each Session keeps the
+effective Environment configuration it captured at creation. `limited`
+networking returns `422` until the selected sandbox adapter can enforce it.
 
 ## Delete
 
@@ -109,8 +115,11 @@ Deleting an environment referenced by a session returns `409`.
 ```
 
 The default cloud response includes the official SDK's resolved
-unrestricted-network and empty-package defaults. Description, metadata, and
-self-hosted scope persist across create, get, list, and archive. Requests for
-limited networking or non-empty package sets remain unsupported until the
-runtime can enforce them. The [core conformance matrix](core-conformance.md)
-tracks that gap separately from route presence.
+unrestricted-network and empty-package defaults. Configured package lists,
+description, metadata, and self-hosted scope persist across create, get, list,
+update, and archive. A package-manager error prevents sandbox binding and tool
+execution; a later retry resumes provisioning from the durable intent. The
+selected isolated sandbox image must provide every requested package-manager
+binary.
+The [core conformance matrix](core-conformance.md) tracks limited networking
+separately from route presence.

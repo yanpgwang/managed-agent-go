@@ -104,17 +104,18 @@ func (s *SessionService) Create(
 	}
 	now := s.clock.Now().UTC()
 	session := domain.Session{
-		ID:              s.ids.NewID(domain.PrefixSession),
-		AgentID:         agent.ID,
-		AgentVersion:    agent.Version,
-		EnvironmentID:   environment.ID,
-		EnvironmentType: environment.ConfigType,
-		Status:          domain.StatusIdle,
-		Title:           input.Title,
-		Metadata:        metadata,
-		AgentSnapshot:   snapshot,
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		ID:                s.ids.NewID(domain.PrefixSession),
+		AgentID:           agent.ID,
+		AgentVersion:      agent.Version,
+		EnvironmentID:     environment.ID,
+		EnvironmentType:   environment.ConfigType,
+		EnvironmentConfig: environment.SessionConfig(),
+		Status:            domain.StatusIdle,
+		Title:             input.Title,
+		Metadata:          metadata,
+		AgentSnapshot:     snapshot,
+		CreatedAt:         now,
+		UpdatedAt:         now,
 	}
 	created, _, err := s.orchestrator.CreateAPISession(ctx, session, input.InitialEvents)
 	return created, err

@@ -100,8 +100,11 @@ func postgresHandlerWithFixture(t *testing.T) (http.Handler, postgresFixture) {
 		store, agentRepo, environmentRepo, orchestrator, ids, clock,
 	)
 	server := httpapi.NewServer(httpapi.Deps{
-		Agents:   app.NewAgentService(agentRepo, ids, clock),
-		Envs:     app.NewEnvironmentService(environmentRepo, ids, clock),
+		Agents: app.NewAgentService(agentRepo, ids, clock),
+		Envs: app.NewEnvironmentService(
+			environmentRepo, ids, clock,
+			app.EnvironmentCapabilities{PackageSetup: true},
+		),
 		Sessions: sessions,
 		Events:   NewEventService(store),
 		Stream:   app.NewHub(64),

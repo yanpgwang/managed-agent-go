@@ -93,6 +93,8 @@ func newOpenSandboxProvider(service openSandboxService, root string) Provider {
 
 func (p *openSandboxProvider) Name() string { return OpenSandboxProviderName }
 
+func (*openSandboxProvider) SupportsPackageSetup() bool { return true }
+
 func (p *openSandboxProvider) Create(
 	ctx context.Context,
 	sessionKey string,

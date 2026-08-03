@@ -36,6 +36,10 @@ func NewLocalProvider() Provider {
 
 func (p *localProvider) Name() string { return LocalProviderName }
 
+// Package installation is intentionally disabled: local execution shares the
+// worker host and must never mutate its system or language package stores.
+func (*localProvider) SupportsPackageSetup() bool { return false }
+
 func (p *localProvider) Create(
 	ctx context.Context,
 	sessionKey string,

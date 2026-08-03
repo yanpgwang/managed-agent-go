@@ -81,6 +81,23 @@ func TestSandboxProviderRegistry_IsLazy(t *testing.T) {
 	}
 }
 
+func TestSandboxProviderRegistry_AdvertisesPackageSetup(t *testing.T) {
+	registry, err := sandboxProviderRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range registry.Names() {
+		capabilities, err := registry.Capabilities(name)
+		if err != nil {
+			t.Fatalf("capabilities for %s: %v", name, err)
+		}
+		want := name != sandbox.LocalProviderName
+		if capabilities.PackageSetup != want {
+			t.Errorf("%s PackageSetup = %v, want %v", name, capabilities.PackageSetup, want)
+		}
+	}
+}
+
 func TestResolveSandboxProvider_RejectsInvalidSelectedProviderConfig(t *testing.T) {
 	t.Setenv(sandboxProviderEnv, sandbox.E2BProviderName)
 	t.Setenv(e2bAPIKeyEnv, "test-key")

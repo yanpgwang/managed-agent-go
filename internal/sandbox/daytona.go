@@ -105,6 +105,8 @@ func newDaytonaProvider(service daytonaService, root string) Provider {
 
 func (p *daytonaProvider) Name() string { return DaytonaProviderName }
 
+func (*daytonaProvider) SupportsPackageSetup() bool { return true }
+
 func (p *daytonaProvider) Create(
 	ctx context.Context,
 	sessionKey string,

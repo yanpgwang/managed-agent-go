@@ -11,7 +11,41 @@ import (
 func newEnvService(t *testing.T) *EnvironmentService {
 	t.Helper()
 	return NewEnvironmentService(newMemoryEnvironmentRepository(),
-		domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1, 0).UTC()})
+		domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1, 0).UTC()},
+		EnvironmentCapabilities{PackageSetup: true})
+}
+
+func TestEnvironmentService_RejectsPackagesWithoutRuntimeCapability(t *testing.T) {
+	svc := NewEnvironmentService(
+		newMemoryEnvironmentRepository(),
+		domain.NewSeqIDGen(),
+		domain.FixedClock{T: time.Unix(1, 0).UTC()},
+	)
+	_, err := svc.Create(context.Background(), domain.Environment{
+		Name: "packages",
+		Config: map[string]any{
+			"type": "cloud",
+			"packages": map[string]any{
+				"pip": []any{"httpx==0.28.1"},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("package config was accepted without runtime capability")
+	}
+	domainError, ok := err.(*domain.DomainError)
+	if !ok || domainError.Kind != domain.KindUnsupported {
+		t.Fatalf("package config error = %v, want unsupported", err)
+	}
+	if _, err := svc.Create(context.Background(), domain.Environment{
+		Name: "empty packages",
+		Config: map[string]any{
+			"type":     "cloud",
+			"packages": map[string]any{"pip": []any{}},
+		},
+	}); err != nil {
+		t.Fatalf("empty package config requires no runtime capability: %v", err)
+	}
 }
 
 func TestEnvironmentService_DeleteReferenced(t *testing.T) {
@@ -68,7 +102,6 @@ func TestEnvironmentService_RejectsUnenforcedConfiguration(t *testing.T) {
 	ctx := context.Background()
 	cases := []map[string]any{
 		{"type": "cloud", "networking": map[string]any{"type": "limited"}},
-		{"type": "cloud", "packages": map[string]any{"pip": []any{"requests"}}},
 		{"type": "cloud", "future_policy": true},
 		{"type": 42},
 	}
@@ -96,8 +129,12 @@ func TestEnvironmentService_NormalizesSupportedConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create default cloud environment: %v", err)
 	}
-	if created.ConfigType != "cloud" || len(created.Config) != 1 || created.Config["type"] != "cloud" {
+	if created.ConfigType != "cloud" || created.Config["type"] != "cloud" {
 		t.Fatalf("normalized config = %#v", created.Config)
+	}
+	packages := created.Config["packages"].(map[string]any)
+	if values, ok := packages["pip"].([]string); !ok || len(values) != 0 {
+		t.Fatalf("normalized packages = %#v", packages)
 	}
 	if created.Description != "analysis" || created.Metadata["team"] != "data" {
 		t.Fatalf("resource fields = %#v", created)
@@ -109,6 +146,40 @@ func TestEnvironmentService_NormalizesSupportedConfiguration(t *testing.T) {
 	}
 	if defaults.Description != "" || defaults.Scope != "" || defaults.Metadata == nil || len(defaults.Metadata) != 0 {
 		t.Fatalf("default resource fields = %#v", defaults)
+	}
+}
+
+func TestEnvironmentService_PreservesConfiguredPackages(t *testing.T) {
+	svc := newEnvService(t)
+	created, err := svc.Create(context.Background(), domain.Environment{
+		Name: "packages",
+		Config: map[string]any{
+			"type": "cloud",
+			"packages": map[string]any{
+				"apt": []any{"git"},
+				"pip": []any{"httpx==0.28.1"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create package environment: %v", err)
+	}
+	packages := created.Config["packages"].(map[string]any)
+	if packages["apt"].([]any)[0] != "git" || packages["pip"].([]any)[0] != "httpx==0.28.1" {
+		t.Fatalf("stored packages = %#v", packages)
+	}
+
+	config := map[string]any{
+		"type":       "cloud",
+		"networking": map[string]any{"type": "unrestricted"},
+	}
+	updated, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{Config: &config})
+	if err != nil {
+		t.Fatalf("update networking only: %v", err)
+	}
+	packages = updated.Config["packages"].(map[string]any)
+	if packages["apt"].([]any)[0] != "git" || packages["pip"].([]any)[0] != "httpx==0.28.1" {
+		t.Fatalf("omitted packages were not preserved: %#v", packages)
 	}
 }
 
@@ -127,6 +198,8 @@ func TestEnvironmentService_RejectsMalformedConfiguration(t *testing.T) {
 		{"type": "cloud", "packages": map[string]any{"type": "future"}},
 		{"type": "cloud", "packages": map[string]any{"apt": nil}},
 		{"type": "cloud", "packages": map[string]any{"apt": []any{1}}},
+		{"type": "cloud", "packages": map[string]any{"pip": []any{"--target=/tmp"}}},
+		{"type": "cloud", "packages": map[string]any{"pip": []any{" "}}},
 		{"type": "cloud", "packages": map[string]any{"apt": []any{"curl"}, "pip": []any{1}}},
 		{"type": "cloud", "packages": map[string]any{"future": []any{}}},
 		{"type": "self_hosted", "networking": map[string]any{"type": "unrestricted"}},

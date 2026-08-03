@@ -46,7 +46,10 @@ func newTestHandlerWithSessions(
 	agentsRepo := newTestAgentRepository()
 	environmentsRepo := newTestEnvironmentRepository()
 	agents := app.NewAgentService(agentsRepo, ids, clock)
-	environments := app.NewEnvironmentService(environmentsRepo, ids, clock)
+	environments := app.NewEnvironmentService(
+		environmentsRepo, ids, clock,
+		app.EnvironmentCapabilities{PackageSetup: true},
+	)
 	hub := app.NewHub(256)
 	sessions := newTestSessionService(
 		agentsRepo,
@@ -418,8 +421,9 @@ func (s *testSessionService) Create(
 		ID: s.ids.NewID(domain.PrefixSession), AgentID: agent.ID,
 		AgentVersion: agent.Version, AgentSnapshot: snapshot,
 		EnvironmentID: environment.ID, EnvironmentType: environment.ConfigType,
-		Status: domain.StatusIdle,
-		Title:  input.Title, Metadata: metadata, CreatedAt: now, UpdatedAt: now,
+		EnvironmentConfig: environment.SessionConfig(),
+		Status:            domain.StatusIdle,
+		Title:             input.Title, Metadata: metadata, CreatedAt: now, UpdatedAt: now,
 	}
 	s.mu.Lock()
 	s.sessions[session.ID] = session

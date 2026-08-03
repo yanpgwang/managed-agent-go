@@ -75,6 +75,8 @@ func NewDockerProvider(cfg DockerConfig) (Provider, error) {
 
 func (p *dockerProvider) Name() string { return DockerProviderName }
 
+func (*dockerProvider) SupportsPackageSetup() bool { return true }
+
 // runDocker invokes the docker CLI with the given args, capturing stdout/stderr
 // (capped) and the process exit code. The passed ctx bounds the whole call.
 func (p *dockerProvider) runDocker(ctx context.Context, stdin []byte, args ...string) (stdout, stderr []byte, exitCode int, err error) {
