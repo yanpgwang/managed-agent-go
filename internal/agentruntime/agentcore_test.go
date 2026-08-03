@@ -379,16 +379,21 @@ func TestAgentCore_ExecutesBuiltinToolLoop(t *testing.T) {
 
 	// The tool_result must correlate to the committed id of the tool_use event.
 	var useID, resultFor string
+	var evaluatedPermission any
 	for _, e := range sink.events {
 		switch e.Type {
 		case domain.EvAgentToolUse:
 			useID = e.ID
+			evaluatedPermission = e.Payload["evaluated_permission"]
 		case domain.EvAgentToolResult:
 			resultFor, _ = e.Payload["tool_use_id"].(string)
 		}
 	}
 	if useID == "" || useID != resultFor {
 		t.Fatalf("tool_result tool_use_id = %q, want committed use id %q", resultFor, useID)
+	}
+	if evaluatedPermission != "allow" {
+		t.Fatalf("evaluated_permission = %#v, want allow", evaluatedPermission)
 	}
 	if len(journal.calls) != 3 ||
 		journal.calls[0].operation != "prepare" ||

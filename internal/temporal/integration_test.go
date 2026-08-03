@@ -714,6 +714,9 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 	if toolName != tc.expectedTool {
 		t.Fatalf("agent.tool_use name = %q, want %q", toolName, tc.expectedTool)
 	}
+	if permission, _ := toolUse.Payload["evaluated_permission"].(string); permission != "allow" {
+		t.Fatalf("agent.tool_use evaluated_permission = %q, want allow", permission)
+	}
 	toolResults := eventsOfType(events, domain.EvAgentToolResult)
 	if len(toolResults) != 1 {
 		t.Fatalf("agent.tool_result count = %d, want exactly 1; got %s", len(toolResults), typeList(events))

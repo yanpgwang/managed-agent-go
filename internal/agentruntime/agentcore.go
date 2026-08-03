@@ -219,8 +219,9 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 					ID:   id,
 					Type: domain.EvAgentToolUse,
 					Payload: map[string]any{
-						"name":  use.ToolName,
-						"input": use.Input,
+						"name":                 use.ToolName,
+						"input":                use.Input,
+						"evaluated_permission": "allow",
 					},
 				}}); err != nil {
 					return RunOutcome{}, err
