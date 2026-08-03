@@ -50,8 +50,9 @@ separate evidence.
   `internal/pg/session_update_test.go`, and `internal/pg/store_test.go`.
 - PostgreSQL/Temporal service-path tests:
   `internal/controlplane/integration_test.go`,
-  `internal/controlplane/session_update_test.go`, and the replay/runtime suites
-  under `internal/temporal`.
+  `internal/controlplane/session_update_test.go`, the runtime suites under
+  `internal/temporal`, and the version-gate matrix in
+  `internal/temporal/replay_test.go`.
 - PostgreSQL/NATS stream recovery and backpressure tests:
   `internal/live/integration_test.go` and `internal/live/recovery_test.go`.
 - OpenAPI lifecycle, Session Event union, and reference invariants:
