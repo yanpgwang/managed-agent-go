@@ -152,19 +152,24 @@ func validateToolWireShape(rawTools, rawServers []any) error {
 			if err := rejectUnknownFields(tool, "custom tool", customToolFields); err != nil {
 				return err
 			}
-			if description, present := tool["description"]; present && description != nil {
-				if _, ok := description.(string); !ok {
-					return fmt.Errorf("custom tool description must be a string")
-				}
+			name, ok := tool["name"].(string)
+			if !ok || !validCustomToolName(name) {
+				return fmt.Errorf("custom tool name must match ^[a-zA-Z0-9_-]{1,128}$")
 			}
-			if rawSchema, present := tool["input_schema"]; present && rawSchema != nil {
-				schema, ok := rawSchema.(map[string]any)
-				if !ok {
-					return fmt.Errorf("custom tool input_schema must be an object")
-				}
-				if schemaType, present := schema["type"]; present && schemaType != "object" {
-					return fmt.Errorf("custom tool input_schema type must be object")
-				}
+			description, ok := tool["description"].(string)
+			if !ok {
+				return fmt.Errorf("custom tool description must be a string")
+			}
+			descriptionLength := utf8.RuneCountInString(description)
+			if descriptionLength < 1 || descriptionLength > 4096 {
+				return fmt.Errorf("custom tool description must contain 1 to 4096 characters")
+			}
+			schema, ok := tool["input_schema"].(map[string]any)
+			if !ok {
+				return fmt.Errorf("custom tool input_schema must be an object")
+			}
+			if schemaType, present := schema["type"]; !present || schemaType != "object" {
+				return fmt.Errorf("custom tool input_schema type must be object")
 			}
 			continue
 		default:
@@ -221,6 +226,22 @@ func validateToolWireShape(rawTools, rawServers []any) error {
 		}
 	}
 	return nil
+}
+
+func validCustomToolName(name string) bool {
+	if len(name) == 0 || len(name) > 128 {
+		return false
+	}
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') ||
+			char == '_' || char == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func parsePolicy(raw any) *PermissionPolicy {

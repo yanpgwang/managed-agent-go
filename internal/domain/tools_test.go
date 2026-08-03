@@ -146,6 +146,76 @@ func TestValidateToolConfiguration_RejectsMalformedOptionalValues(t *testing.T) 
 	}
 }
 
+func TestValidateToolConfiguration_EnforcesCustomToolContract(t *testing.T) {
+	valid := map[string]any{
+		"type": "custom", "name": "weather-lookup_v2", "description": "Look up weather.",
+		"input_schema": map[string]any{"type": "object"},
+	}
+	if err := ValidateToolConfiguration([]any{valid}, nil); err != nil {
+		t.Fatalf("valid custom tool was rejected: %v", err)
+	}
+
+	boundary := map[string]any{
+		"type": "custom", "name": strings.Repeat("a", 128),
+		"description": strings.Repeat("界", 4096),
+		"input_schema": map[string]any{
+			"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}},
+		},
+	}
+	if err := ValidateToolConfiguration([]any{boundary}, nil); err != nil {
+		t.Fatalf("boundary custom tool was rejected: %v", err)
+	}
+
+	cases := map[string]map[string]any{
+		"missing name": {
+			"type": "custom", "description": "d", "input_schema": map[string]any{"type": "object"},
+		},
+		"invalid name character": {
+			"type": "custom", "name": "weather.lookup", "description": "d",
+			"input_schema": map[string]any{"type": "object"},
+		},
+		"name too long": {
+			"type": "custom", "name": strings.Repeat("a", 129), "description": "d",
+			"input_schema": map[string]any{"type": "object"},
+		},
+		"missing description": {
+			"type": "custom", "name": "weather", "input_schema": map[string]any{"type": "object"},
+		},
+		"empty description": {
+			"type": "custom", "name": "weather", "description": "",
+			"input_schema": map[string]any{"type": "object"},
+		},
+		"description too long": {
+			"type": "custom", "name": "weather", "description": strings.Repeat("d", 4097),
+			"input_schema": map[string]any{"type": "object"},
+		},
+		"missing input schema": {
+			"type": "custom", "name": "weather", "description": "d",
+		},
+		"missing schema type": {
+			"type": "custom", "name": "weather", "description": "d",
+			"input_schema": map[string]any{"properties": map[string]any{}},
+		},
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateToolConfiguration([]any{raw}, nil); err == nil {
+				t.Fatalf("invalid custom tool was accepted: %#v", raw)
+			}
+		})
+	}
+}
+
+func TestStoredToolConfiguration_ToleratesHistoricalIncompleteCustomTool(t *testing.T) {
+	tool := map[string]any{"type": "custom", "name": "legacy_tool"}
+	if err := ValidateStoredToolConfiguration([]any{tool}, nil); err != nil {
+		t.Fatalf("historical custom tool was rejected: %v", err)
+	}
+	if err := ValidateToolConfiguration([]any{tool}, nil); err == nil {
+		t.Fatal("new admission accepted an incomplete custom tool")
+	}
+}
+
 func TestStoredToolConfiguration_ToleratesHistoricalFields(t *testing.T) {
 	baseTools := []any{map[string]any{
 		"type": "mcp_toolset", "mcp_server_name": "github",

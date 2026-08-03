@@ -47,6 +47,17 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 		},
 		System:   anthropic.String("help"),
 		Metadata: map[string]string{"team": "sre"},
+		Tools: []anthropic.BetaAgentNewParamsToolUnion{{
+			OfCustom: &anthropic.BetaManagedAgentsCustomToolParams{
+				Description: "Look up the current service status.",
+				InputSchema: anthropic.BetaManagedAgentsCustomToolInputSchemaParam{
+					Properties: map[string]any{"service": map[string]any{"type": "string"}},
+					Required:   []string{"service"},
+				},
+				Name: "get_service_status",
+				Type: anthropic.BetaManagedAgentsCustomToolParamsTypeCustom,
+			},
+		}},
 		Multiagent: anthropic.BetaManagedAgentsMultiagentParams{
 			Type: anthropic.BetaManagedAgentsMultiagentParamsTypeCoordinator,
 			Agents: []anthropic.BetaManagedAgentsMultiagentRosterEntryParamsUnion{{
@@ -78,6 +89,12 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 	}
 	if agent.Metadata["team"] != "sre" {
 		t.Fatalf("metadata = %#v, want team=sre", agent.Metadata)
+	}
+	if len(agent.Tools) != 1 || agent.Tools[0].Type != "custom" ||
+		agent.Tools[0].Name != "get_service_status" ||
+		agent.Tools[0].Description != "Look up the current service status." ||
+		agent.Tools[0].InputSchema.Type != "object" {
+		t.Fatalf("custom tool response = %#v", agent.Tools)
 	}
 	if agent.Multiagent.Type != anthropic.BetaManagedAgentsMultiagentTypeCoordinator ||
 		len(agent.Multiagent.Agents) != 1 ||

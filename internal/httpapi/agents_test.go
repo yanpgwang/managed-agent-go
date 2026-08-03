@@ -132,7 +132,8 @@ func TestAgents_UpdateArrayNullClears(t *testing.T) {
 	srv := newTestServer(t)
 	rec := do(srv, "POST", "/v1/agents",
 		`{"name":"Agent","model":"claude-opus-4-8",`+
-			`"tools":[{"type":"custom","name":"x"},{"type":"mcp_toolset","mcp_server_name":"m"}],`+
+			`"tools":[{"type":"custom","name":"x","description":"x",`+
+			`"input_schema":{"type":"object"}},{"type":"mcp_toolset","mcp_server_name":"m"}],`+
 			`"mcp_servers":[{"type":"url","name":"m","url":"https://example.com"}],`+
 			`"skills":[{"type":"anthropic","skill_id":"xlsx","version":"1"}]}`)
 	if rec.Code != http.StatusOK {
@@ -432,6 +433,49 @@ func TestAgents_RejectsMalformedToolValuesWithoutCreatingVersion(t *testing.T) {
 	}
 	if data, _ := page["data"].([]any); len(data) != 1 {
 		t.Fatalf("rejected update created an Agent version: %#v", page["data"])
+	}
+}
+
+func TestAgents_RejectsInvalidCustomToolContractWithoutCreatingVersion(t *testing.T) {
+	srv := newTestServer(t)
+	invalidTools := []string{
+		`[{"type":"custom","name":"weather","input_schema":{"type":"object"}}]`,
+		`[{"type":"custom","name":"weather","description":"Look up weather.","input_schema":{}}]`,
+		`[{"type":"custom","name":"weather.lookup","description":"Look up weather.",` +
+			`"input_schema":{"type":"object"}}]`,
+	}
+	for _, tools := range invalidTools {
+		rec := do(srv, "POST", "/v1/agents", `{"name":"Agent","model":"claude-opus-4-8",`+
+			`"tools":`+tools+`}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid create status = %d, want 400: %s", rec.Code, rec.Body)
+		}
+	}
+
+	rec := do(srv, "POST", "/v1/agents", `{"name":"Agent","model":"claude-opus-4-8"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id := created["id"].(string)
+
+	for _, tools := range invalidTools {
+		rec = do(srv, "POST", "/v1/agents/"+id, `{"tools":`+tools+`}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("invalid update status = %d, want 400: %s", rec.Code, rec.Body)
+		}
+	}
+
+	versions := do(srv, "GET", "/v1/agents/"+id+"/versions", "")
+	var page map[string]any
+	if err := json.Unmarshal(versions.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := page["data"].([]any); len(data) != 1 {
+		t.Fatalf("rejected updates created Agent versions: %#v", page["data"])
 	}
 }
 
