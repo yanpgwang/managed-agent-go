@@ -215,6 +215,235 @@ func oppositeSQLOrder(order string) string {
 	return "ASC"
 }
 
+// Agent and Environment listing share no query builder with Sessions and none
+// with each other: the three endpoints document different parameter sets. What
+// they do share is the keyset shape. Both resources are ordered newest-first by
+// the relational (created_at, id) pair — upstream documents no `order`
+// parameter for either, so the ordering is a local choice, but it must be a
+// total order for the opaque cursor to be stable.
+const resourceListOrder = ` ORDER BY created_at DESC, id DESC`
+
+// forwardKeysetPredicate returns the "strictly after this row" predicate for
+// the newest-first order above, appending its two placeholders to args.
+func forwardKeysetPredicate(args []any, createdAt time.Time, id string) (string, []any) {
+	args = append(args, createdAt, id)
+	position := len(args)
+	return fmt.Sprintf(
+		`(created_at < $%d OR (created_at = $%d AND id < $%d))`,
+		position-1, position-1, position,
+	), args
+}
+
+// ListAgents pages over the LATEST version of each agent. The agents table is
+// append-only with PRIMARY KEY (id, version), so the DISTINCT ON collapse is
+// what keeps superseded versions out of List Agents entirely.
+func (s *Store) ListAgents(
+	ctx context.Context,
+	query app.AgentListQuery,
+) (app.AgentListPage, error) {
+	if query.Limit <= 0 {
+		query.Limit = app.DefaultAgentListLimit
+	}
+	var clauses []string
+	var args []any
+	if !query.IncludeArchived {
+		clauses = append(clauses, `archived_at IS NULL`)
+	}
+	if query.CreatedAtGte != nil {
+		args = append(args, *query.CreatedAtGte)
+		clauses = append(clauses, fmt.Sprintf(`created_at >= $%d`, len(args)))
+	}
+	if query.CreatedAtLte != nil {
+		args = append(args, *query.CreatedAtLte)
+		clauses = append(clauses, fmt.Sprintf(`created_at <= $%d`, len(args)))
+	}
+	if query.After != nil {
+		var predicate string
+		predicate, args = forwardKeysetPredicate(args, query.After.CreatedAt, query.After.ID)
+		clauses = append(clauses, predicate)
+	}
+
+	statement := `SELECT id, body, created_at, archived_at FROM (
+    SELECT DISTINCT ON (id) id, body, created_at, archived_at
+    FROM agents
+    ORDER BY id, version DESC
+) AS latest`
+	if len(clauses) > 0 {
+		statement += ` WHERE ` + strings.Join(clauses, ` AND `)
+	}
+	args = append(args, query.Limit+1)
+	statement += resourceListOrder + fmt.Sprintf(` LIMIT $%d`, len(args))
+
+	rows, err := s.pool.Query(ctx, statement, args...)
+	if err != nil {
+		return app.AgentListPage{}, err
+	}
+	defer rows.Close()
+	agents := make([]domain.Agent, 0, query.Limit)
+	for rows.Next() {
+		var (
+			id         string
+			body       []byte
+			createdAt  time.Time
+			archivedAt *time.Time
+		)
+		if err := rows.Scan(&id, &body, &createdAt, &archivedAt); err != nil {
+			return app.AgentListPage{}, err
+		}
+		var agent domain.Agent
+		if err := json.Unmarshal(body, &agent); err != nil {
+			return app.AgentListPage{}, fmt.Errorf("pg: decode agent %s: %w", id, err)
+		}
+		// The relational columns are authoritative for the pagination key and
+		// for archival, which is projected across versions rather than rewritten
+		// into the immutable JSON body.
+		agent.CreatedAt = createdAt.UTC()
+		agent.ArchivedAt = utcPtr(archivedAt)
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return app.AgentListPage{}, err
+	}
+	page := app.AgentListPage{Agents: agents}
+	if len(agents) > query.Limit {
+		page.Agents = agents[:query.Limit]
+		page.HasNext = true
+	}
+	return page, nil
+}
+
+// ListEnvironments pages Environments with the three documented parameters.
+// There is deliberately no created_at filtering here: List Environments does
+// not document any.
+func (s *Store) ListEnvironments(
+	ctx context.Context,
+	query app.EnvironmentListQuery,
+) (app.EnvironmentListPage, error) {
+	if query.Limit <= 0 {
+		query.Limit = app.DefaultEnvironmentListLimit
+	}
+	var clauses []string
+	var args []any
+	if !query.IncludeArchived {
+		clauses = append(clauses, `archived_at IS NULL`)
+	}
+	if query.After != nil {
+		var predicate string
+		predicate, args = forwardKeysetPredicate(args, query.After.CreatedAt, query.After.ID)
+		clauses = append(clauses, predicate)
+	}
+
+	statement := `SELECT id, body, created_at, archived_at FROM environments`
+	if len(clauses) > 0 {
+		statement += ` WHERE ` + strings.Join(clauses, ` AND `)
+	}
+	args = append(args, query.Limit+1)
+	statement += resourceListOrder + fmt.Sprintf(` LIMIT $%d`, len(args))
+
+	rows, err := s.pool.Query(ctx, statement, args...)
+	if err != nil {
+		return app.EnvironmentListPage{}, err
+	}
+	defer rows.Close()
+	environments := make([]domain.Environment, 0, query.Limit)
+	for rows.Next() {
+		var (
+			id         string
+			body       []byte
+			createdAt  time.Time
+			archivedAt *time.Time
+		)
+		if err := rows.Scan(&id, &body, &createdAt, &archivedAt); err != nil {
+			return app.EnvironmentListPage{}, err
+		}
+		var environment domain.Environment
+		if err := json.Unmarshal(body, &environment); err != nil {
+			return app.EnvironmentListPage{}, fmt.Errorf("pg: decode environment %s: %w", id, err)
+		}
+		environment.CreatedAt = createdAt.UTC()
+		environment.ArchivedAt = utcPtr(archivedAt)
+		environments = append(environments, environment)
+	}
+	if err := rows.Err(); err != nil {
+		return app.EnvironmentListPage{}, err
+	}
+	page := app.EnvironmentListPage{Environments: environments}
+	if len(environments) > query.Limit {
+		page.Environments = environments[:query.Limit]
+		page.HasNext = true
+	}
+	return page, nil
+}
+
+// UpdateEnvironment applies a read-modify-write under SELECT ... FOR UPDATE so
+// two concurrent partial updates cannot each write a body derived from the same
+// pre-update snapshot and silently drop one another's fields.
+func (s *Store) UpdateEnvironment(
+	ctx context.Context,
+	id string,
+	mutate func(domain.Environment) (domain.Environment, bool, error),
+) (domain.Environment, error) {
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
+		return domain.Environment{}, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
+
+	var (
+		body       []byte
+		createdAt  time.Time
+		archivedAt *time.Time
+	)
+	err = tx.QueryRow(ctx,
+		`SELECT body, created_at, archived_at FROM environments WHERE id = $1 FOR UPDATE`,
+		id,
+	).Scan(&body, &createdAt, &archivedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Environment{}, domain.NotFound("environment not found")
+	}
+	if err != nil {
+		return domain.Environment{}, err
+	}
+	var current domain.Environment
+	if err := json.Unmarshal(body, &current); err != nil {
+		return domain.Environment{}, fmt.Errorf("pg: decode environment %s: %w", id, err)
+	}
+	current.CreatedAt = createdAt.UTC()
+	current.ArchivedAt = utcPtr(archivedAt)
+
+	next, changed, err := mutate(current)
+	if err != nil {
+		return domain.Environment{}, err
+	}
+	if !changed {
+		return current, tx.Commit(ctx)
+	}
+	next.ID = current.ID
+	next.CreatedAt = current.CreatedAt
+	next.ArchivedAt = current.ArchivedAt
+	nextBody, err := json.Marshal(next)
+	if err != nil {
+		return domain.Environment{}, err
+	}
+	if _, err := tx.Exec(ctx,
+		`UPDATE environments
+         SET name = $2, config_type = $3, body = $4, updated_at = $5
+         WHERE id = $1`,
+		id, next.Name, next.ConfigType, nextBody, tsUTC(next.UpdatedAt),
+	); err != nil {
+		return domain.Environment{}, err
+	}
+	return next, tx.Commit(ctx)
+}
+
+func utcPtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	value := t.UTC()
+	return &value
+}
+
 // UpdateSessionTitle keeps the projection and session.updated event in one
 // transaction under the per-session admission lock.
 func (s *Store) UpdateSessionTitle(

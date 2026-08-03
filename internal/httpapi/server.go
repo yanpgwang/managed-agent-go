@@ -15,10 +15,14 @@ var openapiDoc string
 
 const timeFmt = time.RFC3339Nano
 
+// AgentService and EnvironmentService keep separate list signatures on purpose.
+// List Agents and List Environments document different query parameters, so a
+// shared page type would make it possible to accept a parameter one of the two
+// endpoints does not support.
 type AgentService interface {
 	Create(context.Context, domain.Agent) (domain.Agent, error)
 	Get(context.Context, string) (domain.Agent, error)
-	List(context.Context) ([]domain.Agent, error)
+	List(context.Context, app.AgentListQuery) (app.AgentListPage, error)
 	Versions(context.Context, string) ([]domain.Agent, error)
 	Update(context.Context, string, domain.AgentPatch) (domain.Agent, error)
 	Archive(context.Context, string) (domain.Agent, error)
@@ -27,7 +31,8 @@ type AgentService interface {
 type EnvironmentService interface {
 	Create(context.Context, domain.Environment) (domain.Environment, error)
 	Get(context.Context, string) (domain.Environment, error)
-	List(context.Context) ([]domain.Environment, error)
+	List(context.Context, app.EnvironmentListQuery) (app.EnvironmentListPage, error)
+	Update(context.Context, string, domain.EnvironmentPatch) (domain.Environment, error)
 	Archive(context.Context, string) (domain.Environment, error)
 	Delete(context.Context, string) error
 }
@@ -88,6 +93,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/environments", s.createEnvironment)
 	s.mux.HandleFunc("GET /v1/environments", s.listEnvironments)
 	s.mux.HandleFunc("GET /v1/environments/{id}", s.getEnvironment)
+	s.mux.HandleFunc("POST /v1/environments/{id}", s.updateEnvironment)
 	s.mux.HandleFunc("POST /v1/environments/{id}/archive", s.archiveEnvironment)
 	s.mux.HandleFunc("DELETE /v1/environments/{id}", s.deleteEnvironment)
 

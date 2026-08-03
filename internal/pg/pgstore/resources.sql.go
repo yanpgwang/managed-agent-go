@@ -235,76 +235,8 @@ func (q *Queries) ListDeletingSessionIDs(ctx context.Context, rowLimit int32) ([
 	return items, nil
 }
 
-const listEnvironments = `-- name: ListEnvironments :many
-SELECT id, name, config_type, body, created_at, updated_at, archived_at
-FROM environments
-ORDER BY id
-`
-
-func (q *Queries) ListEnvironments(ctx context.Context) ([]Environment, error) {
-	rows, err := q.db.Query(ctx, listEnvironments)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Environment{}
-	for rows.Next() {
-		var i Environment
-		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.ConfigType,
-			&i.Body,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.ArchivedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listLatestAgents = `-- name: ListLatestAgents :many
-SELECT DISTINCT ON (id)
-    id, version, name, body, created_at, updated_at, archived_at
-FROM agents
-ORDER BY id, version DESC
-`
-
-func (q *Queries) ListLatestAgents(ctx context.Context) ([]Agent, error) {
-	rows, err := q.db.Query(ctx, listLatestAgents)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []Agent{}
-	for rows.Next() {
-		var i Agent
-		if err := rows.Scan(
-			&i.ID,
-			&i.Version,
-			&i.Name,
-			&i.Body,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.ArchivedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const lockActiveAgentVersion = `-- name: LockActiveAgentVersion :one
+
 SELECT id
 FROM agents
 WHERE id = $1 AND version = $2 AND archived_at IS NULL
@@ -316,6 +248,9 @@ type LockActiveAgentVersionParams struct {
 	Version int32
 }
 
+// List Agents and List Environments are keyset-paginated with request-dependent
+// filters, so their statements are composed in internal/pg/api_store.go beside
+// List Sessions rather than being pinned here as static queries.
 func (q *Queries) LockActiveAgentVersion(ctx context.Context, arg LockActiveAgentVersionParams) (string, error) {
 	row := q.db.QueryRow(ctx, lockActiveAgentVersion, arg.ID, arg.Version)
 	var id string

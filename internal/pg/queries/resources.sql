@@ -30,11 +30,9 @@ FROM agents
 WHERE id = @id
 ORDER BY version;
 
--- name: ListLatestAgents :many
-SELECT DISTINCT ON (id)
-    id, version, name, body, created_at, updated_at, archived_at
-FROM agents
-ORDER BY id, version DESC;
+-- List Agents and List Environments are keyset-paginated with request-dependent
+-- filters, so their statements are composed in internal/pg/api_store.go beside
+-- List Sessions rather than being pinned here as static queries.
 
 -- name: LockActiveAgentVersion :one
 SELECT id
@@ -65,11 +63,6 @@ ON CONFLICT (id) DO UPDATE SET
 SELECT id, name, config_type, body, created_at, updated_at, archived_at
 FROM environments
 WHERE id = @id;
-
--- name: ListEnvironments :many
-SELECT id, name, config_type, body, created_at, updated_at, archived_at
-FROM environments
-ORDER BY id;
 
 -- name: LockActiveEnvironment :one
 SELECT id

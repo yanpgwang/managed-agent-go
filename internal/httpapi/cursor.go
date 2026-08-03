@@ -4,9 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 // Pagination cursors are opaque to callers. Internally they encode the last
@@ -122,4 +125,116 @@ func decodeSessionCursor(token string) (sessionCursor, bool) {
 		return sessionCursor{}, false
 	}
 	return cursor, true
+}
+
+// resourceCursor is the forward-only cursor used by List Agents and List
+// Environments. Neither endpoint documents `order` or `prev_page`, so unlike
+// the session cursor it carries no direction and no order; like the session
+// cursor it carries a filter fingerprint, so replaying a page token under
+// different filters is rejected rather than silently returning a page from a
+// different result set. Kind separates the two resources so an agents cursor
+// cannot be replayed against environments.
+type resourceCursor struct {
+	Version   int    `json:"v"`
+	Kind      string `json:"kind"`
+	CreatedAt string `json:"created_at"`
+	ID        string `json:"id"`
+	Filter    string `json:"filter"`
+}
+
+const (
+	agentListCursorKind       = "agent_list"
+	environmentListCursorKind = "environment_list"
+	// resourceCursorPrefix keeps the wire token visibly opaque and matches the
+	// shape of the `page_...` cursors in the official examples.
+	resourceCursorPrefix = "page_"
+)
+
+func encodeResourceCursor(cursor resourceCursor) string {
+	cursor.Version = 1
+	body, _ := json.Marshal(cursor)
+	return resourceCursorPrefix + base64.RawURLEncoding.EncodeToString(body)
+}
+
+func decodeResourceCursor(token, kind string) (resourceCursor, bool) {
+	encoded, ok := strings.CutPrefix(token, resourceCursorPrefix)
+	if !ok {
+		return resourceCursor{}, false
+	}
+	body, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return resourceCursor{}, false
+	}
+	var cursor resourceCursor
+	if err := json.Unmarshal(body, &cursor); err != nil {
+		return resourceCursor{}, false
+	}
+	if cursor.Version != 1 ||
+		cursor.Kind != kind ||
+		cursor.CreatedAt == "" ||
+		cursor.ID == "" ||
+		cursor.Filter == "" {
+		return resourceCursor{}, false
+	}
+	return cursor, true
+}
+
+// agentCursorFilter fingerprints exactly the documented List Agents filters.
+type agentCursorFilter struct {
+	CreatedAtGte    string `json:"created_at_gte,omitempty"`
+	CreatedAtLte    string `json:"created_at_lte,omitempty"`
+	IncludeArchived bool   `json:"include_archived"`
+}
+
+func (f agentCursorFilter) fingerprint() string {
+	body, _ := json.Marshal(f)
+	sum := sha256.Sum256(body)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// environmentCursorFilter is deliberately a separate type from
+// agentCursorFilter. List Environments documents no created_at filters, so it
+// must not be possible to fingerprint one here.
+type environmentCursorFilter struct {
+	IncludeArchived bool `json:"include_archived"`
+}
+
+func (f environmentCursorFilter) fingerprint() string {
+	body, _ := json.Marshal(f)
+	sum := sha256.Sum256(body)
+	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// parsePositiveLimit parses a `limit` value without applying any bound. Each
+// endpoint owns its own maximum because the documented bounds differ per
+// resource, so the caller compares against its own constant.
+func parsePositiveLimit(raw string) (int, error) {
+	limit, err := strconv.Atoi(raw)
+	if err != nil || limit <= 0 {
+		return 0, domain.Validation("limit must be a positive integer")
+	}
+	return limit, nil
+}
+
+func parseBoolParam(raw, field string) (bool, error) {
+	switch raw {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	return false, domain.Validation(field + " must be true or false")
+}
+
+// rejectUnsupportedListParams turns a named-but-unsupported query parameter into
+// an explicit validation error. It deliberately checks a closed list rather than
+// rejecting every unrecognized key: the official SDK appends parameters of its
+// own (for example `beta=true`) to these paths.
+func rejectUnsupportedListParams(values url.Values, unsupported ...string) error {
+	for _, key := range unsupported {
+		if values.Has(key) {
+			return domain.Validation(key + " is not a supported query parameter for this endpoint")
+		}
+	}
+	return nil
 }

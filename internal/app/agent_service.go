@@ -2,8 +2,44 @@ package app
 
 import (
 	"context"
+	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+)
+
+// AgentListQuery is the List Agents query. It is intentionally not shared with
+// EnvironmentListQuery: the two endpoints document different parameter sets and
+// a common struct would make it easy to accept a parameter one of them does not
+// support. List Agents documents exactly created_at[gte], created_at[lte],
+// include_archived, limit, and page.
+type AgentListQuery struct {
+	CreatedAtGte    *time.Time
+	CreatedAtLte    *time.Time
+	IncludeArchived bool
+	// After is the forward-only keyset boundary decoded from `page`.
+	After *AgentPageBoundary
+	Limit int
+}
+
+// AgentPageBoundary is the last row of the previous page.
+type AgentPageBoundary struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+// AgentListPage carries one page plus whether another page exists. The
+// documented envelope is `data` + `next_page` only: forward-only, no prev.
+type AgentListPage struct {
+	Agents  []domain.Agent
+	HasNext bool
+}
+
+// DefaultAgentListLimit and MaxAgentListLimit are the documented List Agents
+// bounds ("Maximum results per page. Default 20, maximum 100."). They are
+// specific to this endpoint and must not be reused for other list resources.
+const (
+	DefaultAgentListLimit = 20
+	MaxAgentListLimit     = 100
 )
 
 type AgentService struct {
@@ -36,7 +72,12 @@ func (s *AgentService) Get(ctx context.Context, id string) (domain.Agent, error)
 	return s.repo.Latest(ctx, id)
 }
 
-func (s *AgentService) List(ctx context.Context) ([]domain.Agent, error) { return s.repo.List(ctx) }
+func (s *AgentService) List(ctx context.Context, query AgentListQuery) (AgentListPage, error) {
+	if query.Limit <= 0 {
+		query.Limit = DefaultAgentListLimit
+	}
+	return s.repo.ListLatest(ctx, query)
+}
 
 func (s *AgentService) Versions(ctx context.Context, id string) ([]domain.Agent, error) {
 	return s.repo.Versions(ctx, id)

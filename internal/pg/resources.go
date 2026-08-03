@@ -152,12 +152,11 @@ func (r *AgentRepository) Versions(ctx context.Context, id string) ([]domain.Age
 	return agentsFromRows(rows)
 }
 
-func (r *AgentRepository) List(ctx context.Context) ([]domain.Agent, error) {
-	rows, err := r.store.q.ListLatestAgents(ctx)
-	if err != nil {
-		return nil, err
-	}
-	return agentsFromRows(rows)
+func (r *AgentRepository) ListLatest(
+	ctx context.Context,
+	query app.AgentListQuery,
+) (app.AgentListPage, error) {
+	return r.store.ListAgents(ctx, query)
 }
 
 func agentInsertParams(agent domain.Agent) (pgstore.InsertAgentVersionParams, error) {
@@ -238,20 +237,19 @@ func (r *EnvironmentRepository) Get(
 	return environmentFromRow(row)
 }
 
-func (r *EnvironmentRepository) List(ctx context.Context) ([]domain.Environment, error) {
-	rows, err := r.store.q.ListEnvironments(ctx)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]domain.Environment, 0, len(rows))
-	for _, row := range rows {
-		environment, err := environmentFromRow(row)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, environment)
-	}
-	return out, nil
+func (r *EnvironmentRepository) List(
+	ctx context.Context,
+	query app.EnvironmentListQuery,
+) (app.EnvironmentListPage, error) {
+	return r.store.ListEnvironments(ctx, query)
+}
+
+func (r *EnvironmentRepository) Update(
+	ctx context.Context,
+	id string,
+	mutate func(domain.Environment) (domain.Environment, bool, error),
+) (domain.Environment, error) {
+	return r.store.UpdateEnvironment(ctx, id, mutate)
 }
 
 func (r *EnvironmentRepository) DeleteIfUnreferenced(ctx context.Context, id string) error {

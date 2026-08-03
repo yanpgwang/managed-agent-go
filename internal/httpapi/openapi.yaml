@@ -6,7 +6,7 @@ info:
 paths:
   /v1/agents:
     post: { summary: Create agent, responses: { "200": { description: ok } } }
-    get: { summary: List agents, responses: { "200": { description: ok } } }
+    get: { summary: "List agents (created_at[gte], created_at[lte], include_archived, limit<=100, page)", responses: { "200": { description: ok } } }
   /v1/agents/{id}:
     get: { summary: Get agent, responses: { "200": { description: ok } } }
     post: { summary: Update agent (new version), responses: { "200": { description: ok }, "409": { description: version conflict } } }
@@ -16,9 +16,10 @@ paths:
     post: { summary: Archive agent, responses: { "200": { description: ok } } }
   /v1/environments:
     post: { summary: Create environment, responses: { "200": { description: ok } } }
-    get: { summary: List environments, responses: { "200": { description: ok } } }
+    get: { summary: "List environments (include_archived, limit, page)", responses: { "200": { description: ok } } }
   /v1/environments/{id}:
     get: { summary: Get environment, responses: { "200": { description: ok } } }
+    post: { summary: Update environment, responses: { "200": { description: ok }, "400": { description: invalid config or metadata patch } } }
     delete: { summary: Delete environment, responses: { "200": { description: ok }, "409": { description: referenced } } }
   /v1/environments/{id}/archive:
     post: { summary: Archive environment, responses: { "200": { description: ok } } }

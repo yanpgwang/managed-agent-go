@@ -544,3 +544,148 @@ func mustAgent(t *testing.T, client anthropic.Client, _ string, system string) *
 	}
 	return agent
 }
+
+// TestSDK_AgentListParamsAndPaging drives the documented List Agents query
+// surface through the SDK's own BetaAgentListParams, which exposes exactly
+// created_at[gte], created_at[lte], include_archived, limit, and page.
+func TestSDK_AgentListParamsAndPaging(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+
+	created := map[string]bool{}
+	for range 3 {
+		agent := mustAgent(t, client, "opus", "system")
+		created[agent.ID] = true
+	}
+
+	first, err := client.Beta.Agents.List(ctx, anthropic.BetaAgentListParams{
+		Limit:           anthropic.Int(2),
+		IncludeArchived: anthropic.Bool(false),
+		CreatedAtGte:    anthropic.Time(time.Unix(0, 0).UTC()),
+		CreatedAtLte:    anthropic.Time(time.Unix(1<<31, 0).UTC()),
+	})
+	if err != nil {
+		t.Fatalf("list agents page 1: %v", err)
+	}
+	if len(first.Data) != 2 {
+		t.Fatalf("page 1 returned %d agents, want 2", len(first.Data))
+	}
+	if first.NextPage == "" {
+		t.Fatal("page 1 has no next_page cursor")
+	}
+	assertRawObjectHasFields(t, first.RawJSON(), "data", "next_page")
+
+	// The SDK's own pager re-sends the identical filter set with the cursor, so
+	// following next_page must be accepted by the filter-fingerprint check.
+	second, err := first.GetNextPage()
+	if err != nil {
+		t.Fatalf("follow next_page: %v", err)
+	}
+	if second == nil || len(second.Data) != 1 {
+		t.Fatalf("page 2 = %+v, want 1 agent", second)
+	}
+	if second.NextPage != "" {
+		t.Fatalf("page 2 next_page = %q, want empty", second.NextPage)
+	}
+	for _, agent := range append(append([]anthropic.BetaManagedAgentsAgent{}, first.Data...), second.Data...) {
+		if !created[agent.ID] {
+			t.Fatalf("unexpected agent %s in results", agent.ID)
+		}
+		delete(created, agent.ID)
+	}
+	if len(created) != 0 {
+		t.Fatalf("agents missing from the paged result: %v", created)
+	}
+
+	// Documented maximum is 100; over-maximum is an explicit error, not a clamp.
+	if _, err := client.Beta.Agents.List(ctx, anthropic.BetaAgentListParams{
+		Limit: anthropic.Int(101),
+	}); err == nil {
+		t.Fatal("limit=101 was accepted")
+	} else {
+		assertAPIStatus(t, err, 400)
+	}
+}
+
+// TestSDK_EnvironmentListAndUpdate exercises List Environments and Update
+// Environment through the SDK. The SDK types the update metadata as
+// map[string]string, so empty-string deletion is the only deletion it can
+// express — which is why the endpoint documents it alongside null.
+func TestSDK_EnvironmentListAndUpdate(t *testing.T) {
+	client, ts := sdkClientAndServer(t)
+	ctx := context.Background()
+
+	for range 3 {
+		mustEnv(t, ts.URL)
+	}
+
+	page, err := client.Beta.Environments.List(ctx, anthropic.BetaEnvironmentListParams{
+		Limit:           anthropic.Int(2),
+		IncludeArchived: anthropic.Bool(false),
+	})
+	if err != nil {
+		t.Fatalf("list environments: %v", err)
+	}
+	if len(page.Data) != 2 {
+		t.Fatalf("page 1 returned %d environments, want 2", len(page.Data))
+	}
+	if page.NextPage == "" {
+		t.Fatal("page 1 has no next_page cursor")
+	}
+	assertRawObjectHasFields(t, page.RawJSON(), "data", "next_page")
+	assertRawObjectHasFields(t, page.Data[0].RawJSON(),
+		"id", "archived_at", "config", "created_at", "description", "metadata",
+		"name", "type", "updated_at")
+
+	rest, err := page.GetNextPage()
+	if err != nil {
+		t.Fatalf("follow next_page: %v", err)
+	}
+	if rest == nil || len(rest.Data) != 1 {
+		t.Fatalf("page 2 = %+v, want 1 environment", rest)
+	}
+
+	target := page.Data[0].ID
+	updated, err := client.Beta.Environments.Update(ctx, target, anthropic.BetaEnvironmentUpdateParams{
+		Description: anthropic.String("data analysis"),
+		Metadata:    map[string]string{"team": "ml"},
+		Scope:       anthropic.BetaEnvironmentUpdateParamsScopeOrganization,
+		Config: anthropic.BetaEnvironmentUpdateParamsConfigUnion{
+			OfCloud: &anthropic.BetaCloudConfigParams{
+				Packages: anthropic.BetaPackagesParams{Pip: []string{"pandas", "numpy"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("update environment: %v", err)
+	}
+	if updated.Description != "data analysis" {
+		t.Fatalf("description = %q", updated.Description)
+	}
+	if updated.Metadata["team"] != "ml" {
+		t.Fatalf("metadata = %v", updated.Metadata)
+	}
+	if updated.Scope != anthropic.BetaEnvironmentScopeOrganization {
+		t.Fatalf("scope = %q", updated.Scope)
+	}
+	if pip := updated.Config.Packages.Pip; len(pip) != 2 {
+		t.Fatalf("packages.pip = %v", pip)
+	}
+
+	// Omitting a field preserves it; an empty-string metadata value deletes it.
+	preserved, err := client.Beta.Environments.Update(ctx, target, anthropic.BetaEnvironmentUpdateParams{
+		Metadata: map[string]string{"team": ""},
+	})
+	if err != nil {
+		t.Fatalf("metadata delete update: %v", err)
+	}
+	if _, ok := preserved.Metadata["team"]; ok {
+		t.Fatalf("empty-string metadata value did not delete the key: %v", preserved.Metadata)
+	}
+	if preserved.Description != "data analysis" {
+		t.Fatalf("omitted description was not preserved: %q", preserved.Description)
+	}
+	if pip := preserved.Config.Packages.Pip; len(pip) != 2 {
+		t.Fatalf("omitted config was not preserved: %v", preserved.Config)
+	}
+}

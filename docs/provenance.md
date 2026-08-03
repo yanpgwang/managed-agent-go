@@ -37,6 +37,18 @@ Verified 2026-07-29.
   model configuration, initial `version`, and response shape.
 - [Update Agent](https://platform.claude.com/docs/en/api/beta/agents/update) —
   optimistic concurrency and update-field semantics.
+- [List Agents](https://platform.claude.com/docs/en/api/beta/agents/list) — the
+  five query parameters, the documented `limit` default 20 / maximum 100, and
+  the `data` + `next_page` response envelope.
+- [List Environments](https://platform.claude.com/docs/en/api/beta/environments/list)
+  — the three query parameters (no `created_at` filtering), `limit` with no
+  documented default or maximum, and the `page_...` cursor example.
+- [Update Environment](https://platform.claude.com/docs/en/api/beta/environments/update)
+  — the five body fields, "omitted fields preserve the existing value" for
+  `config` and for limited-network params, and metadata deletion on `null` or
+  empty string. Contrast with
+  [Update Session](https://platform.claude.com/docs/en/api/beta/sessions/update),
+  whose metadata patch deletes only on `null`.
 - [Start a session](https://platform.claude.com/docs/en/managed-agents/sessions)
   — agent reference forms, initial events, and resolved snapshot.
 - [Create Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/create)

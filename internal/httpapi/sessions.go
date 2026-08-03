@@ -282,9 +282,9 @@ func parseSessionListParams(r *http.Request) (app.ListPage, sessionCursorFilter,
 	}
 
 	if query.Has("limit") {
-		limit, err := strconv.Atoi(query.Get("limit"))
-		if err != nil || limit <= 0 {
-			return app.ListPage{}, sessionCursorFilter{}, domain.Validation("limit must be a positive integer")
+		limit, err := parsePositiveLimit(query.Get("limit"))
+		if err != nil {
+			return app.ListPage{}, sessionCursorFilter{}, err
 		}
 		if limit > maxPageLimit {
 			return app.ListPage{}, sessionCursorFilter{}, domain.Validation("limit must not exceed 1000")
@@ -309,15 +309,11 @@ func parseSessionListParams(r *http.Request) (app.ListPage, sessionCursorFilter,
 	}
 
 	if query.Has("include_archived") {
-		switch query.Get("include_archived") {
-		case "true":
-			params.IncludeArchived = true
-		case "false":
-			params.IncludeArchived = false
-		default:
-			return app.ListPage{}, sessionCursorFilter{},
-				domain.Validation("include_archived must be true or false")
+		include, err := parseBoolParam(query.Get("include_archived"), "include_archived")
+		if err != nil {
+			return app.ListPage{}, sessionCursorFilter{}, err
 		}
+		params.IncludeArchived = include
 	}
 	filter.IncludeArchived = params.IncludeArchived
 
