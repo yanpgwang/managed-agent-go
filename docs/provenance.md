@@ -78,9 +78,10 @@ declaration, the custom/permission handoff, and the tool-block event wire.
 - [Managed Agents tools](https://platform.claude.com/docs/en/managed-agents/tools)
   — the `agent_toolset_20260401` built-in toolset, per-tool `enabled` and
   `permission_policy` config, custom tools, and MCP toolsets.
-  Verified 2026-08-03 against the documented nested field sets, required custom
-  tool fields, and name/description bounds; custom-tool `input_schema` remains
-  an open JSON Schema beyond its required object wrapper.
+  Verified 2026-08-03 against the documented nested field sets, the 128-entry
+  tool limit, required custom-tool fields, custom name/description bounds, and
+  MCP tool-config name bounds; custom-tool `input_schema` remains an open JSON
+  Schema beyond its required object wrapper.
 - [List Events](https://platform.claude.com/docs/en/api/beta/sessions/events/list)
   and
   [Send Events](https://platform.claude.com/docs/en/api/beta/sessions/events/send)

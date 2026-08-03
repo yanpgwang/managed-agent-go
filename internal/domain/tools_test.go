@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"fmt"
 	"net/netip"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -128,12 +130,13 @@ func TestValidateToolConfiguration_RejectsMalformedOptionalValues(t *testing.T) 
 		}},
 		"custom description not string": {map[string]any{
 			"type": "custom", "name": "weather", "description": 7,
+			"input_schema": map[string]any{"type": "object"},
 		}},
 		"custom schema not object": {map[string]any{
-			"type": "custom", "name": "weather", "input_schema": "object",
+			"type": "custom", "name": "weather", "description": "d", "input_schema": "object",
 		}},
 		"custom schema wrong type": {map[string]any{
-			"type": "custom", "name": "weather",
+			"type": "custom", "name": "weather", "description": "d",
 			"input_schema": map[string]any{"type": "string"},
 		}},
 	}
@@ -213,6 +216,53 @@ func TestStoredToolConfiguration_ToleratesHistoricalIncompleteCustomTool(t *test
 	}
 	if err := ValidateToolConfiguration([]any{tool}, nil); err == nil {
 		t.Fatal("new admission accepted an incomplete custom tool")
+	}
+}
+
+func TestValidateToolConfiguration_EnforcesToolCollectionBounds(t *testing.T) {
+	tools := make([]any, 128)
+	for index := range tools {
+		tools[index] = map[string]any{
+			"type": "custom", "name": fmt.Sprintf("tool_%d", index), "description": "d",
+			"input_schema": map[string]any{"type": "object"},
+		}
+	}
+	if err := ValidateToolConfiguration(tools, nil); err != nil {
+		t.Fatalf("128 tool entries were rejected: %v", err)
+	}
+
+	overLimit := append(slices.Clone(tools), map[string]any{
+		"type": "custom", "name": "tool_128", "description": "d",
+		"input_schema": map[string]any{"type": "object"},
+	})
+	if err := ValidateToolConfiguration(overLimit, nil); err == nil {
+		t.Fatal("129 tool entries were accepted")
+	}
+	if err := ValidateStoredToolConfiguration(overLimit, nil); err != nil {
+		t.Fatalf("historical over-limit snapshot was rejected: %v", err)
+	}
+}
+
+func TestValidateToolConfiguration_EnforcesMCPToolConfigNameBounds(t *testing.T) {
+	servers := []any{map[string]any{
+		"type": "url", "name": "server", "url": "https://mcp.example.com",
+	}}
+	toolWithName := func(name string) []any {
+		return []any{map[string]any{
+			"type": "mcp_toolset", "mcp_server_name": "server",
+			"configs": []any{map[string]any{"name": name}},
+		}}
+	}
+
+	if err := ValidateToolConfiguration(toolWithName(strings.Repeat("界", 128)), servers); err != nil {
+		t.Fatalf("128-character MCP tool name was rejected: %v", err)
+	}
+	longName := strings.Repeat("界", 129)
+	if err := ValidateToolConfiguration(toolWithName(longName), servers); err == nil {
+		t.Fatal("129-character MCP tool name was accepted")
+	}
+	if err := ValidateStoredToolConfiguration(toolWithName(longName), servers); err != nil {
+		t.Fatalf("historical long MCP tool name was rejected: %v", err)
 	}
 }
 
