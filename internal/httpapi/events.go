@@ -32,8 +32,8 @@ const maxOutcomeRubricCharacters = 262144
 // preview frames. Only agent.message previews are currently emitted, but the
 // opt-in contract accepts agent.thinking too.
 var deltaOptInTypes = map[string]bool{
-	domain.EvAgentMessage: true,
-	"agent.thinking":      true,
+	domain.EvAgentMessage:  true,
+	domain.EvAgentThinking: true,
 }
 
 // toDrafts converts raw event objects (top-level tagged union) into internal

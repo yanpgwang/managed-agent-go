@@ -1939,6 +1939,7 @@ components:
         - user.define_outcome
         - system.message
         - agent.message
+        - agent.thinking
         - agent.custom_tool_use
         - agent.tool_use
         - agent.tool_result
@@ -2063,6 +2064,14 @@ components:
             content:
               type: array
               items: {$ref: '#/components/schemas/TextBlockInput'}
+      unevaluatedProperties: false
+    AgentThinkingEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: agent.thinking}
       unevaluatedProperties: false
     AgentCustomToolUseEvent:
       allOf:
@@ -2212,6 +2221,8 @@ components:
           properties:
             type: {type: string, enum: [retrying, exhausted, terminal]}
         mcp_server_name: {type: string}
+        credential_id: {type: string}
+        vault_id: {type: string}
       additionalProperties: false
     SessionErrorEvent:
       allOf:
@@ -2343,6 +2354,7 @@ components:
         - $ref: '#/components/schemas/PersistedUserDefineOutcomeEvent'
         - $ref: '#/components/schemas/PersistedSystemMessageEvent'
         - $ref: '#/components/schemas/AgentMessageEvent'
+        - $ref: '#/components/schemas/AgentThinkingEvent'
         - $ref: '#/components/schemas/AgentCustomToolUseEvent'
         - $ref: '#/components/schemas/AgentToolUseEvent'
         - $ref: '#/components/schemas/AgentToolResultEvent'

@@ -14,7 +14,7 @@ const (
 )
 
 type ContentBlock struct {
-	Type          string         // "text" | "tool_use" | "tool_result"
+	Type          string         // "text" | "thinking" | "redacted_thinking" | "tool_use" | "tool_result"
 	Text          string         // text blocks; also flattened text of a tool_result
 	ToolUseID     string         // tool_use: the event id
 	ToolName      string         // tool_use: tool name
