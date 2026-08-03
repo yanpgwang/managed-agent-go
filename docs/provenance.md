@@ -71,7 +71,11 @@ declaration, the custom/permission handoff, and the tool-block event wire.
   [Send Events](https://platform.claude.com/docs/en/api/beta/sessions/events/send)
   — the `agent.tool_use` / `agent.tool_result` / `agent.custom_tool_use` event
   variants and the `user.custom_tool_result` / `user.tool_confirmation` client
-  events used for the handoff.
+  events used for the handoff. The same references define the distinct
+  `agent.mcp_tool_use` (required `mcp_server_name`, bare tool `name`, optional
+  `evaluated_permission`) and `agent.mcp_tool_result` (`mcp_tool_use_id`, no
+  server name) variants, and state that `user.tool_confirmation.tool_use_id`
+  answers either tool-use variant. Verified 2026-08-03.
 - [Permission policies](https://platform.claude.com/docs/en/managed-agents/permission-policies)
   — `always_allow` / `always_ask` / `always_deny` evaluation and the
   `requires_action` stop reason that a pending confirmation produces.

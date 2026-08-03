@@ -85,7 +85,7 @@ func ProjectMessages(events []Event) []Message {
 	seen := make(map[string]struct{})
 	for _, e := range events {
 		switch e.Type {
-		case EvAgentToolUse, EvAgentCustomToolUse:
+		case EvAgentToolUse, EvAgentCustomToolUse, EvAgentMcpToolUse:
 			id := e.ID
 			if id == "" {
 				id, _ = e.Payload["id"].(string)
@@ -93,8 +93,8 @@ func ProjectMessages(events []Event) []Message {
 			if id != "" {
 				seen[id] = struct{}{}
 			}
-		case EvAgentToolResult:
-			if id, _ := e.Payload["tool_use_id"].(string); id != "" {
+		case EvAgentToolResult, EvAgentMcpToolResult:
+			if id, _ := AgentToolResultReference(e.Type, e.Payload); id != "" {
 				answered[id] = struct{}{}
 			}
 		case EvUserCustomToolResult:
@@ -127,7 +127,7 @@ func ProjectMessages(events []Event) []Message {
 			add(RoleUser, outcomePromptBlocks(e.Payload))
 		case EvAgentMessage:
 			add(RoleAssistant, contentBlocks(e.Payload))
-		case EvAgentToolUse, EvAgentCustomToolUse:
+		case EvAgentToolUse, EvAgentCustomToolUse, EvAgentMcpToolUse:
 			// The correlation id is the committed event id (Event.ID), the same
 			// value the public wire exposes and the value a tool_result event's
 			// tool_use_id points at. payload["id"] holds the model's transient
@@ -148,8 +148,8 @@ func ProjectMessages(events []Event) []Message {
 			name, _ := e.Payload["name"].(string)
 			input, _ := e.Payload["input"].(map[string]any)
 			add(RoleAssistant, []ContentBlock{{Type: "tool_use", ToolUseID: id, ToolName: name, Input: input}})
-		case EvAgentToolResult:
-			id, _ := e.Payload["tool_use_id"].(string)
+		case EvAgentToolResult, EvAgentMcpToolResult:
+			id, _ := AgentToolResultReference(e.Type, e.Payload)
 			if id == "" {
 				continue
 			}

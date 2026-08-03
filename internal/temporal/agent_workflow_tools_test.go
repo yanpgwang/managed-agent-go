@@ -46,7 +46,7 @@ func TestPlanToolBatch_ClassifiesWholeRoundBeforeExecution(t *testing.T) {
 		},
 	}
 
-	plan, failure := planToolBatch(uses, tools, steps)
+	plan, failure := planToolBatch(uses, tools, steps, true)
 
 	require.Empty(t, failure)
 	require.Equal(t, []string{
@@ -58,6 +58,7 @@ func TestPlanToolBatch_ClassifiesWholeRoundBeforeExecution(t *testing.T) {
 	require.Equal(t, []plannedToolUse{{
 		use:           uses[1],
 		publicEventID: "sevt_builtin",
+		useEventType:  domain.EvAgentToolUse,
 		stepID:        "tstep_builtin",
 		definition:    tools["bash"],
 	}}, plan.executable)
@@ -124,6 +125,7 @@ func TestPlanToolBatch_RejectsInvalidRoundBeforePlanning(t *testing.T) {
 				[]domain.ContentBlock{tc.use},
 				indexTurnTools(tc.tools),
 				tc.steps,
+				true,
 			)
 			require.Equal(t, tc.wantFailure, failure)
 			require.Empty(t, plan.actionDrafts)
@@ -148,6 +150,7 @@ func TestPlanToolBatch_SelfHostedBuiltinParksForClientResult(t *testing.T) {
 			ToolUseEventID: "sevt_read", ProviderToolUseID: "provider_read",
 			ToolStepID: "tstep_read",
 		}},
+		true,
 	)
 	require.Empty(t, failure)
 	require.Empty(t, plan.executable)

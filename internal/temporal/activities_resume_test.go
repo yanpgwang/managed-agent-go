@@ -151,6 +151,7 @@ func TestPrepareTurn_ProcessedOnReceiptCustomResultStillResumesPendingBarrier(t 
 	}}, prepared.Request.Messages, "parked action/result must be reconstructed by Workflow, not projected twice")
 	require.Equal(t, []ResumeAction{{
 		ActionEventID:     "sevt_custom",
+		ActionEventType:   domain.EvAgentCustomToolUse,
 		Kind:              domain.PendingCustomToolResult,
 		ToolName:          "ask_client",
 		Input:             map[string]any{"question": "continue?"},

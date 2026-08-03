@@ -21,6 +21,15 @@ const (
 	EvAgentToolUse       = "agent.tool_use"
 	EvAgentToolResult    = "agent.tool_result"
 
+	// MCP tool calls are a distinct documented variant of the tool-use pair. The
+	// use event additionally carries a required mcp_server_name and reports the
+	// bare tool name as the server published it (not the namespaced model-facing
+	// alias). The result event correlates through mcp_tool_use_id and carries no
+	// server name: a client attributes a result to a server by joining back to
+	// its use event.
+	EvAgentMcpToolUse    = "agent.mcp_tool_use"
+	EvAgentMcpToolResult = "agent.mcp_tool_result"
+
 	EvSessionStatusIdle         = "session.status_idle"
 	EvSessionStatusRunning      = "session.status_running"
 	EvSessionStatusTerminated   = "session.status_terminated"
@@ -86,9 +95,57 @@ func IsUserEvent(t string) bool {
 // IsClientSubmittable reports whether a client may POST an event of this type to
 // the send-events endpoint. The set is exactly the documented user.* inputs plus
 // system.message. Agent-, session-, and span-scoped types are server-only and
-// must be rejected.
+// must be rejected; that includes agent.mcp_tool_use and agent.mcp_tool_result,
+// which are emitted by the runtime and never accepted from a caller.
 func IsClientSubmittable(t string) bool {
 	return IsUserEvent(t) || t == EvSystemMessage
+}
+
+// IsAgentToolUse reports whether a type is one of the server-emitted tool-call
+// announcements. Both agent.tool_use and agent.mcp_tool_use name a call the
+// runtime made on the model's behalf; agent.custom_tool_use names one the client
+// must execute.
+func IsAgentToolUse(t string) bool {
+	switch t {
+	case EvAgentToolUse, EvAgentMcpToolUse, EvAgentCustomToolUse:
+		return true
+	}
+	return false
+}
+
+// AgentToolResultReference returns the tool-use event id a server-emitted tool
+// result correlates to, reading the id field the documented variant uses:
+// tool_use_id for agent.tool_result and mcp_tool_use_id for
+// agent.mcp_tool_result. ok is false for any other event type.
+func AgentToolResultReference(
+	eventType string,
+	payload map[string]any,
+) (toolUseEventID string, ok bool) {
+	switch eventType {
+	case EvAgentToolResult:
+		id, _ := payload["tool_use_id"].(string)
+		return id, true
+	case EvAgentMcpToolResult:
+		id, _ := payload["mcp_tool_use_id"].(string)
+		return id, true
+	}
+	return "", false
+}
+
+// AgentToolResultTypeFor returns the result event type that answers a
+// server-emitted tool-use event: agent.mcp_tool_result for agent.mcp_tool_use
+// and agent.tool_result for every other server-executed call.
+//
+// The pairing is a property of the committed use event, not of the code that
+// happens to be running when the answer is produced. A tool call can park on a
+// client confirmation for an unbounded time and be answered by a later, upgraded
+// process, so the answering side must read the durable type rather than assume
+// its own naming scheme.
+func AgentToolResultTypeFor(toolUseEventType string) string {
+	if toolUseEventType == EvAgentMcpToolUse {
+		return EvAgentMcpToolResult
+	}
+	return EvAgentToolResult
 }
 
 // IsInitialEventType reports whether a type is allowed in a session's

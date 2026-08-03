@@ -167,7 +167,8 @@ func retainCommittedProviderMappings(
 	committed := make(map[string]struct{})
 	for _, draft := range drafts {
 		switch draft.Type {
-		case domain.EvAgentToolUse, domain.EvAgentCustomToolUse:
+		case domain.EvAgentToolUse, domain.EvAgentCustomToolUse,
+			domain.EvAgentMcpToolUse:
 			if draft.ID != "" {
 				committed[draft.ID] = struct{}{}
 			}
