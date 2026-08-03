@@ -31,8 +31,8 @@ logs:
 # healthcheck, then confirms the Temporal frontend answers. It exits non-zero if
 # any service is not healthy within the compose-defined retry windows.
 health:
-	@echo "waiting for postgres, temporal, nats, and api to become healthy..."
-	@for svc in managed-agent-postgres managed-agent-temporal managed-agent-nats managed-agent-api; do \
+	@echo "waiting for postgres, temporal, nats, api, and worker to become healthy..."
+	@for svc in managed-agent-postgres managed-agent-temporal managed-agent-nats managed-agent-api managed-agent-worker; do \
 		printf "  %-28s " "$$svc"; \
 		for i in $$(seq 1 60); do \
 			state=$$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $$svc 2>/dev/null || echo missing); \

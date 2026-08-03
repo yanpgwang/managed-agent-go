@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -50,6 +51,27 @@ func (b *Broker) Close() {
 		return
 	}
 	b.connection.Close()
+}
+
+// Ping reports whether the live channel is usable right now. It is a readiness
+// probe, not a correctness check: NATS is an ephemeral delivery optimization,
+// so a failure here degrades stream latency rather than the durable ledger. The
+// flush forces a real round trip instead of trusting the cached connection
+// state, and the timeout keeps a wedged server from stalling readiness.
+func (b *Broker) Ping(timeout time.Duration) error {
+	if b == nil || b.connection == nil {
+		return errors.New("live: NATS connection is not configured")
+	}
+	if !b.connection.IsConnected() {
+		return fmt.Errorf("live: NATS connection is %s", b.connection.Status())
+	}
+	if timeout <= 0 {
+		timeout = 2 * time.Second
+	}
+	if err := b.connection.FlushTimeout(timeout); err != nil {
+		return fmt.Errorf("live: NATS round trip failed: %w", err)
+	}
+	return nil
 }
 
 func (b *Broker) NotifySession(_ context.Context, sessionID string) error {

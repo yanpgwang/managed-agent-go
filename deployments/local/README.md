@@ -76,6 +76,10 @@ Each service declares a Docker `healthcheck`:
 - **temporal** — `tctl --address temporal:7233 cluster health`
 - **nats** — HTTP `GET /healthz` on the monitoring port
 - **api** — HTTP `GET /readyz`
+- **worker** — HTTP `GET /readyz` on its own loopback health listener (`:8081`)
+
+`/healthz` is liveness only and never probes a dependency; `/readyz` probes
+PostgreSQL, Temporal, and NATS and answers `503` naming the failing one.
 
 `docker compose ps` shows `(healthy)` once each passes.
 

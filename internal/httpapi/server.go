@@ -3,11 +3,13 @@ package httpapi
 import (
 	"context"
 	_ "embed"
+	"log/slog"
 	"net/http"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/health"
 )
 
 //go:embed openapi.yaml
@@ -56,23 +58,41 @@ type Deps struct {
 	Sessions SessionService
 	Events   EventService
 	Stream   EventSubscriber
+
+	// Readiness probes the process's required dependencies for GET /readyz.
+	// Nil means "no dependencies to probe", which keeps in-memory embedders and
+	// the HTTP test suite unconditionally ready.
+	Readiness health.Prober
+	// Logger receives operational records (access log, readiness failures). Nil
+	// selects slog.Default().
+	Logger *slog.Logger
 }
 
 type Server struct {
-	deps Deps
-	cfg  Config
-	mux  *http.ServeMux
+	deps   Deps
+	cfg    Config
+	mux    *http.ServeMux
+	logger *slog.Logger
 }
 
 func NewServer(deps Deps, cfg Config) *Server {
-	s := &Server{deps: deps, cfg: cfg, mux: http.NewServeMux()}
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	s := &Server{deps: deps, cfg: cfg, mux: http.NewServeMux(), logger: logger}
 	s.routes()
 	return s
 }
 
 func (s *Server) routes() {
-	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
-	s.mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })
+	// Health endpoints are a local operational choice: the Claude Managed
+	// Agents API documents no health, readiness, or status endpoint, so they
+	// live outside /v1 and outside the OpenAPI document. /healthz is liveness
+	// only and never probes a dependency; /readyz fails closed when PostgreSQL,
+	// Temporal, or NATS is unreachable.
+	s.mux.Handle("GET /healthz", health.LiveHandler())
+	s.mux.Handle("GET /readyz", health.ReadyHandler(s.deps.Readiness, s.logger))
 	s.mux.HandleFunc("GET /openapi.yaml", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/yaml")
 		_, _ = w.Write([]byte(openapiDoc))
@@ -98,6 +118,6 @@ func (s *Server) routes() {
 }
 
 func (s *Server) Handler() http.Handler {
-	return requestIDMiddleware(bodyLimitMiddleware(authMiddleware(s.cfg,
-		versionMiddleware(s.cfg, contentTypeMiddleware(s.cfg, betaMiddleware(s.cfg, s.mux))))))
+	return requestIDMiddleware(logMiddleware(s.logger, bodyLimitMiddleware(authMiddleware(s.cfg,
+		versionMiddleware(s.cfg, contentTypeMiddleware(s.cfg, betaMiddleware(s.cfg, s.mux)))))))
 }

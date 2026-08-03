@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -20,6 +20,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
 	"github.com/yanpgwang/managed-agent-go/internal/live"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/managed-agent-go/internal/obs"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
@@ -73,10 +74,16 @@ func resolveModelClient() (client model.Client, realModel bool, err error) {
 	if client, ok, err := model.AnthropicFromEnv(); err != nil {
 		return nil, false, err
 	} else if ok {
-		log.Printf("runtime: agent core using real Messages API")
+		slog.Info("agent core model selected",
+			slog.String("component", "runtime"),
+			slog.String("model_client", "messages_api"),
+		)
 		return client, true, nil
 	}
-	log.Printf("runtime: agent core using offline fake model")
+	slog.Info("agent core model selected",
+		slog.String("component", "runtime"),
+		slog.String("model_client", "offline_fake"),
+	)
 	return model.NewFake(), false, nil
 }
 
@@ -227,6 +234,55 @@ func envBool(name string) (bool, error) {
 	return parsed, nil
 }
 
+// envLogFormat parses the handler selection. Text is the development default;
+// production deployments set json so records are machine-parsable.
+func envLogFormat(name string) (string, error) {
+	format, err := obs.ParseFormat(os.Getenv(name))
+	if err != nil {
+		return "", fmt.Errorf("configuration: %s: %w", name, err)
+	}
+	return format, nil
+}
+
+func envLogLevel(name string) (slog.Level, error) {
+	level, err := obs.ParseLevel(os.Getenv(name))
+	if err != nil {
+		return 0, fmt.Errorf("configuration: %s: %w", name, err)
+	}
+	return level, nil
+}
+
+// configureLogging installs the process-wide structured logger before any
+// component that logs is constructed. Every record carries the process role so
+// a shared sink can separate API from worker output.
+func configureLogging(role string) (*slog.Logger, error) {
+	format, err := envLogFormat(envLogFormatName)
+	if err != nil {
+		return nil, err
+	}
+	level, err := envLogLevel(envLogLevelName)
+	if err != nil {
+		return nil, err
+	}
+	return obs.Configure(os.Stderr, obs.Options{
+		Format: format, Level: level, Role: role,
+	})
+}
+
+// fatal reports an unrecoverable startup or runtime condition and exits
+// non-zero, replacing log.Fatalf while keeping the structured record shape.
+func fatal(logger *slog.Logger, msg string, attrs ...any) {
+	logger.Error(msg, attrs...)
+	os.Exit(1)
+}
+
+// errAttr keeps error formatting consistent across call sites. Errors reaching
+// here are already sanitized by their producing package (see
+// internal/model.APIError), so no credential material is rendered.
+func errAttr(err error) slog.Attr {
+	return slog.String("error", err.Error())
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -255,10 +311,17 @@ func resolveSandboxProvider() (p sandbox.Provider, isLocal bool, err error) {
 		return nil, false, err
 	}
 	if name == sandbox.LocalProviderName {
-		log.Printf("sandbox: local provider (dev-grade guardrail, not a security boundary)")
+		slog.Warn("sandbox provider selected",
+			slog.String("component", "sandbox"),
+			slog.String("provider", name),
+			slog.String("isolation", "dev-grade guardrail, not a security boundary"),
+		)
 		return provider, true, nil
 	}
-	log.Printf("sandbox: %s provider", name)
+	slog.Info("sandbox provider selected",
+		slog.String("component", "sandbox"),
+		slog.String("provider", name),
+	)
 	return provider, false, nil
 }
 
@@ -300,45 +363,61 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 	}
 }
 
+const usage = "usage: managed-agent <serve|orchestrate> [flags]"
+
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("usage: managed-agent <serve|orchestrate> [flags]")
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(1)
 	}
-	switch os.Args[1] {
-	case "serve":
-		runServe()
-	case "orchestrate":
-		runOrchestrate()
+	role := os.Args[1]
+	switch role {
+	case "serve", "orchestrate":
 	default:
-		log.Fatal("usage: managed-agent <serve|orchestrate> [flags]")
+		fmt.Fprintln(os.Stderr, usage)
+		os.Exit(1)
+	}
+	// Logging is configured before any component is constructed so no startup
+	// record escapes through the stdlib default logger.
+	logger, err := configureLogging(role)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	switch role {
+	case "serve":
+		runServe(logger)
+	case "orchestrate":
+		runOrchestrate(logger)
 	}
 }
 
-func runServe() {
+func runServe(logger *slog.Logger) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "listen address (default binds to loopback; use e.g. :8080 to expose on all interfaces)")
 	strict := fs.Bool("strict", false, "require Claude API wire headers (auth, version, beta, content-type) to be present and valid; this is header validation, NOT authentication")
 	_ = fs.Parse(os.Args[2:])
 
 	cfg := httpapi.Config{
-		RequireBeta: *strict, RequireAuth: *strict, RequireVersion: *strict, RequireContentType: *strict,
+		RequireBeta: *strict, RequireAuth: *strict, RequireVersion: *strict,
+		RequireContentType: *strict,
 	}
-	runPostgresAPI(*addr, cfg)
+	runPostgresAPI(logger, *addr, cfg)
 }
 
-func runPostgresAPI(addr string, cfg httpapi.Config) {
+func runPostgresAPI(logger *slog.Logger, addr string, cfg httpapi.Config) {
 	databaseURL := os.Getenv(envDatabaseURL)
 	if databaseURL == "" {
-		log.Fatalf("serve: %s is required", envDatabaseURL)
+		fatal(logger, "missing required configuration", slog.String("env", envDatabaseURL))
 	}
 	ctx := context.Background()
 	pool, err := pg.Pool(ctx, databaseURL)
 	if err != nil {
-		log.Fatalf("serve: postgres: %v", err)
+		fatal(logger, "postgres connection failed", errAttr(err))
 	}
 	defer pool.Close()
 	if err := pg.Migrate(ctx, pool); err != nil {
-		log.Fatalf("serve: migrate: %v", err)
+		fatal(logger, "postgres migration failed", errAttr(err))
 	}
 
 	ids := domain.NewRandomIDGen()
@@ -346,7 +425,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	pgStore := pg.NewStore(pool, ids, clock)
 	broker, err := live.Connect(os.Getenv(envNATSURL))
 	if err != nil {
-		log.Fatalf("serve: nats: %v", err)
+		fatal(logger, "NATS connection failed", errAttr(err))
 	}
 	defer broker.Close()
 	pgStore.SetEventNotifier(broker)
@@ -360,7 +439,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		Namespace: os.Getenv(envTemporalNamespace),
 	})
 	if err != nil {
-		log.Fatalf("serve: temporal: %v", err)
+		fatal(logger, "temporal connection failed", errAttr(err))
 	}
 	defer temporalClient.Close()
 	// Event admission remains correct through a Temporal outage because it
@@ -376,26 +455,44 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	)
 	events := controlplane.NewEventService(pgStore)
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
+	readiness, err := newReadinessChecker(
+		postgresProbe(pool),
+		temporalProbe(temporalClient),
+		natsProbe(broker),
+	)
+	if err != nil {
+		fatal(logger, "invalid configuration", errAttr(err))
+	}
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
 		Events: events, Stream: stream,
+		Readiness: readiness, Logger: logger,
 	}, cfg).Handler()
-	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")
-	serveHTTP(addr, handler)
+	logger.Info("control plane connected",
+		slog.String("component", "serve"),
+		slog.String("store", "postgres"),
+		slog.String("orchestrator", "temporal"),
+		slog.String("live_channel", "nats"),
+	)
+	serveHTTP(logger, addr, handler)
 }
 
-func serveHTTP(addr string, handler http.Handler) {
+func serveHTTP(logger *slog.Logger, addr string, handler http.Handler) {
 	srv := newHTTPServer(addr, handler)
 	go func() {
-		log.Printf("listening on %s", addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("serve: %v", err)
+		logger.Info("http listener started",
+			slog.String("component", "serve"),
+			slog.String("addr", addr),
+		)
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fatal(logger, "http listener failed", errAttr(err))
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop
+	logger.Info("shutting down", slog.String("component", "serve"))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)

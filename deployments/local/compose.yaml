@@ -135,6 +135,13 @@ services:
       MANAGED_AGENT_TEMPORAL_HOSTPORT: temporal:7233
       MANAGED_AGENT_TEMPORAL_NAMESPACE: default
       MANAGED_AGENT_NATS_URL: nats://nats:4222
+    healthcheck:
+      # The worker serves no CMA HTTP surface; this is its own health listener,
+      # bound to loopback inside the container.
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1:8081/readyz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
 volumes:
   postgres-data:
