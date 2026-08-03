@@ -43,7 +43,7 @@ These labels describe project support, not a security certification.
 | Backend | Status | Isolation model | Session state | Intended use |
 |---|---|---|---|---|
 | Local process | Available; default | Host process plus confined workspace; not an isolation boundary | Reattaches by durable workspace path on the same host | Offline tests and trusted local development only |
-| Docker | Available; opt-in | Container filesystem, namespaces/cgroups, configurable limits, network disabled by default | Reattaches by container ID on the same Docker daemon | Controlled single-host self-hosting |
+| Docker | Available; opt-in | Container filesystem, namespaces/cgroups, configurable limits; provider calls default to no network while cloud Environments request bridge networking | Reattaches by container ID on the same Docker daemon | Controlled single-host self-hosting |
 | [E2B](https://github.com/e2b-dev/E2B) | Preview | Managed microVM service | E2B ID plus auto-pause filesystem persistence | Managed production |
 | [Tencent CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | Preview | E2B-compatible microVM service | Provider-owned durable sandbox ID | Self-hosted production on Linux/KVM |
 | [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | Preview; Docker runtime manually live-verified | Docker or Kubernetes-backed sandbox service | Provider-owned durable sandbox ID | Self-hosted production |

@@ -220,6 +220,11 @@ const defaultContextTokenBudget = 150000
 // sandboxTurnTimeout bounds a built-in tool execution within a turn.
 const sandboxTurnTimeout = 120 * time.Second
 
+// The public cloud Environment default resolves to unrestricted networking.
+// Provider defaults remain deny-by-default for direct sandbox consumers; the
+// Managed Agents execution path opts into provider egress explicitly.
+const defaultCloudSandboxNetwork = "bridge"
+
 // toolResultWriteAttempts gives a known in-memory tool result a brief chance to
 // cross a transient PostgreSQL outage before the Activity returns an error. A
 // later Activity retry must conservatively classify a still-started step as
@@ -1253,7 +1258,10 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	// Provisioning happens before Start: a transient sandbox failure cannot turn
 	// a never-executed tool into an ambiguous side effect. MCP also uses the
 	// Session sandbox to materialize binary and oversized results.
-	box, err := a.sandboxes.Acquire(ctx, in.SessionID, sandbox.Spec{Timeout: sandboxTurnTimeout})
+	box, err := a.sandboxes.Acquire(ctx, in.SessionID, sandbox.Spec{
+		Timeout: sandboxTurnTimeout,
+		Network: defaultCloudSandboxNetwork,
+	})
 	if err != nil {
 		return ExecuteToolResult{}, err
 	}

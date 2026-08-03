@@ -130,6 +130,7 @@ type forwardingCountingLease struct {
 	inner SandboxLease
 	mu    sync.Mutex
 	count int
+	spec  sandbox.Spec
 }
 
 func (l *forwardingCountingLease) Acquire(
@@ -139,6 +140,7 @@ func (l *forwardingCountingLease) Acquire(
 ) (sandbox.Sandbox, error) {
 	l.mu.Lock()
 	l.count++
+	l.spec = spec
 	l.mu.Unlock()
 	return l.inner.Acquire(ctx, sessionID, spec)
 }
@@ -151,6 +153,12 @@ func (l *forwardingCountingLease) calls() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.count
+}
+
+func (l *forwardingCountingLease) lastSpec() sandbox.Spec {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.spec
 }
 
 type loseFirstCompletionAckJournal struct {
@@ -319,6 +327,9 @@ func TestWorkflowTurn_ToolResultWriteRetryDoesNotReexecute(t *testing.T) {
 	}
 	if lease.calls() != 1 {
 		t.Fatalf("completed tool was re-executed: sandbox acquired %d times", lease.calls())
+	}
+	if spec := lease.lastSpec(); spec.Network != defaultCloudSandboxNetwork {
+		t.Fatalf("sandbox network = %q, want %q", spec.Network, defaultCloudSandboxNetwork)
 	}
 	events, err := store.EventsAfter(context.Background(), sessionID, 0, 100)
 	if err != nil {

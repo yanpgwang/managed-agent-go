@@ -295,18 +295,20 @@ func (j *memoryMCPJournal) MarkToolStepAmbiguous(
 }
 
 type fixedSandboxLease struct {
-	box sandbox.Sandbox
+	box  sandbox.Sandbox
+	spec sandbox.Spec
 }
 
-func (l fixedSandboxLease) Acquire(
-	context.Context,
-	string,
-	sandbox.Spec,
+func (l *fixedSandboxLease) Acquire(
+	_ context.Context,
+	_ string,
+	spec sandbox.Spec,
 ) (sandbox.Sandbox, error) {
+	l.spec = spec
 	return l.box, nil
 }
 
-func (fixedSandboxLease) Release(context.Context, string) error { return nil }
+func (*fixedSandboxLease) Release(context.Context, string) error { return nil }
 
 func TestExecuteTool_MCPJournalsRawAndProjectsModelContent(t *testing.T) {
 	_, box, err := sandbox.NewLocalProvider().Create(
@@ -317,6 +319,7 @@ func TestExecuteTool_MCPJournalsRawAndProjectsModelContent(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
 	journal := &memoryMCPJournal{}
+	lease := &fixedSandboxLease{box: box}
 	client := &fakeMCPClient{result: mcpclient.Result{
 		Raw: json.RawMessage(`{
 			"_meta":{"trace":"private"},
@@ -327,7 +330,7 @@ func TestExecuteTool_MCPJournalsRawAndProjectsModelContent(t *testing.T) {
 		nil,
 		nil,
 		journal,
-		fixedSandboxLease{box: box},
+		lease,
 		&testIDGen{},
 	).WithMCPClient(client)
 	result, err := activities.ExecuteTool(
@@ -359,6 +362,7 @@ func TestExecuteTool_MCPJournalsRawAndProjectsModelContent(t *testing.T) {
 	require.Contains(t, string(journal.result.Raw), `"trace":"private"`)
 	require.Empty(t, result.Result.Raw)
 	require.Empty(t, result.Result.RawPath)
+	require.Equal(t, defaultCloudSandboxNetwork, lease.spec.Network)
 	require.NotContains(
 		t,
 		result.Result.Content[0].(map[string]any)["text"],
