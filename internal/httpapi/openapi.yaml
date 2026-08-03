@@ -2134,13 +2134,14 @@ components:
       properties:
         type:
           type: string
-          enum: [api_error, mcp_connection_failed_error]
+          description: api_error may appear only in histories written before the terminal Session error contract.
+          enum: [unknown_error, mcp_connection_failed_error, api_error]
         message: {type: string}
         retry_status:
           type: object
           required: [type]
           properties:
-            type: {type: string}
+            type: {type: string, enum: [retrying, exhausted, terminal]}
         mcp_server_name: {type: string}
       additionalProperties: false
     SessionErrorEvent:

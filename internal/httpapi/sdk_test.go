@@ -8,6 +8,8 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 // These tests drive the server through the official Anthropic Go SDK as a
@@ -22,7 +24,15 @@ import (
 
 func sdkClientAndServer(t *testing.T) (anthropic.Client, *httptest.Server) {
 	t.Helper()
-	handler := newTestHandler(t, Config{
+	client, server, _ := sdkClientServerAndSessions(t)
+	return client, server
+}
+
+func sdkClientServerAndSessions(
+	t *testing.T,
+) (anthropic.Client, *httptest.Server, *testSessionService) {
+	t.Helper()
+	handler, sessions := newTestHandlerWithSessions(t, Config{
 		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
 	}, false)
 	ts := httptest.NewServer(handler)
@@ -32,7 +42,50 @@ func sdkClientAndServer(t *testing.T) (anthropic.Client, *httptest.Server) {
 		option.WithBaseURL(ts.URL),
 		option.WithAPIKey("sk-test"),
 	)
-	return client, ts
+	return client, ts, sessions
+}
+
+func TestSDK_TerminalSessionErrorEvent(t *testing.T) {
+	client, ts, sessions := sdkClientServerAndSessions(t)
+	ctx := context.Background()
+
+	agent := mustAgent(t, client, "opus", "sys")
+	environmentID := mustEnv(t, ts.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: environmentID,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	sessions.mu.Lock()
+	sessions.appendEventLocked(session.ID, domain.EventDraft{
+		Type: domain.EvSessionError,
+		Payload: map[string]any{"error": map[string]any{
+			"type": "unknown_error", "message": "turn failed",
+			"retry_status": map[string]any{"type": "terminal"},
+		}},
+	})
+	sessions.mu.Unlock()
+
+	page, err := client.Beta.Sessions.Events.List(
+		ctx,
+		session.ID,
+		anthropic.BetaSessionEventListParams{Types: []string{domain.EvSessionError}},
+	)
+	if err != nil {
+		t.Fatalf("list session errors: %v", err)
+	}
+	if len(page.Data) != 1 {
+		t.Fatalf("session.error count = %d, want 1", len(page.Data))
+	}
+	event := page.Data[0].AsSessionError()
+	unknown := event.Error.AsUnknownError()
+	if unknown.Type != anthropic.BetaManagedAgentsUnknownErrorTypeUnknownError ||
+		unknown.RetryStatus.Type != "terminal" || unknown.Message != "turn failed" {
+		t.Fatalf("session.error = %s", event.RawJSON())
+	}
 }
 
 func TestSDK_AgentLifecycle(t *testing.T) {

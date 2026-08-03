@@ -629,6 +629,8 @@ func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	errorPayload, ok := completed.Output[1].Payload["error"].(map[string]any)
 	require.True(t, ok)
 	require.Contains(t, errorPayload["message"], "invalid_request_error")
+	require.Equal(t, "unknown_error", errorPayload["type"])
+	require.Equal(t, "terminal", errorPayload["retry_status"].(map[string]any)["type"])
 }
 
 func TestWorkflowTurn_MixedBatchExecutesBuiltinAndParksClientAction(t *testing.T) {

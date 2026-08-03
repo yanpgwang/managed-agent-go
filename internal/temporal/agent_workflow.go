@@ -42,6 +42,13 @@ const (
 	// plannedToolUse.useEventType within a round), never from this gate.
 	mcpToolEventsChangeID = "mcp-tool-event-types"
 	mcpToolEventsVersion  = 1
+
+	// terminalSessionErrorChangeID gates the public transition from the legacy
+	// HTTP-style api_error payload to the documented Session Event error union.
+	// Existing Workflow histories retain their recorded command payload; new
+	// executions publish unknown_error with an explicit terminal retry status.
+	terminalSessionErrorChangeID = "terminal-session-error-contract"
+	terminalSessionErrorVersion  = 1
 )
 
 // runWorkflowTurn owns the plan-act-observe loop in deterministic Workflow
@@ -114,6 +121,12 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		mcpToolEventsVersion,
 	) == mcpToolEventsVersion
+	terminalSessionErrors := workflow.GetVersion(
+		actx,
+		terminalSessionErrorChangeID,
+		workflow.DefaultVersion,
+		terminalSessionErrorVersion,
+	) == terminalSessionErrorVersion
 
 	turn := &workflowTurnState{
 		actx:                   actx,
@@ -121,6 +134,7 @@ func runWorkflowTurnInternal(
 		triggerEventID:         triggerEventID,
 		resolutionEventIDs:     resolutionEventIDs,
 		interrupts:             interrupts,
+		terminalSessionErrors:  terminalSessionErrors,
 		usesProviderTranscript: prepared.UsesProviderTranscript,
 		output:                 append([]domain.EventDraft(nil), prepared.PreludeEvents...),
 		transcriptDelta: append(
