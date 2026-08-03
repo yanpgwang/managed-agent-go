@@ -22,6 +22,7 @@ const sidebars: SidebarsConfig = {
       label: 'API',
       items: [
         'api/overview',
+        'api/core-conformance',
         'api/agents',
         'api/environments',
         'api/sessions',
