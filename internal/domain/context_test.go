@@ -7,20 +7,36 @@ import (
 )
 
 func TestCompactMessagesLeavesTranscriptUntouchedWithinBudget(t *testing.T) {
+	raw := json.RawMessage(`{"type":"image","source":{"type":"url","url":"https://example.com/a.png"}}`)
+	result := json.RawMessage(`{"type":"text","text":"done"}`)
 	messages := []Message{{
-		Role:    RoleUser,
-		Content: []ContentBlock{{Type: "text", Text: "hello"}},
+		Role: RoleUser,
+		Content: []ContentBlock{
+			{
+				Type: "tool_use", ToolUseID: "tool_1", ToolName: "inspect",
+				Input: map[string]any{
+					"nested": map[string]any{"items": []any{"original"}},
+				},
+				Raw: raw,
+			},
+			{Type: "tool_result", ToolResultFor: "tool_1", ResultContent: []json.RawMessage{result}},
+		},
 	}}
 	got, projection := CompactMessages(messages, 100)
 	if projection.Compacted {
 		t.Fatal("small transcript was unexpectedly compacted")
 	}
-	if len(got) != 1 || got[0].Content[0].Text != "hello" {
+	if len(got) != 1 || len(got[0].Content) != 2 {
 		t.Fatalf("projection = %#v", got)
 	}
-	got[0].Content[0].Text = "changed"
-	if messages[0].Content[0].Text != "hello" {
-		t.Fatal("projection mutated the lossless source transcript")
+	got[0].Content[0].Input["nested"].(map[string]any)["items"].([]any)[0] = "changed"
+	got[0].Content[0].Raw[0] = '['
+	got[0].Content[1].ResultContent[0][0] = '['
+	if nested := messages[0].Content[0].Input["nested"].(map[string]any)["items"].([]any)[0]; nested != "original" {
+		t.Fatalf("projection mutated nested tool input: %#v", nested)
+	}
+	if messages[0].Content[0].Raw[0] != '{' || messages[0].Content[1].ResultContent[0][0] != '{' {
+		t.Fatal("projection mutated raw transcript content")
 	}
 }
 

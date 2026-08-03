@@ -468,10 +468,11 @@ tool boundaries needed for native web and unauthenticated MCP:
    metadata, and reserved networks; private MCP requires a future explicit
    tunnel/egress capability.
 7. Request-time token-aware context projection and extractive compaction are
-   implemented without rewriting the Provider Transcript. Durable Context
-   Snapshot records, deployment-managed MCP authentication, provider-round
-   records, explicit per-endpoint capability profiles, and reference-only
-   Temporal payloads remain follow-up work.
+   deeply detached from the durable transcript, including nested tool inputs
+   and rich/raw content, so request adaptation cannot mutate stored history.
+   Durable Context Snapshot records, deployment-managed MCP authentication,
+   provider-round records, explicit per-endpoint capability profiles, and
+   reference-only Temporal payloads remain follow-up work.
 
 ## Delivery order
 
