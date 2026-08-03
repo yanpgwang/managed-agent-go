@@ -100,14 +100,30 @@ func (r *memoryAgentRepository) GetVersion(
 func (r *memoryAgentRepository) Versions(
 	_ context.Context,
 	id string,
-) ([]domain.Agent, error) {
+	query AgentVersionListQuery,
+) (AgentVersionListPage, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	versions := r.versions[id]
 	if len(versions) == 0 {
-		return nil, domain.NotFound("agent not found")
+		return AgentVersionListPage{}, domain.NotFound("agent not found")
 	}
-	return append([]domain.Agent(nil), versions...), nil
+	pageVersions := make([]domain.Agent, 0, query.Limit+1)
+	for _, version := range versions {
+		if version.Version <= query.AfterVersion {
+			continue
+		}
+		pageVersions = append(pageVersions, version)
+		if query.Limit > 0 && len(pageVersions) > query.Limit {
+			break
+		}
+	}
+	page := AgentVersionListPage{Versions: pageVersions}
+	if query.Limit > 0 && len(pageVersions) > query.Limit {
+		page.Versions = pageVersions[:query.Limit]
+		page.HasNext = true
+	}
+	return page, nil
 }
 
 func (r *memoryAgentRepository) ListLatest(

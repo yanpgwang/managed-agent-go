@@ -175,12 +175,19 @@ func (q *Queries) InsertAgentVersion(ctx context.Context, arg InsertAgentVersion
 const listAgentVersions = `-- name: ListAgentVersions :many
 SELECT id, version, name, body, created_at, updated_at, archived_at
 FROM agents
-WHERE id = $1
+WHERE id = $1 AND version > $2
 ORDER BY version
+LIMIT $3
 `
 
-func (q *Queries) ListAgentVersions(ctx context.Context, id string) ([]Agent, error) {
-	rows, err := q.db.Query(ctx, listAgentVersions, id)
+type ListAgentVersionsParams struct {
+	ID           string
+	AfterVersion int32
+	RowLimit     int32
+}
+
+func (q *Queries) ListAgentVersions(ctx context.Context, arg ListAgentVersionsParams) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, listAgentVersions, arg.ID, arg.AfterVersion, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

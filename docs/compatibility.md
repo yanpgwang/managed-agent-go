@@ -26,7 +26,7 @@ compatibility.
 
 | Area | Status | Current scope and limitations |
 |---|---|---|
-| Agent lifecycle | Supported | Create, get, list, version, update with optimistic concurrency, and archive. List supports the documented archive/time filters and forward cursor pagination over the latest version of each Agent. |
+| Agent lifecycle | Supported | Create, get, list, version, update with optimistic concurrency, and archive. List supports the documented archive/time filters and forward cursor pagination over the latest version of each Agent; version history supports its documented forward pagination. |
 | Model configuration | Supported | Model ID, effort (`low` through `max`), and speed (`standard`/`fast`) resolve every working and grader request. The semantic defaults (`high`/`standard`) are omitted on the Messages wire for compatibility; non-default effort and `fast` are forwarded and require endpoint support. Same-model Agent updates preserve omitted effort; changing model resets omitted fields to defaults. |
 | Agent configuration | Limited | System, tools, MCP references, metadata, and model configuration execute. Skills and multi-agent orchestration are not yet executed. |
 | Environment lifecycle | Supported | Create, get, list, archive, and delete support `cloud` and `self_hosted`. List supports archive filtering and forward cursor pagination. Cloud sandbox tools execute on the worker; self-hosted sandbox tools park for `user.tool_result` from the client. Environment update is not implemented. |

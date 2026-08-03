@@ -19,7 +19,7 @@ type AgentService interface {
 	Create(context.Context, domain.Agent) (domain.Agent, error)
 	Get(context.Context, string) (domain.Agent, error)
 	List(context.Context, app.AgentListQuery) (app.AgentListPage, error)
-	Versions(context.Context, string) ([]domain.Agent, error)
+	Versions(context.Context, string, app.AgentVersionListQuery) (app.AgentVersionListPage, error)
 	Update(context.Context, string, domain.AgentPatch) (domain.Agent, error)
 	Archive(context.Context, string) (domain.Agent, error)
 }

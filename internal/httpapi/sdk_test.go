@@ -682,6 +682,47 @@ func TestSDK_AgentListParamsAndPaging(t *testing.T) {
 	}
 }
 
+func TestSDK_AgentVersionListParamsAndPaging(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "opus", "system")
+	for _, name := range []string{"Agent v2", "Agent v3"} {
+		updated, err := client.Beta.Agents.Update(ctx, agent.ID, anthropic.BetaAgentUpdateParams{
+			Name: anthropic.String(name), Version: anthropic.Int(agent.Version),
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", name, err)
+		}
+		agent = updated
+	}
+
+	first, err := client.Beta.Agents.Versions.List(
+		ctx, agent.ID, anthropic.BetaAgentVersionListParams{Limit: anthropic.Int(2)},
+	)
+	if err != nil {
+		t.Fatalf("list Agent versions page 1: %v", err)
+	}
+	if len(first.Data) != 2 || first.Data[0].Version != 1 ||
+		first.Data[1].Version != 2 || first.NextPage == "" {
+		t.Fatalf("page 1 = %+v, want versions 1,2 and next_page", first)
+	}
+	second, err := first.GetNextPage()
+	if err != nil {
+		t.Fatalf("follow Agent versions next_page: %v", err)
+	}
+	if second == nil || len(second.Data) != 1 || second.Data[0].Version != 3 ||
+		second.NextPage != "" {
+		t.Fatalf("page 2 = %+v, want terminal version 3", second)
+	}
+	if _, err := client.Beta.Agents.Versions.List(
+		ctx, agent.ID, anthropic.BetaAgentVersionListParams{Limit: anthropic.Int(101)},
+	); err == nil {
+		t.Fatal("Agent Versions limit=101 was accepted")
+	} else {
+		assertAPIStatus(t, err, 400)
+	}
+}
+
 func TestSDK_EnvironmentListParamsAndPaging(t *testing.T) {
 	client, server := sdkClientAndServer(t)
 	ctx := context.Background()

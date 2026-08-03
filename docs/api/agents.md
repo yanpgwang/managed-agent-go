@@ -45,8 +45,10 @@ GET /v1/agents
 GET /v1/agents/{id}/versions
 ```
 
-`GET /v1/agents/{id}` returns the latest version. The versions route returns all
-stored versions in a `data` array.
+`GET /v1/agents/{id}` returns the latest version. The versions route returns
+stored versions in ascending version order. It supports the documented `limit`
+and opaque `page` parameters; `limit` defaults to `20` and has a maximum of
+`100`. Its response contains `data` and nullable `next_page` fields.
 
 The Agent list supports the documented `created_at[gte]`, `created_at[lte]`,
 `include_archived`, `limit`, and `page` parameters. `limit` defaults to `20` and

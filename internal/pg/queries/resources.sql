@@ -27,8 +27,9 @@ WHERE id = @id AND version = @version;
 -- name: ListAgentVersions :many
 SELECT id, version, name, body, created_at, updated_at, archived_at
 FROM agents
-WHERE id = @id
-ORDER BY version;
+WHERE id = @id AND version > @after_version
+ORDER BY version
+LIMIT @row_limit;
 
 -- name: ListLatestAgents :many
 SELECT DISTINCT ON (id)

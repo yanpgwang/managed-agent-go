@@ -35,9 +35,9 @@ func TestPostgresResourcesAndSessionDependencies(t *testing.T) {
 	if agent.Version != 2 || agent.Name != renamed {
 		t.Fatalf("updated agent = %+v, want version 2/name %q", agent, renamed)
 	}
-	versions, err := agents.Versions(ctx, agent.ID)
-	if err != nil || len(versions) != 2 {
-		t.Fatalf("versions = %d, err=%v; want 2", len(versions), err)
+	versionPage, err := agents.Versions(ctx, agent.ID, app.AgentVersionListQuery{})
+	if err != nil || len(versionPage.Versions) != 2 {
+		t.Fatalf("versions = %d, err=%v; want 2", len(versionPage.Versions), err)
 	}
 
 	environment, err := environments.Create(ctx, domain.Environment{

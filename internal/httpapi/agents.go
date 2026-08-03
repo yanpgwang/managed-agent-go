@@ -152,12 +152,48 @@ func parseAgentListParams(r *http.Request) (app.AgentListQuery, agentCursorFilte
 }
 
 func (s *Server) listAgentVersions(w http.ResponseWriter, r *http.Request) {
-	vs, err := s.deps.Agents.Versions(r.Context(), r.PathValue("id"))
+	agentID := r.PathValue("id")
+	query, err := parseAgentVersionListParams(r, agentID)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"data": mapAgents(vs)})
+	page, err := s.deps.Agents.Versions(r.Context(), agentID, query)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	var nextPage any
+	if page.HasNext && len(page.Versions) > 0 {
+		last := page.Versions[len(page.Versions)-1]
+		nextPage = encodeAgentVersionCursor(agentID, last.Version)
+	}
+	writeJSON(w, 200, map[string]any{
+		"data": mapAgents(page.Versions), "next_page": nextPage,
+	})
+}
+
+func parseAgentVersionListParams(r *http.Request, agentID string) (app.AgentVersionListQuery, error) {
+	values := r.URL.Query()
+	query := app.AgentVersionListQuery{Limit: app.DefaultAgentListLimit}
+	if values.Has("limit") {
+		limit, err := parseResourceListLimit(values.Get("limit"))
+		if err != nil {
+			return app.AgentVersionListQuery{}, err
+		}
+		if limit > app.MaxAgentListLimit {
+			return app.AgentVersionListQuery{}, domain.Validation("limit must not exceed 100")
+		}
+		query.Limit = limit
+	}
+	if values.Has("page") {
+		afterVersion, ok := decodeAgentVersionCursor(values.Get("page"), agentID)
+		if !ok {
+			return app.AgentVersionListQuery{}, domain.Validation("invalid page cursor")
+		}
+		query.AfterVersion = afterVersion
+	}
+	return query, nil
 }
 
 func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {

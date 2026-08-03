@@ -20,7 +20,7 @@ type AgentRepository interface {
 	Archive(context.Context, string, time.Time) (domain.Agent, error)
 	Latest(context.Context, string) (domain.Agent, error)
 	GetVersion(context.Context, string, int) (domain.Agent, error)
-	Versions(context.Context, string) ([]domain.Agent, error)
+	Versions(context.Context, string, AgentVersionListQuery) (AgentVersionListPage, error)
 	ListLatest(context.Context, AgentListQuery) (AgentListPage, error)
 }
 
