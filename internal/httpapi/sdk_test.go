@@ -745,13 +745,17 @@ func TestSDK_EnvironmentLifecycle(t *testing.T) {
 	ctx := context.Background()
 
 	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
-		Name: "SDK environment",
+		Name:        "SDK environment",
+		Description: anthropic.String("created through the official SDK"),
+		Metadata:    map[string]string{"team": "platform"},
 	})
 	if err != nil {
 		t.Fatalf("create environment: %v", err)
 	}
 	if environment.ID == "" || environment.Type != "environment" ||
-		environment.Name != "SDK environment" || environment.Description != "" ||
+		environment.Name != "SDK environment" ||
+		environment.Description != "created through the official SDK" ||
+		environment.Metadata["team"] != "platform" ||
 		environment.Config.Type != "cloud" || environment.Config.Networking.Type != "unrestricted" {
 		t.Fatalf("created environment = %#v", environment)
 	}
@@ -765,7 +769,8 @@ func TestSDK_EnvironmentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get environment: %v", err)
 	}
-	if got.ID != environment.ID || got.Config.Networking.Type != "unrestricted" {
+	if got.ID != environment.ID || got.Description != environment.Description ||
+		got.Metadata["team"] != "platform" || got.Config.Networking.Type != "unrestricted" {
 		t.Fatalf("retrieved environment = %#v", got)
 	}
 
@@ -775,8 +780,9 @@ func TestSDK_EnvironmentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("archive environment: %v", err)
 	}
-	if archived.ArchivedAt == "" {
-		t.Fatal("archived environment has empty archived_at")
+	if archived.ArchivedAt == "" || archived.Description != environment.Description ||
+		archived.Metadata["team"] != "platform" {
+		t.Fatalf("archived environment = %#v", archived)
 	}
 
 	deleted, err := client.Beta.Environments.Delete(
@@ -788,6 +794,36 @@ func TestSDK_EnvironmentLifecycle(t *testing.T) {
 	if deleted.ID != environment.ID ||
 		deleted.Type != anthropic.BetaEnvironmentDeleteResponseTypeEnvironmentDeleted {
 		t.Fatalf("delete response = %#v", deleted)
+	}
+}
+
+func TestSDK_SelfHostedEnvironmentScope(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	config := anthropic.NewBetaSelfHostedConfigParams()
+
+	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
+		Name: "Self-hosted SDK environment",
+		Config: anthropic.BetaEnvironmentNewParamsConfigUnion{
+			OfSelfHosted: &config,
+		},
+		Scope: anthropic.BetaEnvironmentNewParamsScopeAccount,
+	})
+	if err != nil {
+		t.Fatalf("create self-hosted environment: %v", err)
+	}
+	if environment.Config.Type != "self_hosted" ||
+		environment.Scope != anthropic.BetaEnvironmentScopeAccount {
+		t.Fatalf("self-hosted environment = %#v", environment)
+	}
+	assertRawObjectHasFields(t, environment.RawJSON(), "scope")
+
+	got, err := client.Beta.Environments.Get(ctx, environment.ID, anthropic.BetaEnvironmentGetParams{})
+	if err != nil {
+		t.Fatalf("get self-hosted environment: %v", err)
+	}
+	if got.Config.Type != "self_hosted" || got.Scope != anthropic.BetaEnvironmentScopeAccount {
+		t.Fatalf("retrieved self-hosted environment = %#v", got)
 	}
 }
 

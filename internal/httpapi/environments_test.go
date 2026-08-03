@@ -50,3 +50,69 @@ func TestEnvironments_RejectsUnenforcedConfiguration(t *testing.T) {
 		}
 	}
 }
+
+func TestEnvironments_ResourceFieldsRoundTrip(t *testing.T) {
+	srv := newTestServer(t)
+	rec := do(srv, http.MethodPost, "/v1/environments", `{
+		"name":"local",
+		"description":"developer laptop",
+		"metadata":{"team":"sdk"},
+		"scope":"account",
+		"config":{"type":"self_hosted"}
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body)
+	}
+	created := decodeBody(t, rec.Body.Bytes())
+	if created["description"] != "developer laptop" || created["scope"] != "account" {
+		t.Fatalf("created environment = %#v", created)
+	}
+	metadata, _ := created["metadata"].(map[string]any)
+	if metadata["team"] != "sdk" {
+		t.Fatalf("created metadata = %#v", metadata)
+	}
+	config, _ := created["config"].(map[string]any)
+	if config["type"] != "self_hosted" {
+		t.Fatalf("created config = %#v", config)
+	}
+
+	id := created["id"].(string)
+	got := do(srv, http.MethodGet, "/v1/environments/"+id, "")
+	if got.Code != http.StatusOK {
+		t.Fatalf("get status = %d: %s", got.Code, got.Body)
+	}
+	if body := decodeBody(t, got.Body.Bytes()); body["description"] != "developer laptop" ||
+		body["scope"] != "account" || body["metadata"].(map[string]any)["team"] != "sdk" {
+		t.Fatalf("retrieved environment = %#v", body)
+	}
+	archived := do(srv, http.MethodPost, "/v1/environments/"+id+"/archive", `{}`)
+	if archived.Code != http.StatusOK {
+		t.Fatalf("archive status = %d: %s", archived.Code, archived.Body)
+	}
+	archivedBody := decodeBody(t, archived.Body.Bytes())
+	if archivedBody["archived_at"] == nil || archivedBody["scope"] != "account" ||
+		archivedBody["metadata"].(map[string]any)["team"] != "sdk" {
+		t.Fatalf("archived environment = %#v", archivedBody)
+	}
+}
+
+func TestEnvironments_RejectsMalformedOptionalFields(t *testing.T) {
+	srv := newTestServer(t)
+	for _, body := range []string{
+		`{"name":"bad","description":null}`,
+		`{"name":"bad","description":42}`,
+		`{"name":"bad","metadata":null}`,
+		`{"name":"bad","metadata":[]}`,
+		`{"name":"bad","metadata":{"team":1}}`,
+		`{"name":"bad","scope":null}`,
+		`{"name":"bad","scope":"workspace","config":{"type":"self_hosted"}}`,
+		`{"name":"bad","scope":"account"}`,
+		`{"name":"bad","config":null}`,
+		`{"name":"bad","config":[]}`,
+	} {
+		rec := do(srv, http.MethodPost, "/v1/environments", body)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("body %s status = %d, want 400: %s", body, rec.Code, rec.Body)
+		}
+	}
+}

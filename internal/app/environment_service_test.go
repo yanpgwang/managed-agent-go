@@ -85,12 +85,48 @@ func TestEnvironmentService_RejectsUnenforcedConfiguration(t *testing.T) {
 func TestEnvironmentService_NormalizesSupportedConfiguration(t *testing.T) {
 	svc := newEnvService(t)
 	created, err := svc.Create(context.Background(), domain.Environment{
-		Name: "cloud", Config: map[string]any{"networking": nil, "packages": nil},
+		Name: "cloud", Description: "analysis", Metadata: map[string]any{"team": "data"},
+		Config: map[string]any{"networking": nil, "packages": nil},
 	})
 	if err != nil {
 		t.Fatalf("create default cloud environment: %v", err)
 	}
 	if created.ConfigType != "cloud" || len(created.Config) != 1 || created.Config["type"] != "cloud" {
 		t.Fatalf("normalized config = %#v", created.Config)
+	}
+	if created.Description != "analysis" || created.Metadata["team"] != "data" {
+		t.Fatalf("resource fields = %#v", created)
+	}
+
+	defaults, err := svc.Create(context.Background(), domain.Environment{Name: "defaults"})
+	if err != nil {
+		t.Fatalf("create default fields: %v", err)
+	}
+	if defaults.Description != "" || defaults.Scope != "" || defaults.Metadata == nil || len(defaults.Metadata) != 0 {
+		t.Fatalf("default resource fields = %#v", defaults)
+	}
+}
+
+func TestEnvironmentService_ValidatesMetadataAndScope(t *testing.T) {
+	svc := newEnvService(t)
+	cases := []domain.Environment{
+		{Name: "bad metadata", Metadata: map[string]any{"bad": 1}},
+		{Name: "bad scope", ConfigType: "self_hosted", Scope: "workspace"},
+		{Name: "cloud scope", ConfigType: "cloud", Scope: "account"},
+	}
+	for _, environment := range cases {
+		if _, err := svc.Create(context.Background(), environment); err == nil {
+			t.Fatalf("invalid environment was accepted: %#v", environment)
+		}
+	}
+
+	created, err := svc.Create(context.Background(), domain.Environment{
+		Name: "self-hosted", ConfigType: "self_hosted", Scope: "account",
+	})
+	if err != nil {
+		t.Fatalf("create scoped self-hosted environment: %v", err)
+	}
+	if created.Scope != "account" {
+		t.Fatalf("scope = %q", created.Scope)
 	}
 }

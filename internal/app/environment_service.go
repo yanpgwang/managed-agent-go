@@ -28,6 +28,15 @@ func (s *EnvironmentService) Create(ctx context.Context, e domain.Environment) (
 	if e.ConfigType != "cloud" && e.ConfigType != "self_hosted" {
 		return domain.Environment{}, domain.Validation("config type must be cloud or self_hosted")
 	}
+	if e.Scope != "" && e.Scope != "organization" && e.Scope != "account" {
+		return domain.Environment{}, domain.Validation("scope must be organization or account")
+	}
+	if e.ConfigType == "cloud" && e.Scope != "" {
+		return domain.Environment{}, domain.Validation("scope is only supported for self_hosted environments")
+	}
+	if err := validateMetadata(e.Metadata); err != nil {
+		return domain.Environment{}, err
+	}
 	if err := validateEnvironmentConfig(e.Config, e.ConfigType); err != nil {
 		return domain.Environment{}, err
 	}
@@ -35,6 +44,9 @@ func (s *EnvironmentService) Create(ctx context.Context, e domain.Environment) (
 	// networking and package policies are rejected above rather than stored as
 	// inert configuration.
 	e.Config = map[string]any{"type": e.ConfigType}
+	if e.Metadata == nil {
+		e.Metadata = map[string]any{}
+	}
 	now := s.clock.Now().UTC()
 	e.ID = s.ids.NewID(domain.PrefixEnv)
 	e.CreatedAt = now

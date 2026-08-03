@@ -22,11 +22,11 @@ separate evidence.
 | Agent | Update | `POST /v1/agents/{agent_id}` | Yes | Yes | Yes | Finish the cross-field default, null, and error-contract sweep. |
 | Agent | List versions | `GET /v1/agents/{agent_id}/versions` | Yes | Yes | Yes | None identified for forward pagination. |
 | Agent | Archive | `POST /v1/agents/{agent_id}/archive` | Yes | Yes | Yes | None identified for the core idempotent archive path. |
-| Environment | Create | `POST /v1/environments` | Yes | Yes | Yes | Persist description, metadata, and scope; validate configured cloud fields. |
-| Environment | List | `GET /v1/environments` | Yes | Yes | Yes | Persisted optional resource fields and configured cloud projections remain incomplete. |
-| Environment | Get | `GET /v1/environments/{environment_id}` | Yes | Yes | Yes | Persisted optional resource fields and configured cloud projections remain incomplete. |
+| Environment | Create | `POST /v1/environments` | Yes | Yes | Yes | Configured cloud networking and package fields remain unsupported. |
+| Environment | List | `GET /v1/environments` | Yes | Yes | Yes | Configured cloud networking and package projections remain unsupported. |
+| Environment | Get | `GET /v1/environments/{environment_id}` | Yes | Yes | Yes | Configured cloud networking and package projections remain unsupported. |
 | Environment | Update | `POST /v1/environments/{environment_id}` | **No** | No | No | Implement update with real networking and package enforcement. |
-| Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | Yes | Yes | Persisted optional resource fields and configured cloud projections remain incomplete. |
+| Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | Yes | Yes | Configured cloud networking and package projections remain unsupported. |
 | Environment | Delete | `DELETE /v1/environments/{environment_id}` | Yes | Yes | Yes | None identified for the core unreferenced-delete path. |
 | Session | Create | `POST /v1/sessions` | Yes | Yes | Yes | Complete core validation/default/null coverage; unsupported product surfaces remain explicit. |
 | Session | List | `GET /v1/sessions` | Yes | Yes | Yes | None identified for the in-scope filters and bidirectional cursors. |
