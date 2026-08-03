@@ -116,6 +116,17 @@ func rejectUnknownFields(value map[string]any, context string, allowed []string)
 	return fmt.Errorf("%s does not support field %q", context, unknown[0])
 }
 
+func validateOptionalBool(value map[string]any, key, context string) error {
+	raw, present := value[key]
+	if !present || raw == nil {
+		return nil
+	}
+	if _, ok := raw.(bool); !ok {
+		return fmt.Errorf("%s %s must be a boolean", context, key)
+	}
+	return nil
+}
+
 // validateToolWireShape is the strict admission boundary for new public
 // requests. Runtime parsing remains tolerant of unknown historical fields so
 // persisted snapshots and Temporal replays survive upgrades.
@@ -141,12 +152,33 @@ func validateToolWireShape(rawTools, rawServers []any) error {
 			if err := rejectUnknownFields(tool, "custom tool", customToolFields); err != nil {
 				return err
 			}
+			if description, present := tool["description"]; present && description != nil {
+				if _, ok := description.(string); !ok {
+					return fmt.Errorf("custom tool description must be a string")
+				}
+			}
+			if rawSchema, present := tool["input_schema"]; present && rawSchema != nil {
+				schema, ok := rawSchema.(map[string]any)
+				if !ok {
+					return fmt.Errorf("custom tool input_schema must be an object")
+				}
+				if schemaType, present := schema["type"]; present && schemaType != "object" {
+					return fmt.Errorf("custom tool input_schema type must be object")
+				}
+			}
 			continue
 		default:
 			continue
 		}
-		if config, ok := tool["default_config"].(map[string]any); ok {
+		if rawConfig, present := tool["default_config"]; present && rawConfig != nil {
+			config, ok := rawConfig.(map[string]any)
+			if !ok {
+				return fmt.Errorf("%s default_config must be an object", context)
+			}
 			if err := rejectUnknownFields(config, context+" default_config", defaultConfigFields); err != nil {
+				return err
+			}
+			if err := validateOptionalBool(config, "enabled", context+" default_config"); err != nil {
 				return err
 			}
 			if policy, ok := config["permission_policy"].(map[string]any); ok {
@@ -155,13 +187,20 @@ func validateToolWireShape(rawTools, rawServers []any) error {
 				}
 			}
 		}
-		if configs, ok := tool["configs"].([]any); ok {
+		if rawConfigs, present := tool["configs"]; present && rawConfigs != nil {
+			configs, ok := rawConfigs.([]any)
+			if !ok {
+				return fmt.Errorf("%s configs must be an array", context)
+			}
 			for _, item := range configs {
 				config, ok := item.(map[string]any)
 				if !ok {
 					continue
 				}
 				if err := rejectUnknownFields(config, context+" config", toolConfigFields); err != nil {
+					return err
+				}
+				if err := validateOptionalBool(config, "enabled", context+" config"); err != nil {
 					return err
 				}
 				if policy, ok := config["permission_policy"].(map[string]any); ok {

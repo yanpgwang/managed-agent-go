@@ -405,6 +405,36 @@ func TestAgents_RejectsUnsupportedToolFieldsWithoutCreatingVersion(t *testing.T)
 	}
 }
 
+func TestAgents_RejectsMalformedToolValuesWithoutCreatingVersion(t *testing.T) {
+	srv := newTestServer(t)
+	rec := do(srv, "POST", "/v1/agents", `{"name":"Agent","model":"claude-opus-4-8",`+
+		`"tools":[{"type":"agent_toolset_20260401"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", rec.Code, rec.Body)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id := created["id"].(string)
+
+	rec = do(srv, "POST", "/v1/agents/"+id,
+		`{"tools":[{"type":"agent_toolset_20260401",`+
+			`"default_config":{"enabled":"yes"}}]}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid update status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+
+	versions := do(srv, "GET", "/v1/agents/"+id+"/versions", "")
+	var page map[string]any
+	if err := json.Unmarshal(versions.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := page["data"].([]any); len(data) != 1 {
+		t.Fatalf("rejected update created an Agent version: %#v", page["data"])
+	}
+}
+
 // helpers used across httpapi black-box tests
 func newTestServer(t *testing.T) http.Handler {
 	t.Helper()
