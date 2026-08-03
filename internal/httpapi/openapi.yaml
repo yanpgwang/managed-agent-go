@@ -1,43 +1,1619 @@
 openapi: 3.1.0
 info:
-  title: managed-agent-go (v0.1)
+  title: managed-agent-go
   version: 0.1.0
-  description: Clean-room subset of the public Claude Managed Agents API. Apache-2.0. Not an Anthropic product.
+  description: >-
+    Clean-room implementation of the supported Claude Managed Agents API core.
+    This project is Apache-2.0 licensed and is not an Anthropic product.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+servers:
+  - url: /
+    description: Current managed-agent-go server
+security:
+  - ApiKeyAuth: []
+  - BearerAuth: []
+  - {}
+tags:
+  - name: Agents
+    description: Versioned Agent definitions.
+  - name: Environments
+    description: Session execution environments.
+  - name: Sessions
+    description: Durable single-agent Sessions.
+  - name: Session Events
+    description: Durable Session input and output events.
 paths:
   /v1/agents:
-    post: { summary: Create agent, responses: { "200": { description: ok } } }
-    get: { summary: List agents, responses: { "200": { description: ok } } }
-  /v1/agents/{id}:
-    get: { summary: Get agent, responses: { "200": { description: ok } } }
-    post: { summary: Update agent (new version), responses: { "200": { description: ok }, "409": { description: version conflict } } }
-  /v1/agents/{id}/versions:
-    get: { summary: List agent versions, responses: { "200": { description: ok } } }
-  /v1/agents/{id}/archive:
-    post: { summary: Archive agent, responses: { "200": { description: ok } } }
+    post:
+      operationId: createAgent
+      tags: [Agents]
+      summary: Create an Agent
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentCreateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/AgentResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listAgents
+      tags: [Agents]
+      summary: List Agents
+      parameters:
+        - $ref: '#/components/parameters/AgentListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/IncludeArchived'
+        - $ref: '#/components/parameters/CreatedAtGte'
+        - $ref: '#/components/parameters/CreatedAtLte'
+      responses:
+        '200':
+          $ref: '#/components/responses/AgentListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+  /v1/agents/{agent_id}:
+    parameters:
+      - $ref: '#/components/parameters/AgentID'
+    get:
+      operationId: getAgent
+      tags: [Agents]
+      summary: Get an Agent
+      responses:
+        '200':
+          $ref: '#/components/responses/AgentResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: updateAgent
+      tags: [Agents]
+      summary: Update an Agent and create a new version when fields change
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AgentUpdateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/AgentResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/agents/{agent_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/AgentID'
+    get:
+      operationId: listAgentVersions
+      tags: [Agents]
+      summary: List Agent versions
+      parameters:
+        - $ref: '#/components/parameters/AgentListLimit'
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200':
+          $ref: '#/components/responses/AgentListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/agents/{agent_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/AgentID'
+    post:
+      operationId: archiveAgent
+      tags: [Agents]
+      summary: Archive an Agent
+      responses:
+        '200':
+          $ref: '#/components/responses/AgentResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/environments:
-    post: { summary: Create environment, responses: { "200": { description: ok } } }
-    get: { summary: List environments, responses: { "200": { description: ok } } }
-  /v1/environments/{id}:
-    get: { summary: Get environment, responses: { "200": { description: ok } } }
-    post: { summary: Update environment, responses: { "200": { description: ok }, "422": { description: unenforced configuration } } }
-    delete: { summary: Delete environment, responses: { "200": { description: ok }, "409": { description: referenced } } }
-  /v1/environments/{id}/archive:
-    post: { summary: Archive environment, responses: { "200": { description: ok } } }
+    post:
+      operationId: createEnvironment
+      tags: [Environments]
+      summary: Create an Environment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvironmentCreateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listEnvironments
+      tags: [Environments]
+      summary: List Environments
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+  /v1/environments/{environment_id}:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+    get:
+      operationId: getEnvironment
+      tags: [Environments]
+      summary: Get an Environment
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: updateEnvironment
+      tags: [Environments]
+      summary: Update an Environment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EnvironmentUpdateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteEnvironment
+      tags: [Environments]
+      summary: Delete an unreferenced Environment
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentDeletedResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/environments/{environment_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+    post:
+      operationId: archiveEnvironment
+      tags: [Environments]
+      summary: Archive an Environment
+      responses:
+        '200':
+          $ref: '#/components/responses/EnvironmentResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /v1/sessions:
-    post: { summary: Create session, responses: { "200": { description: ok } } }
-    get: { summary: List sessions, responses: { "200": { description: ok } } }
-  /v1/sessions/{id}:
-    get: { summary: Get session, responses: { "200": { description: ok } } }
-    post: { summary: "Update session (title, metadata patch, agent tools/mcp_servers; agent requires idle)", responses: { "200": { description: ok }, "409": { description: not idle } } }
-    delete: { summary: Delete session, responses: { "200": { description: ok }, "409": { description: running } } }
-  /v1/sessions/{id}/archive:
-    post: { summary: Archive session, responses: { "200": { description: ok }, "409": { description: running } } }
-  /v1/sessions/{id}/events:
-    post: { summary: Send events, responses: { "200": { description: ok } } }
-    get: { summary: List event history, responses: { "200": { description: ok } } }
-  /v1/sessions/{id}/events/stream:
-    get: { summary: "SSE event stream (no Last-Event-ID, no replay)", responses: { "200": { description: text/event-stream } } }
+    post:
+      operationId: createSession
+      tags: [Sessions]
+      summary: Create a Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionCreateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listSessions
+      tags: [Sessions]
+      summary: List Sessions
+      parameters:
+        - $ref: '#/components/parameters/SessionListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Order'
+        - $ref: '#/components/parameters/AgentIDFilter'
+        - $ref: '#/components/parameters/AgentVersionFilter'
+        - $ref: '#/components/parameters/Statuses'
+        - $ref: '#/components/parameters/IncludeArchived'
+        - $ref: '#/components/parameters/CreatedAtGt'
+        - $ref: '#/components/parameters/CreatedAtGte'
+        - $ref: '#/components/parameters/CreatedAtLt'
+        - $ref: '#/components/parameters/CreatedAtLte'
+        - $ref: '#/components/parameters/DeploymentIDFilter'
+        - $ref: '#/components/parameters/MemoryStoreIDFilter'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+  /v1/sessions/{session_id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    get:
+      operationId: getSession
+      tags: [Sessions]
+      summary: Get a Session
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      operationId: updateSession
+      tags: [Sessions]
+      summary: Update Session metadata, title, or the next-turn tool configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionUpdateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteSession
+      tags: [Sessions]
+      summary: Delete a non-running Session and its event history
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionDeletedResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/sessions/{session_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      operationId: archiveSession
+      tags: [Sessions]
+      summary: Archive a non-running Session
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /v1/sessions/{session_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      operationId: sendSessionEvents
+      tags: [Session Events]
+      summary: Send Session events
+      responses:
+        '200':
+          description: Event batch accepted
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    get:
+      operationId: listSessionEvents
+      tags: [Session Events]
+      summary: List Session event history
+      responses:
+        '200':
+          description: Event page
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/sessions/{session_id}/events/stream:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    get:
+      operationId: streamSessionEvents
+      tags: [Session Events]
+      summary: Stream live Session events over SSE
+      responses:
+        '200':
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
   /healthz:
-    get: { summary: liveness, responses: { "200": { description: ok } } }
+    get:
+      operationId: health
+      summary: Liveness probe
+      responses:
+        '200':
+          description: Healthy
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
   /readyz:
-    get: { summary: readiness, responses: { "200": { description: ok } } }
+    get:
+      operationId: readiness
+      summary: Readiness probe
+      responses:
+        '200':
+          description: Ready
+        '401':
+          $ref: '#/components/responses/AuthenticationError'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: x-api-key
+    BearerAuth:
+      type: http
+      scheme: bearer
+
+  parameters:
+    AgentID:
+      name: agent_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    EnvironmentID:
+      name: environment_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    SessionID:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    AgentListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    EnvironmentListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+    SessionListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+    Page:
+      name: page
+      in: query
+      description: Opaque cursor returned by a previous list response.
+      schema:
+        type: string
+        minLength: 1
+    IncludeArchived:
+      name: include_archived
+      in: query
+      schema:
+        type: boolean
+        default: false
+    Order:
+      name: order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: desc
+    AgentIDFilter:
+      name: agent_id
+      in: query
+      schema:
+        type: string
+    AgentVersionFilter:
+      name: agent_version
+      in: query
+      description: Requires agent_id.
+      schema:
+        type: integer
+        minimum: 1
+    Statuses:
+      name: statuses[]
+      in: query
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/SessionStatus'
+    DeploymentIDFilter:
+      name: deployment_id
+      in: query
+      description: Accepted for compatibility; no current Session matches a deployment.
+      schema:
+        type: string
+    MemoryStoreIDFilter:
+      name: memory_store_id
+      in: query
+      description: Accepted for compatibility; no current Session matches a memory store.
+      schema:
+        type: string
+    CreatedAtGt:
+      name: created_at[gt]
+      in: query
+      schema:
+        type: string
+        format: date-time
+    CreatedAtGte:
+      name: created_at[gte]
+      in: query
+      schema:
+        type: string
+        format: date-time
+    CreatedAtLt:
+      name: created_at[lt]
+      in: query
+      schema:
+        type: string
+        format: date-time
+    CreatedAtLte:
+      name: created_at[lte]
+      in: query
+      schema:
+        type: string
+        format: date-time
+
+  responses:
+    AgentResponse:
+      description: Agent resource
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Agent'
+    AgentListResponse:
+      description: Agent page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AgentList'
+    EnvironmentResponse:
+      description: Environment resource
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Environment'
+    EnvironmentListResponse:
+      description: Environment page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EnvironmentList'
+    EnvironmentDeletedResponse:
+      description: Environment deleted
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/EnvironmentDeleted'
+    SessionResponse:
+      description: Session resource
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Session'
+    SessionListResponse:
+      description: Session page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SessionList'
+    SessionDeletedResponse:
+      description: Session deleted
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SessionDeleted'
+    InvalidRequest:
+      description: Invalid request
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Resource not found
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: State or optimistic-concurrency conflict
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnsupportedRequest:
+      description: Well-formed capability that this implementation cannot enforce
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    AuthenticationError:
+      description: Missing API credentials when strict header validation is enabled
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+  headers:
+    RequestID:
+      description: Identifier for this API request.
+      schema:
+        type: string
+
+  schemas:
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [type, error, request_id]
+      properties:
+        type:
+          type: string
+          const: error
+        error:
+          type: object
+          additionalProperties: false
+          required: [type, message]
+          properties:
+            type:
+              type: string
+              enum:
+                - invalid_request_error
+                - authentication_error
+                - not_found_error
+                - conflict_error
+                - request_too_large
+                - api_error
+            message:
+              type: string
+        request_id:
+          type: string
+
+    Metadata:
+      type: object
+      maxProperties: 16
+      propertyNames:
+        maxLength: 64
+      additionalProperties:
+        type: string
+        maxLength: 512
+    MetadataPatch:
+      type: object
+      propertyNames:
+        maxLength: 64
+      additionalProperties:
+        oneOf:
+          - type: string
+            maxLength: 512
+          - type: 'null'
+    NullableTimestamp:
+      type: [string, 'null']
+      format: date-time
+    Cursor:
+      type: [string, 'null']
+
+    ModelInput:
+      oneOf:
+        - type: string
+          minLength: 1
+        - type: object
+          additionalProperties: false
+          required: [id]
+          properties:
+            id:
+              type: string
+              minLength: 1
+            effort:
+              oneOf:
+                - $ref: '#/components/schemas/ModelEffortLevel'
+                - $ref: '#/components/schemas/ModelEffort'
+            speed:
+              type: string
+              enum: [standard, fast]
+    ModelEffortLevel:
+      type: string
+      enum: [low, medium, high, xhigh, max]
+    ModelEffort:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          $ref: '#/components/schemas/ModelEffortLevel'
+    Model:
+      type: object
+      additionalProperties: false
+      required: [id, effort, speed]
+      properties:
+        id:
+          type: string
+        effort:
+          $ref: '#/components/schemas/ModelEffort'
+        speed:
+          type: string
+          enum: [standard, fast]
+
+    PermissionPolicy:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [always_allow, always_ask]
+    ToolDefaultConfig:
+      type: object
+      additionalProperties: false
+      properties:
+        enabled:
+          type: boolean
+        permission_policy:
+          $ref: '#/components/schemas/PermissionPolicy'
+    ToolConfig:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+        enabled:
+          type: boolean
+        permission_policy:
+          $ref: '#/components/schemas/PermissionPolicy'
+    BuiltinToolset:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: agent_toolset_20260401
+        default_config:
+          $ref: '#/components/schemas/ToolDefaultConfig'
+        configs:
+          type: array
+          items:
+            allOf:
+              - $ref: '#/components/schemas/ToolConfig'
+              - type: object
+                properties:
+                  name:
+                    type: string
+                    enum: [bash, read, write, edit, glob, grep, web_fetch, web_search]
+    MCPToolset:
+      type: object
+      additionalProperties: false
+      required: [type, mcp_server_name]
+      properties:
+        type:
+          type: string
+          const: mcp_toolset
+        mcp_server_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        default_config:
+          $ref: '#/components/schemas/ToolDefaultConfig'
+        configs:
+          type: array
+          items:
+            $ref: '#/components/schemas/ToolConfig'
+    CustomTool:
+      type: object
+      additionalProperties: false
+      required: [type, name, description, input_schema]
+      properties:
+        type:
+          type: string
+          const: custom
+        name:
+          type: string
+          pattern: '^[a-zA-Z0-9_-]{1,128}$'
+        description:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        input_schema:
+          type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+              const: object
+          additionalProperties: true
+    AgentTool:
+      oneOf:
+        - $ref: '#/components/schemas/BuiltinToolset'
+        - $ref: '#/components/schemas/MCPToolset'
+        - $ref: '#/components/schemas/CustomTool'
+      discriminator:
+        propertyName: type
+    MCPServer:
+      type: object
+      additionalProperties: false
+      required: [type, name, url]
+      properties:
+        type:
+          type: string
+          const: url
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        url:
+          type: string
+          format: uri
+          maxLength: 2048
+    Skill:
+      type: object
+      description: Stored for compatibility; execution is outside the supported core.
+      additionalProperties: true
+    Multiagent:
+      type: [object, 'null']
+      description: Stored opaquely; multi-agent execution is outside the supported core.
+      additionalProperties: true
+
+    AgentCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name, model]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        model:
+          $ref: '#/components/schemas/ModelInput'
+        system:
+          type: [string, 'null']
+        description:
+          type: [string, 'null']
+        tools:
+          type: array
+          maxItems: 128
+          items:
+            $ref: '#/components/schemas/AgentTool'
+        mcp_servers:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/MCPServer'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/Skill'
+        multiagent:
+          $ref: '#/components/schemas/Multiagent'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+    AgentUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+          minLength: 1
+        model:
+          $ref: '#/components/schemas/ModelInput'
+        system:
+          type: [string, 'null']
+        description:
+          type: [string, 'null']
+        tools:
+          oneOf:
+            - type: array
+              maxItems: 128
+              items:
+                $ref: '#/components/schemas/AgentTool'
+            - type: 'null'
+        mcp_servers:
+          oneOf:
+            - type: array
+              maxItems: 20
+              items:
+                $ref: '#/components/schemas/MCPServer'
+            - type: 'null'
+        skills:
+          oneOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/Skill'
+            - type: 'null'
+        multiagent:
+          $ref: '#/components/schemas/Multiagent'
+        metadata:
+          $ref: '#/components/schemas/MetadataPatch'
+    Agent:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - type
+        - version
+        - name
+        - model
+        - system
+        - description
+        - tools
+        - mcp_servers
+        - skills
+        - multiagent
+        - metadata
+        - created_at
+        - updated_at
+        - archived_at
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: agent
+        version:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        model:
+          $ref: '#/components/schemas/Model'
+        system:
+          type: [string, 'null']
+        description:
+          type: [string, 'null']
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentTool'
+        mcp_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MCPServer'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/Skill'
+        multiagent:
+          $ref: '#/components/schemas/Multiagent'
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        archived_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+    AgentSnapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - type
+        - version
+        - name
+        - model
+        - system
+        - description
+        - tools
+        - mcp_servers
+        - skills
+        - multiagent
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: agent
+        version:
+          type: integer
+          minimum: 1
+        name:
+          type: string
+        model:
+          $ref: '#/components/schemas/Model'
+        system:
+          type: string
+        description:
+          type: string
+        tools:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentTool'
+        mcp_servers:
+          type: array
+          items:
+            $ref: '#/components/schemas/MCPServer'
+        skills:
+          type: array
+          items:
+            $ref: '#/components/schemas/Skill'
+        multiagent:
+          $ref: '#/components/schemas/Multiagent'
+    AgentList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Agent'
+        next_page:
+          $ref: '#/components/schemas/Cursor'
+
+    UnrestrictedNetwork:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: unrestricted
+    LimitedNetwork:
+      type: object
+      description: Well-formed limited policies currently return 422 because enforcement is unavailable.
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: limited
+        allowed_hosts:
+          type: array
+          items:
+            type: string
+        allow_mcp_servers:
+          type: boolean
+          default: false
+        allow_package_managers:
+          type: boolean
+          default: false
+    NetworkPolicy:
+      oneOf:
+        - $ref: '#/components/schemas/UnrestrictedNetwork'
+        - $ref: '#/components/schemas/LimitedNetwork'
+      discriminator:
+        propertyName: type
+    PackagesInput:
+      type: object
+      description: Empty package sets are accepted; any non-empty manager list currently returns 422.
+      additionalProperties: false
+      properties:
+        type:
+          type: string
+          const: packages
+        apt:
+          type: array
+          items:
+            type: string
+        cargo:
+          type: array
+          items:
+            type: string
+        gem:
+          type: array
+          items:
+            type: string
+        go:
+          type: array
+          items:
+            type: string
+        npm:
+          type: array
+          items:
+            type: string
+        pip:
+          type: array
+          items:
+            type: string
+    Packages:
+      allOf:
+        - $ref: '#/components/schemas/PackagesInput'
+        - type: object
+          required: [type, apt, cargo, gem, go, npm, pip]
+    CloudEnvironmentConfigInput:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: cloud
+        networking:
+          $ref: '#/components/schemas/NetworkPolicy'
+        packages:
+          $ref: '#/components/schemas/PackagesInput'
+    CloudEnvironmentConfig:
+      type: object
+      additionalProperties: false
+      required: [type, networking, packages]
+      properties:
+        type:
+          type: string
+          const: cloud
+        networking:
+          $ref: '#/components/schemas/NetworkPolicy'
+        packages:
+          $ref: '#/components/schemas/Packages'
+    SelfHostedEnvironmentConfig:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: self_hosted
+    EnvironmentConfigInput:
+      oneOf:
+        - $ref: '#/components/schemas/CloudEnvironmentConfigInput'
+        - $ref: '#/components/schemas/SelfHostedEnvironmentConfig'
+      discriminator:
+        propertyName: type
+    EnvironmentConfig:
+      oneOf:
+        - $ref: '#/components/schemas/CloudEnvironmentConfig'
+        - $ref: '#/components/schemas/SelfHostedEnvironmentConfig'
+      discriminator:
+        propertyName: type
+    EnvironmentCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        scope:
+          type: string
+          enum: [organization, account]
+        config:
+          $ref: '#/components/schemas/EnvironmentConfigInput'
+    EnvironmentUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/MetadataPatch'
+        scope:
+          type: string
+          enum: [organization, account]
+        config:
+          $ref: '#/components/schemas/EnvironmentConfigInput'
+    Environment:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - type
+        - name
+        - description
+        - metadata
+        - config
+        - created_at
+        - updated_at
+        - archived_at
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: environment
+        name:
+          type: string
+        description:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        scope:
+          type: string
+          enum: [organization, account]
+        config:
+          $ref: '#/components/schemas/EnvironmentConfig'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        archived_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+    EnvironmentList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Environment'
+        next_page:
+          $ref: '#/components/schemas/Cursor'
+    EnvironmentDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: environment_deleted
+
+    AgentReference:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          const: agent
+        id:
+          type: string
+          minLength: 1
+        version:
+          type: integer
+          minimum: 1
+    AgentWithOverrides:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          const: agent_with_overrides
+        id:
+          type: string
+          minLength: 1
+        version:
+          type: integer
+          minimum: 1
+        model:
+          $ref: '#/components/schemas/ModelInput'
+        system:
+          type: [string, 'null']
+        tools:
+          oneOf:
+            - type: array
+              maxItems: 128
+              items:
+                $ref: '#/components/schemas/AgentTool'
+            - type: 'null'
+        mcp_servers:
+          oneOf:
+            - type: array
+              maxItems: 20
+              items:
+                $ref: '#/components/schemas/MCPServer'
+            - type: 'null'
+        skills:
+          oneOf:
+            - type: array
+              items:
+                $ref: '#/components/schemas/Skill'
+            - type: 'null'
+    SessionAgentInput:
+      oneOf:
+        - type: string
+          minLength: 1
+        - $ref: '#/components/schemas/AgentReference'
+        - $ref: '#/components/schemas/AgentWithOverrides'
+    TextBlockInput:
+      type: object
+      additionalProperties: false
+      required: [type, text]
+      properties:
+        type:
+          type: string
+          const: text
+        text:
+          type: string
+    ImageBlockInput:
+      type: object
+      required: [type, source]
+      properties:
+        type:
+          type: string
+          const: image
+        source:
+          type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+          additionalProperties: true
+      additionalProperties: true
+    DocumentBlockInput:
+      type: object
+      required: [type, source]
+      properties:
+        type:
+          type: string
+          const: document
+        source:
+          type: object
+          required: [type]
+          properties:
+            type:
+              type: string
+          additionalProperties: true
+      additionalProperties: true
+    MessageContentInput:
+      oneOf:
+        - $ref: '#/components/schemas/TextBlockInput'
+        - $ref: '#/components/schemas/ImageBlockInput'
+        - $ref: '#/components/schemas/DocumentBlockInput'
+      discriminator:
+        propertyName: type
+    UserMessageInitialEvent:
+      type: object
+      additionalProperties: false
+      required: [type, content]
+      properties:
+        type:
+          type: string
+          const: user.message
+        content:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/MessageContentInput'
+    TextRubric:
+      type: object
+      additionalProperties: false
+      required: [type, content]
+      properties:
+        type:
+          type: string
+          const: text
+        content:
+          type: string
+          minLength: 1
+    FileRubric:
+      type: object
+      additionalProperties: false
+      required: [type, file_id]
+      properties:
+        type:
+          type: string
+          const: file
+        file_id:
+          type: string
+          minLength: 1
+    OutcomeRubric:
+      oneOf:
+        - $ref: '#/components/schemas/TextRubric'
+        - $ref: '#/components/schemas/FileRubric'
+      discriminator:
+        propertyName: type
+    DefineOutcomeInitialEvent:
+      type: object
+      additionalProperties: false
+      required: [type, description, rubric]
+      properties:
+        type:
+          type: string
+          const: user.define_outcome
+        description:
+          type: string
+          minLength: 1
+        rubric:
+          $ref: '#/components/schemas/OutcomeRubric'
+        max_iterations:
+          type: integer
+          minimum: 1
+          maximum: 20
+    InitialEvent:
+      oneOf:
+        - $ref: '#/components/schemas/UserMessageInitialEvent'
+        - $ref: '#/components/schemas/DefineOutcomeInitialEvent'
+      discriminator:
+        propertyName: type
+    SessionCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [agent, environment_id]
+      properties:
+        agent:
+          $ref: '#/components/schemas/SessionAgentInput'
+        environment_id:
+          type: string
+          minLength: 1
+        title:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        initial_events:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/InitialEvent'
+        resources:
+          type: array
+          maxItems: 0
+        vault_ids:
+          type: array
+          maxItems: 0
+          items:
+            type: string
+    SessionAgentUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        tools:
+          oneOf:
+            - type: array
+              maxItems: 128
+              items:
+                $ref: '#/components/schemas/AgentTool'
+            - type: 'null'
+        mcp_servers:
+          oneOf:
+            - type: array
+              maxItems: 20
+              items:
+                $ref: '#/components/schemas/MCPServer'
+            - type: 'null'
+    SessionUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/MetadataPatch'
+        agent:
+          $ref: '#/components/schemas/SessionAgentUpdate'
+        vault_ids:
+          description: Reserved and rejected with 422 when present.
+          type: array
+          items:
+            type: string
+    SessionStatus:
+      type: string
+      enum: [idle, running, rescheduling, terminated]
+    SessionStats:
+      type: object
+      additionalProperties: false
+      required: [active_seconds, duration_seconds]
+      properties:
+        active_seconds:
+          type: number
+          minimum: 0
+        duration_seconds:
+          type: number
+          minimum: 0
+    SessionUsage:
+      type: object
+      additionalProperties: false
+      required: [cache_creation, cache_read_input_tokens, input_tokens, output_tokens]
+      properties:
+        cache_creation:
+          type: object
+          additionalProperties: false
+          required: [ephemeral_1h_input_tokens, ephemeral_5m_input_tokens]
+          properties:
+            ephemeral_1h_input_tokens:
+              type: integer
+              minimum: 0
+            ephemeral_5m_input_tokens:
+              type: integer
+              minimum: 0
+        cache_read_input_tokens:
+          type: integer
+          minimum: 0
+        input_tokens:
+          type: integer
+          minimum: 0
+        output_tokens:
+          type: integer
+          minimum: 0
+    OutcomeEvaluation:
+      type: object
+      additionalProperties: false
+      required: [type, outcome_id, description, result, explanation, iteration, completed_at]
+      properties:
+        type:
+          type: string
+          const: outcome_evaluation
+        outcome_id:
+          type: string
+        description:
+          type: string
+        result:
+          type: string
+        explanation:
+          type: [string, 'null']
+        iteration:
+          type: integer
+          minimum: 0
+        completed_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+    Session:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - type
+        - status
+        - agent
+        - environment_id
+        - title
+        - metadata
+        - outcome_evaluations
+        - resources
+        - stats
+        - usage
+        - vault_ids
+        - deployment_id
+        - created_at
+        - updated_at
+        - archived_at
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: session
+        status:
+          $ref: '#/components/schemas/SessionStatus'
+        agent:
+          $ref: '#/components/schemas/AgentSnapshot'
+        environment_id:
+          type: string
+        title:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/Metadata'
+        outcome_evaluations:
+          type: array
+          items:
+            $ref: '#/components/schemas/OutcomeEvaluation'
+        resources:
+          type: array
+          maxItems: 0
+        stats:
+          $ref: '#/components/schemas/SessionStats'
+        usage:
+          $ref: '#/components/schemas/SessionUsage'
+        vault_ids:
+          type: array
+          maxItems: 0
+          items:
+            type: string
+        deployment_id:
+          type: 'null'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        archived_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+    SessionList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page, prev_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Session'
+        next_page:
+          $ref: '#/components/schemas/Cursor'
+        prev_page:
+          $ref: '#/components/schemas/Cursor'
+    SessionDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+          const: session_deleted

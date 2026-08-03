@@ -105,8 +105,12 @@ lists are forward-only and include `next_page`.
 ## OpenAPI
 
 The running server exposes `/openapi.yaml`, sourced from
-`internal/httpapi/openapi.yaml`. It is currently an endpoint inventory, not a
-complete generated client contract: schemas, examples, parameter definitions,
-and the full event union still need to be added.
+`internal/httpapi/openapi.yaml`. Agent, Environment, and Session lifecycle
+operations define stable operation IDs, path and query parameters, request and
+response schemas, list envelopes, and shared error responses. Repository tests
+keep all local references resolvable and preserve the 21-operation core
+inventory.
 
-For now, use these guides and the API coverage page when integrating.
+The Session Event routes are present, but their complete tagged event union and
+SSE preview-frame schemas are still being added. Use the event guide alongside
+the OpenAPI document for that surface.
