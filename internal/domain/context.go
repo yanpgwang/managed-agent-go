@@ -137,9 +137,67 @@ func cloneMessages(messages []Message) []Message {
 	out := make([]Message, len(messages))
 	for i, message := range messages {
 		out[i] = message
-		out[i].Content = append([]ContentBlock(nil), message.Content...)
+		out[i].Content = make([]ContentBlock, len(message.Content))
+		for j, block := range message.Content {
+			out[i].Content[j] = cloneContentBlock(block)
+		}
 	}
 	return out
+}
+
+func cloneContentBlock(block ContentBlock) ContentBlock {
+	cloned := block
+	if block.Input != nil {
+		cloned.Input = make(map[string]any, len(block.Input))
+		for key, value := range block.Input {
+			cloned.Input[key] = cloneJSONValue(value)
+		}
+	}
+	if block.Raw != nil {
+		cloned.Raw = append(json.RawMessage(nil), block.Raw...)
+	}
+	if block.ResultContent != nil {
+		cloned.ResultContent = make([]json.RawMessage, len(block.ResultContent))
+		for index, raw := range block.ResultContent {
+			cloned.ResultContent[index] = append(json.RawMessage(nil), raw...)
+		}
+	}
+	return cloned
+}
+
+// cloneJSONValue copies the JSON-shaped values accepted in tool inputs without
+// round-tripping through encoding/json, which would coerce integer-like Go
+// values to float64. Scalars are immutable; maps, slices, and raw byte values
+// must be detached from the durable transcript.
+func cloneJSONValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		cloned := make(map[string]any, len(typed))
+		for key, nested := range typed {
+			cloned[key] = cloneJSONValue(nested)
+		}
+		return cloned
+	case []any:
+		cloned := make([]any, len(typed))
+		for index, nested := range typed {
+			cloned[index] = cloneJSONValue(nested)
+		}
+		return cloned
+	case json.RawMessage:
+		return append(json.RawMessage(nil), typed...)
+	case []byte:
+		return append([]byte(nil), typed...)
+	case []string:
+		return append([]string(nil), typed...)
+	case map[string]string:
+		cloned := make(map[string]string, len(typed))
+		for key, nested := range typed {
+			cloned[key] = nested
+		}
+		return cloned
+	default:
+		return value
+	}
 }
 
 func hasToolResult(message Message) bool {
