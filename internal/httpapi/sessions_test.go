@@ -223,6 +223,10 @@ func TestSendEvents_ValidatesVariantShape(t *testing.T) {
 		`{"events":[{"type":"user.message","content":[{"type":"text","text":"x"}],"session_thread_id":"st_1"}]}`,
 		`{"events":[{"type":"system.message","content":[{"type":"text","text":"late context"}]}]}`,
 		`{"events":[{"type":"system.message","content":[{"type":"image","source":{"type":"url","url":"https://example.com/x.png"}}]}]}`,
+		`{"events":[{"type":"user.message","content":[{"type":"text","text":"x","bogus":true}]}]}`,
+		`{"events":[{"type":"user.message","content":[{"type":"image","source":{"type":"url"}}]}]}`,
+		`{"events":[{"type":"user.message","content":[{"type":"document","source":{"type":"text","data":"x","media_type":"text/markdown"}}]}]}`,
+		`{"events":[{"type":"user.tool_result","tool_use_id":"sevt_x","content":[{"type":"search_result","source":"https://example.com","title":"x","content":[]}]}]}`,
 	} {
 		rec := do(h, "POST", "/v1/sessions/"+id+"/events", body)
 		if rec.Code != 400 {
@@ -248,6 +252,103 @@ func TestSendEvents_ValidatesVariantShape(t *testing.T) {
 		`"type":"document","source":{"type":"file","file_id":"file_x"}}]}]}`
 	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileDocument); rec.Code != 422 {
 		t.Fatalf("file document -> %d, want 422: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestValidateClientEventAcceptsDocumentAndSearchResultShapes(t *testing.T) {
+	events := []map[string]any{
+		{
+			"type": "user.message",
+			"content": []any{map[string]any{
+				"type": "document",
+				"source": map[string]any{
+					"type": "text", "data": "evidence", "media_type": "text/plain",
+				},
+				"context": "supporting material",
+				"title":   "Evidence",
+			}},
+		},
+		{
+			"type":        "user.tool_result",
+			"tool_use_id": "sevt_tool",
+			"content": []any{map[string]any{
+				"type": "search_result", "source": "https://example.com",
+				"title":     "Example",
+				"citations": map[string]any{"enabled": true},
+				"content":   []any{map[string]any{"type": "text", "text": "result"}},
+			}},
+		},
+	}
+	for _, event := range events {
+		if err := validateClientEvent(event); err != nil {
+			t.Errorf("validate %s: %v", event["type"], err)
+		}
+	}
+}
+
+func TestValidateClientEventRejectsMalformedNestedObjects(t *testing.T) {
+	message := func(block map[string]any) map[string]any {
+		return map[string]any{"type": "user.message", "content": []any{block}}
+	}
+	toolResult := func(block map[string]any) map[string]any {
+		return map[string]any{
+			"type": "user.tool_result", "tool_use_id": "sevt_tool",
+			"content": []any{block},
+		}
+	}
+	invalid := []map[string]any{
+		message(map[string]any{"type": "text", "text": "x", "bogus": true}),
+		message(map[string]any{
+			"type": "image", "source": map[string]any{"type": "url"},
+		}),
+		message(map[string]any{
+			"type": "image",
+			"source": map[string]any{
+				"type": "url", "url": "https://example.com/image.png", "data": "extra",
+			},
+		}),
+		message(map[string]any{
+			"type": "document",
+			"source": map[string]any{
+				"type": "text", "data": "x", "media_type": "text/markdown",
+			},
+		}),
+		message(map[string]any{
+			"type": "document", "source": map[string]any{
+				"type": "url", "url": "https://example.com/document.pdf",
+			}, "title": nil,
+		}),
+		toolResult(map[string]any{
+			"type": "search_result", "source": "https://example.com", "title": "Example",
+			"content": []any{},
+		}),
+		toolResult(map[string]any{
+			"type": "search_result", "source": "https://example.com", "title": "Example",
+			"citations": map[string]any{"enabled": true, "bogus": true},
+			"content":   []any{},
+		}),
+		toolResult(map[string]any{
+			"type": "search_result", "source": "https://example.com", "title": "Example",
+			"citations": map[string]any{"enabled": true},
+			"content": []any{map[string]any{
+				"type": "text", "text": "result", "bogus": true,
+			}},
+		}),
+		{
+			"type": "user.define_outcome", "description": "x",
+			"rubric": map[string]any{"type": "text", "content": "good", "bogus": true},
+		},
+		{
+			"type": "user.define_outcome", "description": "x",
+			"rubric": map[string]any{
+				"type": "text", "content": strings.Repeat("x", maxOutcomeRubricCharacters+1),
+			},
+		},
+	}
+	for i, event := range invalid {
+		if err := validateClientEvent(event); err == nil {
+			t.Errorf("case %d accepted malformed event: %#v", i, event)
+		}
 	}
 }
 

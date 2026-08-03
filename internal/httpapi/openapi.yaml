@@ -1395,36 +1395,95 @@ components:
           const: text
         text:
           type: string
+    Base64ImageSourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, data, media_type]
+      properties:
+        type: {type: string, const: base64}
+        data: {type: string}
+        media_type: {type: string}
+    URLImageSourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, url]
+      properties:
+        type: {type: string, const: url}
+        url: {type: string}
+    FileImageSourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, file_id]
+      properties:
+        type: {type: string, const: file}
+        file_id: {type: string, minLength: 1}
+    ImageSourceInput:
+      oneOf:
+        - $ref: '#/components/schemas/Base64ImageSourceInput'
+        - $ref: '#/components/schemas/URLImageSourceInput'
+        - $ref: '#/components/schemas/FileImageSourceInput'
+      discriminator:
+        propertyName: type
     ImageBlockInput:
       type: object
+      additionalProperties: false
       required: [type, source]
       properties:
         type:
           type: string
           const: image
         source:
-          type: object
-          required: [type]
-          properties:
-            type:
-              type: string
-          additionalProperties: true
-      additionalProperties: true
+          $ref: '#/components/schemas/ImageSourceInput'
+    Base64DocumentSourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, data, media_type]
+      properties:
+        type: {type: string, const: base64}
+        data: {type: string}
+        media_type: {type: string}
+    TextDocumentSourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, data, media_type]
+      properties:
+        type: {type: string, const: text}
+        data: {type: string}
+        media_type: {type: string, const: text/plain}
+    URLDocumentSourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, url]
+      properties:
+        type: {type: string, const: url}
+        url: {type: string}
+    FileDocumentSourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, file_id]
+      properties:
+        type: {type: string, const: file}
+        file_id: {type: string, minLength: 1}
+    DocumentSourceInput:
+      oneOf:
+        - $ref: '#/components/schemas/Base64DocumentSourceInput'
+        - $ref: '#/components/schemas/TextDocumentSourceInput'
+        - $ref: '#/components/schemas/URLDocumentSourceInput'
+        - $ref: '#/components/schemas/FileDocumentSourceInput'
+      discriminator:
+        propertyName: type
     DocumentBlockInput:
       type: object
+      additionalProperties: false
       required: [type, source]
       properties:
         type:
           type: string
           const: document
         source:
-          type: object
-          required: [type]
-          properties:
-            type:
-              type: string
-          additionalProperties: true
-      additionalProperties: true
+          $ref: '#/components/schemas/DocumentSourceInput'
+        context: {type: string}
+        title: {type: string}
     MessageContentInput:
       oneOf:
         - $ref: '#/components/schemas/TextBlockInput'
@@ -1457,6 +1516,7 @@ components:
         content:
           type: string
           minLength: 1
+          maxLength: 262144
     FileRubric:
       type: object
       additionalProperties: false
