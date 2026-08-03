@@ -50,6 +50,14 @@ The response is:
 Archive is idempotent. Archived environments cannot be used for new sessions,
 but existing session references remain intact.
 
+## Update
+
+`POST /v1/environments/{id}` is the only missing operation in the 21-operation
+core HTTP inventory. Mango does not currently accept an Environment update
+because cloud networking and package configuration are not yet enforced by the
+runtime. Accepting and storing those fields without honoring them would create
+a false compatibility claim.
+
 ## Delete
 
 `DELETE /v1/environments/{id}`
@@ -78,3 +86,8 @@ Deleting an environment referenced by a session returns `409`.
   "archived_at": null
 }
 ```
+
+The current response does not yet include the official SDK's `description`,
+`metadata`, and `scope` fields. The [core conformance
+matrix](core-conformance.md) tracks that projection gap separately from route
+presence.

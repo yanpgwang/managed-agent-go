@@ -18,6 +18,9 @@ This page describes the user-visible integration surface:
 - **Not supported** means the server may accept or preserve part of the shape,
   but does not provide the corresponding behavior.
 
+The [core API conformance matrix](api/core-conformance.md) separately records
+route, official SDK, and durable/service evidence for each in-scope operation.
+
 The official Anthropic Go SDK is used as a black-box client for core lifecycle
 tests. That verifies useful interoperability, not universal drop-in
 compatibility.

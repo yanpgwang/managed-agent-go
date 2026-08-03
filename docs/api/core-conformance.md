@@ -1,0 +1,67 @@
+---
+title: Core API conformance matrix
+---
+
+# Core API conformance matrix
+
+This matrix tracks the 21 SDK-visible operations in Mango's core single-agent
+scope. It is based on the public Managed Agents API reference and the official
+Anthropic Go SDK v1.61.0 types. It was last verified against those sources on
+2026-08-03.
+
+Route presence is only an inventory signal. A **yes** in the route column does
+not claim full compatibility: accepted fields, defaults, null behavior, error
+responses, durable state transitions, and runtime semantics still require
+separate evidence.
+
+| Resource | Operation | HTTP route | Route | Official SDK black box | Durable/service path | Remaining core gap |
+| --- | --- | --- | --- | --- | --- | --- |
+| Agent | Create | `POST /v1/agents` | Yes | Yes | Yes | Finish the cross-field default, null, and error-contract sweep. |
+| Agent | List | `GET /v1/agents` | Yes | Yes | Yes | None identified for the documented core filters and forward cursor. |
+| Agent | Get | `GET /v1/agents/{agent_id}` | Yes | Yes | Yes | None identified for the core resource projection. |
+| Agent | Update | `POST /v1/agents/{agent_id}` | Yes | Yes | Yes | Finish the cross-field default, null, and error-contract sweep. |
+| Agent | List versions | `GET /v1/agents/{agent_id}/versions` | Yes | Yes | Yes | None identified for forward pagination. |
+| Agent | Archive | `POST /v1/agents/{agent_id}/archive` | Yes | Yes | Yes | None identified for the core idempotent archive path. |
+| Environment | Create | `POST /v1/environments` | Yes | No | Yes | Align the current SDK resource fields and enforce cloud networking/packages. |
+| Environment | List | `GET /v1/environments` | Yes | Yes | Yes | Returned Environment objects still need the complete current SDK projection. |
+| Environment | Get | `GET /v1/environments/{environment_id}` | Yes | No | Yes | Add SDK coverage and the complete current SDK projection. |
+| Environment | Update | `POST /v1/environments/{environment_id}` | **No** | No | No | Implement update with real networking and package enforcement. |
+| Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | No | Yes | Add SDK coverage and the complete current SDK projection. |
+| Environment | Delete | `DELETE /v1/environments/{environment_id}` | Yes | No | Yes | Add SDK coverage and align the current delete response shape. |
+| Session | Create | `POST /v1/sessions` | Yes | Yes | Yes | Complete core validation/default/null coverage; unsupported product surfaces remain explicit. |
+| Session | List | `GET /v1/sessions` | Yes | Yes | Yes | None identified for the in-scope filters and bidirectional cursors. |
+| Session | Get | `GET /v1/sessions/{session_id}` | Yes | Yes | Yes | None identified for the in-scope resource projection. |
+| Session | Update | `POST /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue race and next-turn visibility verification. |
+| Session | Archive | `POST /v1/sessions/{session_id}/archive` | Yes | No | Yes | Add official SDK black-box coverage. |
+| Session | Delete | `DELETE /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue deletion-fence and restart verification. |
+| Session event | Send | `POST /v1/sessions/{session_id}/events` | Yes | Yes | Yes | Complete the documented core event union and legality checks. |
+| Session event | List | `GET /v1/sessions/{session_id}/events` | Yes | Yes | Yes | Verify ordering, timestamp-boundary, and restart behavior. |
+| Session event | Stream | `GET /v1/sessions/{session_id}/events/stream` | Yes | Yes | Yes | Verify reconnection, backpressure, restart, and preview-finish behavior. |
+
+## Evidence map
+
+- Official SDK lifecycle, update, event, and paging tests:
+  `internal/httpapi/sdk_test.go` and
+  `internal/httpapi/sdk_session_list_test.go`.
+- Exact wire and error-envelope tests:
+  `internal/httpapi/sdk_golden_test.go`.
+- PostgreSQL resource, pagination, admission, and transition tests:
+  `internal/pg/resource_list_test.go`, `internal/pg/resources_test.go`,
+  `internal/pg/session_update_test.go`, and `internal/pg/store_test.go`.
+- PostgreSQL/Temporal service-path tests:
+  `internal/controlplane/integration_test.go`,
+  `internal/controlplane/session_update_test.go`, and the replay/runtime suites
+  under `internal/temporal`.
+
+The user-facing support claim remains the
+[Claude API coverage](../compatibility.md) page. This matrix is the narrower
+engineering ledger used to identify missing evidence without treating a
+registered route as compatibility.
+
+## Normative references
+
+- [Agents](https://platform.claude.com/docs/en/api/beta/agents)
+- [Environments](https://platform.claude.com/docs/en/api/beta/environments)
+- [Sessions](https://platform.claude.com/docs/en/api/beta/sessions)
+- [Session events](https://platform.claude.com/docs/en/api/beta/sessions/events)
+

@@ -12,7 +12,9 @@ under `/v1`.
 
 This reference documents repository behavior. [Claude API
 coverage](../compatibility.md) summarizes which integration workflows are
-supported, limited, or not supported.
+supported, limited, or not supported. The [core API conformance
+matrix](core-conformance.md) inventories each SDK-visible operation and its
+current test evidence.
 
 :::
 
@@ -21,7 +23,7 @@ supported, limited, or not supported.
 | Resource | Endpoints |
 | --- | --- |
 | Agents | `POST/GET /v1/agents`, `GET/POST /v1/agents/{id}`, versions, archive |
-| Environments | `POST/GET /v1/environments`, get, archive, delete |
+| Environments | `POST/GET /v1/environments`, get, archive, delete; update is not implemented |
 | Sessions | `POST/GET /v1/sessions`, get, update, archive, delete |
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
@@ -32,6 +34,7 @@ Resource-specific request shapes are covered in:
 - [Environments](environments.md)
 - [Sessions](sessions.md)
 - [Events and streaming](events.md)
+- [Core API conformance matrix](core-conformance.md)
 
 ## Headers
 

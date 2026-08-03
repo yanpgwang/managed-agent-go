@@ -27,12 +27,19 @@ Implemented in the current M1 slice:
 - built-in sandbox tools, provider-native Web Search/Fetch, remote MCP basics,
   custom tools, and confirmation.
 
-Remaining M1 conformance work is deliberately narrow:
+Remaining M1 work is tracked by evidence rather than route count:
 
-1. public periodic `span.outcome_evaluation_ongoing` events during long grader
-   calls and Files-backed outcome rubrics;
-2. `agent.thinking` preview production and exact endpoint/model context-window
-   profiles where a provider exposes them.
+- complete the core request validation, defaults, null, error, OpenAPI, and
+  official SDK coverage sweep;
+- implement Environment update only together with runtime-enforced networking
+  and package configuration;
+- close the documented event, retry, terminal-state, heartbeat, SSE,
+  interruption, and restart invariants;
+- publish a versioned core compatibility statement after those gates pass.
+
+The operation-level baseline lives in the [core API conformance
+matrix](api/core-conformance.md). Files-backed outcomes and other broader
+product surfaces remain outside the core gate.
 
 Repeatable black-box comparison against the hosted Managed Agents API remains
 useful optional validation when a Managed Agents-capable credential is
