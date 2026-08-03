@@ -2,6 +2,7 @@ package domain
 
 import (
 	"net/netip"
+	"strings"
 	"testing"
 )
 
@@ -93,6 +94,23 @@ func TestParseMCPServers_ValidatesIdentityAndURL(t *testing.T) {
 		if _, err := ParseMCPServers(raw); err == nil {
 			t.Fatalf("expected invalid MCP servers to fail: %#v", raw)
 		}
+	}
+}
+
+func TestParseMCPServers_RejectsUnsupportedFields(t *testing.T) {
+	for _, field := range []string{"authorization_token", "headers", "tool_configuration"} {
+		t.Run(field, func(t *testing.T) {
+			_, err := ParseMCPServers([]any{map[string]any{
+				"type": "url", "name": "github", "url": "https://example.com/mcp",
+				field: "secret",
+			}})
+			if err == nil {
+				t.Fatalf("unsupported field %q was accepted", field)
+			}
+			if !strings.Contains(err.Error(), field) || strings.Contains(err.Error(), "secret") {
+				t.Fatalf("error should name only the field: %v", err)
+			}
+		})
 	}
 }
 
