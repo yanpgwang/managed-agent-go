@@ -26,7 +26,8 @@ internal design, is secondary and cannot establish a compatibility claim.
 
 ## Official documentation and API Reference
 
-Verified 2026-07-29.
+Baseline verified through 2026-08-03. Entries below record later focused
+verification where applicable.
 
 - [API overview](https://platform.claude.com/docs/en/api/overview) — auth
   headers, pagination, request-size limit, and error envelope.
@@ -110,7 +111,9 @@ declaration, the custom/permission handoff, and the tool-block event wire.
   — provider-native server-tool declarations, result blocks, citations, and
   continuation behavior. Verified 2026-08-01.
 - [Cloud environment setup](https://platform.claude.com/docs/en/managed-agents/environments)
-  — reusable Environment configuration and isolated session sandbox ownership.
+  — reusable Environment configuration, isolated session sandbox ownership,
+  limited-network semantics, package-manager access, and package caching across
+  Sessions sharing an Environment. Verified 2026-08-03.
 - [Self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
   — the control-plane/worker boundary and session-scoped sandbox guidance.
 - [Bash tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool)
@@ -164,3 +167,8 @@ forwarding upstream frames.
   their wire behavior is implemented and tested.
 - Only official documentation and official SDKs are normative for the public
   compatibility surface.
+
+The resulting frozen claim is
+[core compatibility statement v1.0.0](compatibility/core-v1.md). Its explicit
+limitations take precedence over any broader shorthand elsewhere in the
+documentation.

@@ -79,11 +79,13 @@ transactional outbox, tool journal, interrupt ordering, and sandbox lifecycle.
 > **Alpha.** Mango implements a documented subset of the API and is not an
 > Anthropic product or a drop-in production service. Check the
 > [compatibility matrix](docs/compatibility.md) before depending on a capability.
+> The [core compatibility statement v1.0.0](docs/compatibility/core-v1.md)
+> freezes the first scoped single-agent claim.
 > The default local sandbox is not a security boundary.
 
 | Area | Status |
 | --- | --- |
-| Agents, Environments, Sessions | Core lifecycle implemented |
+| Agents, Environments, Sessions | Core lifecycle, package setup, and capability-gated networking implemented |
 | Events | Messages, interrupts, custom-tool results, confirmations, pagination, and SSE |
 | Runtime | Multi-round model/tool loop with durable park and resume |
 | Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools |
@@ -93,7 +95,8 @@ Web Search/Fetch currently require a supporting Messages API endpoint and
 `always_allow`. MCP supports unauthenticated public Streamable HTTP servers;
 deployment-managed authentication remains future work. Files, skills, memory,
 vaults, multi-agent orchestration, schedules, and webhooks are not implemented.
-See [Claude API coverage](docs/compatibility.md) for exact behavior and the
+See [Claude API coverage](docs/compatibility.md) for current behavior, the
+[versioned core statement](docs/compatibility/core-v1.md) for the frozen claim, and the
 [roadmap](docs/roadmap.md) for planned work.
 
 ## Next steps
