@@ -92,8 +92,10 @@ declaration, the custom/permission handoff, and the tool-block event wire.
   — `always_allow` / `always_ask` / `always_deny` evaluation and the
   `requires_action` stop reason that a pending confirmation produces.
 - [MCP connector](https://platform.claude.com/docs/en/managed-agents/mcp-connector)
-  — server/toolset matching, default permission policy, oversized-result
-  handling, and recoverable connection failures. Verified 2026-08-01.
+  — Agent definitions declare only the server type, name, and URL; credentials
+  are supplied separately through Session vaults. Also covers server/toolset
+  matching, default permission policy, oversized-result handling, and
+  recoverable connection failures. Verified 2026-08-03.
 - [Web Search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)
   and
   [Web Fetch](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool)

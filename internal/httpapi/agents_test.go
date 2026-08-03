@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -310,6 +311,64 @@ func TestAgents_MetadataValidationUsesResultingBag(t *testing.T) {
 	gotMetadata := updated["metadata"].(map[string]any)
 	if len(gotMetadata) != 16 || gotMetadata["replacement"] != "v" {
 		t.Fatalf("metadata patch result = %#v", gotMetadata)
+	}
+}
+
+func TestAgents_RejectsUnsupportedMCPServerFieldsWithoutPersisting(t *testing.T) {
+	srv := newTestServer(t)
+	const secret = "sk-must-not-be-stored"
+	invalidServers := `[{"type":"url","name":"github",` +
+		`"url":"https://example.com/mcp","authorization_token":"` + secret + `"}]`
+	tools := `[{"type":"mcp_toolset","mcp_server_name":"github"}]`
+
+	rec := do(srv, "POST", "/v1/agents", `{"name":"Agent","model":"claude-opus-4-8",`+
+		`"tools":`+tools+`,"mcp_servers":`+invalidServers+`}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid create status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("create error echoed rejected value: %s", rec.Body)
+	}
+
+	rec = do(srv, "POST", "/v1/agents", `{"name":"Agent","model":"claude-opus-4-8",`+
+		`"tools":`+tools+`,"mcp_servers":[{"type":"url","name":"github",`+
+		`"url":"https://example.com/mcp"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("valid create status = %d: %s", rec.Code, rec.Body)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	id := created["id"].(string)
+
+	rec = do(srv, "POST", "/v1/agents/"+id, `{"mcp_servers":`+invalidServers+`}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid update status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+	if strings.Contains(rec.Body.String(), secret) {
+		t.Fatalf("update error echoed rejected value: %s", rec.Body)
+	}
+
+	for _, path := range []string{
+		"/v1/agents", "/v1/agents/" + id, "/v1/agents/" + id + "/versions",
+	} {
+		read := do(srv, "GET", path, "")
+		if read.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d: %s", path, read.Code, read.Body)
+		}
+		if strings.Contains(read.Body.String(), secret) {
+			t.Fatalf("GET %s exposed rejected value: %s", path, read.Body)
+		}
+	}
+
+	versions := do(srv, "GET", "/v1/agents/"+id+"/versions", "")
+	var page map[string]any
+	if err := json.Unmarshal(versions.Body.Bytes(), &page); err != nil {
+		t.Fatal(err)
+	}
+	if data, _ := page["data"].([]any); len(data) != 1 {
+		t.Fatalf("rejected update created an Agent version: %#v", page["data"])
 	}
 }
 

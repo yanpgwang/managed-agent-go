@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"unicode/utf8"
 )
@@ -86,6 +87,26 @@ func MCPAddressAllowed(address netip.Addr) bool {
 
 func validPermissionPolicy(policy PermissionPolicy) bool {
 	return policy.Type == "always_allow" || policy.Type == "always_ask"
+}
+
+// validateMCPServerFields keeps unsupported nested data out of immutable
+// Agent versions. Managed Agents MCP server definitions contain only type,
+// name, and URL; authentication belongs to Session vaults rather than the
+// reusable Agent definition.
+func validateMCPServerFields(value map[string]any) error {
+	var unknown []string
+	for key := range value {
+		switch key {
+		case "type", "name", "url":
+		default:
+			unknown = append(unknown, key)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	slices.Sort(unknown)
+	return fmt.Errorf("mcp server does not support field %q", unknown[0])
 }
 
 func parsePolicy(raw any) *PermissionPolicy {
@@ -279,6 +300,9 @@ func ParseMCPServers(raw []any) (map[string]MCPServer, error) {
 		value, ok := item.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("mcp server entry must be an object")
+		}
+		if err := validateMCPServerFields(value); err != nil {
+			return nil, err
 		}
 		serverType, _ := value["type"].(string)
 		name, _ := value["name"].(string)
