@@ -28,13 +28,30 @@ func timestampProto(at time.Time) *timestamppb.Timestamp {
 }
 
 // replayWorkflowName is the registered name the synthetic histories below carry.
-// The turn harness is the replay subject because every Workflow version gate in
-// this package lives inside runWorkflowTurnInternal; SessionWorkflow only drives
-// it. Registering under a stable name keeps the fixtures independent of Go
-// function naming.
+// The turn harness is the replay subject for the ordered turn-level version
+// gates inside runWorkflowTurnInternal. Registering under a stable name keeps
+// the fixtures independent of Go function naming.
 const replayWorkflowName = "SessionAgentTurn"
 
+const replaySessionWorkflowName = SessionWorkflowType
+
 const replayTaskQueue = "replay-task-queue"
+
+type replayVersionGate struct {
+	changeID string
+	version  workflow.Version
+}
+
+// turnReplayVersionGates is intentionally in Workflow command order. A rolling
+// upgrade can leave history at every prefix, so the replay suite exercises each
+// deployment boundary rather than only the oldest and newest shapes.
+var turnReplayVersionGates = []replayVersionGate{
+	{liveModelSpanStartChangeID, liveModelSpanStartVersion},
+	{mcpToolEventsChangeID, mcpToolEventsVersion},
+	{terminalSessionErrorChangeID, terminalSessionErrorVersion},
+	{outcomeEvaluationHeartbeatChangeID, outcomeEvaluationHeartbeatVersion},
+	{modelRetryLifecycleChangeID, modelRetryLifecycleVersion},
+}
 
 // historyFixture builds a Temporal Workflow history by hand so replay
 // compatibility can be asserted offline, with no Temporal service and no
@@ -55,6 +72,10 @@ type historyFixture struct {
 }
 
 func newHistoryFixture(t *testing.T, input any) *historyFixture {
+	return newNamedHistoryFixture(t, replayWorkflowName, input)
+}
+
+func newNamedHistoryFixture(t *testing.T, workflowName string, input any) *historyFixture {
 	t.Helper()
 	h := &historyFixture{
 		t:   t,
@@ -64,7 +85,7 @@ func newHistoryFixture(t *testing.T, input any) *historyFixture {
 		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED,
 		&historypb.HistoryEvent_WorkflowExecutionStartedEventAttributes{
 			WorkflowExecutionStartedEventAttributes: &historypb.WorkflowExecutionStartedEventAttributes{
-				WorkflowType: &commonpb.WorkflowType{Name: replayWorkflowName},
+				WorkflowType: &commonpb.WorkflowType{Name: workflowName},
 				TaskQueue: &taskqueuepb.TaskQueue{
 					Name: replayTaskQueue,
 					Kind: enumspb.TASK_QUEUE_KIND_NORMAL,
@@ -126,6 +147,8 @@ func (h *historyFixture) append(
 	case *historypb.HistoryEvent_UpsertWorkflowSearchAttributesEventAttributes:
 		event.Attributes = typed
 	case *historypb.HistoryEvent_WorkflowExecutionCompletedEventAttributes:
+		event.Attributes = typed
+	case *historypb.HistoryEvent_WorkflowExecutionSignaledEventAttributes:
 		event.Attributes = typed
 	default:
 		h.t.Fatalf("unsupported history attributes %T", attributes)
@@ -274,6 +297,26 @@ func (h *historyFixture) activity(activityType string, result any) *historyFixtu
 	return h
 }
 
+func (h *historyFixture) signal(name string, value any) *historyFixture {
+	h.openWorkflowTask()
+	h.append(
+		enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_SIGNALED,
+		&historypb.HistoryEvent_WorkflowExecutionSignaledEventAttributes{
+			WorkflowExecutionSignaledEventAttributes: &historypb.WorkflowExecutionSignaledEventAttributes{
+				SignalName: name,
+				Input:      h.payloads(value),
+			},
+		},
+	)
+	h.scheduleWorkflowTask()
+	return h
+}
+
+func (h *historyFixture) partial() *historypb.History {
+	h.openWorkflowTask()
+	return &historypb.History{Events: h.events}
+}
+
 func (h *historyFixture) finish(result any) *historypb.History {
 	h.openWorkflowTask()
 	h.append(
@@ -294,6 +337,16 @@ func replayTurnHistory(t *testing.T, history *historypb.History) error {
 	replayer.RegisterWorkflowWithOptions(
 		workflowTurnHarness,
 		workflow.RegisterOptions{Name: replayWorkflowName},
+	)
+	return replayer.ReplayWorkflowHistory(nil, history)
+}
+
+func replaySessionHistory(t *testing.T, history *historypb.History) error {
+	t.Helper()
+	replayer := worker.NewWorkflowReplayer()
+	replayer.RegisterWorkflowWithOptions(
+		SessionWorkflow,
+		workflow.RegisterOptions{Name: replaySessionWorkflowName},
 	)
 	return replayer.ReplayWorkflowHistory(nil, history)
 }
@@ -393,29 +446,65 @@ func TestReplay_MCPToolTurnRecordedBeforeMCPEventTypesGate(t *testing.T) {
 	require.NoError(t, replayTurnHistory(t, history))
 }
 
-// A Workflow recorded by the current code carries both markers and must replay
-// unchanged as well, which is what keeps a worker restart mid-turn safe once
-// this change ships.
-func TestReplay_MCPToolTurnRecordedWithMCPEventTypesGate(t *testing.T) {
-	input := PrepareTurnInput{
-		SessionID: "sess_replay_current", TriggerEventID: "sevt_trigger",
-	}
-	history := newHistoryFixture(t, input).
-		activity(ActivityPrepareTurn, mcpToolRoundPrepared()).
-		versionMarker(liveModelSpanStartChangeID, liveModelSpanStartVersion).
-		versionMarker(mcpToolEventsChangeID, mcpToolEventsVersion).
-		activity(ActivityStartModelRequest, nil).
-		activity(ActivityCallModel, mcpToolRoundCall()).
-		activity(ActivityExecuteTool, mcpToolRoundExecuted()).
-		activity(ActivityAppendWorkflowEvents, nil).
-		activity(ActivityStartModelRequest, nil).
-		activity(ActivityCallModel, mcpToolRoundFinalCall()).
-		activity(ActivityCompleteWorkflowTurn, RunTurnResult{
-			Disposition: TurnCompleted,
-		}).
-		finish(RunTurnResult{Disposition: TurnCompleted})
+// Each prefix represents a real rolling-upgrade boundary: the execution was
+// created after that prefix shipped but before the next gate existed. All of
+// them must replay on the current worker, including the full current marker set.
+func TestReplay_MCPToolTurnAcrossVersionGatePrefixes(t *testing.T) {
+	for prefix := 2; prefix <= len(turnReplayVersionGates); prefix++ {
+		lastGate := turnReplayVersionGates[prefix-1]
+		t.Run(lastGate.changeID, func(t *testing.T) {
+			input := PrepareTurnInput{
+				SessionID:      "sess_replay_prefix_" + itoaTest(int64(prefix)),
+				TriggerEventID: "sevt_trigger",
+			}
+			fixture := newHistoryFixture(t, input).
+				activity(ActivityPrepareTurn, mcpToolRoundPrepared())
+			for _, gate := range turnReplayVersionGates[:prefix] {
+				fixture.versionMarker(gate.changeID, gate.version)
+			}
+			history := fixture.
+				activity(ActivityStartModelRequest, nil).
+				activity(ActivityCallModel, mcpToolRoundCall()).
+				activity(ActivityExecuteTool, mcpToolRoundExecuted()).
+				activity(ActivityAppendWorkflowEvents, nil).
+				activity(ActivityStartModelRequest, nil).
+				activity(ActivityCallModel, mcpToolRoundFinalCall()).
+				activity(ActivityCompleteWorkflowTurn, RunTurnResult{
+					Disposition: TurnCompleted,
+				}).
+				finish(RunTurnResult{Disposition: TurnCompleted})
 
-	require.NoError(t, replayTurnHistory(t, history))
+			require.NoError(t, replayTurnHistory(t, history))
+		})
+	}
+}
+
+// SessionWorkflow has its own durable-interrupt gate outside the turn harness.
+// Both a history recorded before that gate and one carrying its current marker
+// must resume draining the PostgreSQL ledger and then return to its signal wait.
+func TestReplay_SessionWorkflowAcrossInterruptGate(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		currentMarker bool
+	}{
+		{name: "before durable interrupts"},
+		{name: "current durable interrupts", currentMarker: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := SessionWorkflowInput{SessionID: "sess_replay_session"}
+			fixture := newNamedHistoryFixture(t, replaySessionWorkflowName, input)
+			if test.currentMarker {
+				fixture.versionMarker(durableInterruptChangeID, durableInterruptVersion)
+			}
+			history := fixture.
+				signal(WakeupSignalName, WakeupSignal{MaxEventSeq: 1}).
+				activity(ActivityLoadPendingActions, LoadPendingActionsResult{}).
+				activity(ActivityLoadEvents, LoadEventsResult{}).
+				partial()
+
+			require.NoError(t, replaySessionHistory(t, history))
+		})
+	}
 }
 
 // An always_ask MCP call recorded before this change parked the run on an

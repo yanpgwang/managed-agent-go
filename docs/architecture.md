@@ -137,9 +137,11 @@ live conformance are still required before production rolling deployments.
 Workflow changes use Temporal version markers where replay compatibility
 requires them, and `internal/temporal` carries an offline `worker.WorkflowReplayer`
 harness that replays synthetic pre-change histories against the current code.
-A version marker is scoped to one Workflow execution, so it can only keep a
-code branch consistent inside that execution. `SessionWorkflow` continues-as-new
-and PostgreSQL outlives every execution, so any semantic that must agree with
+The harness covers every recorded prefix of the ordered turn-level version
+gates and both sides of the Session Workflow durable-interrupt gate. A version
+marker is scoped to one Workflow execution, so it can only keep a code branch
+consistent inside that execution. `SessionWorkflow` continues-as-new and
+PostgreSQL outlives every execution, so any semantic that must agree with
 already-published events — such as which tool-result variant answers a parked
 tool call — is derived from the durable event rather than from a version gate.
 Production rolling deployments still need Worker Versioning.
