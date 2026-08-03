@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
 
@@ -81,6 +82,132 @@ func TestOpenAPIResourceLifecycleContract(t *testing.T) {
 		t.Fatalf("resource lifecycle operation count = %d, want 18", len(seenOperationIDs))
 	}
 	validateOpenAPIRefs(t, doc, doc)
+}
+
+func TestOpenAPISessionEventContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	eventsPath := openAPIMap(t, paths["/v1/sessions/{session_id}/events"], "events path")
+
+	post := openAPIMap(t, eventsPath["post"], "send events operation")
+	requestBody := openAPIMap(t, post["requestBody"], "send events request body")
+	requestContent := openAPIMap(t, requestBody["content"], "send events request content")
+	requestJSON := openAPIMap(t, requestContent["application/json"], "send events JSON request")
+	assertOpenAPIRef(t, requestJSON["schema"], "#/components/schemas/SendSessionEventsRequest")
+	postResponses := openAPIMap(t, post["responses"], "send events responses")
+	assertOpenAPIRef(t, postResponses["200"], "#/components/responses/SessionEventBatchResponse")
+
+	get := openAPIMap(t, eventsPath["get"], "list events operation")
+	assertOpenAPIParameterNames(t, doc, get["parameters"], []string{
+		"limit", "order", "page", "types[]", "created_at[gt]", "created_at[gte]",
+		"created_at[lt]", "created_at[lte]",
+	})
+	getResponses := openAPIMap(t, get["responses"], "list events responses")
+	assertOpenAPIRef(t, getResponses["200"], "#/components/responses/SessionEventListResponse")
+
+	streamPath := openAPIMap(t, paths["/v1/sessions/{session_id}/events/stream"], "stream path")
+	stream := openAPIMap(t, streamPath["get"], "stream events operation")
+	assertOpenAPIParameterNames(t, doc, stream["parameters"], []string{"event_deltas[]"})
+	streamResponses := openAPIMap(t, stream["responses"], "stream responses")
+	streamSuccess := resolveOpenAPIRef(t, doc, streamResponses["200"])
+	streamContent := openAPIMap(t, streamSuccess["content"], "stream success content")
+	sse := openAPIMap(t, streamContent["text/event-stream"], "SSE media type")
+	assertOpenAPIRef(t, sse["schema"], "#/components/schemas/EventStreamFrame")
+	frames := openAPIMap(t, sse["x-sse-event-schemas"], "SSE event schemas")
+	assertOpenAPIRef(t, frames["persisted"], "#/components/schemas/SessionEvent")
+	assertOpenAPIRef(t, frames["event_start"], "#/components/schemas/EventStart")
+	assertOpenAPIRef(t, frames["event_delta"], "#/components/schemas/EventDelta")
+
+	assertOpenAPIEventUnion(t, doc, "ClientSessionEventInput", []string{
+		"user.message", "user.interrupt", "user.tool_confirmation",
+		"user.custom_tool_result", "user.define_outcome", "user.tool_result",
+		"system.message",
+	})
+	assertOpenAPIEventUnion(t, doc, "SessionEvent", []string{
+		"user.message", "user.interrupt", "user.tool_confirmation",
+		"user.custom_tool_result", "user.tool_result", "user.define_outcome",
+		"system.message", "agent.message", "agent.custom_tool_use", "agent.tool_use",
+		"agent.tool_result", "agent.mcp_tool_use", "agent.mcp_tool_result",
+		"session.status_idle", "session.status_running", "session.status_terminated",
+		"session.status_rescheduled", "session.error", "session.updated", "session.deleted",
+		"span.outcome_evaluation_start", "span.outcome_evaluation_ongoing",
+		"span.outcome_evaluation_end", "span.model_request_start", "span.model_request_end",
+	})
+	validateOpenAPIRefs(t, doc, doc)
+}
+
+func assertOpenAPIRef(t *testing.T, value any, want string) {
+	t.Helper()
+	ref, _ := openAPIMap(t, value, "reference")["$ref"].(string)
+	if ref != want {
+		t.Fatalf("OpenAPI reference = %q, want %q", ref, want)
+	}
+}
+
+func assertOpenAPIParameterNames(t *testing.T, doc map[string]any, value any, want []string) {
+	t.Helper()
+	parameters, ok := value.([]any)
+	if !ok {
+		t.Fatalf("parameters are %T, want array", value)
+	}
+	got := make([]string, 0, len(parameters))
+	for _, raw := range parameters {
+		parameter := resolveOpenAPIRef(t, doc, raw)
+		name, _ := parameter["name"].(string)
+		got = append(got, name)
+	}
+	sort.Strings(got)
+	want = append([]string(nil), want...)
+	sort.Strings(want)
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("parameter names = %v, want %v", got, want)
+	}
+}
+
+func assertOpenAPIEventUnion(t *testing.T, doc map[string]any, name string, want []string) {
+	t.Helper()
+	components := openAPIMap(t, doc["components"], "components")
+	schemas := openAPIMap(t, components["schemas"], "schemas")
+	union := openAPIMap(t, schemas[name], name)
+	variants, ok := union["oneOf"].([]any)
+	if !ok {
+		t.Fatalf("%s oneOf is %T, want array", name, union["oneOf"])
+	}
+	got := make([]string, 0, len(variants))
+	for _, raw := range variants {
+		variant := resolveOpenAPIRef(t, doc, raw)
+		got = append(got, openAPIEventTypeConst(t, variant, name))
+	}
+	sort.Strings(got)
+	want = append([]string(nil), want...)
+	sort.Strings(want)
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("%s variants = %v, want %v", name, got, want)
+	}
+}
+
+func openAPIEventTypeConst(t *testing.T, schema map[string]any, context string) string {
+	t.Helper()
+	if properties, ok := schema["properties"].(map[string]any); ok {
+		if typeSchema, ok := properties["type"].(map[string]any); ok {
+			if value, ok := typeSchema["const"].(string); ok {
+				return value
+			}
+		}
+	}
+	if allOf, ok := schema["allOf"].([]any); ok {
+		for _, raw := range allOf {
+			part := openAPIMap(t, raw, context+" allOf member")
+			if _, isRef := part["$ref"]; isRef {
+				continue
+			}
+			if value := openAPIEventTypeConst(t, part, context); value != "" {
+				return value
+			}
+		}
+	}
+	t.Fatalf("%s has no event type const", context)
+	return ""
 }
 
 func parseOpenAPIDocument(t *testing.T) map[string]any {

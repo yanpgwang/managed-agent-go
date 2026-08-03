@@ -316,20 +316,39 @@ paths:
       operationId: sendSessionEvents
       tags: [Session Events]
       summary: Send Session events
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendSessionEventsRequest'
       responses:
         '200':
-          description: Event batch accepted
+          $ref: '#/components/responses/SessionEventBatchResponse'
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
     get:
       operationId: listSessionEvents
       tags: [Session Events]
       summary: List Session event history
+      parameters:
+        - $ref: '#/components/parameters/EventListLimit'
+        - $ref: '#/components/parameters/EventOrder'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/EventTypes'
+        - $ref: '#/components/parameters/CreatedAtGt'
+        - $ref: '#/components/parameters/CreatedAtGte'
+        - $ref: '#/components/parameters/CreatedAtLt'
+        - $ref: '#/components/parameters/CreatedAtLte'
       responses:
         '200':
-          description: Event page
+          $ref: '#/components/responses/SessionEventListResponse'
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '404':
@@ -341,13 +360,25 @@ paths:
       operationId: streamSessionEvents
       tags: [Session Events]
       summary: Stream live Session events over SSE
+      parameters:
+        - $ref: '#/components/parameters/EventDeltas'
       responses:
         '200':
           description: SSE event stream
+          headers:
+            request-id:
+              $ref: '#/components/headers/RequestID'
           content:
             text/event-stream:
               schema:
-                type: string
+                $ref: '#/components/schemas/EventStreamFrame'
+              x-sse-event-schemas:
+                persisted:
+                  $ref: '#/components/schemas/SessionEvent'
+                event_start:
+                  $ref: '#/components/schemas/EventStart'
+                event_delta:
+                  $ref: '#/components/schemas/EventDelta'
         '400':
           $ref: '#/components/responses/InvalidRequest'
         '404':
@@ -428,6 +459,42 @@ components:
         minimum: 1
         maximum: 1000
         default: 100
+    EventListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+    EventOrder:
+      name: order
+      in: query
+      schema:
+        type: string
+        enum: [asc, desc]
+        default: asc
+    EventTypes:
+      name: types[]
+      in: query
+      style: form
+      explode: true
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/CoreSessionEventType'
+    EventDeltas:
+      name: event_deltas[]
+      in: query
+      description: Opt in to best-effort preview frames for the selected event types.
+      style: form
+      explode: true
+      schema:
+        type: array
+        maxItems: 100
+        items:
+          type: string
+          enum: [agent.message, agent.thinking]
     Page:
       name: page
       in: query
@@ -579,6 +646,24 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/SessionDeleted'
+    SessionEventBatchResponse:
+      description: Accepted events after server IDs, defaults, and receipt timestamps are applied.
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SessionEventBatch'
+    SessionEventListResponse:
+      description: Session event page.
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SessionEventList'
     InvalidRequest:
       description: Invalid request
       headers:
@@ -1617,3 +1702,656 @@ components:
         type:
           type: string
           const: session_deleted
+
+    SearchResultBlock:
+      type: object
+      additionalProperties: false
+      required: [type, source, title, citations, content]
+      properties:
+        type:
+          type: string
+          const: search_result
+        source:
+          type: string
+        title:
+          type: string
+        citations:
+          type: object
+          additionalProperties: false
+          required: [enabled]
+          properties:
+            enabled:
+              type: boolean
+        content:
+          type: array
+          items:
+            $ref: '#/components/schemas/TextBlockInput'
+    ResultContentInput:
+      oneOf:
+        - $ref: '#/components/schemas/TextBlockInput'
+        - $ref: '#/components/schemas/ImageBlockInput'
+        - $ref: '#/components/schemas/DocumentBlockInput'
+        - $ref: '#/components/schemas/SearchResultBlock'
+      discriminator:
+        propertyName: type
+    UserMessageEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, content]
+      properties:
+        type:
+          type: string
+          const: user.message
+        content:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/MessageContentInput'
+    UserInterruptEventInput:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: user.interrupt
+        session_thread_id:
+          description: Targeted interrupts are outside the supported single-agent core and return 422.
+          type: string
+          minLength: 1
+    UserToolConfirmationEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, tool_use_id, result]
+      properties:
+        type:
+          type: string
+          const: user.tool_confirmation
+        tool_use_id:
+          type: string
+          minLength: 1
+        result:
+          type: string
+          enum: [allow, deny]
+        deny_message:
+          description: Valid only when result is deny.
+          type: string
+    UserCustomToolResultEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, custom_tool_use_id]
+      properties:
+        type:
+          type: string
+          const: user.custom_tool_result
+        custom_tool_use_id:
+          type: string
+          minLength: 1
+        content:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/ResultContentInput'
+        is_error:
+          type: boolean
+    UserToolResultEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, tool_use_id]
+      properties:
+        type:
+          type: string
+          const: user.tool_result
+        tool_use_id:
+          type: string
+          minLength: 1
+        content:
+          type: array
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/ResultContentInput'
+        is_error:
+          type: boolean
+    UserDefineOutcomeEventInput:
+      type: object
+      additionalProperties: false
+      required: [type, description, rubric]
+      properties:
+        type:
+          type: string
+          const: user.define_outcome
+        description:
+          type: string
+          minLength: 1
+        rubric:
+          $ref: '#/components/schemas/OutcomeRubric'
+        max_iterations:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 3
+    SystemMessageEventInput:
+      type: object
+      description: Must be the final companion to a user message or tool-result event in the same batch.
+      additionalProperties: false
+      required: [type, content]
+      properties:
+        type:
+          type: string
+          const: system.message
+        content:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            $ref: '#/components/schemas/TextBlockInput'
+    ClientSessionEventInput:
+      oneOf:
+        - $ref: '#/components/schemas/UserMessageEventInput'
+        - $ref: '#/components/schemas/UserInterruptEventInput'
+        - $ref: '#/components/schemas/UserToolConfirmationEventInput'
+        - $ref: '#/components/schemas/UserCustomToolResultEventInput'
+        - $ref: '#/components/schemas/UserDefineOutcomeEventInput'
+        - $ref: '#/components/schemas/UserToolResultEventInput'
+        - $ref: '#/components/schemas/SystemMessageEventInput'
+      discriminator:
+        propertyName: type
+    SendSessionEventsRequest:
+      type: object
+      additionalProperties: false
+      required: [events]
+      properties:
+        events:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ClientSessionEventInput'
+
+    CoreSessionEventType:
+      type: string
+      enum:
+        - user.message
+        - user.interrupt
+        - user.tool_confirmation
+        - user.custom_tool_result
+        - user.tool_result
+        - user.define_outcome
+        - system.message
+        - agent.message
+        - agent.custom_tool_use
+        - agent.tool_use
+        - agent.tool_result
+        - agent.mcp_tool_use
+        - agent.mcp_tool_result
+        - session.status_idle
+        - session.status_running
+        - session.status_terminated
+        - session.status_rescheduled
+        - session.error
+        - session.updated
+        - session.deleted
+        - span.outcome_evaluation_start
+        - span.outcome_evaluation_ongoing
+        - span.outcome_evaluation_end
+        - span.model_request_start
+        - span.model_request_end
+    PersistedSessionEventBase:
+      type: object
+      required: [id, type, processed_at]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        type:
+          $ref: '#/components/schemas/CoreSessionEventType'
+        processed_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+    PersistedUserMessageEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, content]
+          properties:
+            type: {type: string, const: user.message}
+            content:
+              type: array
+              minItems: 1
+              maxItems: 1000
+              items: {$ref: '#/components/schemas/MessageContentInput'}
+      unevaluatedProperties: false
+    PersistedUserInterruptEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: user.interrupt}
+            session_thread_id: {type: string}
+      unevaluatedProperties: false
+    PersistedUserToolConfirmationEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, tool_use_id, result]
+          properties:
+            type: {type: string, const: user.tool_confirmation}
+            tool_use_id: {type: string}
+            result: {type: string, enum: [allow, deny]}
+            deny_message: {type: string}
+      unevaluatedProperties: false
+    PersistedUserCustomToolResultEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, custom_tool_use_id]
+          properties:
+            type: {type: string, const: user.custom_tool_result}
+            custom_tool_use_id: {type: string}
+            content:
+              type: array
+              maxItems: 1000
+              items: {$ref: '#/components/schemas/ResultContentInput'}
+            is_error: {type: boolean}
+      unevaluatedProperties: false
+    PersistedUserToolResultEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, tool_use_id]
+          properties:
+            type: {type: string, const: user.tool_result}
+            tool_use_id: {type: string}
+            content:
+              type: array
+              maxItems: 1000
+              items: {$ref: '#/components/schemas/ResultContentInput'}
+            is_error: {type: boolean}
+      unevaluatedProperties: false
+    PersistedUserDefineOutcomeEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, description, rubric, max_iterations, outcome_id]
+          properties:
+            type: {type: string, const: user.define_outcome}
+            description: {type: string}
+            rubric: {$ref: '#/components/schemas/OutcomeRubric'}
+            max_iterations: {type: integer, minimum: 1, maximum: 20}
+            outcome_id: {type: string}
+      unevaluatedProperties: false
+    PersistedSystemMessageEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, content]
+          properties:
+            type: {type: string, const: system.message}
+            content:
+              type: array
+              minItems: 1
+              maxItems: 1000
+              items: {$ref: '#/components/schemas/TextBlockInput'}
+      unevaluatedProperties: false
+    AgentMessageEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, content]
+          properties:
+            type: {type: string, const: agent.message}
+            content:
+              type: array
+              items: {$ref: '#/components/schemas/TextBlockInput'}
+      unevaluatedProperties: false
+    AgentCustomToolUseEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, input, name]
+          properties:
+            type: {type: string, const: agent.custom_tool_use}
+            input: {type: object, additionalProperties: true}
+            name: {type: string}
+      unevaluatedProperties: false
+    EvaluatedPermission:
+      type: string
+      enum: [allow, ask, deny]
+    AgentToolUseEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, input, name]
+          properties:
+            type: {type: string, const: agent.tool_use}
+            input: {type: object, additionalProperties: true}
+            name: {type: string}
+            evaluated_permission: {$ref: '#/components/schemas/EvaluatedPermission'}
+      unevaluatedProperties: false
+    AgentMCPToolUseEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, input, mcp_server_name, name]
+          properties:
+            type: {type: string, const: agent.mcp_tool_use}
+            input: {type: object, additionalProperties: true}
+            mcp_server_name: {type: string}
+            name: {type: string}
+            evaluated_permission: {$ref: '#/components/schemas/EvaluatedPermission'}
+      unevaluatedProperties: false
+    AgentToolResultEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, tool_use_id]
+          properties:
+            type: {type: string, const: agent.tool_result}
+            tool_use_id: {type: string}
+            content:
+              type: array
+              items: {$ref: '#/components/schemas/ResultContentInput'}
+            is_error: {type: boolean}
+      unevaluatedProperties: false
+    AgentMCPToolResultEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, mcp_tool_use_id]
+          properties:
+            type: {type: string, const: agent.mcp_tool_result}
+            mcp_tool_use_id: {type: string}
+            content:
+              type: array
+              items: {$ref: '#/components/schemas/ResultContentInput'}
+            is_error: {type: boolean}
+      unevaluatedProperties: false
+
+    SessionEndTurn:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: end_turn}
+    SessionRequiresAction:
+      type: object
+      additionalProperties: false
+      required: [type, event_ids]
+      properties:
+        type: {type: string, const: requires_action}
+        event_ids:
+          type: array
+          items: {type: string}
+    SessionRetriesExhausted:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: retries_exhausted}
+    SessionStopReason:
+      oneOf:
+        - $ref: '#/components/schemas/SessionEndTurn'
+        - $ref: '#/components/schemas/SessionRequiresAction'
+        - $ref: '#/components/schemas/SessionRetriesExhausted'
+      discriminator:
+        propertyName: type
+    SessionStatusIdleEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, stop_reason]
+          properties:
+            type: {type: string, const: session.status_idle}
+            stop_reason: {$ref: '#/components/schemas/SessionStopReason'}
+      unevaluatedProperties: false
+    SessionStatusRunningEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: session.status_running}
+      unevaluatedProperties: false
+    SessionStatusTerminatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: session.status_terminated}
+      unevaluatedProperties: false
+    SessionStatusRescheduledEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: session.status_rescheduled}
+      unevaluatedProperties: false
+    SessionExecutionError:
+      type: object
+      required: [type, message]
+      properties:
+        type:
+          type: string
+          enum: [api_error, mcp_connection_failed_error]
+        message: {type: string}
+        retry_status:
+          type: object
+          required: [type]
+          properties:
+            type: {type: string}
+        mcp_server_name: {type: string}
+      additionalProperties: false
+    SessionErrorEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, error]
+          properties:
+            type: {type: string, const: session.error}
+            error: {$ref: '#/components/schemas/SessionExecutionError'}
+      unevaluatedProperties: false
+    SessionUpdatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: session.updated}
+            agent: {$ref: '#/components/schemas/AgentSnapshot'}
+            metadata: {$ref: '#/components/schemas/Metadata'}
+            title: {type: string}
+      unevaluatedProperties: false
+    SessionDeletedEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: session.deleted}
+      unevaluatedProperties: false
+
+    SpanModelUsage:
+      type: object
+      additionalProperties: false
+      required:
+        - cache_creation_input_tokens
+        - cache_read_input_tokens
+        - input_tokens
+        - output_tokens
+        - speed
+      properties:
+        cache_creation_input_tokens: {type: integer, minimum: 0}
+        cache_read_input_tokens: {type: integer, minimum: 0}
+        input_tokens: {type: integer, minimum: 0}
+        output_tokens: {type: integer, minimum: 0}
+        speed:
+          type: [string, 'null']
+          enum: [standard, fast, null]
+    SpanModelRequestStartEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: span.model_request_start}
+      unevaluatedProperties: false
+    SpanModelRequestEndEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, is_error, model_request_start_id, model_usage]
+          properties:
+            type: {type: string, const: span.model_request_end}
+            is_error: {type: boolean}
+            model_request_start_id: {type: string}
+            model_usage: {$ref: '#/components/schemas/SpanModelUsage'}
+      unevaluatedProperties: false
+    SpanOutcomeEvaluationStartEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, iteration, outcome_id]
+          properties:
+            type: {type: string, const: span.outcome_evaluation_start}
+            iteration: {type: integer, minimum: 0}
+            outcome_id: {type: string}
+      unevaluatedProperties: false
+    SpanOutcomeEvaluationOngoingEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, iteration, outcome_id]
+          properties:
+            type: {type: string, const: span.outcome_evaluation_ongoing}
+            iteration: {type: integer, minimum: 0}
+            outcome_id: {type: string}
+      unevaluatedProperties: false
+    SpanOutcomeEvaluationEndEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required:
+            - type
+            - explanation
+            - iteration
+            - outcome_evaluation_start_id
+            - outcome_id
+            - result
+            - usage
+          properties:
+            type: {type: string, const: span.outcome_evaluation_end}
+            explanation: {type: string}
+            iteration: {type: integer, minimum: 0}
+            outcome_evaluation_start_id: {type: string}
+            outcome_id: {type: string}
+            result:
+              type: string
+              enum: [satisfied, needs_revision, max_iterations_reached, failed, interrupted]
+            usage: {$ref: '#/components/schemas/SpanModelUsage'}
+      unevaluatedProperties: false
+
+    ClientPersistedSessionEvent:
+      oneOf:
+        - $ref: '#/components/schemas/PersistedUserMessageEvent'
+        - $ref: '#/components/schemas/PersistedUserInterruptEvent'
+        - $ref: '#/components/schemas/PersistedUserToolConfirmationEvent'
+        - $ref: '#/components/schemas/PersistedUserCustomToolResultEvent'
+        - $ref: '#/components/schemas/PersistedUserDefineOutcomeEvent'
+        - $ref: '#/components/schemas/PersistedUserToolResultEvent'
+        - $ref: '#/components/schemas/PersistedSystemMessageEvent'
+      discriminator:
+        propertyName: type
+    SessionEvent:
+      oneOf:
+        - $ref: '#/components/schemas/PersistedUserMessageEvent'
+        - $ref: '#/components/schemas/PersistedUserInterruptEvent'
+        - $ref: '#/components/schemas/PersistedUserToolConfirmationEvent'
+        - $ref: '#/components/schemas/PersistedUserCustomToolResultEvent'
+        - $ref: '#/components/schemas/PersistedUserToolResultEvent'
+        - $ref: '#/components/schemas/PersistedUserDefineOutcomeEvent'
+        - $ref: '#/components/schemas/PersistedSystemMessageEvent'
+        - $ref: '#/components/schemas/AgentMessageEvent'
+        - $ref: '#/components/schemas/AgentCustomToolUseEvent'
+        - $ref: '#/components/schemas/AgentToolUseEvent'
+        - $ref: '#/components/schemas/AgentToolResultEvent'
+        - $ref: '#/components/schemas/AgentMCPToolUseEvent'
+        - $ref: '#/components/schemas/AgentMCPToolResultEvent'
+        - $ref: '#/components/schemas/SessionStatusIdleEvent'
+        - $ref: '#/components/schemas/SessionStatusRunningEvent'
+        - $ref: '#/components/schemas/SessionStatusTerminatedEvent'
+        - $ref: '#/components/schemas/SessionStatusRescheduledEvent'
+        - $ref: '#/components/schemas/SessionErrorEvent'
+        - $ref: '#/components/schemas/SessionUpdatedEvent'
+        - $ref: '#/components/schemas/SessionDeletedEvent'
+        - $ref: '#/components/schemas/SpanOutcomeEvaluationStartEvent'
+        - $ref: '#/components/schemas/SpanOutcomeEvaluationOngoingEvent'
+        - $ref: '#/components/schemas/SpanOutcomeEvaluationEndEvent'
+        - $ref: '#/components/schemas/SpanModelRequestStartEvent'
+        - $ref: '#/components/schemas/SpanModelRequestEndEvent'
+      discriminator:
+        propertyName: type
+    SessionEventBatch:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClientPersistedSessionEvent'
+    SessionEventList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SessionEvent'
+        next_page:
+          $ref: '#/components/schemas/Cursor'
+
+    EventStartPreview:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id: {type: string}
+        type:
+          type: string
+          enum: [agent.message, agent.thinking]
+    EventStart:
+      type: object
+      description: Ephemeral preview frame; never persisted in Session event history.
+      additionalProperties: false
+      required: [type, event]
+      properties:
+        type: {type: string, const: event_start}
+        event: {$ref: '#/components/schemas/EventStartPreview'}
+    EventDeltaContent:
+      type: object
+      additionalProperties: false
+      required: [type, index, content]
+      properties:
+        type: {type: string, const: content_delta}
+        index: {type: integer, minimum: 0}
+        content: {$ref: '#/components/schemas/TextBlockInput'}
+    EventDelta:
+      type: object
+      description: Ephemeral best-effort preview frame; the persisted event is authoritative.
+      additionalProperties: false
+      required: [type, event_id, delta]
+      properties:
+        type: {type: string, const: event_delta}
+        event_id: {type: string}
+        delta: {$ref: '#/components/schemas/EventDeltaContent'}
+    EventStreamFrame:
+      description: JSON payload carried by one SSE data frame.
+      oneOf:
+        - $ref: '#/components/schemas/SessionEvent'
+        - $ref: '#/components/schemas/EventStart'
+        - $ref: '#/components/schemas/EventDelta'
+      discriminator:
+        propertyName: type
