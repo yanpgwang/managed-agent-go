@@ -110,6 +110,42 @@ func TestValidateToolConfiguration_RejectsUnsupportedToolFields(t *testing.T) {
 	}
 }
 
+func TestValidateToolConfiguration_RejectsMalformedOptionalValues(t *testing.T) {
+	cases := map[string][]any{
+		"default_config not object": {map[string]any{
+			"type": BuiltinToolsetType, "default_config": "enabled",
+		}},
+		"configs not array": {map[string]any{
+			"type": BuiltinToolsetType, "configs": map[string]any{"name": "bash"},
+		}},
+		"default enabled not boolean": {map[string]any{
+			"type":           BuiltinToolsetType,
+			"default_config": map[string]any{"enabled": "yes"},
+		}},
+		"config enabled not boolean": {map[string]any{
+			"type":    BuiltinToolsetType,
+			"configs": []any{map[string]any{"name": "bash", "enabled": "yes"}},
+		}},
+		"custom description not string": {map[string]any{
+			"type": "custom", "name": "weather", "description": 7,
+		}},
+		"custom schema not object": {map[string]any{
+			"type": "custom", "name": "weather", "input_schema": "object",
+		}},
+		"custom schema wrong type": {map[string]any{
+			"type": "custom", "name": "weather",
+			"input_schema": map[string]any{"type": "string"},
+		}},
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateToolConfiguration(raw, nil); err == nil {
+				t.Fatalf("malformed tool value was accepted: %#v", raw)
+			}
+		})
+	}
+}
+
 func TestStoredToolConfiguration_ToleratesHistoricalFields(t *testing.T) {
 	baseTools := []any{map[string]any{
 		"type": "mcp_toolset", "mcp_server_name": "github",
