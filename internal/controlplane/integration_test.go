@@ -103,7 +103,7 @@ func postgresHandlerWithFixture(t *testing.T) (http.Handler, postgresFixture) {
 		Agents: app.NewAgentService(agentRepo, ids, clock),
 		Envs: app.NewEnvironmentService(
 			environmentRepo, ids, clock,
-			app.EnvironmentCapabilities{PackageSetup: true},
+			app.EnvironmentCapabilities{PackageSetup: true, LimitedNetwork: true},
 		),
 		Sessions: sessions,
 		Events:   NewEventService(store),

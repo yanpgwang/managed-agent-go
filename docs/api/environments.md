@@ -30,8 +30,23 @@ directly to the corresponding package manager; the caller is responsible for
 valid names and versions. Package setup requires Docker or a remote isolated
 backend; a deployment using the host-process `local` backend rejects non-empty
 package configuration at admission.
-Limited networking is still rejected because the runtime does not persist
-unenforced policy as inert configuration.
+
+Limited networking is available when the deployment selects the `opensandbox`
+backend. It is deny-by-default and accepts this shape:
+
+```json
+{
+  "type": "limited",
+  "allowed_hosts": ["api.example.com", "*.assets.example.com"],
+  "allow_mcp_servers": true,
+  "allow_package_managers": false
+}
+```
+
+`allowed_hosts` entries are bare hostnames or a leading `*.` wildcard. URL
+schemes, ports, paths, and embedded wildcards are rejected. The two allow flags
+default to `false`. Deployments using local, Docker, E2B, CubeSandbox, or
+Daytona return `422` for a limited policy instead of storing unenforced intent.
 
 The runtime accepts `cloud` and `self_hosted` sessions. In `cloud`, enabled
 built-in sandbox tools execute on the configured worker sandbox. In
@@ -70,11 +85,32 @@ self-hosted `scope`, and the Environment type. Metadata is patched per key;
 `null` and empty string delete a key. Changing a self-hosted Environment to
 `cloud` clears its inapplicable scope. Archived Environments are read-only.
 
-Explicit unrestricted networking and package lists are accepted. Omitting
+Unrestricted and limited networking and package lists are accepted when the
+selected backend can enforce them. Omitting
 `networking` or `packages` from a cloud config update preserves its existing
 value. An update affects Sessions created afterward; each Session keeps the
-effective Environment configuration it captured at creation. `limited`
-networking returns `422` until the selected sandbox adapter can enforce it.
+effective Environment configuration it captured at creation. Within a limited
+policy update, omitted `allowed_hosts`, `allow_mcp_servers`, and
+`allow_package_managers` fields preserve their existing values.
+
+For a limited Session, explicit hosts form the base egress allowlist.
+`allow_mcp_servers` adds the host of each MCP URL in the Session's current Agent
+snapshot, including a session-local MCP replacement on the next sandbox-using
+turn. `allow_package_managers` keeps the canonical public registries available
+after provisioning. Native `web_search` and `web_fetch` run outside the sandbox
+and are not constrained by its egress policy.
+
+Configured packages can install even when `allow_package_managers` is `false`:
+the provisioning path temporarily adds the canonical Debian/Ubuntu, Cargo,
+RubyGems, Go, npm, and PyPI registry hosts, installs packages, restores the
+final policy, and only then publishes the sandbox binding. The built-in list is
+`deb.debian.org`, `security.debian.org`, `archive.ubuntu.com`,
+`security.ubuntu.com`, `ports.ubuntu.com`, `snapshot.debian.org`, `crates.io`,
+`index.crates.io`, `static.crates.io`, `rubygems.org`,
+`index.rubygems.org`, `api.rubygems.org`, `proxy.golang.org`, `sum.golang.org`,
+`storage.googleapis.com`, `registry.npmjs.org`, `pypi.org`, and
+`files.pythonhosted.org`. Custom indexes and direct Go VCS hosts must be listed
+explicitly in `allowed_hosts`.
 
 ## Delete
 
@@ -121,5 +157,5 @@ update, and archive. A package-manager error prevents sandbox binding and tool
 execution; a later retry resumes provisioning from the durable intent. The
 selected isolated sandbox image must provide every requested package-manager
 binary.
-The [core conformance matrix](core-conformance.md) tracks limited networking
-separately from route presence.
+The [core conformance matrix](core-conformance.md) tracks the wire and durable
+runtime evidence separately from route presence.

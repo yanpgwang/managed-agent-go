@@ -38,6 +38,7 @@ type openSandboxRemote interface {
 	Exec(context.Context, string, string, time.Duration) (string, string, int, error)
 	ReadFile(context.Context, string) ([]byte, error)
 	WriteFile(context.Context, string, []byte) error
+	ApplyLimitedNetwork(context.Context, []string) error
 	Destroy(context.Context) error
 }
 
@@ -94,6 +95,8 @@ func newOpenSandboxProvider(service openSandboxService, root string) Provider {
 func (p *openSandboxProvider) Name() string { return OpenSandboxProviderName }
 
 func (*openSandboxProvider) SupportsPackageSetup() bool { return true }
+
+func (*openSandboxProvider) SupportsLimitedNetwork() bool { return true }
 
 func (p *openSandboxProvider) Create(
 	ctx context.Context,
@@ -197,6 +200,13 @@ type openSandboxBox struct {
 }
 
 func (s *openSandboxBox) Root() string { return s.root }
+
+func (s *openSandboxBox) ApplyLimitedNetwork(
+	ctx context.Context,
+	allowedHosts []string,
+) error {
+	return s.remote.ApplyLimitedNetwork(ctx, allowedHosts)
+}
 
 func (s *openSandboxBox) ensureRoot(ctx context.Context) error {
 	_, stderr, code, err := s.remote.Exec(
@@ -365,10 +375,7 @@ func (s *openSandboxSDKService) Create(
 		}
 		limits["memory"] = normalizeKubernetesMemory(spec.Memory)
 	}
-	var policy *opensandbox.NetworkPolicy
-	if spec.Network == "" || spec.Network == "none" {
-		policy = &opensandbox.NetworkPolicy{DefaultAction: "deny"}
-	}
+	policy := openSandboxNetworkPolicy(spec)
 	created, err := opensandbox.CreateSandbox(
 		ctx,
 		s.config,
@@ -384,6 +391,21 @@ func (s *openSandboxSDKService) Create(
 		return nil, err
 	}
 	return &openSandboxSDKRemote{sandbox: created}, nil
+}
+
+func openSandboxNetworkPolicy(spec Spec) *opensandbox.NetworkPolicy {
+	switch spec.Network {
+	case "limited":
+		rules := make([]opensandbox.NetworkRule, 0, len(spec.NetworkAllowedHosts))
+		for _, host := range spec.NetworkAllowedHosts {
+			rules = append(rules, opensandbox.NetworkRule{Action: "allow", Target: host})
+		}
+		return &opensandbox.NetworkPolicy{DefaultAction: "deny", Egress: rules}
+	case "", "none":
+		return &opensandbox.NetworkPolicy{DefaultAction: "deny"}
+	default:
+		return nil
+	}
 }
 
 func (s *openSandboxSDKService) Connect(
@@ -467,6 +489,59 @@ func (s *openSandboxSDKRemote) WriteFile(
 			},
 		},
 	)
+}
+
+func (s *openSandboxSDKRemote) ApplyLimitedNetwork(
+	ctx context.Context,
+	allowedHosts []string,
+) error {
+	status, err := s.sandbox.GetEgressPolicy(ctx)
+	if err != nil {
+		return err
+	}
+	if status == nil || status.Policy == nil {
+		return errors.New("opensandbox: egress policy is unavailable")
+	}
+	if status.Policy.DefaultAction != "deny" {
+		return fmt.Errorf(
+			"opensandbox: egress default action is %q, want deny",
+			status.Policy.DefaultAction,
+		)
+	}
+	desired := make(map[string]struct{}, len(allowedHosts))
+	for _, host := range allowedHosts {
+		desired[host] = struct{}{}
+	}
+	currentAllows := make(map[string]struct{}, len(status.Policy.Egress))
+	remove := make([]string, 0)
+	for _, rule := range status.Policy.Egress {
+		if rule.Action != "allow" {
+			continue
+		}
+		currentAllows[rule.Target] = struct{}{}
+		if _, keep := desired[rule.Target]; !keep {
+			remove = append(remove, rule.Target)
+		}
+	}
+	sort.Strings(remove)
+	if len(remove) > 0 {
+		if _, err := s.sandbox.DeleteEgressRules(ctx, remove); err != nil {
+			return err
+		}
+	}
+	add := make([]opensandbox.NetworkRule, 0)
+	for _, host := range allowedHosts {
+		if _, present := currentAllows[host]; present {
+			continue
+		}
+		add = append(add, opensandbox.NetworkRule{Action: "allow", Target: host})
+	}
+	if len(add) > 0 {
+		if _, err := s.sandbox.PatchEgressRules(ctx, add); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *openSandboxSDKRemote) Destroy(ctx context.Context) error {

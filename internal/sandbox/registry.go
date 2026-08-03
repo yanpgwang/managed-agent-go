@@ -24,7 +24,8 @@ type ProviderFactory func() (Provider, error)
 // ProviderCapabilities are admission-safe facts about an adapter. They can be
 // inspected without constructing the provider or loading its credentials.
 type ProviderCapabilities struct {
-	PackageSetup bool
+	PackageSetup   bool
+	LimitedNetwork bool
 }
 
 // ProviderRegistration is one deployment-selectable sandbox adapter.
@@ -125,15 +126,26 @@ func (r *ProviderRegistry) Open(name string) (Provider, error) {
 			provider.Name(),
 		)
 	}
-	declared := r.capabilities[name].PackageSetup
-	capability, implementsCapability := provider.(PackageSetupProvider)
-	actual := implementsCapability && capability.SupportsPackageSetup()
-	if declared != actual {
+	declaredPackages := r.capabilities[name].PackageSetup
+	packageCapability, implementsPackageCapability := provider.(PackageSetupProvider)
+	actualPackages := implementsPackageCapability && packageCapability.SupportsPackageSetup()
+	if declaredPackages != actualPackages {
 		return nil, fmt.Errorf(
 			"sandbox: provider %q package setup capability is registered as %t but reports %t",
 			name,
-			declared,
-			actual,
+			declaredPackages,
+			actualPackages,
+		)
+	}
+	declaredNetwork := r.capabilities[name].LimitedNetwork
+	networkCapability, implementsNetworkCapability := provider.(LimitedNetworkProvider)
+	actualNetwork := implementsNetworkCapability && networkCapability.SupportsLimitedNetwork()
+	if declaredNetwork != actualNetwork {
+		return nil, fmt.Errorf(
+			"sandbox: provider %q limited network capability is registered as %t but reports %t",
+			name,
+			declaredNetwork,
+			actualNetwork,
 		)
 	}
 	return provider, nil

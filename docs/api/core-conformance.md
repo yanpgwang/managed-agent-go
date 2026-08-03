@@ -22,11 +22,11 @@ separate evidence.
 | Agent | Update | `POST /v1/agents/{agent_id}` | Yes | Yes | Yes | None identified for documented core fields, defaults, null handling, or errors. |
 | Agent | List versions | `GET /v1/agents/{agent_id}/versions` | Yes | Yes | Yes | None identified for forward pagination. |
 | Agent | Archive | `POST /v1/agents/{agent_id}/archive` | Yes | Yes | Yes | None identified for the core idempotent archive path. |
-| Environment | Create | `POST /v1/environments` | Yes | Yes | Yes | Limited networking remains unsupported. Package installation is enforced before sandbox binding. |
-| Environment | List | `GET /v1/environments` | Yes | Yes | Yes | Limited networking remains unsupported. Configured package projections round-trip. |
-| Environment | Get | `GET /v1/environments/{environment_id}` | Yes | Yes | Yes | Limited networking remains unsupported. Configured package projections round-trip. |
-| Environment | Update | `POST /v1/environments/{environment_id}` | Yes | Yes | Yes | Limited networking remains unsupported. Package updates apply to future Sessions. |
-| Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | Yes | Yes | Limited networking remains unsupported. Configured package projections round-trip. |
+| Environment | Create | `POST /v1/environments` | Yes | Yes | Yes | None identified; packages and capable-backend limited egress are enforced before sandbox binding. |
+| Environment | List | `GET /v1/environments` | Yes | Yes | Yes | None identified for configured package and networking projections. |
+| Environment | Get | `GET /v1/environments/{environment_id}` | Yes | Yes | Yes | None identified for configured package and networking projections. |
+| Environment | Update | `POST /v1/environments/{environment_id}` | Yes | Yes | Yes | None identified; nested limited fields preserve omission and future Sessions snapshot updates. |
+| Environment | Archive | `POST /v1/environments/{environment_id}/archive` | Yes | Yes | Yes | None identified for configured package and networking projections. |
 | Environment | Delete | `DELETE /v1/environments/{environment_id}` | Yes | Yes | Yes | None identified for the core unreferenced-delete path. |
 | Session | Create | `POST /v1/sessions` | Yes | Yes | Yes | Core field/default/null behavior is covered; unsupported resources and vaults remain explicit. |
 | Session | List | `GET /v1/sessions` | Yes | Yes | Yes | None identified for the in-scope filters and bidirectional cursors. |

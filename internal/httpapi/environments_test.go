@@ -38,12 +38,38 @@ func TestEnvironments_DefaultCloudWireShape(t *testing.T) {
 	}
 }
 
-func TestEnvironments_RejectsUnenforcedConfiguration(t *testing.T) {
+func TestEnvironments_LimitedNetworkingRoundTrip(t *testing.T) {
 	srv := newTestServer(t)
-	rec := do(srv, http.MethodPost, "/v1/environments",
-		`{"name":"limited","config":{"type":"cloud","networking":{"type":"limited"}}}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("unsupported config status = %d, want 422: %s", rec.Code, rec.Body)
+	created := do(srv, http.MethodPost, "/v1/environments", `{
+		"name":"limited",
+		"config":{"type":"cloud","networking":{
+			"type":"limited","allow_mcp_servers":true,
+			"allowed_hosts":["api.example.com","*.assets.example.com"]
+		}}
+	}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status = %d: %s", created.Code, created.Body)
+	}
+	body := decodeBody(t, created.Body.Bytes())
+	networking := body["config"].(map[string]any)["networking"].(map[string]any)
+	if networking["type"] != "limited" || networking["allow_mcp_servers"] != true ||
+		networking["allow_package_managers"] != false ||
+		len(networking["allowed_hosts"].([]any)) != 2 {
+		t.Fatalf("created networking = %#v", networking)
+	}
+
+	updated := do(srv, http.MethodPost, "/v1/environments/"+body["id"].(string), `{
+		"config":{"type":"cloud","networking":{
+			"type":"limited","allowed_hosts":["next.example.com"]
+		}}
+	}`)
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update status = %d: %s", updated.Code, updated.Body)
+	}
+	networking = decodeBody(t, updated.Body.Bytes())["config"].(map[string]any)["networking"].(map[string]any)
+	if networking["allow_mcp_servers"] != true ||
+		networking["allowed_hosts"].([]any)[0] != "next.example.com" {
+		t.Fatalf("updated networking = %#v", networking)
 	}
 }
 
@@ -154,6 +180,8 @@ func TestEnvironments_RejectsMalformedOptionalFields(t *testing.T) {
 		`{"name":"bad","config":[]}`,
 		`{"name":"bad","config":{"type":"cloud","networking":null}}`,
 		`{"name":"bad","config":{"type":"cloud","networking":{"type":"unrestricted","future":true}}}`,
+		`{"name":"bad","config":{"type":"cloud","networking":{"type":"limited","allowed_hosts":["https://example.com"]}}}`,
+		`{"name":"bad","config":{"type":"cloud","networking":{"type":"limited","allowed_hosts":["example.com:443"]}}}`,
 		`{"name":"bad","config":{"type":"cloud","packages":{"apt":null}}}`,
 		`{"name":"bad","config":{"type":"cloud","packages":{"pip":[1]}}}`,
 	} {
@@ -199,7 +227,7 @@ func TestEnvironments_UpdateRoundTrip(t *testing.T) {
 	}
 }
 
-func TestEnvironments_UpdateRejectsMalformedOrUnenforcedFields(t *testing.T) {
+func TestEnvironments_UpdateRejectsMalformedFields(t *testing.T) {
 	srv := newTestServer(t)
 	created := do(srv, http.MethodPost, "/v1/environments", `{"name":"stable"}`)
 	if created.Code != http.StatusOK {
@@ -217,20 +245,13 @@ func TestEnvironments_UpdateRejectsMalformedOrUnenforcedFields(t *testing.T) {
 		`{"config":null}`,
 		`{"config":{}}`,
 		`{"config":{"type":"cloud","networking":null}}`,
+		`{"config":{"type":"cloud","networking":{"type":"limited","allowed_hosts":["https://example.com"]}}}`,
 		`{"config":{"type":"cloud","packages":null}}`,
 		`{"future":true}`,
 	} {
 		rec := do(srv, http.MethodPost, "/v1/environments/"+id, body)
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("body %s status = %d, want 400: %s", body, rec.Code, rec.Body)
-		}
-	}
-	for _, body := range []string{
-		`{"config":{"type":"cloud","networking":{"type":"limited"}}}`,
-	} {
-		rec := do(srv, http.MethodPost, "/v1/environments/"+id, body)
-		if rec.Code != http.StatusUnprocessableEntity {
-			t.Errorf("body %s status = %d, want 422: %s", body, rec.Code, rec.Body)
 		}
 	}
 	got := do(srv, http.MethodGet, "/v1/environments/"+id, "")

@@ -61,6 +61,11 @@ type Spec struct {
 	CPUs      string // e.g. "1.0"; empty uses the default
 	Network   string // "none" (default) or "bridge"
 	PidsLimit int    // max processes; 0 uses the default
+	// NetworkAllowedHosts is the final allowlist for a limited network. Setup
+	// NetworkAllowedHosts may temporarily add package registries while package
+	// setup runs; the final policy is restored before binding publication.
+	NetworkAllowedHosts      []string
+	SetupNetworkAllowedHosts []string
 	// Packages are installed once while provisioning, before the durable
 	// sandbox binding becomes visible to tool execution.
 	Packages PackageSet
@@ -147,6 +152,19 @@ type Provider interface {
 // must opt in explicitly; an unknown or local-process provider is denied.
 type PackageSetupProvider interface {
 	SupportsPackageSetup() bool
+}
+
+// LimitedNetworkProvider declares support for enforcing per-sandbox host
+// allowlists. Providers must opt in explicitly; a bridge/none toggle alone is
+// not sufficient.
+type LimitedNetworkProvider interface {
+	SupportsLimitedNetwork() bool
+}
+
+// LimitedNetworkSandbox reconciles the exact runtime allowlist for a live
+// sandbox. It is optional because most providers cannot enforce FQDN policy.
+type LimitedNetworkSandbox interface {
+	ApplyLimitedNetwork(ctx context.Context, allowedHosts []string) error
 }
 
 func validateSandbox(provider Provider, ref Ref, box Sandbox) error {

@@ -38,11 +38,30 @@ func environmentConfigToJSON(e domain.Environment) map[string]any {
 		config[key] = value
 	}
 	config["type"] = "cloud"
-	if _, present := config["networking"]; !present {
-		config["networking"] = map[string]any{"type": "unrestricted"}
-	}
+	config["networking"] = environmentNetworkingToJSON(config["networking"])
 	config["packages"] = environmentPackagesToJSON(config["packages"])
 	return config
+}
+
+func environmentNetworkingToJSON(raw any) map[string]any {
+	configured, _ := raw.(map[string]any)
+	if configured["type"] != "limited" {
+		return map[string]any{"type": "unrestricted"}
+	}
+	networking := map[string]any{
+		"type":                   "limited",
+		"allow_mcp_servers":      false,
+		"allow_package_managers": false,
+		"allowed_hosts":          []any{},
+	}
+	for _, field := range []string{
+		"allow_mcp_servers", "allow_package_managers", "allowed_hosts",
+	} {
+		if value, present := configured[field]; present {
+			networking[field] = value
+		}
+	}
+	return networking
 }
 
 func environmentPackagesToJSON(raw any) map[string]any {

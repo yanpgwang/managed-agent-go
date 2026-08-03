@@ -118,6 +118,14 @@ Provider credentials, endpoint routing, templates, images, and auto-pause
 settings stay in worker environment variables. They do not change the Managed
 Agents Environment or Session wire models.
 
+OpenSandbox is the first adapter with fine-grained egress capability. A
+limited cloud Environment becomes a deny-by-default OpenSandbox network policy
+whose exact allow rules are reconciled during provisioning, after an
+MCP-affecting Session update, and after worker restart. Package installation
+uses a temporary registry expansion before the durable binding is published;
+tool execution sees only the final policy. The API returns `422` for limited
+networking when any other implemented adapter is selected.
+
 ## Session-scoped ownership
 
 A sandbox is scoped to the session, not to a single run. The first run in a

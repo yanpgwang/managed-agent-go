@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 
@@ -19,7 +20,8 @@ type EnvironmentService struct {
 // EnvironmentCapabilities describe policies the configured execution runtime
 // can enforce. The zero value fails closed for optional behavior.
 type EnvironmentCapabilities struct {
-	PackageSetup bool
+	PackageSetup   bool
+	LimitedNetwork bool
 }
 
 func NewEnvironmentService(
@@ -102,6 +104,7 @@ func (s *EnvironmentService) Update(
 					rawConfig[field] = cloneEnvironmentConfigValue(existing)
 				}
 			}
+			mergeLimitedNetworkUpdate(rawConfig, current.Config)
 		}
 		if err := validateEnvironmentConfig(rawConfig, configType); err != nil {
 			return domain.Environment{}, err
@@ -136,7 +139,14 @@ func validateEnvironmentRuntimeConfig(
 	configType string,
 	capabilities EnvironmentCapabilities,
 ) error {
-	if configType != "cloud" || capabilities.PackageSetup {
+	if configType != "cloud" {
+		return nil
+	}
+	networking, _ := config["networking"].(map[string]any)
+	if networking["type"] == "limited" && !capabilities.LimitedNetwork {
+		return domain.Unsupported("limited environment networking is unavailable for the configured sandbox provider")
+	}
+	if capabilities.PackageSetup {
 		return nil
 	}
 	packages, _ := config["packages"].(map[string]any)
@@ -153,6 +163,24 @@ func validateEnvironmentRuntimeConfig(
 		}
 	}
 	return nil
+}
+
+func mergeLimitedNetworkUpdate(update, current map[string]any) {
+	updateNetworking, _ := update["networking"].(map[string]any)
+	currentNetworking, _ := current["networking"].(map[string]any)
+	if updateNetworking["type"] != "limited" || currentNetworking["type"] != "limited" {
+		return
+	}
+	for _, field := range []string{
+		"allow_mcp_servers", "allow_package_managers", "allowed_hosts",
+	} {
+		if _, present := updateNetworking[field]; present {
+			continue
+		}
+		if value, present := currentNetworking[field]; present {
+			updateNetworking[field] = cloneEnvironmentConfigValue(value)
+		}
+	}
 }
 
 func validateEnvironment(environment domain.Environment) error {
@@ -231,8 +259,11 @@ func validateEnvironmentNetworking(value any) error {
 			if err := validateEnvironmentStringList(hosts, "networking.allowed_hosts"); err != nil {
 				return err
 			}
+			if err := validateEnvironmentHosts(hosts); err != nil {
+				return err
+			}
 		}
-		return domain.Unsupported("limited environment networking is not implemented")
+		return nil
 	}
 	if typeValue != "unrestricted" {
 		return domain.Validation("environment networking type must be unrestricted or limited")
@@ -242,6 +273,56 @@ func validateEnvironmentNetworking(value any) error {
 		map[string]struct{}{"type": {}},
 		"networking",
 	)
+}
+
+func validateEnvironmentHosts(value any) error {
+	var hosts []string
+	switch values := value.(type) {
+	case []string:
+		hosts = values
+	case []any:
+		hosts = make([]string, len(values))
+		for index, entry := range values {
+			hosts[index], _ = entry.(string)
+		}
+	}
+	for _, host := range hosts {
+		if !validEnvironmentHost(host) {
+			return domain.Validation(
+				"environment networking.allowed_hosts must contain bare hostnames or *. wildcards",
+			)
+		}
+	}
+	return nil
+}
+
+func validEnvironmentHost(host string) bool {
+	if host == "" || strings.TrimSpace(host) != host || len(host) > 253 ||
+		strings.ContainsAny(host, "/:#?@[]") {
+		return false
+	}
+	if address := net.ParseIP(host); address != nil {
+		return address.To4() != nil
+	}
+	host = strings.TrimPrefix(host, "*.")
+	if host == "" || strings.Contains(host, "*") {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for index := 0; index < len(label); index++ {
+			character := label[index]
+			if (character >= 'a' && character <= 'z') ||
+				(character >= 'A' && character <= 'Z') ||
+				(character >= '0' && character <= '9') || character == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
 }
 
 func validateEnvironmentPackages(value any) error {
@@ -304,10 +385,31 @@ func normalizeEnvironmentConfig(config map[string]any, configType string) map[st
 		return normalized
 	}
 	if networking, present := config["networking"]; present {
-		normalized["networking"] = cloneEnvironmentConfigValue(networking)
+		normalized["networking"] = normalizeEnvironmentNetworking(networking)
 	}
 	if packages, present := config["packages"]; present {
 		normalized["packages"] = cloneEnvironmentConfigValue(packages)
+	}
+	return normalized
+}
+
+func normalizeEnvironmentNetworking(value any) map[string]any {
+	networking, _ := value.(map[string]any)
+	if networking["type"] != "limited" {
+		return map[string]any{"type": "unrestricted"}
+	}
+	normalized := map[string]any{
+		"type":                   "limited",
+		"allow_mcp_servers":      false,
+		"allow_package_managers": false,
+		"allowed_hosts":          []any{},
+	}
+	for _, field := range []string{
+		"allow_mcp_servers", "allow_package_managers", "allowed_hosts",
+	} {
+		if configured, present := networking[field]; present {
+			normalized[field] = cloneEnvironmentConfigValue(configured)
+		}
 	}
 	return normalized
 }
