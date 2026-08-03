@@ -166,23 +166,48 @@ func parseAgentRef(raw json.RawMessage) (agentRef, error) {
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Agent         json.RawMessage   `json:"agent"`
-		EnvironmentID string            `json:"environment_id"`
-		Title         string            `json:"title"`
-		Metadata      map[string]any    `json:"metadata"`
-		InitialEvents []map[string]any  `json:"initial_events"`
-		Resources     []json.RawMessage `json:"resources"`
-		VaultIDs      []string          `json:"vault_ids"`
+		Agent         json.RawMessage `json:"agent"`
+		EnvironmentID string          `json:"environment_id"`
+		Title         json.RawMessage `json:"title"`
+		Metadata      json.RawMessage `json:"metadata"`
+		InitialEvents json.RawMessage `json:"initial_events"`
+		Resources     json.RawMessage `json:"resources"`
+		VaultIDs      json.RawMessage `json:"vault_ids"`
 	}
 	if err := decodeJSONBody(r, &in); err != nil {
 		writeError(w, err)
 		return
 	}
-	if len(in.Resources) > 0 {
+	title, err := parseOptionalNonNullJSON[string](in.Title, "title")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	metadata, err := parseOptionalNonNullJSON[map[string]any](in.Metadata, "metadata")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	initialEvents, err := parseOptionalNonNullJSON[[]map[string]any](in.InitialEvents, "initial_events")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	resources, err := parseOptionalNonNullJSON[[]json.RawMessage](in.Resources, "resources")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	vaultIDs, err := parseOptionalNonNullJSON[[]string](in.VaultIDs, "vault_ids")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if resources != nil && len(*resources) > 0 {
 		writeError(w, domain.Unsupported("session resources are not implemented"))
 		return
 	}
-	if len(in.VaultIDs) > 0 {
+	if vaultIDs != nil && len(*vaultIDs) > 0 {
 		writeError(w, domain.Unsupported(vaultIDsCreateUnsupportedMessage))
 		return
 	}
@@ -193,11 +218,15 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// initial_events accepts only user.message / user.define_outcome.
-	if len(in.InitialEvents) > 50 {
+	var events []map[string]any
+	if initialEvents != nil {
+		events = *initialEvents
+	}
+	if len(events) > 50 {
 		writeError(w, domain.Validation("initial_events must contain at most 50 events"))
 		return
 	}
-	for _, it := range in.InitialEvents {
+	for _, it := range events {
 		t, _ := it["type"].(string)
 		if !domain.IsInitialEventType(t) {
 			writeError(w, domain.Validation("initial_events may contain only user.message or user.define_outcome"))
@@ -208,14 +237,22 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := validateClientEventBatch(in.InitialEvents); err != nil {
+	if err := validateClientEventBatch(events); err != nil {
 		writeError(w, err)
 		return
 	}
-	drafts := toDrafts(in.InitialEvents)
+	drafts := toDrafts(events)
+	var sessionTitle string
+	if title != nil {
+		sessionTitle = *title
+	}
+	var sessionMetadata map[string]any
+	if metadata != nil {
+		sessionMetadata = *metadata
+	}
 	sess, err := s.deps.Sessions.Create(r.Context(), app.CreateSessionInput{
 		AgentID: ref.ID, AgentVersion: ref.Version, Overrides: ref.Overrides,
-		EnvironmentID: in.EnvironmentID, Title: in.Title, Metadata: in.Metadata,
+		EnvironmentID: in.EnvironmentID, Title: sessionTitle, Metadata: sessionMetadata,
 		InitialEvents: drafts,
 	})
 	if err != nil {
@@ -425,7 +462,7 @@ func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Agent    json.RawMessage `json:"agent"`
 		Metadata json.RawMessage `json:"metadata"`
-		Title    *string         `json:"title"`
+		Title    json.RawMessage `json:"title"`
 		VaultIDs json.RawMessage `json:"vault_ids"`
 	}
 	if err := decodeJSONBody(r, &in); err != nil {
@@ -436,7 +473,12 @@ func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.Unsupported(vaultIDsUpdateRejectedMessage))
 		return
 	}
-	update := domain.SessionUpdate{Title: in.Title}
+	title, err := parseOptionalNonNullJSON[string](in.Title, "title")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	update := domain.SessionUpdate{Title: title}
 	metadata, err := parseSessionMetadataPatch(in.Metadata)
 	if err != nil {
 		writeError(w, err)

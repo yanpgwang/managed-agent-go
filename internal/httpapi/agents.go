@@ -16,11 +16,11 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		Model       json.RawMessage `json:"model"`
 		System      *string         `json:"system"`
 		Description *string         `json:"description"`
-		Tools       []any           `json:"tools"`
-		MCPServers  []any           `json:"mcp_servers"`
-		Skills      []any           `json:"skills"`
+		Tools       json.RawMessage `json:"tools"`
+		MCPServers  json.RawMessage `json:"mcp_servers"`
+		Skills      json.RawMessage `json:"skills"`
 		Multiagent  json.RawMessage `json:"multiagent"`
-		Metadata    map[string]any  `json:"metadata"`
+		Metadata    json.RawMessage `json:"metadata"`
 	}
 	if err := decodeJSONBody(r, &in); err != nil {
 		writeError(w, err)
@@ -41,9 +41,40 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	tools, err := parseOptionalNonNullJSON[[]any](in.Tools, "tools")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	mcpServers, err := parseOptionalNonNullJSON[[]any](in.MCPServers, "mcp_servers")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	skills, err := parseOptionalNonNullJSON[[]any](in.Skills, "skills")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	metadata, err := parseOptionalNonNullJSON[map[string]any](in.Metadata, "metadata")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
 	a := domain.Agent{
 		Name: in.Name, Model: model, System: in.System, Description: in.Description,
-		Tools: in.Tools, MCPServers: in.MCPServers, Skills: in.Skills, Metadata: in.Metadata,
+	}
+	if tools != nil {
+		a.Tools = *tools
+	}
+	if mcpServers != nil {
+		a.MCPServers = *mcpServers
+	}
+	if skills != nil {
+		a.Skills = *skills
+	}
+	if metadata != nil {
+		a.Metadata = *metadata
 	}
 	if multiagent != nil {
 		a.Multiagent = *multiagent
@@ -198,7 +229,7 @@ func parseAgentVersionListParams(r *http.Request, agentID string) (app.AgentVers
 
 func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 	var in struct {
-		Name        *string         `json:"name"`
+		Name        json.RawMessage `json:"name"`
 		Model       json.RawMessage `json:"model"`
 		System      json.RawMessage `json:"system"`
 		Description json.RawMessage `json:"description"`
@@ -206,8 +237,8 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		MCPServers  json.RawMessage `json:"mcp_servers"`
 		Skills      json.RawMessage `json:"skills"`
 		Multiagent  json.RawMessage `json:"multiagent"`
-		Metadata    map[string]any  `json:"metadata"`
-		Version     *int            `json:"version"`
+		Metadata    json.RawMessage `json:"metadata"`
+		Version     json.RawMessage `json:"version"`
 	}
 	if err := decodeJSONBody(r, &in); err != nil {
 		writeError(w, err)
@@ -243,14 +274,32 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if in.Version != nil && *in.Version < 1 {
+	name, err := parseOptionalNonNullJSON[string](in.Name, "name")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	metadata, err := parseOptionalNonNullJSON[map[string]any](in.Metadata, "metadata")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	version, err := parseOptionalNonNullJSON[int](in.Version, "version")
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if version != nil && *version < 1 {
 		writeError(w, domain.Validation("version must be at least 1"))
 		return
 	}
 	patch := domain.AgentPatch{
-		Name: in.Name, System: system, Description: description,
+		Name: name, System: system, Description: description,
 		Tools: tools, MCPServers: mcpServers, Skills: skills,
-		Multiagent: multiagent, Metadata: in.Metadata, ExpectedVersion: in.Version,
+		Multiagent: multiagent, ExpectedVersion: version,
+	}
+	if metadata != nil {
+		patch.Metadata = *metadata
 	}
 	if len(in.Model) > 0 {
 		if bytes.Equal(bytes.TrimSpace(in.Model), []byte("null")) {

@@ -84,6 +84,29 @@ func parseNullableStrict(raw json.RawMessage, field string) (*domain.NullableStr
 	return &domain.NullableString{Set: true, Value: &value}, nil
 }
 
+// parseOptionalNonNullJSON preserves the distinction between an omitted field
+// and an explicit JSON null for optional, non-nullable request properties.
+// encoding/json otherwise decodes null into the zero value of strings, slices,
+// maps, and pointers, which can silently turn an invalid request into a default
+// or no-op update.
+func parseOptionalNonNullJSON[T any](
+	raw json.RawMessage,
+	field string,
+) (*T, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return nil, domain.Validation(field + " cannot be null")
+	}
+	var value T
+	if err := json.Unmarshal(trimmed, &value); err != nil {
+		return nil, domain.Validation(field + " has an invalid value")
+	}
+	return &value, nil
+}
+
 func agentToJSON(a domain.Agent) map[string]any {
 	model := map[string]any{"id": a.Model.ID}
 	if a.Model.Effort != "" {
