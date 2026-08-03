@@ -19,9 +19,12 @@ const (
 	// separated list of "<key-id>:<secret>" entries. Empty disables
 	// authentication (with a startup warning); see runServe.
 	envAPIKeys = "MANAGED_AGENT_API_KEYS"
-	// envAllowAuthorizationHeader opts in to reading `authorization: Bearer
-	// <key>` in addition to `x-api-key`. This is a non-upstream extension.
-	envAllowAuthorizationHeader = "MANAGED_AGENT_AUTH_ALLOW_AUTHORIZATION_HEADER"
+	// envDisableAuthorizationHeader turns OFF acceptance of `authorization:
+	// Bearer <token>`. Both `x-api-key` and `Authorization` are documented
+	// Claude API credential headers, so the bearer form is accepted by default;
+	// this exists only for a deployment whose ingress already uses
+	// `Authorization` for something else.
+	envDisableAuthorizationHeader = "MANAGED_AGENT_AUTH_DISABLE_AUTHORIZATION_HEADER"
 
 	// envShutdownTimeout bounds the API drain window. It must be long enough
 	// for open SSE streams to end at a frame boundary.

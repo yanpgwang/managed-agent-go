@@ -29,10 +29,14 @@ internal design, is secondary and cannot establish a compatibility claim.
 Verified 2026-07-29.
 
 - [API overview](https://platform.claude.com/docs/en/api/overview) — auth
-  headers, pagination, request-size limit, and error envelope.
-- [Claude API errors](https://platform.claude.com/docs/en/api/errors) — Messages
-  API status/error types, request IDs, transient retry classes, and
-  `Retry-After`.
+  headers, response headers, pagination, request-size limit, and error
+  envelope. See
+  [Authentication and error-status sources](#authentication-and-error-status-sources)
+  for the header-level detail.
+- [Claude API errors](https://platform.claude.com/docs/en/api/errors) — status
+  and error types, request IDs, transient retry classes, and `retry-after`. See
+  [Authentication and error-status sources](#authentication-and-error-status-sources)
+  for the full status table and how Mango maps onto it.
 - [Create Agent](https://platform.claude.com/docs/en/api/beta/agents/create) —
   model configuration, initial `version`, and response shape.
 - [Update Agent](https://platform.claude.com/docs/en/api/beta/agents/update) —
@@ -55,13 +59,63 @@ Verified 2026-07-29.
 - [Managed Agents reference](https://platform.claude.com/docs/en/managed-agents/reference)
   — the published per-organization rate limits (300 requests per minute for
   create endpoints, 1,200 for read endpoints). Verified 2026-08-03. The
-  documentation states these as Anthropic organization policy and defines **no**
-  rate-limit response headers, so Mango emits none and implements no inbound
-  rate limiting. The same audit found that the documentation names `x-api-key`
-  and lists an `authentication_error` type but binds no HTTP status code to an
-  authentication failure; Mango's `401` for a missing or invalid key is
-  therefore a local choice, recorded in
+  documentation states these as Anthropic organization policy. Mango implements
+  no inbound rate limiting, so it never returns `429` `rate_limit_error` and has
+  no occasion to emit `retry-after`.
+
+## Authentication and error-status sources
+
+Verified 2026-08-03. The Managed Agents API is part of the Claude API and
+inherits these general pages; they are normative for Mango's credential headers
+and error status codes.
+
+- [API overview — Authentication](https://platform.claude.com/docs/en/api/overview#authentication)
+  — the request-header table lists **both** `x-api-key` and `Authorization`,
+  each marked "One of `x-api-key` or `Authorization`". `Authorization` carries
+  `Bearer <token>`, where the token is short-lived and obtained from
+  `POST /v1/oauth/token` through Workload Identity Federation. Both header
+  shapes are therefore **documented contract** and Mango accepts both by
+  default.
+
+  Mango implements neither `POST /v1/oauth/token` nor Workload Identity
+  Federation. It reproduces only the header shape, validating the presented
+  bearer value against the same configured key set as `x-api-key`. That
+  narrowing is a **local choice**, recorded in
   [API overview](api/overview.md#authentication).
+
+  The same page's "Response headers" section documents `request-id` and
+  `anthropic-organization-id` on every response. Mango emits `request-id`; it
+  does not emit `anthropic-organization-id`, because it is single-tenant and
+  has no organization to name. Recorded in
+  [compatibility](compatibility.md).
+
+- [Claude API errors](https://platform.claude.com/docs/en/api/errors)
+  — binds status codes to error types explicitly: `400 invalid_request_error`,
+  `401 authentication_error`, `402 billing_error`, `403 permission_error`,
+  `404 not_found_error`, `409 conflict_error`, `413 request_too_large`,
+  `429 rate_limit_error`, `500 api_error`, `504 timeout_error`, and
+  `529 overloaded_error`. Mango's `401 authentication_error` for a missing or
+  invalid credential is therefore **documented contract**, not a local choice,
+  as are its 400/404/409/413/500 pairings.
+
+  The page also states that the official SDKs retry transient failures
+  "honoring the `retry-after` header when present", so `retry-after` is a
+  documented header rather than an undocumented one.
+
+  `422` is the only status Mango returns that the table does not list; it marks
+  a documented capability Mango has not implemented. The page does say
+  `invalid_request_error` "may also be used for other 4XX status codes not
+  listed in this section", so the *type* remains documented while the *status*
+  is a **local choice**. Recorded in
+  [API overview](api/overview.md#errors).
+
+The official Go SDK corroborates the two-header contract. `anthropic.NewClient`
+reads `ANTHROPIC_AUTH_TOKEN` from the environment into an `Authorization:
+Bearer` header, and an explicit `option.WithAPIKey` sets `X-Api-Key` alongside
+it, so a single request routinely carries both headers with different values.
+Mango therefore tries each presented credential rather than rejecting the
+combination — a **design inference** covered by
+`TestAuthMiddleware_BothHeadersAreTried`.
 
 ## Tool and sandbox sources
 

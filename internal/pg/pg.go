@@ -7,6 +7,7 @@ import (
 	"embed"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -52,6 +53,10 @@ type PoolConfig struct {
 	// the PostgreSQL `statement_timeout` runtime parameter, so a runaway query
 	// cannot pin a pooled connection forever. Set it negative to leave
 	// statement_timeout unset (PostgreSQL's own default, usually unlimited).
+	//
+	// PostgreSQL expresses the parameter in milliseconds and reads 0 as
+	// unlimited, so a positive duration below 1ms is rounded up to 1ms rather
+	// than truncated to an accidental "no limit".
 	StatementTimeout time.Duration
 }
 
@@ -144,8 +149,16 @@ func applyPoolConfig(cfg *pgxpool.Config, resolved PoolConfig, present map[strin
 		strings.Contains(cfg.ConnConfig.RuntimeParams["options"], "statement_timeout") {
 		return
 	}
-	cfg.ConnConfig.RuntimeParams["statement_timeout"] =
-		fmt.Sprintf("%d", resolved.StatementTimeout.Milliseconds())
+	// PostgreSQL takes statement_timeout in milliseconds and reads 0 as "no
+	// limit". Truncating a sub-millisecond duration to 0 would therefore turn
+	// the tightest bound an operator can ask for into an unbounded one, so a
+	// positive StatementTimeout always resolves to at least 1ms. Unlimited
+	// stays reachable only through the explicit negative StatementTimeout.
+	millis := resolved.StatementTimeout.Milliseconds()
+	if millis < 1 {
+		millis = 1
+	}
+	cfg.ConnConfig.RuntimeParams["statement_timeout"] = strconv.FormatInt(millis, 10)
 }
 
 // connStringParams reports which parameter names the connection string sets. It

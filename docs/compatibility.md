@@ -26,6 +26,8 @@ compatibility.
 
 | Area | Status | Current scope and limitations |
 |---|---|---|
+| Authentication | Limited | Both documented credential headers work: `x-api-key: <key>` and `authorization: Bearer <key>`, tried in that order when a request carries both. A missing or unknown credential returns `401 authentication_error`. Mango runs no token service, so it implements neither `POST /v1/oauth/token` nor Workload Identity Federation — a bearer value is validated against the same configured key set as an API key, with no signature, expiry, or federation check. There is no authorization, tenancy, or per-key scoping. |
+| Response headers | Limited | `request-id` is sent on every response. `anthropic-organization-id`, the other documented response header, is **not** sent: Mango is single-tenant and has no organization to name. No rate-limit headers are sent because no inbound rate limiting exists, so `429` and `retry-after` never occur. |
 | Agent lifecycle | Supported | Create, get, list, version, update with optimistic concurrency, and archive. Agent list filtering and pagination are not implemented. |
 | Model configuration | Supported | Model ID, effort (`low` through `max`), and speed (`standard`/`fast`) resolve every working and grader request. The semantic defaults (`high`/`standard`) are omitted on the Messages wire for compatibility; non-default effort and `fast` are forwarded and require endpoint support. Same-model Agent updates preserve omitted effort; changing model resets omitted fields to defaults. |
 | Agent configuration | Limited | System, tools, MCP references, metadata, and model configuration execute. Skills and multi-agent orchestration are not yet executed. |
@@ -65,7 +67,12 @@ The project does **not** promise:
 - that every official SDK method or upstream field works;
 - exact parity for undocumented behavior and error wording;
 - Anthropic-internal scheduling, storage, or orchestration semantics;
-- production-grade authentication, multi-tenancy, or distributed execution.
+- production-grade authorization, multi-tenancy, or distributed execution.
+
+One status code is deliberately non-upstream: `422` marks a documented
+capability Mango has not implemented, and the documented error table has no
+`422`. The error *type* stays `invalid_request_error`, so clients that branch on
+the type are unaffected. See the [API reference](api/overview.md#errors).
 
 See the [API reference](api/overview.md) for repository behavior and
 [compatibility provenance](provenance.md) for the official public sources used

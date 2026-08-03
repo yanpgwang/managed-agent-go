@@ -198,33 +198,70 @@ func TestServerHandler_AuthenticatesRealRoutes(t *testing.T) {
 			accepted.Code, accepted.Body)
 	}
 
-	// Probes remain reachable without a credential.
-	probe := httptest.NewRecorder()
-	h.ServeHTTP(probe, httptest.NewRequest("GET", "/healthz", nil))
-	if probe.Code != 200 {
-		t.Fatalf("GET /healthz = %d, want 200", probe.Code)
+	// Probes remain reachable without a credential, for GET and for the HEAD
+	// that net/http.ServeMux routes to the same "GET" pattern.
+	for _, method := range []string{"GET", "HEAD"} {
+		for _, path := range []string{"/healthz", "/readyz"} {
+			probe := httptest.NewRecorder()
+			h.ServeHTTP(probe, httptest.NewRequest(method, path, nil))
+			if probe.Code != 200 {
+				t.Fatalf("%s %s = %d, want 200", method, path, probe.Code)
+			}
+		}
 	}
 }
 
-func TestPresentedAPIKey_HeaderPrecedenceAndBearerParsing(t *testing.T) {
+// TestPresentedCredentials_ReadsBothDocumentedHeaders covers credential
+// extraction. The Claude API overview marks `x-api-key` and `Authorization`
+// each as "One of `x-api-key` or `Authorization`", so both are read by default
+// and both are offered as candidates; only an explicit operator opt-out
+// narrows to `x-api-key`.
+func TestPresentedCredentials_ReadsBothDocumentedHeaders(t *testing.T) {
 	cases := []struct {
 		name       string
 		headers    map[string]string
-		allowAuthz bool
-		want       string
-		wantOK     bool
+		acceptAuth bool
+		want       []credential
 	}{
-		{"x-api-key", map[string]string{"x-api-key": "k"}, false, "k", true},
-		{"x-api-key trimmed", map[string]string{"x-api-key": "  k  "}, false, "k", true},
-		{"empty x-api-key", map[string]string{"x-api-key": "   "}, false, "", false},
-		{"bearer ignored by default", map[string]string{"authorization": "Bearer k"}, false, "", false},
-		{"bearer opt-in", map[string]string{"authorization": "Bearer k"}, true, "k", true},
-		{"bearer case-insensitive", map[string]string{"authorization": "bEaReR k"}, true, "k", true},
-		{"bearer without value", map[string]string{"authorization": "Bearer "}, true, "", false},
-		{"non-bearer scheme", map[string]string{"authorization": "Basic abc"}, true, "", false},
-		{"x-api-key wins", map[string]string{
+		{"x-api-key", map[string]string{"x-api-key": "k"}, true, []credential{
+			{"k", credentialAPIKeyHeader},
+		}},
+		{"x-api-key trimmed", map[string]string{"x-api-key": "  k  "}, true, []credential{
+			{"k", credentialAPIKeyHeader},
+		}},
+		{"empty x-api-key", map[string]string{"x-api-key": "   "}, true, nil},
+		{"no headers", map[string]string{}, true, nil},
+		{"bearer read by default", map[string]string{
+			"authorization": "Bearer k",
+		}, true, []credential{{"k", credentialAuthorizationHeader}}},
+		{"bearer case-insensitive", map[string]string{
+			"authorization": "bEaReR k",
+		}, true, []credential{{"k", credentialAuthorizationHeader}}},
+		{"bearer tab separated", map[string]string{
+			"authorization": "Bearer\tk",
+		}, true, []credential{{"k", credentialAuthorizationHeader}}},
+		{"bearer without value", map[string]string{"authorization": "Bearer "}, true, nil},
+		{"bearer without separator", map[string]string{"authorization": "Bearerk"}, true, nil},
+		{"non-bearer scheme is not a credential", map[string]string{
+			"authorization": "Basic abc",
+		}, true, nil},
+		{"a proxy's Basic header does not shadow x-api-key", map[string]string{
+			"x-api-key": "k", "authorization": "Basic abc",
+		}, true, []credential{{"k", credentialAPIKeyHeader}}},
+		// The official Go SDK produces exactly this shape whenever
+		// ANTHROPIC_AUTH_TOKEN is exported and WithAPIKey is passed.
+		{"both headers become two candidates, x-api-key first", map[string]string{
 			"x-api-key": "k", "authorization": "Bearer other",
-		}, true, "k", true},
+		}, true, []credential{
+			{"k", credentialAPIKeyHeader},
+			{"other", credentialAuthorizationHeader},
+		}},
+		{"bearer ignored when disabled", map[string]string{
+			"authorization": "Bearer k",
+		}, false, nil},
+		{"only x-api-key survives the opt-out", map[string]string{
+			"x-api-key": "k", "authorization": "Bearer other",
+		}, false, []credential{{"k", credentialAPIKeyHeader}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -232,10 +269,42 @@ func TestPresentedAPIKey_HeaderPrecedenceAndBearerParsing(t *testing.T) {
 			for name, value := range tc.headers {
 				req.Header.Set(name, value)
 			}
-			got, ok := presentedAPIKey(req, tc.allowAuthz)
-			if got != tc.want || ok != tc.wantOK {
-				t.Fatalf("presentedAPIKey = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.wantOK)
+			got := presentedCredentials(req, tc.acceptAuth)
+			if len(got) != len(tc.want) {
+				t.Fatalf("presentedCredentials = %+v, want %+v", got, tc.want)
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Fatalf("candidate %d = %+v, want %+v", i, got[i], tc.want[i])
+				}
 			}
 		})
+	}
+}
+
+// TestIsOperationalProbe asserts the unauthenticated probe set matches what
+// net/http.ServeMux will actually dispatch: a "GET" pattern also serves HEAD,
+// so a HEAD probe must not be answered 401 while a GET probe is answered 200.
+func TestIsOperationalProbe(t *testing.T) {
+	cases := []struct {
+		method string
+		path   string
+		want   bool
+	}{
+		{"GET", "/healthz", true},
+		{"GET", "/readyz", true},
+		{"HEAD", "/healthz", true},
+		{"HEAD", "/readyz", true},
+		{"POST", "/healthz", false},
+		{"GET", "/v1/agents", false},
+		{"HEAD", "/v1/agents", false},
+		{"GET", "/openapi.yaml", false},
+	}
+	for _, tc := range cases {
+		req := httptest.NewRequest(tc.method, tc.path, nil)
+		if got := isOperationalProbe(req); got != tc.want {
+			t.Errorf("isOperationalProbe(%s %s) = %v, want %v",
+				tc.method, tc.path, got, tc.want)
+		}
 	}
 }

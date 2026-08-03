@@ -330,9 +330,9 @@ func runServe() {
 		// Key ids are non-secret labels; key material is never logged.
 		log.Printf("serve: API key authentication enabled (%d key id(s): %s)",
 			cfg.APIKeys.Len(), strings.Join(cfg.APIKeys.IDs(), ", "))
-		if cfg.AllowAuthorizationHeader {
-			log.Printf("serve: accepting `authorization: Bearer` as well as x-api-key " +
-				"(non-upstream extension)")
+		if cfg.DisableAuthorizationHeader {
+			log.Printf("serve: `authorization: Bearer` is disabled by %s; "+
+				"only x-api-key is accepted", envDisableAuthorizationHeader)
 		}
 	}
 	shutdownTimeout, err := envDurationOr(envShutdownTimeout, defaultShutdownTimeout)
@@ -359,17 +359,17 @@ func apiConfigFromEnv(strict bool) (cfg httpapi.Config, warning string, err erro
 	if err != nil {
 		return httpapi.Config{}, "", err
 	}
-	allowAuthorizationHeader, err := envBool(envAllowAuthorizationHeader)
+	disableAuthorizationHeader, err := envBool(envDisableAuthorizationHeader)
 	if err != nil {
 		return httpapi.Config{}, "", err
 	}
 	cfg = httpapi.Config{
-		RequireBeta:              strict,
-		RequireVersion:           strict,
-		RequireContentType:       strict,
-		RequireAuth:              apiKeys.Len() > 0,
-		APIKeys:                  apiKeys,
-		AllowAuthorizationHeader: allowAuthorizationHeader,
+		RequireBeta:                strict,
+		RequireVersion:             strict,
+		RequireContentType:         strict,
+		RequireAuth:                apiKeys.Len() > 0,
+		APIKeys:                    apiKeys,
+		DisableAuthorizationHeader: disableAuthorizationHeader,
 	}
 	if cfg.RequireAuth {
 		return cfg, "", nil

@@ -15,7 +15,7 @@ import (
 // authenticates" behavior.
 func TestAPIConfigFromEnv_ZeroConfigDevPath(t *testing.T) {
 	t.Setenv(envAPIKeys, "")
-	t.Setenv(envAllowAuthorizationHeader, "")
+	t.Setenv(envDisableAuthorizationHeader, "")
 	cfg, warning, err := apiConfigFromEnv(false)
 	if err != nil {
 		t.Fatalf("zero-config serve failed to start: %v", err)
@@ -44,7 +44,7 @@ func TestAPIConfigFromEnv_ZeroConfigDevPath(t *testing.T) {
 // keys is sufficient to turn authentication on: it is not gated behind a flag.
 func TestAPIConfigFromEnv_KeysEnableAuthWithoutStrict(t *testing.T) {
 	t.Setenv(envAPIKeys, "ops:secret-one,ci:secret-two")
-	t.Setenv(envAllowAuthorizationHeader, "")
+	t.Setenv(envDisableAuthorizationHeader, "")
 	cfg, warning, err := apiConfigFromEnv(false)
 	if err != nil {
 		t.Fatal(err)
@@ -64,8 +64,8 @@ func TestAPIConfigFromEnv_KeysEnableAuthWithoutStrict(t *testing.T) {
 	if _, ok := cfg.APIKeys.Lookup("anything-else"); ok {
 		t.Fatal("an unconfigured value authenticated")
 	}
-	if cfg.AllowAuthorizationHeader {
-		t.Fatal("authorization: Bearer must be off by default")
+	if cfg.DisableAuthorizationHeader {
+		t.Fatal("the documented `authorization: Bearer` header must be accepted by default")
 	}
 }
 
@@ -97,18 +97,31 @@ func TestAPIConfigFromEnv_StrictWithKeys(t *testing.T) {
 	}
 }
 
-func TestAPIConfigFromEnv_AuthorizationHeaderOptIn(t *testing.T) {
+// TestAPIConfigFromEnv_AuthorizationHeaderOptOut asserts the knob narrows the
+// accepted credential headers rather than widening them: `authorization:
+// Bearer` is a documented Claude API credential header and is on unless an
+// operator explicitly turns it off.
+func TestAPIConfigFromEnv_AuthorizationHeaderOptOut(t *testing.T) {
 	t.Setenv(envAPIKeys, "ops:secret-one")
-	t.Setenv(envAllowAuthorizationHeader, "true")
+	t.Setenv(envDisableAuthorizationHeader, "")
 	cfg, _, err := apiConfigFromEnv(false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.AllowAuthorizationHeader {
-		t.Fatal("opt-in did not enable the authorization header extension")
+	if cfg.DisableAuthorizationHeader {
+		t.Fatal("the documented bearer header was disabled without being asked")
 	}
 
-	t.Setenv(envAllowAuthorizationHeader, "maybe")
+	t.Setenv(envDisableAuthorizationHeader, "true")
+	cfg, _, err = apiConfigFromEnv(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DisableAuthorizationHeader {
+		t.Fatal("the opt-out did not disable the authorization header")
+	}
+
+	t.Setenv(envDisableAuthorizationHeader, "maybe")
 	if _, _, err := apiConfigFromEnv(false); err == nil {
 		t.Fatal("an invalid boolean was accepted")
 	}

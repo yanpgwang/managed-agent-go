@@ -1,6 +1,7 @@
 package pg
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -116,6 +117,30 @@ func TestPool_StatementTimeoutCanBeDisabled(t *testing.T) {
 	cfg := resolvePoolConfig(t, testDatabaseURL, PoolConfig{StatementTimeout: -1})
 	if got, ok := cfg.ConnConfig.RuntimeParams["statement_timeout"]; ok && got != "" {
 		t.Fatalf("statement_timeout = %q, want unset", got)
+	}
+}
+
+// TestPool_SubMillisecondStatementTimeoutNeverBecomesUnlimited guards the
+// silent inversion: PostgreSQL takes statement_timeout in milliseconds and
+// reads 0 as "no limit", so truncating a sub-millisecond configured timeout
+// would turn the tightest possible bound into an unbounded one.
+func TestPool_SubMillisecondStatementTimeoutNeverBecomesUnlimited(t *testing.T) {
+	for _, timeout := range []time.Duration{
+		1, 999 * time.Microsecond, 1500 * time.Microsecond, time.Millisecond,
+	} {
+		cfg := resolvePoolConfig(t, testDatabaseURL, PoolConfig{StatementTimeout: timeout})
+		got := cfg.ConnConfig.RuntimeParams["statement_timeout"]
+		if got == "0" || got == "" {
+			t.Fatalf("StatementTimeout %v resolved to %q, which PostgreSQL reads as unlimited",
+				timeout, got)
+		}
+		millis, err := strconv.Atoi(got)
+		if err != nil {
+			t.Fatalf("statement_timeout = %q, want an integer millisecond count", got)
+		}
+		if millis < 1 {
+			t.Fatalf("StatementTimeout %v resolved to %d ms", timeout, millis)
+		}
 	}
 }
 

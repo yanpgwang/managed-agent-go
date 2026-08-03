@@ -25,11 +25,12 @@ type Config struct {
 	// compared in constant time; see auth.go.
 	APIKeys *APIKeySet
 
-	// AllowAuthorizationHeader additionally accepts `authorization: Bearer
-	// <key>`. This is a non-upstream extension — the official documentation
-	// only describes `x-api-key` — so it is off by default and must be enabled
-	// explicitly.
-	AllowAuthorizationHeader bool
+	// DisableAuthorizationHeader stops accepting `authorization: Bearer
+	// <token>`. Both `x-api-key` and `Authorization` are documented Claude API
+	// credential headers ("One of `x-api-key` or `Authorization`"), so the
+	// bearer form is accepted by default. This knob exists only for a
+	// deployment whose ingress already uses `Authorization` for something else.
+	DisableAuthorizationHeader bool
 }
 
 const betaValue = "managed-agents-2026-04-01"
@@ -51,35 +52,62 @@ func betaMiddleware(cfg Config, next http.Handler) http.Handler {
 	})
 }
 
-// authMiddleware validates the presented API key against the configured key
+// authMiddleware validates the presented credential against the configured key
 // set and attaches the resolved Principal to the request context.
 //
-// Presence of a header is never sufficient: an unknown key is rejected exactly
-// like a missing one. Both rejections use 401 with the `authentication_error`
-// type. That status is a Mango local choice — upstream documents the
-// `authentication_error` type but binds no HTTP status code to it.
+// Presence of a header is never sufficient: an unknown credential is rejected
+// exactly like a missing one. Both rejections use `401` with the
+// `authentication_error` type, which is the pair the Claude API errors page
+// binds to an authentication failure ("401 - `authentication_error`").
+//
+// A request may legitimately carry both documented credential headers, so every
+// candidate is tried and the first accepted one wins. See auth.go for why.
 func authMiddleware(cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !cfg.RequireAuth || isOperationalProbe(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		presented, ok := presentedAPIKey(r, cfg.AllowAuthorizationHeader)
-		if !ok {
+		acceptAuthorization := !cfg.DisableAuthorizationHeader
+		candidates := presentedCredentials(r, acceptAuthorization)
+		if len(candidates) == 0 {
 			writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
-				"missing x-api-key")
+				missingCredentialMessage(acceptAuthorization))
 			return
 		}
-		principal, ok := cfg.APIKeys.Lookup(presented)
-		if !ok {
-			// Deliberately identical wording for an unknown key and a revoked
-			// one, and never an echo of the presented value.
-			writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
-				"invalid x-api-key")
+		for _, candidate := range candidates {
+			principal, ok := cfg.APIKeys.Lookup(candidate.value)
+			if !ok {
+				continue
+			}
+			next.ServeHTTP(w, r.WithContext(ContextWithPrincipal(r.Context(), principal)))
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(ContextWithPrincipal(r.Context(), principal)))
+		// Deliberately identical wording for an unknown credential and a
+		// revoked one, and never an echo of a presented value.
+		writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
+			invalidCredentialMessage(candidates))
 	})
+}
+
+// missingCredentialMessage names the headers a caller could have used. It
+// tracks the accepted set so the message never advertises a header the server
+// would reject.
+func missingCredentialMessage(acceptAuthorization bool) string {
+	if acceptAuthorization {
+		return "missing x-api-key or authorization header"
+	}
+	return "missing x-api-key"
+}
+
+// invalidCredentialMessage names only the headers the caller actually used, so
+// a request that sent one header is not told the other also failed.
+func invalidCredentialMessage(candidates []credential) string {
+	names := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		names = append(names, candidate.source.headerName())
+	}
+	return "invalid " + strings.Join(names, " and ")
 }
 
 func versionMiddleware(cfg Config, next http.Handler) http.Handler {

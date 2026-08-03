@@ -44,15 +44,25 @@ anthropic-beta: managed-agents-2026-04-01
 content-type: application/json
 ```
 
-Every response includes a `request-id` header. JSON request bodies are limited
+Every response includes a `request-id` header. Mango does **not** send
+`anthropic-organization-id`, the other documented response header: it is
+single-tenant and has no organization to name. JSON request bodies are limited
 to 32 MiB and unknown top-level fields are rejected.
+
+See [Authentication](#authentication) for the credential headers, which are
+configured separately from `-strict`.
 
 ## Authentication
 
-Authentication is configured with key material, not with `-strict`:
+Authentication is configured with key material, not with `-strict`. Both
+documented Claude API credential headers are accepted:
 
 ```http
 x-api-key: <a key configured in MANAGED_AGENT_API_KEYS>
+```
+
+```http
+authorization: Bearer <a key configured in MANAGED_AGENT_API_KEYS>
 ```
 
 `MANAGED_AGENT_API_KEYS` holds a comma- or whitespace-separated list of
@@ -61,33 +71,67 @@ rotated without a window where none is valid. Keys are stored as SHA-256
 digests and compared in constant time; the key id is a non-secret label and is
 the only part that appears in logs.
 
-- When at least one key is configured, every request outside `GET /healthz` and
-  `GET /readyz` must present an accepted key.
+- When at least one key is configured, every request outside `/healthz` and
+  `/readyz` must present an accepted credential.
 - When no key is configured, authentication is **disabled**, the server logs a
   warning at startup, and `-strict` refuses to start. This is the zero-config
   local development path; see [Security](https://github.com/yanpgwang/managed-agent-go/blob/main/SECURITY.md).
-- A missing key and an unknown key are both rejected with `401` and
+- A missing credential and an unknown one are both rejected with `401` and
   `authentication_error`. Header presence alone never authenticates.
 
-:::note[Local choice]
+:::note[Documented contract]
 
-The official Managed Agents documentation describes the `x-api-key` header and
-lists an `authentication_error` error type, but binds **no HTTP status code** to
-an authentication failure and draws no missing-versus-invalid distinction.
-Returning `401` with `authentication_error` is therefore Mango's local choice,
-not a reproduced contract.
-
-Upstream documents **no** rate-limit response headers, so Mango emits none
-(`retry-after`, `anthropic-ratelimit-*`, and `x-should-retry` are never set).
-The published Managed Agents rate limits — 300 requests per minute for create
-endpoints and 1,200 for read endpoints — are Anthropic organization policy;
-Mango does not implement inbound rate limiting.
+The [API overview](https://platform.claude.com/docs/en/api/overview)
+authentication table lists both headers, each marked "One of `x-api-key` or
+`Authorization`", so both are first-class. The
+[errors page](https://platform.claude.com/docs/en/api/errors) binds status
+codes to error types explicitly, including `401` — `authentication_error`, so
+that pairing is reproduced rather than invented.
 
 :::
 
-`authorization: Bearer <key>` is accepted only when
-`MANAGED_AGENT_AUTH_ALLOW_AUTHORIZATION_HEADER=true`. It is a non-upstream
-convenience extension and is off by default.
+:::warning[Mango accepts the header shape, not federated tokens]
+
+Upstream, the `Authorization` value is a short-lived access token obtained from
+`POST /v1/oauth/token` through
+[Workload Identity Federation](https://platform.claude.com/docs/en/manage-claude/workload-identity-federation).
+
+**Mango implements neither.** There is no `POST /v1/oauth/token` endpoint and no
+federation trust evaluation. Mango accepts only the *header shape* and validates
+the presented bearer value against the same configured key set as `x-api-key`.
+The token is opaque: it is not parsed, and it carries no expiry of its own
+beyond the operator rotating `MANAGED_AGENT_API_KEYS`.
+
+:::
+
+### Presenting both headers
+
+A request may carry both headers. Each is tried in turn — `x-api-key` first —
+and the request authenticates if either value is an accepted key.
+
+This is a **design inference** from official SDK behavior rather than a stated
+rule. `anthropic.NewClient` reads `ANTHROPIC_AUTH_TOKEN` from the environment
+into an `Authorization: Bearer` header, and an explicit `option.WithAPIKey`
+adds `x-api-key` alongside it, so a developer with that variable exported sends
+both headers with *different* values on every request. Rejecting the
+combination would break the official client. Trying both grants nothing extra:
+a caller must still present at least one configured key, exactly as if that
+header had been sent alone.
+
+`MANAGED_AGENT_AUTH_DISABLE_AUTHORIZATION_HEADER=true` narrows Mango to
+`x-api-key` only. It exists for a deployment whose ingress already uses
+`Authorization` for something else, and it removes a documented header, so
+leave it unset unless that applies.
+
+### Rate limiting
+
+Mango implements no inbound rate limiting, so it never returns `429`
+`rate_limit_error` and has no occasion to emit `retry-after`. The
+`retry-after` header is documented — the errors page says the official SDKs
+retry "honoring the `retry-after` header when present" — Mango simply has
+nothing to report with it. The published Managed Agents rate limits (300
+requests per minute for create endpoints, 1,200 for read endpoints) are
+Anthropic organization policy.
 
 ## Errors
 
@@ -104,18 +148,32 @@ Errors use a Claude-compatible envelope:
 }
 ```
 
-| HTTP status | Current error type |
-| --- | --- |
-| `400` | `invalid_request_error` |
-| `401` | `authentication_error` |
-| `404` | `not_found_error` |
-| `409` | `conflict_error` |
-| `413` | `request_too_large` |
-| `422` | `invalid_request_error` |
-| `500` | `api_error` |
+| HTTP status | Error type | Source |
+| --- | --- | --- |
+| `400` | `invalid_request_error` | Documented contract |
+| `401` | `authentication_error` | Documented contract |
+| `404` | `not_found_error` | Documented contract |
+| `409` | `conflict_error` | Documented contract |
+| `413` | `request_too_large` | Documented contract |
+| `422` | `invalid_request_error` | Local choice — see below |
+| `500` | `api_error` | Documented contract |
 
-These mappings are Mango's public contract for the supported API subset. See
-the [compatibility matrix](../compatibility.md) for parity limits.
+Every pairing above except `422` reproduces the status/type table on the
+[Claude API errors page](https://platform.claude.com/docs/en/api/errors).
+
+`422` is the one status Mango invents. It answers "this documented capability
+is not implemented here" — a file-backed outcome rubric, file-sourced message
+content, session resources, or `vault_ids` — and is kept distinct from a
+malformed request. The *type* stays documented, because the errors page says
+`invalid_request_error` "may also be used for other 4XX status codes not listed
+in this section", so a client branching on the error type is unaffected. A
+client branching on the exact status will see a `422` upstream would not send;
+treat 4xx `invalid_request_error` as one class.
+
+Documented statuses Mango never produces: `402` `billing_error` (no billing),
+`403` `permission_error` (no authorization or per-key scoping), `429`
+`rate_limit_error` (no inbound rate limiting), `504` `timeout_error`, and `529`
+`overloaded_error`.
 
 ## Pagination
 

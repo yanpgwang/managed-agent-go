@@ -29,7 +29,7 @@ maintainer contact without disclosing vulnerability details.
 - The Docker provider gives container isolation and disables networking by
   default, but containers share the host kernel and the provider has not been
   audited for hostile multi-tenant workloads.
-- Authentication validates a presented `x-api-key` against the keys configured
+- Authentication validates a presented credential against the keys configured
   in `MANAGED_AGENT_API_KEYS`. Keys are held only as SHA-256 digests and are
   compared in constant time; an unknown key is rejected exactly like a missing
   one. There is still no authorization, no tenancy, and no per-key scoping: any
@@ -38,11 +38,15 @@ maintainer contact without disclosing vulnerability details.
   request is served unauthenticated. `serve` logs a warning at startup, binds
   loopback by default, and refuses to start with `-strict` unless keys are
   configured. Set keys before binding any non-loopback address.
-- `authorization: Bearer <key>` is accepted only when
-  `MANAGED_AGENT_AUTH_ALLOW_AUTHORIZATION_HEADER=true`. It is a non-upstream
-  convenience extension; `x-api-key` is the documented header.
-- `GET /healthz` and `GET /readyz` stay unauthenticated so an orchestrator can
-  probe the process. They expose no session data.
+- Both documented credential headers are accepted: `x-api-key: <key>` and
+  `authorization: Bearer <key>`. Mango runs no token service — it implements
+  neither `POST /v1/oauth/token` nor Workload Identity Federation — so a bearer
+  value is validated against the same configured key set, with no signature
+  check, no independent expiry, and no federation trust. Treat a bearer token
+  presented to Mango as exactly as sensitive as an API key.
+  `MANAGED_AGENT_AUTH_DISABLE_AUTHORIZATION_HEADER=true` narrows to `x-api-key`.
+- `/healthz` and `/readyz` stay unauthenticated for `GET` and `HEAD` so an
+  orchestrator can probe the process. They expose no session data.
 - PostgreSQL journals tool attempts, but an external side effect can still be
   ambiguous if execution succeeds and its durable result is lost. Exactly-once
   behavior requires idempotency from the external system.

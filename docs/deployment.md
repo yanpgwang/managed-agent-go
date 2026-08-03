@@ -57,16 +57,24 @@ SHA-256 digests and compared in constant time.
 
 | Situation | Behavior |
 | --- | --- |
-| `MANAGED_AGENT_API_KEYS` set | Every request except `GET /healthz` and `GET /readyz` must present an accepted `x-api-key`; a missing or unknown key gets `401 authentication_error` |
+| `MANAGED_AGENT_API_KEYS` set | Every request except `/healthz` and `/readyz` must present an accepted credential; a missing or unknown one gets `401 authentication_error` |
 | Unset, no `-strict` | Authentication disabled, startup warning logged, loopback bind by default — the zero-config local development path |
 | Unset, with `-strict` | `serve` refuses to start |
 
-`MANAGED_AGENT_AUTH_ALLOW_AUTHORIZATION_HEADER=true` additionally accepts
-`authorization: Bearer <key>`. That header is not documented upstream as an
-alternative to `x-api-key`, so it is a Mango extension and stays off by default.
+Both documented Claude API credential headers are accepted: `x-api-key: <key>`
+and `authorization: Bearer <key>`. Mango runs no token service, so it validates
+a presented bearer value against the same configured key set; it implements
+neither `POST /v1/oauth/token` nor Workload Identity Federation. When a request
+carries both headers — which the official Go SDK does whenever
+`ANTHROPIC_AUTH_TOKEN` is exported — each is tried and either may authenticate.
 
-Mango does not implement inbound rate limiting and emits no rate-limit response
-headers; the published Managed Agents limits are Anthropic organization policy.
+`MANAGED_AGENT_AUTH_DISABLE_AUTHORIZATION_HEADER=true` narrows Mango to
+`x-api-key` only. It removes a documented header, so set it only for a
+deployment whose ingress already uses `Authorization` for something else.
+
+Mango implements no inbound rate limiting, so it never returns `429` and has no
+occasion to emit `retry-after`; the published Managed Agents limits are
+Anthropic organization policy.
 
 ## Runtime limits
 
@@ -93,6 +101,11 @@ then being severed. Ordinary in-flight requests keep the whole window.
 | `MANAGED_AGENT_DB_MAX_CONN_IDLE_TIME` | `5m` | Idle age before a connection is closed |
 | `MANAGED_AGENT_DB_HEALTH_CHECK_PERIOD` | `1m` | Pool health-check interval |
 | `MANAGED_AGENT_DB_STATEMENT_TIMEOUT` | `30s` | Server-side `statement_timeout`; `0` leaves it unset |
+
+A positive `MANAGED_AGENT_DB_STATEMENT_TIMEOUT` below `1ms` is rounded up to
+`1ms` rather than truncated. PostgreSQL reads the parameter in milliseconds and
+treats `0` as unlimited, so truncation would silently turn the tightest
+possible bound into no bound at all. Only the explicit `0` disables it.
 
 **Precedence:** a pool parameter already present in
 `MANAGED_AGENT_DATABASE_URL` wins. `pool_max_conns`, `pool_min_conns`,

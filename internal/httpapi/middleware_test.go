@@ -94,9 +94,10 @@ func TestBetaMiddleware_Strict(t *testing.T) {
 // present a key the server actually accepts. Header presence is not
 // authentication, so an unknown key is rejected exactly like a missing one.
 //
-// 401 with the `authentication_error` type is a Mango local choice: upstream
-// documents the error type but binds no HTTP status code to an authentication
-// failure and draws no missing-versus-invalid distinction.
+// `401` with the `authentication_error` type is a documented contract: the
+// Claude API errors page binds status codes to error types explicitly,
+// including "401 - `authentication_error`". Only the identical wording for a
+// missing versus an invalid credential is Mango's own choice.
 func TestAuthMiddleware_Strict(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
@@ -230,10 +231,16 @@ func TestAuthMiddleware_NoPrincipalWhenAuthDisabled(t *testing.T) {
 	}
 }
 
-// TestAuthMiddleware_AuthorizationHeaderIsOptIn asserts that `authorization:
-// Bearer` is rejected by default. Upstream documents only x-api-key; accepting
-// Bearer is a non-upstream extension and must be requested explicitly.
-func TestAuthMiddleware_AuthorizationHeaderIsOptIn(t *testing.T) {
+// TestAuthMiddleware_AcceptsDocumentedBearerCredential asserts that
+// `authorization: Bearer <token>` authenticates by default. The Claude API
+// overview lists `x-api-key` and `Authorization` side by side, each marked "One
+// of `x-api-key` or `Authorization`", so rejecting the bearer form would fail a
+// caller authenticating the documented way.
+//
+// Mango runs no token service: it validates the presented bearer value against
+// the same configured key set as `x-api-key`, so presence is still never
+// sufficient.
+func TestAuthMiddleware_AcceptsDocumentedBearerCredential(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	})
@@ -241,34 +248,184 @@ func TestAuthMiddleware_AuthorizationHeaderIsOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	h := authMiddleware(Config{RequireAuth: true, APIKeys: keys}, ok)
 
-	defaultHandler := authMiddleware(Config{RequireAuth: true, APIKeys: keys}, ok)
 	req := httptest.NewRequest("GET", "/v1/agents", nil)
 	req.Header.Set("authorization", "Bearer secret-a")
 	rec := httptest.NewRecorder()
-	defaultHandler.ServeHTTP(rec, req)
-	if rec.Code != 401 {
-		t.Fatalf("authorization: Bearer accepted by default, got %d", rec.Code)
+	h.ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("documented `authorization: Bearer` was rejected, got %d", rec.Code)
 	}
 
-	optIn := authMiddleware(Config{
-		RequireAuth: true, APIKeys: keys, AllowAuthorizationHeader: true,
-	}, ok)
-	reqOptIn := httptest.NewRequest("GET", "/v1/agents", nil)
-	reqOptIn.Header.Set("authorization", "Bearer secret-a")
-	recOptIn := httptest.NewRecorder()
-	optIn.ServeHTTP(recOptIn, reqOptIn)
-	if recOptIn.Code != 200 {
-		t.Fatalf("opt-in authorization: Bearer rejected, got %d", recOptIn.Code)
-	}
-
-	// The opt-in still rejects a Bearer value that is not a configured key.
+	// The presence-only vulnerability must stay fixed on this path too: an
+	// unconfigured bearer value is rejected exactly like a missing credential.
 	reqBad := httptest.NewRequest("GET", "/v1/agents", nil)
 	reqBad.Header.Set("authorization", "Bearer not-a-key")
 	recBad := httptest.NewRecorder()
-	optIn.ServeHTTP(recBad, reqBad)
+	h.ServeHTTP(recBad, reqBad)
 	if recBad.Code != 401 {
-		t.Fatalf("opt-in accepted an unknown Bearer value, got %d", recBad.Code)
+		t.Fatalf("an unknown bearer value authenticated, got %d", recBad.Code)
+	}
+	if env := decodeErrorEnvelope(t, recBad.Body.Bytes()); env["type"] != "authentication_error" {
+		t.Fatalf("error type = %q, want authentication_error", env["type"])
+	}
+	if strings.Contains(recBad.Body.String(), "not-a-key") {
+		t.Fatal("the rejection echoed the presented credential")
+	}
+}
+
+// TestAuthMiddleware_BothHeadersAreTried covers a request that presents both
+// documented credential headers with different values.
+//
+// This is not a hypothetical: `anthropic.NewClient` reads ANTHROPIC_AUTH_TOKEN
+// from the environment into an `Authorization: Bearer` header, and an explicit
+// `option.WithAPIKey` adds `X-Api-Key` alongside it, so any developer with that
+// variable exported sends both on every request. Each candidate is tried, and
+// one accepted credential is enough.
+func TestAuthMiddleware_BothHeadersAreTried(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+	keys, err := ParseAPIKeys("key-a:secret-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := authMiddleware(Config{RequireAuth: true, APIKeys: keys}, ok)
+
+	cases := []struct {
+		name   string
+		apiKey string
+		bearer string
+		want   int
+	}{
+		{"valid x-api-key, unrelated ambient bearer", "secret-a", "sk-ant-unrelated", 200},
+		{"unrelated ambient x-api-key, valid bearer", "sk-ant-unrelated", "secret-a", 200},
+		{"same credential in both headers", "secret-a", "secret-a", 200},
+		{"neither header carries a configured key", "nope-1", "nope-2", 401},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/v1/agents", nil)
+			req.Header.Set("x-api-key", tc.apiKey)
+			req.Header.Set("authorization", "Bearer "+tc.bearer)
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != tc.want {
+				t.Fatalf("got %d, want %d: %s", rec.Code, tc.want, rec.Body)
+			}
+			if tc.want == 401 {
+				env := decodeErrorEnvelope(t, rec.Body.Bytes())
+				if env["type"] != "authentication_error" {
+					t.Fatalf("error type = %q, want authentication_error", env["type"])
+				}
+				for _, secret := range []string{tc.apiKey, tc.bearer} {
+					if strings.Contains(rec.Body.String(), secret) {
+						t.Fatalf("the rejection echoed a presented credential %q", secret)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestAuthMiddleware_ResolvesPrincipalFromWhicheverHeaderMatched asserts the
+// Principal follows the credential that actually authenticated, so actor
+// attribution stays correct when the other header holds an unrelated value.
+func TestAuthMiddleware_ResolvesPrincipalFromWhicheverHeaderMatched(t *testing.T) {
+	keys, err := ParseAPIKeys("key-a:secret-a,key-b:secret-b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seen Principal
+	h := authMiddleware(Config{RequireAuth: true, APIKeys: keys},
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			seen, _ = PrincipalFromContext(r.Context())
+			w.WriteHeader(200)
+		}))
+
+	// Only the bearer header carries a configured key.
+	req := httptest.NewRequest("GET", "/v1/agents", nil)
+	req.Header.Set("x-api-key", "sk-ant-unrelated")
+	req.Header.Set("authorization", "Bearer secret-b")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+	if seen.KeyID != "key-b" {
+		t.Fatalf("Principal.KeyID = %q, want key-b", seen.KeyID)
+	}
+
+	// When both are configured keys, x-api-key is tried first and wins.
+	both := httptest.NewRequest("GET", "/v1/agents", nil)
+	both.Header.Set("x-api-key", "secret-a")
+	both.Header.Set("authorization", "Bearer secret-b")
+	h.ServeHTTP(httptest.NewRecorder(), both)
+	if seen.KeyID != "key-a" {
+		t.Fatalf("Principal.KeyID = %q, want key-a (x-api-key is tried first)", seen.KeyID)
+	}
+}
+
+// TestAuthMiddleware_AuthorizationHeaderCanBeDisabled asserts the knob narrows
+// rather than widens: it removes a documented header for a deployment whose
+// ingress already uses `Authorization`, and the default leaves it accepted.
+func TestAuthMiddleware_AuthorizationHeaderCanBeDisabled(t *testing.T) {
+	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+	})
+	keys, err := ParseAPIKeys("key-a:secret-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled := authMiddleware(Config{
+		RequireAuth: true, APIKeys: keys, DisableAuthorizationHeader: true,
+	}, ok)
+
+	req := httptest.NewRequest("GET", "/v1/agents", nil)
+	req.Header.Set("authorization", "Bearer secret-a")
+	rec := httptest.NewRecorder()
+	disabled.ServeHTTP(rec, req)
+	if rec.Code != 401 {
+		t.Fatalf("bearer accepted after being disabled, got %d", rec.Code)
+	}
+	// The rejection must not advertise a header the server would refuse.
+	if msg := decodeErrorEnvelope(t, rec.Body.Bytes())["message"]; strings.Contains(msg, "authorization") {
+		t.Fatalf("message advertises a disabled header: %q", msg)
+	}
+
+	// x-api-key still works with the bearer form disabled.
+	reqKey := httptest.NewRequest("GET", "/v1/agents", nil)
+	reqKey.Header.Set("x-api-key", "secret-a")
+	recKey := httptest.NewRecorder()
+	disabled.ServeHTTP(recKey, reqKey)
+	if recKey.Code != 200 {
+		t.Fatalf("x-api-key = %d, want 200", recKey.Code)
+	}
+}
+
+// TestAuthMiddleware_MissingCredentialIs401AuthenticationError pins the
+// documented status/type pair. The Claude API errors page binds "401 -
+// `authentication_error`", so this is a reproduced contract, not a local
+// choice.
+func TestAuthMiddleware_MissingCredentialIs401AuthenticationError(t *testing.T) {
+	keys, err := ParseAPIKeys("key-a:secret-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := authMiddleware(Config{RequireAuth: true, APIKeys: keys},
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(200)
+		}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/agents", nil))
+	if rec.Code != 401 {
+		t.Fatalf("missing credential = %d, want 401", rec.Code)
+	}
+	env := decodeErrorEnvelope(t, rec.Body.Bytes())
+	if env["type"] != "authentication_error" {
+		t.Fatalf("error type = %q, want authentication_error", env["type"])
+	}
+	for _, want := range []string{"x-api-key", "authorization"} {
+		if !strings.Contains(env["message"], want) {
+			t.Errorf("message %q does not name the %s header", env["message"], want)
+		}
 	}
 }
 
@@ -285,10 +442,12 @@ func TestAuthMiddleware_ProbesStayUnauthenticated(t *testing.T) {
 			w.WriteHeader(200)
 		}))
 	for _, path := range []string{"/healthz", "/readyz"} {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
-		if rec.Code != 200 {
-			t.Errorf("%s required authentication: got %d", path, rec.Code)
+		for _, method := range []string{"GET", "HEAD"} {
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+			if rec.Code != 200 {
+				t.Errorf("%s %s required authentication: got %d", method, path, rec.Code)
+			}
 		}
 	}
 	// Everything else still does.

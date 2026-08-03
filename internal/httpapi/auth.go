@@ -10,17 +10,43 @@ import (
 	"strings"
 )
 
-// Authentication in Mango is a local choice, not a reproduction of a documented
-// contract. The official Claude Managed Agents documentation describes the
-// `x-api-key` request header but binds no HTTP status code to an authentication
-// failure and draws no missing-versus-invalid distinction. Mango therefore
-// answers an unauthenticated request with 401 and the documented
-// `authentication_error` error type, and says so in docs/api/overview.md.
+// Authentication reproduces a documented contract.
 //
-// `authorization: Bearer ...` is NOT documented upstream as an alternative to
-// `x-api-key` (every upstream "Bearer" reference belongs to the unrelated
-// vault-credential feature), so it is off by default and available only as an
-// explicitly opt-in, clearly labelled non-upstream extension.
+// The Claude API overview's authentication table lists two credential headers,
+// each marked "One of `x-api-key` or `Authorization`", and the Managed Agents
+// API inherits them:
+//
+//   - `x-api-key: <key>` — a Console API key.
+//   - `Authorization: Bearer <token>` — a short-lived access token obtained
+//     from `POST /v1/oauth/token` through Workload Identity Federation.
+//
+// The Claude API errors page binds status codes to error types explicitly,
+// including `401 - authentication_error`.
+//
+// **documented contract**: both header shapes are first-class credentials, and
+// a rejected credential is answered with `401` and `authentication_error`.
+//
+// **local choice**: Mango operates no token service. It implements neither
+// `POST /v1/oauth/token` nor Workload Identity Federation, so it accepts only
+// the *shape* of a bearer credential and validates the presented token against
+// the same configured key set as `x-api-key`. The token is opaque to Mango: it
+// is not parsed, it carries no independent expiry, and no federation trust is
+// evaluated.
+//
+// **design inference**: when both headers are present they are tried in order
+// and the request authenticates if *either* carries an accepted credential.
+// The documented table marks the two headers mutually exclusive ("one of")
+// without saying what a server does with both, but the official Go SDK settles
+// it: `anthropic.NewClient` reads `ANTHROPIC_AUTH_TOKEN` from the environment
+// as a default `Authorization: Bearer` header, and an explicit
+// `option.WithAPIKey` adds `X-Api-Key` alongside it. A developer with that
+// variable exported therefore sends both headers with *different* values on
+// every request, so rejecting the combination — or blindly preferring the
+// wrong one — would break the official client. Trying both grants nothing
+// extra: a caller still has to present at least one configured key, exactly as
+// if they had sent that header alone.
+//
+// See docs/api/overview.md#authentication.
 
 // Principal identifies the caller a request was authenticated as.
 //
@@ -176,35 +202,84 @@ func constantTimeDigestEqual(a, b [sha256.Size]byte) bool {
 	return subtle.ConstantTimeCompare(a[:], b[:]) == 1
 }
 
-// presentedAPIKey extracts the candidate key from a request.
+// credentialSource names the header a request presented a credential in.
+type credentialSource int
+
+const (
+	// credentialAPIKeyHeader: `x-api-key`.
+	credentialAPIKeyHeader credentialSource = iota
+	// credentialAuthorizationHeader: `authorization: Bearer <token>`.
+	credentialAuthorizationHeader
+)
+
+// headerName names the header a credential came from, for an error message. It
+// describes the request the caller made and never reveals key material.
+func (s credentialSource) headerName() string {
+	if s == credentialAuthorizationHeader {
+		return "authorization bearer token"
+	}
+	return "x-api-key"
+}
+
+// credential is one candidate the caller presented, tagged with its header.
+type credential struct {
+	value  string
+	source credentialSource
+}
+
+// presentedCredentials returns every candidate credential on a request, in the
+// order they should be tried: `x-api-key` first, then `authorization: Bearer`.
 //
-// `x-api-key` is the only documented header upstream and is always accepted.
-// `authorization: Bearer <key>` is a non-upstream convenience extension and is
-// read only when the operator opts in.
-func presentedAPIKey(r *http.Request, allowAuthorizationHeader bool) (string, bool) {
+// Both are documented credential headers, so both are read. An `authorization`
+// header carrying any other scheme is skipped rather than treated as a failed
+// credential: an ingress proxy may add its own `Basic` header, and that is not
+// a Claude API credential.
+//
+// acceptAuthorization is false only when an operator has explicitly disabled
+// the bearer form.
+func presentedCredentials(r *http.Request, acceptAuthorization bool) []credential {
+	candidates := make([]credential, 0, 2)
 	if key := strings.TrimSpace(r.Header.Get("x-api-key")); key != "" {
-		return key, true
+		candidates = append(candidates, credential{value: key, source: credentialAPIKeyHeader})
 	}
-	if !allowAuthorizationHeader {
-		return "", false
+	if !acceptAuthorization {
+		return candidates
 	}
-	const bearer = "bearer "
-	value := strings.TrimSpace(r.Header.Get("authorization"))
-	if len(value) <= len(bearer) || !strings.EqualFold(value[:len(bearer)], bearer) {
-		return "", false
+	if token := bearerToken(r.Header.Get("authorization")); token != "" {
+		candidates = append(candidates,
+			credential{value: token, source: credentialAuthorizationHeader})
 	}
-	if key := strings.TrimSpace(value[len(bearer):]); key != "" {
-		return key, true
+	return candidates
+}
+
+// bearerToken returns the token from an `Authorization: Bearer <token>` header
+// value, or "" when the header is absent, empty, or carries another scheme.
+// The scheme is matched case-insensitively, and at least one space or tab must
+// separate it from the token, so "bearertoken" is not read as a credential.
+func bearerToken(value string) string {
+	const scheme = "bearer"
+	value = strings.TrimSpace(value)
+	if len(value) <= len(scheme) || !strings.EqualFold(value[:len(scheme)], scheme) {
+		return ""
 	}
-	return "", false
+	rest := value[len(scheme):]
+	if strings.TrimLeft(rest, " \t") == rest {
+		return ""
+	}
+	return strings.TrimSpace(rest)
 }
 
 // isOperationalProbe reports whether a request targets a liveness/readiness
 // probe. Local choice: probes carry no session data and stay unauthenticated so
 // a load balancer or orchestrator does not need a credential to schedule the
 // process.
+//
+// HEAD is accepted alongside GET because net/http.ServeMux routes a HEAD
+// request to a "GET" pattern. Without it the mux would still dispatch
+// `HEAD /healthz` to the probe handler while this predicate denied it, so the
+// same probe answered 200 with authentication off and 401 with it on.
 func isOperationalProbe(r *http.Request) bool {
-	if r.Method != http.MethodGet {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
 	return r.URL.Path == "/healthz" || r.URL.Path == "/readyz"
