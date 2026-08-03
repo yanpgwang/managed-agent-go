@@ -1186,18 +1186,20 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 		defer previewMu.Unlock()
 		if !startedPreview {
 			_ = a.previews.PublishPreview(ctx, in.SessionID, domain.PreviewFrame{
-				Kind:      domain.PreviewEventStart,
-				EventID:   messageEventID,
-				EventType: domain.EvAgentMessage,
+				Kind:                domain.PreviewEventStart,
+				EventID:             messageEventID,
+				EventType:           domain.EvAgentMessage,
+				ModelRequestStartID: modelRequestStartID,
 			})
 			startedPreview = true
 		}
 		_ = a.previews.PublishPreview(ctx, in.SessionID, domain.PreviewFrame{
-			Kind:      domain.PreviewEventDelta,
-			EventID:   messageEventID,
-			EventType: domain.EvAgentMessage,
-			Index:     index,
-			Text:      text,
+			Kind:                domain.PreviewEventDelta,
+			EventID:             messageEventID,
+			EventType:           domain.EvAgentMessage,
+			ModelRequestStartID: modelRequestStartID,
+			Index:               index,
+			Text:                text,
 		})
 	})
 	if err != nil {

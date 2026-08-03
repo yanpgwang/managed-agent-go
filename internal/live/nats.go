@@ -65,7 +65,9 @@ func (b *Broker) PublishPreview(
 ) error {
 	payload, err := json.Marshal(previewEnvelope{
 		Kind: frame.Kind, EventID: frame.EventID, EventType: frame.EventType,
-		Index: frame.Index, Text: frame.Text,
+		ModelRequestStartID: frame.ModelRequestStartID,
+		Index:               frame.Index,
+		Text:                frame.Text,
 	})
 	if err != nil {
 		return err
@@ -74,11 +76,12 @@ func (b *Broker) PublishPreview(
 }
 
 type previewEnvelope struct {
-	Kind      string `json:"kind"`
-	EventID   string `json:"event_id"`
-	EventType string `json:"event_type"`
-	Index     int    `json:"index,omitempty"`
-	Text      string `json:"text,omitempty"`
+	Kind                string `json:"kind"`
+	EventID             string `json:"event_id"`
+	EventType           string `json:"event_type"`
+	ModelRequestStartID string `json:"model_request_start_id,omitempty"`
+	Index               int    `json:"index,omitempty"`
+	Text                string `json:"text,omitempty"`
 }
 
 func eventSubject(sessionID string) string {
@@ -201,7 +204,8 @@ func (s *Stream) tail(
 	defer ticker.Stop()
 	previewPrepared := make(map[string]struct{})
 	closedPreviewEvents := make(map[string]struct{})
-	modelRequestClosed := false
+	closedModelRequests := make(map[string]struct{})
+	legacyModelRequestClosed := false
 
 	reconcile := func() bool {
 		for {
@@ -213,9 +217,12 @@ func (s *Stream) tail(
 				cursor = event.Sequence
 				switch event.Type {
 				case domain.EvSpanModelRequestStart:
-					modelRequestClosed = false
+					legacyModelRequestClosed = false
 				case domain.EvSpanModelRequestEnd:
-					modelRequestClosed = true
+					legacyModelRequestClosed = true
+					if startID, _ := event.Payload["model_request_start_id"].(string); startID != "" {
+						closedModelRequests[startID] = struct{}{}
+					}
 				case domain.EvAgentMessage:
 					closedPreviewEvents[event.ID] = struct{}{}
 				}
@@ -289,16 +296,24 @@ func (s *Stream) tail(
 				// buffered agent.message.
 				continue
 			}
-			if modelRequestClosed {
+			if envelope.ModelRequestStartID != "" {
+				if _, closed := closedModelRequests[envelope.ModelRequestStartID]; closed {
+					// A later model request must not reopen frames buffered for an
+					// earlier failed or interrupted request.
+					continue
+				}
+			} else if legacyModelRequestClosed {
 				// Error and interrupt paths intentionally have no authoritative
-				// agent.message. Once their durable span end has reached this
-				// subscriber, it still closes any preview frames buffered on the
-				// separate NATS subject.
+				// agent.message. Retain the previous global fence for previews from
+				// older publishers that do not carry request correlation yet.
 				continue
 			}
 			preview := domain.PreviewFrame{
 				Kind: envelope.Kind, EventID: envelope.EventID,
-				EventType: envelope.EventType, Index: envelope.Index, Text: envelope.Text,
+				EventType:           envelope.EventType,
+				ModelRequestStartID: envelope.ModelRequestStartID,
+				Index:               envelope.Index,
+				Text:                envelope.Text,
 			}
 			select {
 			case frames <- app.Frame{Preview: &preview}:

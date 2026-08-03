@@ -155,7 +155,8 @@ func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
 	}
 	orderedPreview := domain.PreviewFrame{
 		Kind: domain.PreviewEventDelta, EventID: "sevt_live_preview_order",
-		EventType: domain.EvAgentMessage, Index: 0, Text: "first delta",
+		EventType: domain.EvAgentMessage, ModelRequestStartID: start.ID,
+		Index: 0, Text: "first delta",
 	}
 	if err := broker.PublishPreview(ctx, orderedSession.ID, orderedPreview); err != nil {
 		t.Fatal(err)
@@ -188,13 +189,42 @@ func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
 	if ordered.Event == nil || ordered.Event.ID != end.ID {
 		t.Fatalf("preview-closing frame = %+v, want end event %s", ordered, end.ID)
 	}
+	nextStart := domain.EventDraft{
+		ID: "sevt_live_next_model_start", Type: domain.EvSpanModelRequestStart,
+		Payload: map[string]any{},
+	}
+	if err := store.AppendWorkflowEvents(
+		ctx,
+		orderedSession.ID,
+		orderedAdmission.Events[0].ID,
+		[]domain.EventDraft{nextStart},
+	); err != nil {
+		t.Fatal(err)
+	}
+	ordered = receiveFrame(t, orderedFrames)
+	if ordered.Event == nil || ordered.Event.ID != nextStart.ID {
+		t.Fatalf("next model start frame = %+v, want %s", ordered, nextStart.ID)
+	}
 	if err := broker.PublishPreview(ctx, orderedSession.ID, domain.PreviewFrame{
 		Kind: domain.PreviewEventDelta, EventID: orderedPreview.EventID,
-		EventType: domain.EvAgentMessage, Index: 0, Text: "late delta",
+		EventType: domain.EvAgentMessage, ModelRequestStartID: start.ID,
+		Index: 0, Text: "late delta",
 	}); err != nil {
 		t.Fatal(err)
 	}
 	assertNoFrame(t, orderedFrames)
+	activePreview := domain.PreviewFrame{
+		Kind: domain.PreviewEventDelta, EventID: "sevt_live_next_preview",
+		EventType: domain.EvAgentMessage, ModelRequestStartID: nextStart.ID,
+		Index: 0, Text: "active delta",
+	}
+	if err := broker.PublishPreview(ctx, orderedSession.ID, activePreview); err != nil {
+		t.Fatal(err)
+	}
+	ordered = receiveFrame(t, orderedFrames)
+	if ordered.Preview == nil || ordered.Preview.Text != activePreview.Text {
+		t.Fatalf("active model preview = %+v, want %+v", ordered, activePreview)
+	}
 	cancelOrdered()
 
 	// Core NATS is at-most-once. Drop the publisher deliberately and prove the

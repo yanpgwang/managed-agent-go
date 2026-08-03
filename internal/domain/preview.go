@@ -9,11 +9,12 @@ const (
 // frames are NEVER persisted and never appear in the event history; they are
 // delivered only to stream subscribers that opted in via event_deltas[].
 type PreviewFrame struct {
-	Kind      string // PreviewEventStart | PreviewEventDelta
-	EventID   string // the id of the event being previewed (== the eventual persisted event id)
-	EventType string // event_start: the previewed event's type (e.g. "agent.message")
-	Index     int    // event_delta: content block index
-	Text      string // event_delta: incremental text
+	Kind                string // PreviewEventStart | PreviewEventDelta
+	EventID             string // the id of the event being previewed (== the eventual persisted event id)
+	EventType           string // event_start: the previewed event's type (e.g. "agent.message")
+	ModelRequestStartID string // internal correlation fence; deliberately omitted from WireJSON
+	Index               int    // event_delta: content block index
+	Text                string // event_delta: incremental text
 }
 
 func (f PreviewFrame) WireJSON() map[string]any {
