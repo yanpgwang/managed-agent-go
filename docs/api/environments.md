@@ -13,12 +13,15 @@ An environment is a named session execution configuration.
 ```json
 {
   "name": "local",
+  "description": "Default analysis environment",
+  "metadata": {"team": "data"},
   "config": {"type": "cloud"}
 }
 ```
 
 `name` is required. If `config.type` is omitted, the stored type defaults to
-`cloud`.
+`cloud`. `description` and `metadata` are optional. `scope` accepts `account` or
+`organization` for `self_hosted` environments and is rejected for `cloud`.
 
 Explicit `networking` and `packages` configuration is rejected until the
 selected sandbox adapter can enforce it. The current supported cloud default is
@@ -85,8 +88,8 @@ Deleting an environment referenced by a session returns `409`.
   "id": "env_...",
   "type": "environment",
   "name": "local",
-  "description": "",
-  "metadata": {},
+  "description": "Default analysis environment",
+  "metadata": {"team": "data"},
   "config": {
     "type": "cloud",
     "networking": {"type": "unrestricted"},
@@ -101,9 +104,9 @@ Deleting an environment referenced by a session returns `409`.
 }
 ```
 
-The default cloud response includes the official SDK's required empty
-`description` and `metadata` fields plus resolved unrestricted-network and
-empty-package defaults. Accepting and persisting optional description,
-metadata, scope, networking, and package request fields remains incomplete.
-The [core conformance matrix](core-conformance.md) tracks those gaps separately
-from route presence.
+The default cloud response includes the official SDK's resolved
+unrestricted-network and empty-package defaults. Description, metadata, and
+self-hosted scope persist across create, get, list, and archive. Configured
+networking and package requests remain unsupported until the runtime can
+enforce them. The [core conformance matrix](core-conformance.md) tracks that gap
+separately from route presence.

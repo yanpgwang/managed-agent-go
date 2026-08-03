@@ -41,10 +41,19 @@ func TestPostgresResourcesAndSessionDependencies(t *testing.T) {
 	}
 
 	environment, err := environments.Create(ctx, domain.Environment{
-		Name: "cloud", ConfigType: "cloud", Config: map[string]any{"type": "cloud"},
+		Name: "local", Description: "durable", Metadata: map[string]any{"team": "storage"},
+		Scope: "account", ConfigType: "self_hosted", Config: map[string]any{"type": "self_hosted"},
 	})
 	if err != nil {
 		t.Fatalf("create environment: %v", err)
+	}
+	persistedEnvironment, err := environments.Get(ctx, environment.ID)
+	if err != nil {
+		t.Fatalf("get environment: %v", err)
+	}
+	if persistedEnvironment.Description != "durable" ||
+		persistedEnvironment.Metadata["team"] != "storage" || persistedEnvironment.Scope != "account" {
+		t.Fatalf("persisted environment = %#v", persistedEnvironment)
 	}
 	now := clock.Now().UTC()
 	session := domain.Session{
