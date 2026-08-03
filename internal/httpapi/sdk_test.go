@@ -260,6 +260,27 @@ func TestSDK_SessionLifecycleAndSnapshot(t *testing.T) {
 		t.Fatalf("list sessions returned %d rows", len(list.Data))
 	}
 
+	archived, err := client.Beta.Sessions.Archive(
+		ctx, session.ID, anthropic.BetaSessionArchiveParams{},
+	)
+	if err != nil {
+		t.Fatalf("archive session: %v", err)
+	}
+	if archived.ArchivedAt.IsZero() || archived.ID != session.ID ||
+		archived.Agent.ID != agent.ID || archived.Title != session.Title {
+		t.Fatalf("archived session = %+v", archived)
+	}
+	archivedAgain, err := client.Beta.Sessions.Archive(
+		ctx, session.ID, anthropic.BetaSessionArchiveParams{},
+	)
+	if err != nil {
+		t.Fatalf("archive session again: %v", err)
+	}
+	if !archivedAgain.ArchivedAt.Equal(archived.ArchivedAt) {
+		t.Fatalf("idempotent archive changed archived_at: %s -> %s",
+			archived.ArchivedAt, archivedAgain.ArchivedAt)
+	}
+
 	deleted, err := client.Beta.Sessions.Delete(ctx, session.ID, anthropic.BetaSessionDeleteParams{})
 	if err != nil {
 		t.Fatalf("delete session: %v", err)
