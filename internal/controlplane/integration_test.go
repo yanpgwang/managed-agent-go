@@ -134,8 +134,10 @@ func TestPostgresHTTPResourceSessionAndEventPath(t *testing.T) {
 		t.Fatalf("decode events: %v", err)
 	}
 	if len(envelope.Data) != 2 ||
-		envelope.Data[0]["type"] != domain.EvUserMessage ||
-		envelope.Data[1]["type"] != domain.EvSessionStatusRunning {
+		envelope.Data[0]["type"] != domain.EvSessionStatusRunning ||
+		envelope.Data[0]["processed_at"] == nil ||
+		envelope.Data[1]["type"] != domain.EvUserMessage ||
+		envelope.Data[1]["processed_at"] != nil {
 		t.Fatalf("event order = %#v", envelope.Data)
 	}
 
