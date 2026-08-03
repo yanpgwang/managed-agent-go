@@ -66,6 +66,88 @@ func TestParseTools_RejectsUnknownType(t *testing.T) {
 	}
 }
 
+func TestValidateToolConfiguration_RejectsUnsupportedToolFields(t *testing.T) {
+	cases := map[string][]any{
+		"built-in toolset": {map[string]any{
+			"type": BuiltinToolsetType, "authorization_token": "secret",
+		}},
+		"built-in default_config": {map[string]any{
+			"type":           BuiltinToolsetType,
+			"default_config": map[string]any{"enabled": true, "sudo": true},
+		}},
+		"built-in config": {map[string]any{
+			"type":    BuiltinToolsetType,
+			"configs": []any{map[string]any{"name": "bash", "sudo": true}},
+		}},
+		"permission policy": {map[string]any{
+			"type": BuiltinToolsetType,
+			"configs": []any{map[string]any{
+				"name":              "bash",
+				"permission_policy": map[string]any{"type": "always_allow", "scope": "all"},
+			}},
+		}},
+		"custom tool": {map[string]any{
+			"type": "custom", "name": "weather", "handler_url": "https://example.com",
+		}},
+		"mcp toolset": {map[string]any{
+			"type": "mcp_toolset", "mcp_server_name": "github", "headers": map[string]any{},
+		}},
+		"mcp default_config": {map[string]any{
+			"type": "mcp_toolset", "mcp_server_name": "github",
+			"default_config": map[string]any{"enabled": true, "headers": map[string]any{}},
+		}},
+		"mcp config": {map[string]any{
+			"type": "mcp_toolset", "mcp_server_name": "github",
+			"configs": []any{map[string]any{"name": "list_issues", "api_key": "secret"}},
+		}},
+	}
+	for name, raw := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := validateToolWireShape(raw, nil); err == nil {
+				t.Fatalf("unsupported tool field was accepted: %#v", raw)
+			}
+		})
+	}
+}
+
+func TestStoredToolConfiguration_ToleratesHistoricalFields(t *testing.T) {
+	baseTools := []any{map[string]any{
+		"type": "mcp_toolset", "mcp_server_name": "github",
+	}}
+	baseServers := []any{map[string]any{
+		"type": "url", "name": "github", "url": "https://example.com/mcp",
+	}}
+	cases := map[string]struct {
+		tools   []any
+		servers []any
+	}{
+		"tool field": {
+			tools: []any{map[string]any{
+				"type": "mcp_toolset", "mcp_server_name": "github",
+				"permission": map[string]any{"type": "always_ask"},
+			}},
+			servers: baseServers,
+		},
+		"server field": {
+			tools: baseTools,
+			servers: []any{map[string]any{
+				"type": "url", "name": "github", "url": "https://example.com/mcp",
+				"authorization_token": "historical-value",
+			}},
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := ValidateStoredToolConfiguration(tc.tools, tc.servers); err != nil {
+				t.Fatalf("historical snapshot was rejected: %v", err)
+			}
+			if err := ValidateToolConfiguration(tc.tools, tc.servers); err == nil {
+				t.Fatal("new admission accepted a historical field")
+			}
+		})
+	}
+}
+
 func TestParseTools_Empty(t *testing.T) {
 	ts, err := ParseTools(nil)
 	if err != nil || ts.Builtin != nil || len(ts.Custom) != 0 {
@@ -97,10 +179,10 @@ func TestParseMCPServers_ValidatesIdentityAndURL(t *testing.T) {
 	}
 }
 
-func TestParseMCPServers_RejectsUnsupportedFields(t *testing.T) {
+func TestValidateToolConfiguration_RejectsUnsupportedMCPServerFields(t *testing.T) {
 	for _, field := range []string{"authorization_token", "headers", "tool_configuration"} {
 		t.Run(field, func(t *testing.T) {
-			_, err := ParseMCPServers([]any{map[string]any{
+			err := validateToolWireShape(nil, []any{map[string]any{
 				"type": "url", "name": "github", "url": "https://example.com/mcp",
 				field: "secret",
 			}})

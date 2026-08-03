@@ -457,7 +457,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if err != nil {
 		return PrepareTurnResult{FatalError: "invalid toolset: " + err.Error()}, nil
 	}
-	if err := domain.ValidateToolConfiguration(
+	if err := domain.ValidateStoredToolConfiguration(
 		session.AgentSnapshot.Tools,
 		session.AgentSnapshot.MCPServers,
 	); err != nil {
