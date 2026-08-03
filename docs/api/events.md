@@ -116,13 +116,15 @@ For reconnect without gaps:
 An active stream receives `session.deleted` and then EOF when its session is
 deleted.
 
-## Live message previews
+## Live event previews
 
-Opt in to ephemeral assistant text:
+Opt in to ephemeral assistant text and privacy-safe thinking starts:
 
 ```http
 GET /v1/sessions/{id}/events/stream?event_deltas[]=agent.message
 ```
+
+Repeat `event_deltas[]` with `agent.thinking` to receive thinking starts too.
 
 The stream may first emit:
 
@@ -135,6 +137,9 @@ data: {"type":"event_delta","event_id":"sevt_...","delta":{"type":"content_delta
 ```
 
 The preview and eventual persisted `agent.message` share the same event ID.
+An `agent.thinking` preview emits only `event_start`; it never emits reasoning
+content or an `event_delta`. Its ID is reused by the privacy-preserving
+persisted `agent.thinking` event.
 Preview frames:
 
 - are delivered only to opted-in subscribers;
@@ -161,9 +166,6 @@ interrupted. If interruption happens before any evaluation start can be
 published, the documented `outcome_evaluation_start_id` is the empty string.
 Completed `needs_revision` evaluation pairs remain in history and the
 interrupt end uses the next zero-based iteration.
-
-`agent.thinking` is accepted as an opt-in value but no thinking previews are
-currently emitted.
 
 ## Backpressure
 

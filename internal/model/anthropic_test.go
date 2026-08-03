@@ -140,12 +140,18 @@ func TestDecodeMessageStream_PreservesThinkingContinuationBlocks(t *testing.T) {
 			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{}}\n\n" +
 			"data: {\"type\":\"message_stop\"}\n\n",
 	)
-	response, err := decodeMessageStream(stream, nil)
+	thinkingStarts := 0
+	response, err := decodeMessageStreamWithCallbacks(stream, StreamCallbacks{
+		OnThinkingStart: func() { thinkingStarts++ },
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(response.Content) != 2 {
 		t.Fatalf("content blocks = %d, want 2", len(response.Content))
+	}
+	if thinkingStarts != 1 {
+		t.Fatalf("thinking starts = %d, want one privacy-safe signal", thinkingStarts)
 	}
 	var thinking map[string]any
 	if err := json.Unmarshal(response.Content[0].Raw, &thinking); err != nil {

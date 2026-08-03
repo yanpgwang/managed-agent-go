@@ -121,7 +121,8 @@ func TestCallModelAllocatesPublicThinkingEventWithoutExposingContent(t *testing.
 		},
 		StopReason: "end_turn",
 	}}
-	activities := NewActivities(client, nil, nil, nil, domain.NewSeqIDGen())
+	publisher := &previewRecorder{}
+	activities := NewActivities(client, nil, nil, nil, domain.NewSeqIDGen(), publisher)
 	result, err := activities.CallModel(context.Background(), CallModelInput{
 		SessionID: "sesn_thinking", Request: model.Request{Model: "test-model"},
 	})
@@ -133,6 +134,23 @@ func TestCallModelAllocatesPublicThinkingEventWithoutExposingContent(t *testing.
 	}
 	if result.MessageEventID == "" {
 		t.Fatal("text response has no public message event id")
+	}
+	frames := publisher.snapshot()
+	var thinkingStarts int
+	for _, frame := range frames {
+		if frame.frame.EventType != domain.EvAgentThinking {
+			continue
+		}
+		thinkingStarts++
+		if frame.frame.Kind != domain.PreviewEventStart ||
+			frame.frame.EventID != result.ThinkingEventID ||
+			frame.frame.ModelRequestStartID != result.ModelRequestStartID ||
+			frame.frame.Text != "" {
+			t.Fatalf("thinking preview = %#v, result = %#v", frame.frame, result)
+		}
+	}
+	if thinkingStarts != 1 {
+		t.Fatalf("thinking preview starts = %d, want 1", thinkingStarts)
 	}
 }
 

@@ -36,7 +36,7 @@ separate evidence.
 | Session | Delete | `DELETE /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue deletion-fence and restart verification. |
 | Session event | Send | `POST /v1/sessions/{session_id}/events` | Yes | Yes | Yes | Complete the remaining cross-turn legality checks. |
 | Session event | List | `GET /v1/sessions/{session_id}/events` | Yes | Yes | Yes | Verify ordering, timestamp-boundary, and restart behavior. |
-| Session event | Stream | `GET /v1/sessions/{session_id}/events/stream` | Yes | Yes | Yes | Verify reconnection, backpressure, restart, and preview-finish behavior. |
+| Session event | Stream | `GET /v1/sessions/{session_id}/events/stream` | Yes | Yes | Yes | Verify reconnection, backpressure, and restart behavior. |
 
 ## Evidence map
 

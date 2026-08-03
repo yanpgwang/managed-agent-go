@@ -274,7 +274,22 @@ func (a *Anthropic) CreateMessage(ctx context.Context, req Request) (Response, e
 // assembled from content_block_start + accumulated input_json_delta and parsed
 // at content_block_stop. This is enough for the tool loop (which needs the
 // complete tool call), but partial_json is not surfaced incrementally.
-func (a *Anthropic) CreateMessageStream(ctx context.Context, req Request, onDelta func(index int, text string)) (Response, error) {
+func (a *Anthropic) CreateMessageStream(
+	ctx context.Context,
+	req Request,
+	onDelta func(index int, text string),
+) (Response, error) {
+	return a.CreateMessageStreamWithCallbacks(ctx, req, StreamCallbacks{OnTextDelta: onDelta})
+}
+
+// CreateMessageStreamWithCallbacks adds privacy-safe lifecycle signals to the
+// basic streaming client. In particular, thinking is start-only: no reasoning
+// bytes cross this callback boundary.
+func (a *Anthropic) CreateMessageStreamWithCallbacks(
+	ctx context.Context,
+	req Request,
+	callbacks StreamCallbacks,
+) (Response, error) {
 	// Server-tool responses contain provider-private blocks and citation
 	// structures whose streaming deltas evolve independently of the client-tool
 	// wire shape. Until the streaming assembler can losslessly retain every
@@ -286,10 +301,19 @@ func (a *Anthropic) CreateMessageStream(ctx context.Context, req Request, onDelt
 		if err != nil {
 			return Response{}, err
 		}
-		if onDelta != nil {
+		thinkingStarted := false
+		for _, block := range resp.Content {
+			if !thinkingStarted && (block.Type == "thinking" || block.Type == "redacted_thinking") {
+				if callbacks.OnThinkingStart != nil {
+					callbacks.OnThinkingStart()
+				}
+				thinkingStarted = true
+			}
+		}
+		if callbacks.OnTextDelta != nil {
 			for index, block := range resp.Content {
 				if block.Type == "text" && block.Text != "" {
-					onDelta(index, block.Text)
+					callbacks.OnTextDelta(index, block.Text)
 				}
 			}
 		}
@@ -315,7 +339,7 @@ func (a *Anthropic) CreateMessageStream(ctx context.Context, req Request, onDelt
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 		return Response{}, classifyHTTPError(resp.StatusCode, raw, resp.Header)
 	}
-	return decodeMessageStream(resp.Body, onDelta)
+	return decodeMessageStreamWithCallbacks(resp.Body, callbacks)
 }
 
 // streamBlock accumulates one content block as its deltas arrive over the SSE
@@ -365,6 +389,10 @@ type sseEvent struct {
 // decodeMessageStream reads an Anthropic Messages-API SSE body and assembles the
 // final Response, invoking onDelta for each text_delta.
 func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (Response, error) {
+	return decodeMessageStreamWithCallbacks(body, StreamCallbacks{OnTextDelta: onDelta})
+}
+
+func decodeMessageStreamWithCallbacks(body io.Reader, callbacks StreamCallbacks) (Response, error) {
 	sc := bufio.NewScanner(body)
 	// Allow long data: lines (a single tool_use input_json_delta or a large text
 	// chunk can exceed the default 64 KiB token size).
@@ -374,6 +402,7 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 	var order []int
 	stopReason := ""
 	var usage wireUsage
+	thinkingStarted := false
 
 	finalize := func(idx int) {
 		b := blocks[idx]
@@ -426,10 +455,18 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 				b.toolInput = ev.ContentBlock.Input
 			}
 			if b.typ == "thinking" {
+				if !thinkingStarted && callbacks.OnThinkingStart != nil {
+					callbacks.OnThinkingStart()
+				}
+				thinkingStarted = true
 				b.thinking.WriteString(ev.ContentBlock.Thinking)
 				b.signature.WriteString(ev.ContentBlock.Signature)
 			}
 			if b.typ == "redacted_thinking" {
+				if !thinkingStarted && callbacks.OnThinkingStart != nil {
+					callbacks.OnThinkingStart()
+				}
+				thinkingStarted = true
 				b.data = ev.ContentBlock.Data
 			}
 			if _, seen := blocks[ev.Index]; !seen {
@@ -446,8 +483,8 @@ func decodeMessageStream(body io.Reader, onDelta func(index int, text string)) (
 			switch ev.Delta.Type {
 			case "text_delta":
 				b.text.WriteString(ev.Delta.Text)
-				if onDelta != nil && ev.Delta.Text != "" {
-					onDelta(ev.Index, ev.Delta.Text)
+				if callbacks.OnTextDelta != nil && ev.Delta.Text != "" {
+					callbacks.OnTextDelta(ev.Index, ev.Delta.Text)
 				}
 			case "input_json_delta":
 				b.partialJSON.WriteString(ev.Delta.PartialJSON)

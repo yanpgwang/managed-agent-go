@@ -35,6 +35,25 @@ type Response struct {
 	Usage      domain.TokenUsage
 }
 
+// StreamCallbacks exposes only public, privacy-safe progress signals. Thinking
+// content is intentionally absent: callers may announce that thinking began,
+// but must never receive provider reasoning through this channel.
+type StreamCallbacks struct {
+	OnTextDelta     func(index int, text string)
+	OnThinkingStart func()
+}
+
+// RichStreamingClient is an optional extension implemented by transports that
+// can distinguish privacy-safe stream lifecycle signals. Client remains the
+// compatibility floor for simple providers and existing test doubles.
+type RichStreamingClient interface {
+	CreateMessageStreamWithCallbacks(
+		ctx context.Context,
+		req Request,
+		callbacks StreamCallbacks,
+	) (Response, error)
+}
+
 type Client interface {
 	CreateMessage(ctx context.Context, req Request) (Response, error)
 
