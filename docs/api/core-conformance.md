@@ -36,7 +36,7 @@ separate evidence.
 | Session | Delete | `DELETE /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue deletion-fence and restart verification. |
 | Session event | Send | `POST /v1/sessions/{session_id}/events` | Yes | Yes | Yes | Complete the remaining cross-turn legality checks. |
 | Session event | List | `GET /v1/sessions/{session_id}/events` | Yes | Yes | Yes | None identified for processed-time filters and deterministic forward pagination. |
-| Session event | Stream | `GET /v1/sessions/{session_id}/events/stream` | Yes | Yes | Yes | Verify reconnection, backpressure, and restart behavior. |
+| Session event | Stream | `GET /v1/sessions/{session_id}/events/stream` | Yes | Yes | Yes | None identified for ordering, reconnection, bounded backpressure, or API-process replacement. |
 
 ## Evidence map
 
@@ -52,6 +52,8 @@ separate evidence.
   `internal/controlplane/integration_test.go`,
   `internal/controlplane/session_update_test.go`, and the replay/runtime suites
   under `internal/temporal`.
+- PostgreSQL/NATS stream recovery and backpressure tests:
+  `internal/live/integration_test.go` and `internal/live/recovery_test.go`.
 - OpenAPI lifecycle, Session Event union, and reference invariants:
   `internal/httpapi/openapi_test.go`.
 
