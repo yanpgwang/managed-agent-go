@@ -32,7 +32,12 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Project',
-      items: ['compatibility', 'roadmap', 'provenance'],
+      items: [
+        'compatibility',
+        'compatibility/core-v1',
+        'roadmap',
+        'provenance',
+      ],
     },
   ],
 };

@@ -25,6 +25,10 @@ The official Anthropic Go SDK is used as a black-box client for core lifecycle
 tests. That verifies useful interoperability, not universal drop-in
 compatibility.
 
+The published [core compatibility statement v1.0.0](compatibility/core-v1.md)
+freezes the first scoped claim against the `managed-agents-2026-04-01` beta and
+Anthropic Go SDK `v1.61.0`. This page remains the living coverage view.
+
 ## Coverage summary
 
 | Area | Status | Current scope and limitations |
@@ -32,7 +36,7 @@ compatibility.
 | Agent lifecycle | Supported | Create, get, list, version, update with optimistic concurrency, and archive. List supports the documented archive/time filters and forward cursor pagination over the latest version of each Agent; version history supports its documented forward pagination. |
 | Model configuration | Supported | Model ID, effort (`low` through `max`), and speed (`standard`/`fast`) resolve every working and grader request. The semantic defaults (`high`/`standard`) are omitted on the Messages wire for compatibility; non-default effort and `fast` are forwarded and require endpoint support. Same-model Agent updates preserve omitted effort; changing model resets omitted fields to defaults. |
 | Agent configuration | Limited | System, tools, MCP references, metadata, and model configuration execute. Admission rejects undocumented fields, malformed optional values, and custom tools that omit their required name, description, or object input schema; tool collections, custom-tool fields, and MCP tool-config names enforce the documented bounds. Runtime parsing remains tolerant of historical stored fields so upgrades do not break existing Sessions or replay. Custom-tool `input_schema` remains an open JSON Schema beyond its required object wrapper. Skills and multi-agent orchestration are not yet executed. |
-| Environment lifecycle | Supported | Create, get, list, update, archive, and delete support `cloud` and `self_hosted`; mutable resource fields, self-hosted scope, Environment type, default response shapes, configured package lists, limited networking, and delete responses round-trip through the official SDK. Metadata update is a per-key patch, cloud and limited-network config updates preserve omitted nested fields, and archived Environments are read-only. Cloud sandbox tools execute after configured `apt`, `cargo`, `gem`, `go`, `npm`, or `pip` packages install on an isolated backend. OpenSandbox enforces deny-by-default host allowlists, MCP endpoint expansion, temporary setup registries, and final package-registry access. Incapable deployments return `422`; the local backend also rejects non-empty package configuration. Self-hosted sandbox tools park for `user.tool_result` from the client. |
+| Environment lifecycle | Supported | Create, get, list, update, archive, and delete support `cloud` and `self_hosted`; mutable resource fields, self-hosted scope, Environment type, default response shapes, configured package lists, limited networking, and delete responses round-trip through the official SDK. Metadata update is a per-key patch, cloud and limited-network config updates preserve omitted nested fields, and archived Environments are read-only. Cloud sandbox tools execute after configured `apt`, `cargo`, `gem`, `go`, `npm`, or `pip` packages install on an isolated backend. Package setup is once per Session sandbox rather than cached across Sessions sharing an Environment. OpenSandbox enforces deny-by-default host allowlists, MCP endpoint expansion, temporary setup registries, and final package-registry access. Incapable deployments return `422`; the local backend also rejects non-empty package configuration. Self-hosted sandbox tools park for `user.tool_result` from the client. |
 | Session lifecycle | Supported | Create from latest or pinned agent versions, apply session-local overrides, preserve an immutable resolved snapshot, get, list, archive, and delete. Update accepts `title`, a per-key `metadata` patch, and a session-local `agent.tools`/`agent.mcp_servers` full replacement that requires an idle session and applies from the next turn; update-time `vault_ids` is rejected, matching upstream. Usage, timing stats, and outcome evaluations are live projections rather than placeholders. Unsupported resources and create-time vaults are rejected, so their required response arrays truthfully remain empty; create-time vault rejection is a Mango limitation because upstream accepts it. |
 | Session listing | Limited | Bidirectional cursor pagination and core agent, status, archive, and time filters work. Deployment and memory matching are not implemented. |
 | Event send and list | Limited | All core single-agent input event types are validated and durably processed: `user.message`, `user.interrupt`, `user.tool_confirmation`, `user.custom_tool_result`, self-hosted `user.tool_result`, `user.define_outcome`, and companion `system.message`. Their nested content, source, search-result, and rubric variants reject malformed or undocumented fields before admission. List filters, ordering, and opaque forward cursors use `processed_at`, with deterministic null and timestamp-tie handling. Server output includes privacy-preserving `agent.thinking`, messages, the documented built-in/MCP tool variants, Session status/error events, and correlated model/outcome spans. Tool-use events report `evaluated_permission: allow` when execution proceeds and `ask` when the Session parks for confirmation. Targeted multi-agent interrupts remain unsupported. |
@@ -74,7 +78,9 @@ The project does **not** promise:
 
 See the [API reference](api/overview.md) for repository behavior and
 [compatibility provenance](provenance.md) for the official public sources used
-when shaping this integration surface.
+when shaping this integration surface. The
+[versioned core statement](compatibility/core-v1.md) separates a frozen claim
+from this continuously updated matrix.
 
 ## How coverage is verified
 

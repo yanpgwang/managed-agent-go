@@ -32,8 +32,9 @@ func textResult(s string, isErr bool) Result {
 	}
 }
 
-// notImplemented is the executor used for tools that are declared but not yet
-// backed by an implementation. It always reports an error to the model.
+// notImplemented is the defensive local fallback for tools whose execution is
+// owned by another integration boundary. It always reports an error to the
+// model if routing reaches this registry unexpectedly.
 func notImplemented(name string) Executor {
 	return func(_ context.Context, _ sandbox.Sandbox, _ map[string]any) Result {
 		return textResult(name+": not implemented", true)
@@ -41,8 +42,9 @@ func notImplemented(name string) Executor {
 }
 
 // Registry returns the tool name to executor mapping. bash/read/write/edit and
-// glob/grep are implemented; web_fetch/web_search are present but return
-// notImplemented (they require network egress, wired in a later slice).
+// glob/grep execute locally. web_fetch/web_search normally route through the
+// provider-native server-tool path; their entries here fail closed if that
+// routing invariant is violated.
 func Registry() map[string]Executor {
 	return map[string]Executor{
 		"bash":       execBash,
@@ -70,9 +72,10 @@ func Names() []string {
 // Schema returns the model-facing JSON input_schema for the named tool, or nil
 // if the tool is unknown. Shapes follow Anthropic's public tool conventions.
 //
-// web_fetch/web_search are declared to the model even though their executors
-// return not-implemented: a tool must be offered with a legal JSON Schema
-// object, since the real Anthropic API rejects "input_schema":null (400). They
+// web_fetch/web_search are declared to the model through their native routing
+// path, but still need legal local schema objects for shared configuration and
+// fallback validation. The real Anthropic API rejects "input_schema":null
+// (400). They
 // therefore get a minimal permissive {"type":"object"} schema. Only a genuinely
 // unknown tool name (not one of the eight built-ins) returns nil.
 func Schema(name string) map[string]any {

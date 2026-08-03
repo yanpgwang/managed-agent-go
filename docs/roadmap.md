@@ -29,13 +29,11 @@ Implemented in the current M1 slice:
 - capability-gated Environment package setup and deny-by-default limited
   networking through OpenSandbox, with unsupported adapters failing admission.
 
-Remaining M1 work is tracked by evidence rather than route count:
-
-- complete the core request validation, defaults, null, error, OpenAPI, and
-  official SDK coverage sweep;
-- close the documented event, retry, terminal-state, heartbeat, SSE,
-  interruption, and restart invariants;
-- publish a versioned core compatibility statement after those gates pass.
+The M1 core conformance gate is closed by
+[core compatibility statement v1.0.0](compatibility/core-v1.md). The statement
+pins its upstream beta and SDK evidence, included operations, deployment
+profile, and known limitations. Later capability work does not silently expand
+that frozen claim.
 
 The operation-level baseline lives in the [core API conformance
 matrix](api/core-conformance.md). Files-backed outcomes and other broader
@@ -54,7 +52,7 @@ unauthenticated remote MCP tool discovery and execution. Remaining work is:
 - deployment-managed MCP authentication and private-network connectivity;
 - explicit per-endpoint server-tool capability profiles;
 - optional managed Web Search/Fetch executors that can honor `always_ask`;
-- additional preview event types;
+- preview expansion beyond the core message and thinking types;
 - promotion of preview sandbox adapters after recorded live conformance.
 
 ## M2: multi-agent

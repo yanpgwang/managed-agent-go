@@ -295,9 +295,9 @@ func TestAgentCore_NonUserTriggerIsNoop(t *testing.T) {
 // TestEnabledBuiltinSchemas_AllOfferedSchemasAreObjects guards C1: every
 // built-in schema offered to the model must be a non-nil JSON Schema object.
 // With the default toolset all eight built-ins are enabled, including
-// glob/grep/web_fetch/web_search whose executors are not implemented; the real
-// Anthropic API rejects a tool declared with "input_schema":null (400), so the
-// declared schema must still be a legal object even when the executor is a stub.
+// glob/grep and the provider-native web_fetch/web_search path. The real
+// Anthropic API rejects a tool declared with "input_schema":null (400), so
+// every configured built-in still needs a legal schema object.
 func TestEnabledBuiltinSchemas_AllOfferedSchemasAreObjects(t *testing.T) {
 	// Default toolset: {"type":"agent_toolset_20260401"} with no configs →
 	// DefaultEnabled=true → all eight built-ins offered.

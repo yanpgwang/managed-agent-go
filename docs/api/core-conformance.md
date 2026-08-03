@@ -31,9 +31,9 @@ separate evidence.
 | Session | Create | `POST /v1/sessions` | Yes | Yes | Yes | Core field/default/null behavior is covered; unsupported resources and vaults remain explicit. |
 | Session | List | `GET /v1/sessions` | Yes | Yes | Yes | None identified for the in-scope filters and bidirectional cursors. |
 | Session | Get | `GET /v1/sessions/{session_id}` | Yes | Yes | Yes | None identified for the in-scope resource projection. |
-| Session | Update | `POST /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue race and next-turn visibility verification. |
+| Session | Update | `POST /v1/sessions/{session_id}` | Yes | Yes | Yes | None identified for the idle precondition, atomic update event, or next-turn replacement visibility. |
 | Session | Archive | `POST /v1/sessions/{session_id}/archive` | Yes | Yes | Yes | None identified for the core idempotent archive path. |
-| Session | Delete | `DELETE /v1/sessions/{session_id}` | Yes | Yes | Yes | Continue deletion-fence and restart verification. |
+| Session | Delete | `DELETE /v1/sessions/{session_id}` | Yes | Yes | Yes | None identified for the deletion fence, sandbox teardown, stream close, or restart recovery. |
 | Session event | Send | `POST /v1/sessions/{session_id}/events` | Yes | Yes | Yes | None identified for core cross-turn projection or tool-result legality. |
 | Session event | List | `GET /v1/sessions/{session_id}/events` | Yes | Yes | Yes | None identified for processed-time filters and deterministic forward pagination. |
 | Session event | Stream | `GET /v1/sessions/{session_id}/events/stream` | Yes | Yes | Yes | None identified for ordering, reconnection, bounded backpressure, or API-process replacement. |
@@ -62,6 +62,9 @@ The user-facing support claim remains the
 [Claude API coverage](../compatibility.md) page. This matrix is the narrower
 engineering ledger used to identify missing evidence without treating a
 registered route as compatibility.
+
+The frozen claim based on this evidence is
+[core compatibility statement v1.0.0](../compatibility/core-v1.md).
 
 ## Normative references
 

@@ -26,6 +26,8 @@ do not treat the default local sandbox as a security boundary.
   completes a first Session turn.
 - [Claude API coverage](compatibility.md) is the exact supported/unsupported
   behavior matrix.
+- [Core compatibility statement v1.0.0](compatibility/core-v1.md) is the frozen
+  claim for the first core single-agent conformance gate.
 - [Architecture overview](architecture.md) explains why PostgreSQL owns public
   state, Temporal owns in-flight execution, and NATS carries only ephemeral
   delivery.
@@ -61,12 +63,12 @@ waits; outcome evaluation; eight built-ins; provider-native Web Search/Fetch;
 unauthenticated remote MCP tools; token-aware provider context; local and Docker
 sandboxes; and opt-in assistant text previews.
 
-The remaining M1 closure work is outcome evaluation heartbeat events,
-Files-backed rubrics, thinking previews, and exact endpoint/model context
-profiles. Hosted black-box comparison remains optional validation when a
-Managed Agents-capable credential is available. Deployment-managed MCP
-authentication, skills/memory/vaults, multi-agent orchestration, schedules, and
-webhooks remain future work.
+The first core single-agent conformance gate is closed. Its exact claim and
+known differences are published in the
+[versioned statement](compatibility/core-v1.md). Files-backed rubrics, exact
+endpoint/model context profiles, hosted differential testing,
+deployment-managed MCP authentication, skills/memory/vaults, multi-agent
+orchestration, schedules, and webhooks remain outside that claim.
 
 The runtime is the product; Claude API compatibility is an integration surface.
 Public behavior is derived from official documentation and tested through raw
