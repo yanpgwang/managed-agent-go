@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -1487,33 +1488,173 @@ func sandboxSpecForSession(session domain.Session) (sandbox.Spec, error) {
 		Timeout: sandboxTurnTimeout,
 		Network: defaultCloudSandboxNetwork,
 	}
-	rawPackages, present := session.EnvironmentConfig["packages"]
+	if rawPackages, present := session.EnvironmentConfig["packages"]; present {
+		packages, ok := rawPackages.(map[string]any)
+		if !ok || packages == nil {
+			return sandbox.Spec{}, domain.Validation("session environment packages must be an object")
+		}
+		managers := []struct {
+			name        string
+			destination *[]string
+		}{
+			{name: "apt", destination: &spec.Packages.Apt},
+			{name: "cargo", destination: &spec.Packages.Cargo},
+			{name: "gem", destination: &spec.Packages.Gem},
+			{name: "go", destination: &spec.Packages.Go},
+			{name: "npm", destination: &spec.Packages.NPM},
+			{name: "pip", destination: &spec.Packages.Pip},
+		}
+		for _, manager := range managers {
+			values, err := environmentPackageList(packages[manager.name], manager.name)
+			if err != nil {
+				return sandbox.Spec{}, err
+			}
+			*manager.destination = values
+		}
+	}
+
+	rawNetworking, present := session.EnvironmentConfig["networking"]
 	if !present {
 		return spec, nil
 	}
-	packages, ok := rawPackages.(map[string]any)
-	if !ok || packages == nil {
-		return sandbox.Spec{}, domain.Validation("session environment packages must be an object")
+	networking, ok := rawNetworking.(map[string]any)
+	if !ok || networking == nil {
+		return sandbox.Spec{}, domain.Validation("session environment networking must be an object")
 	}
-	managers := []struct {
-		name        string
-		destination *[]string
-	}{
-		{name: "apt", destination: &spec.Packages.Apt},
-		{name: "cargo", destination: &spec.Packages.Cargo},
-		{name: "gem", destination: &spec.Packages.Gem},
-		{name: "go", destination: &spec.Packages.Go},
-		{name: "npm", destination: &spec.Packages.NPM},
-		{name: "pip", destination: &spec.Packages.Pip},
+	networkType, ok := networking["type"].(string)
+	if !ok {
+		return sandbox.Spec{}, domain.Validation(
+			"session environment networking.type must be unrestricted or limited",
+		)
 	}
-	for _, manager := range managers {
-		values, err := environmentPackageList(packages[manager.name], manager.name)
-		if err != nil {
-			return sandbox.Spec{}, err
+	if networkType == "unrestricted" {
+		return spec, nil
+	}
+	if networkType != "limited" {
+		return sandbox.Spec{}, domain.Validation(
+			"session environment networking.type must be unrestricted or limited",
+		)
+	}
+
+	allowedHosts, err := environmentNetworkHostList(networking["allowed_hosts"])
+	if err != nil {
+		return sandbox.Spec{}, err
+	}
+	allowMCPServers, err := environmentNetworkBool(
+		networking["allow_mcp_servers"],
+		"allow_mcp_servers",
+	)
+	if err != nil {
+		return sandbox.Spec{}, err
+	}
+	allowPackageManagers, err := environmentNetworkBool(
+		networking["allow_package_managers"],
+		"allow_package_managers",
+	)
+	if err != nil {
+		return sandbox.Spec{}, err
+	}
+	if allowMCPServers {
+		servers, parseErr := domain.ParseMCPServers(session.AgentSnapshot.MCPServers)
+		if parseErr != nil {
+			return sandbox.Spec{}, domain.Validation(
+				"session agent MCP servers cannot be added to the network policy: " + parseErr.Error(),
+			)
 		}
-		*manager.destination = values
+		for _, server := range servers {
+			parsed, parseErr := url.Parse(server.URL)
+			if parseErr != nil || parsed.Hostname() == "" {
+				return sandbox.Spec{}, domain.Validation(
+					"session agent MCP server has an invalid URL",
+				)
+			}
+			allowedHosts = append(allowedHosts, parsed.Hostname())
+		}
+	}
+	if allowPackageManagers {
+		allowedHosts = append(allowedHosts, publicPackageRegistryHosts...)
+	}
+	spec.Network = "limited"
+	spec.NetworkAllowedHosts = normalizedNetworkHosts(allowedHosts)
+	if !spec.Packages.Empty() {
+		setupHosts := append([]string(nil), spec.NetworkAllowedHosts...)
+		setupHosts = append(setupHosts, publicPackageRegistryHosts...)
+		spec.SetupNetworkAllowedHosts = normalizedNetworkHosts(setupHosts)
 	}
 	return spec, nil
+}
+
+var publicPackageRegistryHosts = []string{
+	"api.rubygems.org",
+	"archive.ubuntu.com",
+	"crates.io",
+	"deb.debian.org",
+	"files.pythonhosted.org",
+	"index.crates.io",
+	"index.rubygems.org",
+	"ports.ubuntu.com",
+	"proxy.golang.org",
+	"pypi.org",
+	"registry.npmjs.org",
+	"rubygems.org",
+	"security.debian.org",
+	"security.ubuntu.com",
+	"snapshot.debian.org",
+	"static.crates.io",
+	"storage.googleapis.com",
+	"sum.golang.org",
+}
+
+func environmentNetworkHostList(raw any) ([]string, error) {
+	if raw == nil {
+		return nil, nil
+	}
+	switch values := raw.(type) {
+	case []string:
+		return append([]string(nil), values...), nil
+	case []any:
+		result := make([]string, len(values))
+		for index, value := range values {
+			text, ok := value.(string)
+			if !ok {
+				return nil, domain.Validation(
+					"session environment networking.allowed_hosts must contain strings",
+				)
+			}
+			result[index] = text
+		}
+		return result, nil
+	default:
+		return nil, domain.Validation(
+			"session environment networking.allowed_hosts must be an array",
+		)
+	}
+}
+
+func environmentNetworkBool(raw any, field string) (bool, error) {
+	if raw == nil {
+		return false, nil
+	}
+	value, ok := raw.(bool)
+	if !ok {
+		return false, domain.Validation(
+			"session environment networking." + field + " must be a boolean",
+		)
+	}
+	return value, nil
+}
+
+func normalizedNetworkHosts(hosts []string) []string {
+	unique := make(map[string]struct{}, len(hosts))
+	for _, host := range hosts {
+		unique[strings.ToLower(host)] = struct{}{}
+	}
+	normalized := make([]string, 0, len(unique))
+	for host := range unique {
+		normalized = append(normalized, host)
+	}
+	sort.Strings(normalized)
+	return normalized
 }
 
 func environmentPackageList(raw any, manager string) ([]string, error) {

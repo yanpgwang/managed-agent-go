@@ -25,14 +25,14 @@ Implemented in the current M1 slice:
 - lossless provider transcript plus conservative token-aware request projection,
   extractive compaction, and rich image/document/large-result handling;
 - built-in sandbox tools, provider-native Web Search/Fetch, remote MCP basics,
-  custom tools, and confirmation.
+  custom tools, and confirmation;
+- capability-gated Environment package setup and deny-by-default limited
+  networking through OpenSandbox, with unsupported adapters failing admission.
 
 Remaining M1 work is tracked by evidence rather than route count:
 
 - complete the core request validation, defaults, null, error, OpenAPI, and
   official SDK coverage sweep;
-- keep Environment networking requests gated on runtime enforcement
-  across every sandbox adapter;
 - close the documented event, retry, terminal-state, heartbeat, SSE,
   interruption, and restart invariants;
 - publish a versioned core compatibility statement after those gates pass.

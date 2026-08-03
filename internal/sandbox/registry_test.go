@@ -9,13 +9,17 @@ import (
 )
 
 type registryTestProvider struct {
-	name         string
-	packageSetup bool
+	name           string
+	packageSetup   bool
+	limitedNetwork bool
 }
 
 func (p *registryTestProvider) Name() string { return p.name }
 func (p *registryTestProvider) SupportsPackageSetup() bool {
 	return p.packageSetup
+}
+func (p *registryTestProvider) SupportsLimitedNetwork() bool {
+	return p.limitedNetwork
 }
 
 func (*registryTestProvider) Create(
@@ -185,5 +189,22 @@ func TestProviderRegistryRejectsCapabilityDrift(t *testing.T) {
 	if _, err := registry.Open("isolated"); err == nil ||
 		!strings.Contains(err.Error(), "registered as true but reports false") {
 		t.Fatalf("capability drift error = %v", err)
+	}
+}
+
+func TestProviderRegistryRejectsLimitedNetworkCapabilityDrift(t *testing.T) {
+	registry, err := NewProviderRegistry(ProviderRegistration{
+		Name:         "isolated",
+		Capabilities: ProviderCapabilities{LimitedNetwork: true},
+		Factory: func() (Provider, error) {
+			return &registryTestProvider{name: "isolated"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Open("isolated"); err == nil ||
+		!strings.Contains(err.Error(), "limited network capability is registered as true but reports false") {
+		t.Fatalf("limited network capability drift error = %v", err)
 	}
 }

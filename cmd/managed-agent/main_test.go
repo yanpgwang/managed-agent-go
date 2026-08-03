@@ -81,7 +81,7 @@ func TestSandboxProviderRegistry_IsLazy(t *testing.T) {
 	}
 }
 
-func TestSandboxProviderRegistry_AdvertisesPackageSetup(t *testing.T) {
+func TestSandboxProviderRegistry_AdvertisesRuntimeCapabilities(t *testing.T) {
 	registry, err := sandboxProviderRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -94,6 +94,15 @@ func TestSandboxProviderRegistry_AdvertisesPackageSetup(t *testing.T) {
 		want := name != sandbox.LocalProviderName
 		if capabilities.PackageSetup != want {
 			t.Errorf("%s PackageSetup = %v, want %v", name, capabilities.PackageSetup, want)
+		}
+		wantLimitedNetwork := name == sandbox.OpenSandboxProviderName
+		if capabilities.LimitedNetwork != wantLimitedNetwork {
+			t.Errorf(
+				"%s LimitedNetwork = %v, want %v",
+				name,
+				capabilities.LimitedNetwork,
+				wantLimitedNetwork,
+			)
 		}
 	}
 }

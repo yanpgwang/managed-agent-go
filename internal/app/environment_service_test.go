@@ -12,7 +12,29 @@ func newEnvService(t *testing.T) *EnvironmentService {
 	t.Helper()
 	return NewEnvironmentService(newMemoryEnvironmentRepository(),
 		domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1, 0).UTC()},
-		EnvironmentCapabilities{PackageSetup: true})
+		EnvironmentCapabilities{PackageSetup: true, LimitedNetwork: true})
+}
+
+func TestEnvironmentService_RejectsLimitedNetworkingWithoutRuntimeCapability(t *testing.T) {
+	svc := NewEnvironmentService(
+		newMemoryEnvironmentRepository(),
+		domain.NewSeqIDGen(),
+		domain.FixedClock{T: time.Unix(1, 0).UTC()},
+		EnvironmentCapabilities{PackageSetup: true},
+	)
+	_, err := svc.Create(context.Background(), domain.Environment{
+		Name: "limited",
+		Config: map[string]any{
+			"type": "cloud", "networking": map[string]any{"type": "limited"},
+		},
+	})
+	if err == nil {
+		t.Fatal("limited networking was accepted without runtime capability")
+	}
+	domainError, ok := err.(*domain.DomainError)
+	if !ok || domainError.Kind != domain.KindUnsupported {
+		t.Fatalf("limited networking error = %v, want unsupported", err)
+	}
 }
 
 func TestEnvironmentService_RejectsPackagesWithoutRuntimeCapability(t *testing.T) {
@@ -101,7 +123,6 @@ func TestEnvironmentService_RejectsUnenforcedConfiguration(t *testing.T) {
 	svc := newEnvService(t)
 	ctx := context.Background()
 	cases := []map[string]any{
-		{"type": "cloud", "networking": map[string]any{"type": "limited"}},
 		{"type": "cloud", "future_policy": true},
 		{"type": 42},
 	}
@@ -112,6 +133,50 @@ func TestEnvironmentService_RejectsUnenforcedConfiguration(t *testing.T) {
 		if err == nil {
 			t.Fatalf("unsupported config was accepted: %#v", config)
 		}
+	}
+}
+
+func TestEnvironmentService_NormalizesAndPatchesLimitedNetworking(t *testing.T) {
+	svc := newEnvService(t)
+	created, err := svc.Create(context.Background(), domain.Environment{
+		Name: "limited",
+		Config: map[string]any{
+			"type": "cloud",
+			"networking": map[string]any{
+				"type": "limited", "allow_mcp_servers": true,
+				"allowed_hosts": []any{"api.example.com", "*.assets.example.com"},
+			},
+			"packages": map[string]any{"pip": []any{"httpx==0.28.1"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create limited environment: %v", err)
+	}
+	networking := created.Config["networking"].(map[string]any)
+	if networking["allow_mcp_servers"] != true ||
+		networking["allow_package_managers"] != false {
+		t.Fatalf("normalized limited networking = %#v", networking)
+	}
+
+	patch := map[string]any{
+		"type": "cloud",
+		"networking": map[string]any{
+			"type": "limited", "allowed_hosts": []any{"next.example.com"},
+		},
+	}
+	updated, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{Config: &patch})
+	if err != nil {
+		t.Fatalf("patch limited networking: %v", err)
+	}
+	networking = updated.Config["networking"].(map[string]any)
+	if networking["allow_mcp_servers"] != true ||
+		networking["allow_package_managers"] != false ||
+		networking["allowed_hosts"].([]any)[0] != "next.example.com" {
+		t.Fatalf("patched limited networking = %#v", networking)
+	}
+	packages := updated.Config["packages"].(map[string]any)
+	if packages["pip"].([]any)[0] != "httpx==0.28.1" {
+		t.Fatalf("network patch lost packages: %#v", packages)
 	}
 }
 
@@ -193,6 +258,9 @@ func TestEnvironmentService_RejectsMalformedConfiguration(t *testing.T) {
 		{"type": "cloud", "networking": map[string]any{"type": "unrestricted", "future": true}},
 		{"type": "cloud", "networking": map[string]any{"type": "limited", "allowed_hosts": []any{1}}},
 		{"type": "cloud", "networking": map[string]any{"type": "limited", "allow_mcp_servers": "yes"}},
+		{"type": "cloud", "networking": map[string]any{"type": "limited", "allowed_hosts": []any{"https://example.com"}}},
+		{"type": "cloud", "networking": map[string]any{"type": "limited", "allowed_hosts": []any{"example.com:443"}}},
+		{"type": "cloud", "networking": map[string]any{"type": "limited", "allowed_hosts": []any{"foo.*.example.com"}}},
 		{"type": "cloud", "packages": nil},
 		{"type": "cloud", "packages": []any{}},
 		{"type": "cloud", "packages": map[string]any{"type": "future"}},
@@ -278,13 +346,15 @@ func TestEnvironmentService_UpdateRejectsInvalidOrArchivedChanges(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	limited := map[string]any{
-		"type": "cloud", "networking": map[string]any{"type": "limited"},
+	malformed := map[string]any{
+		"type": "cloud", "networking": map[string]any{
+			"type": "limited", "allowed_hosts": []any{"https://example.com"},
+		},
 	}
 	if _, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{
-		Config: &limited,
+		Config: &malformed,
 	}); err == nil {
-		t.Fatal("limited networking update was accepted")
+		t.Fatal("malformed limited networking update was accepted")
 	}
 	badMetadata := map[string]any{"bad": 1}
 	if _, err := svc.Update(context.Background(), created.ID, domain.EnvironmentPatch{

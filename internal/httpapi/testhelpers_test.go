@@ -48,7 +48,7 @@ func newTestHandlerWithSessions(
 	agents := app.NewAgentService(agentsRepo, ids, clock)
 	environments := app.NewEnvironmentService(
 		environmentsRepo, ids, clock,
-		app.EnvironmentCapabilities{PackageSetup: true},
+		app.EnvironmentCapabilities{PackageSetup: true, LimitedNetwork: true},
 	)
 	hub := app.NewHub(256)
 	sessions := newTestSessionService(

@@ -1128,9 +1128,9 @@ components:
         type:
           type: string
           const: unrestricted
-    LimitedNetwork:
+    LimitedNetworkInput:
       type: object
-      description: Well-formed limited policies currently return 422 because enforcement is unavailable.
+      description: Deny-by-default sandbox egress. Admission returns 422 when the selected deployment backend cannot enforce host-level policy.
       additionalProperties: false
       required: [type]
       properties:
@@ -1139,6 +1139,7 @@ components:
           const: limited
         allowed_hosts:
           type: array
+          description: Bare hostnames or leading-star wildcard hostnames; schemes, ports, paths, and embedded wildcards are invalid.
           items:
             type: string
         allow_mcp_servers:
@@ -1147,6 +1148,17 @@ components:
         allow_package_managers:
           type: boolean
           default: false
+    LimitedNetwork:
+      allOf:
+        - $ref: '#/components/schemas/LimitedNetworkInput'
+        - type: object
+          required: [type, allowed_hosts, allow_mcp_servers, allow_package_managers]
+    NetworkPolicyInput:
+      oneOf:
+        - $ref: '#/components/schemas/UnrestrictedNetwork'
+        - $ref: '#/components/schemas/LimitedNetworkInput'
+      discriminator:
+        propertyName: type
     NetworkPolicy:
       oneOf:
         - $ref: '#/components/schemas/UnrestrictedNetwork'
@@ -1199,7 +1211,7 @@ components:
           type: string
           const: cloud
         networking:
-          $ref: '#/components/schemas/NetworkPolicy'
+          $ref: '#/components/schemas/NetworkPolicyInput'
         packages:
           $ref: '#/components/schemas/PackagesInput'
     CloudEnvironmentConfig:

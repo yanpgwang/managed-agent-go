@@ -1120,6 +1120,55 @@ func TestSDK_EnvironmentPackagesRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSDK_EnvironmentLimitedNetworkingRoundTrip(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	limited := anthropic.BetaLimitedNetworkParams{
+		AllowMCPServers:      anthropic.Bool(true),
+		AllowPackageManagers: anthropic.Bool(false),
+		AllowedHosts:         []string{"api.example.com", "*.assets.example.com"},
+	}
+	cloud := anthropic.BetaCloudConfigParams{
+		Networking: anthropic.BetaCloudConfigParamsNetworkingUnion{OfLimited: &limited},
+	}
+
+	environment, err := client.Beta.Environments.New(ctx, anthropic.BetaEnvironmentNewParams{
+		Name: "SDK limited network environment",
+		Config: anthropic.BetaEnvironmentNewParamsConfigUnion{
+			OfCloud: &cloud,
+		},
+	})
+	if err != nil {
+		t.Fatalf("create limited network environment: %v", err)
+	}
+	networking := environment.Config.Networking.AsLimited()
+	if networking.Type != "limited" || !networking.AllowMCPServers ||
+		networking.AllowPackageManagers || len(networking.AllowedHosts) != 2 ||
+		networking.AllowedHosts[0] != "api.example.com" {
+		t.Fatalf("created limited networking = %#v", networking)
+	}
+	assertRawObjectHasFields(t, networking.RawJSON(),
+		"type", "allow_mcp_servers", "allow_package_managers", "allowed_hosts")
+
+	patch := anthropic.BetaLimitedNetworkParams{AllowedHosts: []string{"next.example.com"}}
+	cloud.Networking = anthropic.BetaCloudConfigParamsNetworkingUnion{OfLimited: &patch}
+	updated, err := client.Beta.Environments.Update(
+		ctx,
+		environment.ID,
+		anthropic.BetaEnvironmentUpdateParams{
+			Config: anthropic.BetaEnvironmentUpdateParamsConfigUnion{OfCloud: &cloud},
+		},
+	)
+	if err != nil {
+		t.Fatalf("update limited network environment: %v", err)
+	}
+	networking = updated.Config.Networking.AsLimited()
+	if !networking.AllowMCPServers || len(networking.AllowedHosts) != 1 ||
+		networking.AllowedHosts[0] != "next.example.com" {
+		t.Fatalf("updated limited networking = %#v", networking)
+	}
+}
+
 func TestSDK_SelfHostedEnvironmentScope(t *testing.T) {
 	client, _ := sdkClientAndServer(t)
 	ctx := context.Background()

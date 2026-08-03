@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -36,16 +37,19 @@ func TestPackageSetupCommandsUseArgumentVectors(t *testing.T) {
 }
 
 type packageSetupSandbox struct {
-	mu       sync.Mutex
-	commands []Command
-	results  []*Result
-	errors   []error
+	mu              sync.Mutex
+	commands        []Command
+	results         []*Result
+	errors          []error
+	networkPolicies [][]string
+	operations      []string
 }
 
 func (s *packageSetupSandbox) Exec(_ context.Context, command Command) (*Result, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.commands = append(s.commands, command)
+	s.operations = append(s.operations, "exec:"+command.Path)
 	index := len(s.commands) - 1
 	if index < len(s.errors) && s.errors[index] != nil {
 		return nil, s.errors[index]
@@ -65,10 +69,32 @@ func (*packageSetupSandbox) WriteFile(context.Context, string, []byte) error {
 func (*packageSetupSandbox) Root() string                  { return "/workspace" }
 func (*packageSetupSandbox) Destroy(context.Context) error { return nil }
 
+func (s *packageSetupSandbox) ApplyLimitedNetwork(
+	_ context.Context,
+	allowedHosts []string,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cloned := append([]string(nil), allowedHosts...)
+	s.networkPolicies = append(s.networkPolicies, cloned)
+	s.operations = append(s.operations, "network:"+strings.Join(cloned, ","))
+	return nil
+}
+
 func (s *packageSetupSandbox) commandCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.commands)
+}
+
+func (s *packageSetupSandbox) networkState() ([][]string, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	policies := make([][]string, len(s.networkPolicies))
+	for index, policy := range s.networkPolicies {
+		policies[index] = append([]string(nil), policy...)
+	}
+	return policies, append([]string(nil), s.operations...)
 }
 
 type packageSetupProvider struct {
@@ -80,6 +106,8 @@ type packageSetupProvider struct {
 func (*packageSetupProvider) Name() string { return "package-test" }
 
 func (*packageSetupProvider) SupportsPackageSetup() bool { return true }
+
+func (*packageSetupProvider) SupportsLimitedNetwork() bool { return true }
 
 func (p *packageSetupProvider) Create(
 	context.Context,
@@ -201,5 +229,83 @@ func TestSessionManagerRejectsCachedSandboxWithoutPackageSetupEvidence(t *testin
 	}
 	if box.commandCount() != 0 {
 		t.Fatalf("cached sandbox ran package setup without matching binding evidence")
+	}
+}
+
+func TestSessionManagerEnforcesLimitedNetworkAcrossProvisioningAndAttach(t *testing.T) {
+	ctx := context.Background()
+	box := &packageSetupSandbox{}
+	provider := &packageSetupProvider{box: box}
+	bindings := newMemoryBindingStore()
+	manager := NewSessionManager(provider, bindings)
+	spec := Spec{
+		Network:                  "limited",
+		NetworkAllowedHosts:      []string{"api.example.com"},
+		SetupNetworkAllowedHosts: []string{"api.example.com", "pypi.org"},
+		Packages:                 PackageSet{Pip: []string{"httpx==0.28.1"}},
+	}
+
+	if _, err := manager.Acquire(ctx, "sess_limited", spec); err != nil {
+		t.Fatalf("provision limited sandbox: %v", err)
+	}
+	policies, operations := box.networkState()
+	wantOperations := []string{
+		"network:api.example.com,pypi.org",
+		"exec:python3",
+		"network:api.example.com",
+	}
+	if !reflect.DeepEqual(operations, wantOperations) {
+		t.Fatalf("provisioning operations = %v, want %v", operations, wantOperations)
+	}
+	if len(policies) != 2 {
+		t.Fatalf("provisioning policy count = %d, want 2", len(policies))
+	}
+
+	if _, err := manager.Acquire(ctx, "sess_limited", spec); err != nil {
+		t.Fatalf("reuse limited sandbox: %v", err)
+	}
+	policies, _ = box.networkState()
+	if len(policies) != 2 || box.commandCount() != 1 {
+		t.Fatalf("cached acquire repeated work: policies=%d commands=%d", len(policies), box.commandCount())
+	}
+
+	updated := spec
+	updated.NetworkAllowedHosts = []string{"mcp.example.com"}
+	updated.SetupNetworkAllowedHosts = []string{"mcp.example.com", "pypi.org"}
+	if _, err := manager.Acquire(ctx, "sess_limited", updated); err != nil {
+		t.Fatalf("reconcile updated limited policy: %v", err)
+	}
+	policies, _ = box.networkState()
+	if len(policies) != 3 || !reflect.DeepEqual(policies[2], []string{"mcp.example.com"}) {
+		t.Fatalf("updated policies = %v", policies)
+	}
+	if box.commandCount() != 1 {
+		t.Fatalf("network update repeated package setup: commands=%d", box.commandCount())
+	}
+
+	restarted := NewSessionManager(provider, bindings)
+	if _, err := restarted.Acquire(ctx, "sess_limited", updated); err != nil {
+		t.Fatalf("attach limited sandbox after restart: %v", err)
+	}
+	policies, _ = box.networkState()
+	if provider.attaches != 1 || len(policies) != 4 ||
+		!reflect.DeepEqual(policies[3], []string{"mcp.example.com"}) {
+		t.Fatalf("restart reconciliation: attaches=%d policies=%v", provider.attaches, policies)
+	}
+}
+
+func TestSessionManagerRejectsUnsupportedLimitedNetworkBeforeProvisioning(t *testing.T) {
+	bindings := newMemoryBindingStore()
+	manager := NewSessionManager(NewLocalProvider(), bindings)
+	_, err := manager.Acquire(context.Background(), "sess_local_limited", Spec{
+		Network: "limited", NetworkAllowedHosts: []string{"example.com"},
+	})
+	if err == nil || !IsPermanent(err) {
+		t.Fatalf("local limited network error = %v, want permanent rejection", err)
+	}
+	if _, found, loadErr := bindings.GetSandboxProvisioningIntent(
+		context.Background(), "sess_local_limited",
+	); loadErr != nil || found {
+		t.Fatalf("limited network created intent: found=%v err=%v", found, loadErr)
 	}
 }

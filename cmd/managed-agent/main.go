@@ -150,7 +150,8 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.OpenSandboxProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup: true,
+				PackageSetup:   true,
+				LimitedNetwork: true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				useProxy, err := envBool(openSandboxUseProxyEnv)
@@ -386,7 +387,8 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		ids,
 		clock,
 		app.EnvironmentCapabilities{
-			PackageSetup: providerCapabilities.PackageSetup,
+			PackageSetup:   providerCapabilities.PackageSetup,
+			LimitedNetwork: providerCapabilities.LimitedNetwork,
 		},
 	)
 

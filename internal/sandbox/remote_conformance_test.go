@@ -553,6 +553,10 @@ func (s *fakeOpenSandboxRemote) WriteFile(
 	return s.writeFile(value, data)
 }
 
+func (*fakeOpenSandboxRemote) ApplyLimitedNetwork(context.Context, []string) error {
+	return nil
+}
+
 func (s *fakeOpenSandboxRemote) Destroy(context.Context) error {
 	err := s.store.destroy(s.resource.id)
 	if errors.Is(err, errFakeRemoteNotFound) {

@@ -45,18 +45,18 @@ These labels describe project support, not a security certification.
 
 ## Backend matrix
 
-| Backend | Status | Isolation model | Session state | Intended use |
-|---|---|---|---|---|
-| Local process | Available; default | Host process plus confined workspace; not an isolation boundary | Reattaches by durable workspace path on the same host | Offline tests and trusted local development only |
-| Docker | Available; opt-in | Container filesystem, namespaces/cgroups, configurable limits; provider calls default to no network while cloud Environments request bridge networking | Reattaches by container ID on the same Docker daemon | Controlled single-host self-hosting |
-| [E2B](https://github.com/e2b-dev/E2B) | Preview | Managed microVM service | E2B ID plus auto-pause filesystem persistence | Managed production |
-| [Tencent CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | Preview | E2B-compatible microVM service | Provider-owned durable sandbox ID | Self-hosted production on Linux/KVM |
-| [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | Preview; Docker runtime manually live-verified | Docker or Kubernetes-backed sandbox service | Provider-owned durable sandbox ID | Self-hosted production |
-| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Preview | Managed or self-hosted sandbox service | Deterministic name, durable ID, and auto-pause | Managed production |
-| [Modal](https://modal.com/docs/guide/sandboxes) | Planned | Managed sandbox service | Provider-owned durable sandbox ID | Managed production |
-| [Runloop](https://docs.runloop.ai/docs/devboxes/overview) | Planned | Managed devbox service | Suspend, resume, and snapshot lifecycle | Managed production |
-| [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) | Planned | Kubernetes CRD, controller, and routing layer | Stateful sandbox resource | Kubernetes deployments |
-| Anthropic Sandbox Runtime, Vercel Sandbox, and Cloudflare Sandbox | Evaluating | Backend-specific | Backend-specific | Later adapters |
+| Backend | Status | Isolation model | Limited egress | Session state | Intended use |
+|---|---|---|---|---|---|
+| Local process | Available; default | Host process plus confined workspace; not an isolation boundary | No; rejected | Reattaches by durable workspace path on the same host | Offline tests and trusted local development only |
+| Docker | Available; opt-in | Container filesystem, namespaces/cgroups, configurable limits; provider calls default to no network while cloud Environments request bridge networking | No; rejected | Reattaches by container ID on the same Docker daemon | Controlled single-host self-hosting |
+| [E2B](https://github.com/e2b-dev/E2B) | Preview | Managed microVM service | No; rejected | E2B ID plus auto-pause filesystem persistence | Managed production |
+| [Tencent CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | Preview | E2B-compatible microVM service | No; rejected | Provider-owned durable sandbox ID | Self-hosted production on Linux/KVM |
+| [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | Preview; Docker runtime manually live-verified | Docker or Kubernetes-backed sandbox service | Yes; host allowlist | Provider-owned durable sandbox ID | Self-hosted production |
+| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Preview | Managed or self-hosted sandbox service | No; rejected | Deterministic name, durable ID, and auto-pause | Managed production |
+| [Modal](https://modal.com/docs/guide/sandboxes) | Planned | Managed sandbox service | Planned | Provider-owned durable sandbox ID | Managed production |
+| [Runloop](https://docs.runloop.ai/docs/devboxes/overview) | Planned | Managed devbox service | Planned | Suspend, resume, and snapshot lifecycle | Managed production |
+| [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) | Planned | Kubernetes CRD, controller, and routing layer | Planned | Stateful sandbox resource | Kubernetes deployments |
+| Anthropic Sandbox Runtime, Vercel Sandbox, and Cloudflare Sandbox | Evaluating | Backend-specific | Evaluating | Backend-specific | Later adapters |
 
 The Docker provider has not been audited for hostile multi-tenant workloads.
 The local provider is not a security boundary. No backend currently carries a
@@ -101,6 +101,12 @@ not compatible with all executing built-ins yet.
   configuration at API admission because installing there would mutate the
   worker host. Use Docker or a remote isolated backend for package-configured
   cloud Environments.
+- Limited networking is admitted only when the selected provider declares and
+  implements exact host-level egress reconciliation. OpenSandbox creates a
+  deny-by-default policy, temporarily expands it for configured package setup,
+  restores the final allowlist before binding, and reconciles MCP-derived
+  changes on later turns and worker attach. Other implemented backends reject
+  the policy at API admission.
 - Remote services receive a fixed-length hash of the session key as their
   ownership label; credentials and raw session identifiers are not persisted in
   the provider reference.
