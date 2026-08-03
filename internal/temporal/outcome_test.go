@@ -91,6 +91,30 @@ func (m *outcomeModel) CreateMessageStream(
 	return response, err
 }
 
+func (m *outcomeModel) CreateMessageStreamWithCallbacks(
+	ctx context.Context,
+	request model.Request,
+	callbacks model.StreamCallbacks,
+) (model.Response, error) {
+	response, err := m.CreateMessage(ctx, request)
+	if err != nil {
+		return response, err
+	}
+	thinkingStarted := false
+	for index, block := range response.Content {
+		if !thinkingStarted && (block.Type == "thinking" || block.Type == "redacted_thinking") {
+			if callbacks.OnThinkingStart != nil {
+				callbacks.OnThinkingStart()
+			}
+			thinkingStarted = true
+		}
+		if block.Type == "text" && callbacks.OnTextDelta != nil {
+			callbacks.OnTextDelta(index, block.Text)
+		}
+	}
+	return response, nil
+}
+
 func TestEvaluateOutcomeUsesIsolatedGraderContext(t *testing.T) {
 	client := &outcomeModel{response: model.Response{
 		Content: []domain.ContentBlock{{

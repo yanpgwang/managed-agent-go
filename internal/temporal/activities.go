@@ -1177,8 +1177,10 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 		modelRequestEndID = a.ids.NewID(domain.PrefixEvent)
 	}
 	startedPreview := false
+	startedThinkingPreview := false
+	thinkingEventID := ""
 	var previewMu sync.Mutex
-	response, err := a.modelClient.CreateMessageStream(ctx, in.Request, func(index int, text string) {
+	callbacks := model.StreamCallbacks{OnTextDelta: func(index int, text string) {
 		if a.previews == nil || text == "" {
 			return
 		}
@@ -1201,7 +1203,31 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 			Index:               index,
 			Text:                text,
 		})
-	})
+	}, OnThinkingStart: func() {
+		if a.previews == nil {
+			return
+		}
+		previewMu.Lock()
+		defer previewMu.Unlock()
+		if startedThinkingPreview {
+			return
+		}
+		thinkingEventID = a.ids.NewID(domain.PrefixEvent)
+		_ = a.previews.PublishPreview(ctx, in.SessionID, domain.PreviewFrame{
+			Kind:                domain.PreviewEventStart,
+			EventID:             thinkingEventID,
+			EventType:           domain.EvAgentThinking,
+			ModelRequestStartID: modelRequestStartID,
+		})
+		startedThinkingPreview = true
+	}}
+	var response model.Response
+	var err error
+	if client, ok := a.modelClient.(model.RichStreamingClient); ok {
+		response, err = client.CreateMessageStreamWithCallbacks(ctx, in.Request, callbacks)
+	} else {
+		response, err = a.modelClient.CreateMessageStream(ctx, in.Request, callbacks.OnTextDelta)
+	}
 	if err != nil {
 		var apiErr *model.APIError
 		if errors.As(err, &apiErr) && apiErr.Retryable() && in.HandleRetryableErrors {
@@ -1268,7 +1294,10 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 		result.MessageEventID = messageEventID
 	}
 	if hasThinking {
-		result.ThinkingEventID = a.ids.NewID(domain.PrefixEvent)
+		if thinkingEventID == "" {
+			thinkingEventID = a.ids.NewID(domain.PrefixEvent)
+		}
+		result.ThinkingEventID = thinkingEventID
 	}
 	return result, nil
 }
