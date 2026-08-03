@@ -5,45 +5,48 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"sort"
-	"strconv"
-	"strings"
 )
 
-// Pagination cursors are opaque to callers. Internally they encode the last
-// sequence number returned plus the order they were created with, so that
-// reusing a cursor under a different order can be rejected (per the public
-// contract, a page cursor is only valid with the order it was created with).
-// The internal sequence number never appears un-encoded on the wire.
-
-type cursor struct {
-	seq       int64
-	order     string // "asc" or "desc"
-	sessionID string
-	filter    string
+// eventCursor carries the complete processed_at ordering key. ProcessedAt and
+// Unprocessed are mutually exclusive so a null timestamp cannot be confused
+// with a malformed cursor that simply omitted its boundary.
+type eventCursor struct {
+	Version     int    `json:"v"`
+	Kind        string `json:"kind"`
+	Order       string `json:"order"`
+	SessionID   string `json:"session_id"`
+	Filter      string `json:"filter"`
+	ProcessedAt string `json:"processed_at,omitempty"`
+	Unprocessed bool   `json:"unprocessed,omitempty"`
+	Sequence    int64  `json:"sequence"`
 }
 
-func encodeCursor(c cursor) string {
-	raw := "v2:" + strconv.FormatInt(c.seq, 10) + ":" + c.order + ":" + c.sessionID + ":" + c.filter
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+func encodeEventCursor(cursor eventCursor) string {
+	cursor.Version = 3
+	cursor.Kind = "event_list"
+	body, _ := json.Marshal(cursor)
+	return base64.RawURLEncoding.EncodeToString(body)
 }
 
-func decodeCursor(token string) (cursor, bool) {
-	b, err := base64.RawURLEncoding.DecodeString(token)
+func decodeEventCursor(token string) (eventCursor, bool) {
+	body, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
-		return cursor{}, false
+		return eventCursor{}, false
 	}
-	parts := strings.Split(string(b), ":")
-	if len(parts) != 5 || parts[0] != "v2" {
-		return cursor{}, false
+	var cursor eventCursor
+	if err := json.Unmarshal(body, &cursor); err != nil {
+		return eventCursor{}, false
 	}
-	seq, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil {
-		return cursor{}, false
+	if cursor.Version != 3 ||
+		cursor.Kind != "event_list" ||
+		(cursor.Order != "asc" && cursor.Order != "desc") ||
+		cursor.SessionID == "" ||
+		cursor.Filter == "" ||
+		cursor.Sequence <= 0 ||
+		((cursor.ProcessedAt != "") == cursor.Unprocessed) {
+		return eventCursor{}, false
 	}
-	if (parts[2] != "asc" && parts[2] != "desc") || parts[3] == "" || parts[4] == "" {
-		return cursor{}, false
-	}
-	return cursor{seq: seq, order: parts[2], sessionID: parts[3], filter: parts[4]}, true
+	return cursor, true
 }
 
 type eventCursorFilter struct {
@@ -64,7 +67,7 @@ func (f eventCursorFilter) fingerprint() string {
 
 // sessionCursor is deliberately separate from the event cursor above. Session
 // pagination is bidirectional and uses a stable (created_at,id) key, while
-// event pagination is forward-only and keyed by the internal event sequence.
+// event pagination is forward-only and uses (processed_at,sequence).
 type sessionCursor struct {
 	Version   int    `json:"v"`
 	Kind      string `json:"kind"`

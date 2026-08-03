@@ -80,7 +80,10 @@ func TestListSessions_BidirectionalStablePagination(t *testing.T) {
 	for _, path := range []string{
 		"/v1/sessions?limit=2&order=asc&page=" + url.QueryEscape(*first.NextPage),
 		"/v1/sessions?limit=2&include_archived=true&page=" + url.QueryEscape(*first.NextPage),
-		"/v1/sessions?page=" + url.QueryEscape(encodeCursor(cursor{seq: 1, order: "desc"})),
+		"/v1/sessions?page=" + url.QueryEscape(encodeEventCursor(eventCursor{
+			Order: "desc", SessionID: "sesn_other", Filter: "filter",
+			Unprocessed: true, Sequence: 1,
+		})),
 	} {
 		rec := do(h, "GET", path, "")
 		if rec.Code != http.StatusBadRequest {

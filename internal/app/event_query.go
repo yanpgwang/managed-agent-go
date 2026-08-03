@@ -2,16 +2,24 @@ package app
 
 import "time"
 
-// EventQuery expresses the public List Events filters. Sequence bounds are
-// internal cursor values and never appear directly on the HTTP wire.
+// EventPageBoundary is the complete key carried by an opaque List Events cursor.
+// ProcessedAt is nil for events that have not been processed yet; Sequence is
+// the deterministic tie-breaker for equal (including nil) timestamps.
+type EventPageBoundary struct {
+	ProcessedAt *time.Time
+	Sequence    int64
+}
+
+// EventQuery expresses the public List Events filters. The public API calls
+// these filters created_at for compatibility, but the Managed Agents contract
+// applies them, ordering, and pagination to the event processed_at value.
 type EventQuery struct {
-	AfterSeq     int64
-	BeforeSeq    int64
-	Limit        int
-	Desc         bool
-	Types        []string
-	CreatedAtGt  *time.Time
-	CreatedAtGte *time.Time
-	CreatedAtLt  *time.Time
-	CreatedAtLte *time.Time
+	Boundary       *EventPageBoundary
+	Limit          int
+	Desc           bool
+	Types          []string
+	ProcessedAtGt  *time.Time
+	ProcessedAtGte *time.Time
+	ProcessedAtLt  *time.Time
+	ProcessedAtLte *time.Time
 }

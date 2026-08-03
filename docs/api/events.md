@@ -74,7 +74,7 @@ Supported query parameters:
 | `order` | `asc` or `desc`; default `asc` |
 | `page` | Opaque forward cursor |
 | `types[]` | Repeatable event type filter |
-| `created_at[gt\|gte\|lt\|lte]` | RFC 3339 bounds currently applied to `processed_at` |
+| `created_at[gt\|gte\|lt\|lte]` | RFC 3339 bounds applied to `processed_at` |
 
 ```json
 {
@@ -88,9 +88,11 @@ Supported query parameters:
 }
 ```
 
-Ordering and cursors currently use the internal session sequence, even for
-queries whose public name is `created_at`. Exact `processed_at` null/tie
-semantics remain incomplete.
+Ordering, timestamp bounds, and cursors use `processed_at`, matching the public
+contract despite the compatibility query name `created_at`. Ascending order
+places processed events first and unprocessed (`null`) events last; descending
+order reverses that placement. The internal receipt sequence is used only as a
+stable tie-breaker for equal or null timestamps and is never exposed.
 
 ## Stream events
 

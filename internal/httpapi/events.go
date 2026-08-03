@@ -150,10 +150,10 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		dst        **time.Time
 		normalized *string
 	}{
-		{"created_at[gt]", &eq.CreatedAtGt, &cursorFilter.CreatedAtGt},
-		{"created_at[gte]", &eq.CreatedAtGte, &cursorFilter.CreatedAtGte},
-		{"created_at[lt]", &eq.CreatedAtLt, &cursorFilter.CreatedAtLt},
-		{"created_at[lte]", &eq.CreatedAtLte, &cursorFilter.CreatedAtLte},
+		{"created_at[gt]", &eq.ProcessedAtGt, &cursorFilter.CreatedAtGt},
+		{"created_at[gte]", &eq.ProcessedAtGte, &cursorFilter.CreatedAtGte},
+		{"created_at[lt]", &eq.ProcessedAtLt, &cursorFilter.CreatedAtLt},
+		{"created_at[lte]", &eq.ProcessedAtLte, &cursorFilter.CreatedAtLte},
 	} {
 		if raw := q.Get(item.key); raw != "" {
 			t, ok := parseTimeParam(raw)
@@ -170,7 +170,7 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 	// An opaque page cursor supersedes the default bounds. It must have been
 	// created with the same order as this request.
 	if page := q.Get("page"); page != "" {
-		c, ok := decodeCursor(page)
+		c, ok := decodeEventCursor(page)
 		if !ok {
 			writeError(w, domain.Validation("invalid page cursor"))
 			return
@@ -179,19 +179,24 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 		if desc {
 			wantOrder = "desc"
 		}
-		if c.order != wantOrder {
+		if c.Order != wantOrder {
 			writeError(w, domain.Validation("page cursor order mismatch"))
 			return
 		}
-		if c.sessionID != sessionID || c.filter != filterFingerprint {
+		if c.SessionID != sessionID || c.Filter != filterFingerprint {
 			writeError(w, domain.Validation("page cursor scope mismatch"))
 			return
 		}
-		if desc {
-			eq.BeforeSeq = c.seq
-		} else {
-			eq.AfterSeq = c.seq
+		boundary := &app.EventPageBoundary{Sequence: c.Sequence}
+		if !c.Unprocessed {
+			processedAt, ok := parseTimeParam(c.ProcessedAt)
+			if !ok {
+				writeError(w, domain.Validation("invalid page cursor"))
+				return
+			}
+			boundary.ProcessedAt = processedAt
 		}
+		eq.Boundary = boundary
 	}
 
 	// Fetch one extra row to decide whether a next page exists.
@@ -211,9 +216,16 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 			if desc {
 				order = "desc"
 			}
-			nextPage = encodeCursor(cursor{
-				seq: last.Sequence, order: order, sessionID: sessionID, filter: filterFingerprint,
-			})
+			cursor := eventCursor{
+				Order: order, SessionID: sessionID, Filter: filterFingerprint,
+				Sequence: last.Sequence,
+			}
+			if last.ProcessedAt == nil {
+				cursor.Unprocessed = true
+			} else {
+				cursor.ProcessedAt = last.ProcessedAt.UTC().Format(timeFmt)
+			}
+			nextPage = encodeEventCursor(cursor)
 		}
 	}
 

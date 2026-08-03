@@ -707,39 +707,80 @@ func (s *testSessionService) Query(
 	}
 	events := make([]domain.Event, 0, len(s.events[sessionID]))
 	for _, event := range s.events[sessionID] {
-		if query.AfterSeq > 0 && event.Sequence <= query.AfterSeq {
-			continue
-		}
-		if query.BeforeSeq > 0 && event.Sequence >= query.BeforeSeq {
-			continue
-		}
 		if len(types) > 0 && !types[event.Type] {
 			continue
 		}
-		if query.CreatedAtGt != nil && !event.CreatedAt.After(*query.CreatedAtGt) {
+		if query.ProcessedAtGt != nil &&
+			(event.ProcessedAt == nil || !event.ProcessedAt.After(*query.ProcessedAtGt)) {
 			continue
 		}
-		if query.CreatedAtGte != nil && event.CreatedAt.Before(*query.CreatedAtGte) {
+		if query.ProcessedAtGte != nil &&
+			(event.ProcessedAt == nil || event.ProcessedAt.Before(*query.ProcessedAtGte)) {
 			continue
 		}
-		if query.CreatedAtLt != nil && !event.CreatedAt.Before(*query.CreatedAtLt) {
+		if query.ProcessedAtLt != nil &&
+			(event.ProcessedAt == nil || !event.ProcessedAt.Before(*query.ProcessedAtLt)) {
 			continue
 		}
-		if query.CreatedAtLte != nil && event.CreatedAt.After(*query.CreatedAtLte) {
+		if query.ProcessedAtLte != nil &&
+			(event.ProcessedAt == nil || event.ProcessedAt.After(*query.ProcessedAtLte)) {
 			continue
+		}
+		if query.Boundary != nil {
+			comparison := compareEventPageKey(
+				event.ProcessedAt,
+				event.Sequence,
+				query.Boundary.ProcessedAt,
+				query.Boundary.Sequence,
+			)
+			if (!query.Desc && comparison <= 0) || (query.Desc && comparison >= 0) {
+				continue
+			}
 		}
 		events = append(events, event)
 	}
 	sort.Slice(events, func(i, j int) bool {
+		comparison := compareEventPageKey(
+			events[i].ProcessedAt,
+			events[i].Sequence,
+			events[j].ProcessedAt,
+			events[j].Sequence,
+		)
 		if query.Desc {
-			return events[i].Sequence > events[j].Sequence
+			return comparison > 0
 		}
-		return events[i].Sequence < events[j].Sequence
+		return comparison < 0
 	})
 	if query.Limit > 0 && len(events) > query.Limit {
 		events = events[:query.Limit]
 	}
 	return events, nil
+}
+
+// compareEventPageKey compares the public List Events ordering key in
+// ascending order. Unprocessed events sort after processed events; receipt
+// sequence makes equal and nil timestamps deterministic.
+func compareEventPageKey(leftAt *time.Time, leftSequence int64, rightAt *time.Time, rightSequence int64) int {
+	switch {
+	case leftAt == nil && rightAt != nil:
+		return 1
+	case leftAt != nil && rightAt == nil:
+		return -1
+	case leftAt != nil && rightAt != nil:
+		if leftAt.Before(*rightAt) {
+			return -1
+		}
+		if leftAt.After(*rightAt) {
+			return 1
+		}
+	}
+	if leftSequence < rightSequence {
+		return -1
+	}
+	if leftSequence > rightSequence {
+		return 1
+	}
+	return 0
 }
 
 func (s *testSessionService) appendEventLocked(

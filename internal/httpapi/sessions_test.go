@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 func TestSession_FullLifecycleWithSSE(t *testing.T) {
@@ -438,10 +440,82 @@ func TestListEvents_CursorIsBoundToSessionAndFilters(t *testing.T) {
 	for _, path := range []string{
 		"/v1/sessions/" + firstSession + "/events?limit=1&types%5B%5D=agent.message&page=" + page.NextPage,
 		"/v1/sessions/" + secondSession + "/events?limit=1&types%5B%5D=user.message&page=" + page.NextPage,
+		"/v1/sessions/" + firstSession + "/events?limit=1&order=desc&types%5B%5D=user.message&page=" + page.NextPage,
 	} {
 		rec = do(h, "GET", path, "")
 		if rec.Code != 400 {
 			t.Errorf("GET %s -> %d, want 400: %s", path, rec.Code, rec.Body)
 		}
+	}
+}
+
+func TestListEvents_OrdersAndPagesByProcessedAt(t *testing.T) {
+	h, sessions := newTestHandlerWithSessions(t, Config{}, false)
+	agentID := createID(t, h, "POST", "/v1/agents", `{"name":"a","model":"claude-opus-4-8"}`)
+	environmentID := createID(t, h, "POST", "/v1/environments", `{"name":"e","config":{"type":"cloud"}}`)
+	sessionID := createID(t, h, "POST", "/v1/sessions",
+		`{"agent":"`+agentID+`","environment_id":"`+environmentID+`"}`)
+
+	early := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
+	late := early.Add(time.Minute)
+	created := early.Add(-time.Hour)
+	sessions.mu.Lock()
+	sessions.events[sessionID] = []domain.Event{
+		{ID: "late-a", SessionID: sessionID, Sequence: 1, Type: domain.EvAgentMessage, CreatedAt: created, ProcessedAt: &late},
+		{ID: "pending", SessionID: sessionID, Sequence: 2, Type: domain.EvUserMessage, CreatedAt: created.Add(time.Second)},
+		{ID: "early", SessionID: sessionID, Sequence: 3, Type: domain.EvAgentMessage, CreatedAt: created.Add(2 * time.Second), ProcessedAt: &early},
+		{ID: "late-b", SessionID: sessionID, Sequence: 4, Type: domain.EvAgentMessage, CreatedAt: created.Add(3 * time.Second), ProcessedAt: &late},
+	}
+	sessions.sequences[sessionID] = 4
+	sessions.mu.Unlock()
+
+	type eventPage struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		NextPage string `json:"next_page"`
+	}
+	list := func(path string) eventPage {
+		t.Helper()
+		rec := do(h, "GET", path, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s -> %d: %s", path, rec.Code, rec.Body)
+		}
+		var page eventPage
+		if err := json.Unmarshal(rec.Body.Bytes(), &page); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		return page
+	}
+	ids := func(page eventPage) []string {
+		result := make([]string, len(page.Data))
+		for index := range page.Data {
+			result[index] = page.Data[index].ID
+		}
+		return result
+	}
+
+	first := list("/v1/sessions/" + sessionID + "/events?limit=2")
+	if got, want := ids(first), []string{"early", "late-a"}; !sameStrings(got, want) {
+		t.Fatalf("first page ids = %v, want %v", got, want)
+	}
+	if first.NextPage == "" {
+		t.Fatal("first page omitted next_page")
+	}
+	second := list("/v1/sessions/" + sessionID + "/events?limit=2&page=" + first.NextPage)
+	if got, want := ids(second), []string{"late-b", "pending"}; !sameStrings(got, want) {
+		t.Fatalf("second page ids = %v, want %v", got, want)
+	}
+	if second.NextPage != "" {
+		t.Fatalf("last page next_page = %q, want empty", second.NextPage)
+	}
+
+	descending := list("/v1/sessions/" + sessionID + "/events?limit=10&order=desc")
+	if got, want := ids(descending), []string{"pending", "late-b", "late-a", "early"}; !sameStrings(got, want) {
+		t.Fatalf("descending ids = %v, want %v", got, want)
+	}
+	filtered := list("/v1/sessions/" + sessionID + "/events?limit=10&created_at%5Bgte%5D=" + late.Format(time.RFC3339Nano))
+	if got, want := ids(filtered), []string{"late-a", "late-b"}; !sameStrings(got, want) {
+		t.Fatalf("filtered ids = %v, want %v", got, want)
 	}
 }

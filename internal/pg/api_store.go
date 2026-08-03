@@ -592,12 +592,6 @@ func (s *Store) QueryEvents(
 		args = append(args, value)
 		clauses = append(clauses, fmt.Sprintf(clause, len(args)))
 	}
-	if query.AfterSeq > 0 {
-		add(`seq > $%d`, query.AfterSeq)
-	}
-	if query.BeforeSeq > 0 {
-		add(`seq < $%d`, query.BeforeSeq)
-	}
 	if len(query.Types) > 0 {
 		add(`type = ANY($%d::text[])`, query.Types)
 	}
@@ -605,24 +599,50 @@ func (s *Store) QueryEvents(
 		value *time.Time
 		op    string
 	}{
-		{query.CreatedAtGt, `>`},
-		{query.CreatedAtGte, `>=`},
-		{query.CreatedAtLt, `<`},
-		{query.CreatedAtLte, `<=`},
+		{query.ProcessedAtGt, `>`},
+		{query.ProcessedAtGte, `>=`},
+		{query.ProcessedAtLt, `<`},
+		{query.ProcessedAtLte, `<=`},
 	} {
 		if bound.value != nil {
 			add(`processed_at `+bound.op+` $%d`, bound.value)
 		}
 	}
+	if query.Boundary != nil {
+		boundary := query.Boundary
+		if query.Desc {
+			if boundary.ProcessedAt == nil {
+				add(`((processed_at IS NULL AND seq < $%d) OR processed_at IS NOT NULL)`, boundary.Sequence)
+			} else {
+				first := len(args) + 1
+				clauses = append(clauses, fmt.Sprintf(
+					`(processed_at < $%d OR (processed_at = $%d AND seq < $%d))`,
+					first, first, first+1,
+				))
+				args = append(args, *boundary.ProcessedAt, boundary.Sequence)
+			}
+		} else if boundary.ProcessedAt == nil {
+			add(`processed_at IS NULL AND seq > $%d`, boundary.Sequence)
+		} else {
+			first := len(args) + 1
+			clauses = append(clauses, fmt.Sprintf(
+				`(processed_at > $%d OR (processed_at = $%d AND seq > $%d) OR processed_at IS NULL)`,
+				first, first, first+1,
+			))
+			args = append(args, *boundary.ProcessedAt, boundary.Sequence)
+		}
+	}
 	order := "ASC"
+	nulls := "NULLS LAST"
 	if query.Desc {
 		order = "DESC"
+		nulls = "NULLS FIRST"
 	}
 	args = append(args, query.Limit)
 	statement := `SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
 FROM events
 WHERE ` + strings.Join(clauses, ` AND `) +
-		fmt.Sprintf(` ORDER BY seq %s LIMIT $%d`, order, len(args))
+		fmt.Sprintf(` ORDER BY processed_at %s %s, seq %s LIMIT $%d`, order, nulls, order, len(args))
 	rows, err := s.pool.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, err
