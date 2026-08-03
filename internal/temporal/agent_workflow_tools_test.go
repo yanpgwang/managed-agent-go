@@ -58,6 +58,7 @@ func TestPlanToolBatch_ClassifiesWholeRoundBeforeExecution(t *testing.T) {
 	require.Equal(t, []plannedToolUse{{
 		use:           uses[1],
 		publicEventID: "sevt_builtin",
+		useEventType:  domain.EvAgentToolUse,
 		stepID:        "tstep_builtin",
 		definition:    tools["bash"],
 	}}, plan.executable)

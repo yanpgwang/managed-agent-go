@@ -1018,7 +1018,11 @@ func (a *Activities) prepareResumeActions(
 		}
 
 		resume := ResumeAction{
-			ActionEventID:     action.ID,
+			ActionEventID: action.ID,
+			// Carry the durable type forward: the result event that answers this
+			// park must pair with what the ledger actually holds, whatever naming
+			// scheme the resuming Workflow execution would choose for a new call.
+			ActionEventType:   action.Type,
 			Kind:              row.Kind,
 			ToolName:          name,
 			Input:             input,

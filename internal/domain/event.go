@@ -132,6 +132,22 @@ func AgentToolResultReference(
 	return "", false
 }
 
+// AgentToolResultTypeFor returns the result event type that answers a
+// server-emitted tool-use event: agent.mcp_tool_result for agent.mcp_tool_use
+// and agent.tool_result for every other server-executed call.
+//
+// The pairing is a property of the committed use event, not of the code that
+// happens to be running when the answer is produced. A tool call can park on a
+// client confirmation for an unbounded time and be answered by a later, upgraded
+// process, so the answering side must read the durable type rather than assume
+// its own naming scheme.
+func AgentToolResultTypeFor(toolUseEventType string) string {
+	if toolUseEventType == EvAgentMcpToolUse {
+		return EvAgentMcpToolResult
+	}
+	return EvAgentToolResult
+}
+
 // IsInitialEventType reports whether a type is allowed in a session's
 // initial_events. Only user.message and user.define_outcome are accepted there;
 // unlike scheduled deployments, initial_events does not accept system.message.

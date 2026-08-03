@@ -148,7 +148,15 @@ type EvaluateOutcomeResult struct {
 // event payloads before they enter Workflow history. Confirmations also carry a
 // stable journal step id for an allowed built-in execution.
 type ResumeAction struct {
-	ActionEventID     string                   `json:"action_event_id"`
+	ActionEventID string `json:"action_event_id"`
+	// ActionEventType is the public event type PostgreSQL durably holds for the
+	// parked call. The result that answers this action must be the matching
+	// documented variant, and that decision cannot be made from Workflow code
+	// alone: a barrier can outlive both a worker upgrade and a Continue-As-New,
+	// so the answering execution may run newer code than the one that wrote the
+	// call. An empty value predates this field and means the legacy
+	// agent.tool_use spelling.
+	ActionEventType   string                   `json:"action_event_type,omitempty"`
 	Kind              domain.PendingActionKind `json:"kind"`
 	ToolName          string                   `json:"tool_name"`
 	Input             map[string]any           `json:"input"`

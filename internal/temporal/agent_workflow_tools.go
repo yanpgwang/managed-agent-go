@@ -32,14 +32,10 @@ type workflowTurnState struct {
 	ordinal                int
 	interrupts             *turnInterruptWatcher
 	usesProviderTranscript bool
-	// mcpToolEvents is the resolved value of the mcp-tool-event-types Workflow
-	// version gate for this turn. False replays a history recorded before the
-	// change and keeps MCP calls on agent.tool_use / agent.tool_result.
-	mcpToolEvents     bool
-	transcriptDelta   []domain.Message
-	toolUseMappings   []domain.ProviderToolUseMapping
-	usage             domain.TokenUsage
-	flushedEventCount int
+	transcriptDelta        []domain.Message
+	toolUseMappings        []domain.ProviderToolUseMapping
+	usage                  domain.TokenUsage
+	flushedEventCount      int
 }
 
 func (t *workflowTurnState) startModelRequest(startID string) error {
@@ -458,8 +454,7 @@ func resumeWorkflowTurn(
 				isError = executed.Result.IsError
 				if activityOutcome.Interrupted {
 					turn.output = append(turn.output, toolResultDraft(
-						definition,
-						turn.mcpToolEvents,
+						action.ActionEventType,
 						action.ActionEventID,
 						content,
 						isError,
@@ -468,8 +463,7 @@ func resumeWorkflowTurn(
 				}
 			}
 			turn.output = append(turn.output, toolResultDraft(
-				definition,
-				turn.mcpToolEvents,
+				action.ActionEventType,
 				action.ActionEventID,
 				content,
 				isError,
@@ -507,8 +501,12 @@ func resumeWorkflowTurn(
 type plannedToolUse struct {
 	use           domain.ContentBlock
 	publicEventID string
-	stepID        string
-	definition    TurnTool
+	// useEventType is the type of the tool-use draft this plan committed for the
+	// call. The result event is derived from it rather than recomputed, so the
+	// pair can never disagree.
+	useEventType string
+	stepID       string
+	definition   TurnTool
 }
 
 type toolBatchPlan struct {
@@ -521,7 +519,8 @@ type toolBatchPlan struct {
 // call. An MCP call is its own event type carrying a required mcp_server_name;
 // every other server-executed tool stays on agent.tool_use. mcpToolEvents is the
 // Workflow version gate: a history recorded before the change keeps the legacy
-// spelling so replay stays deterministic.
+// spelling so replay stays deterministic. It is the only decision the gate
+// makes, because it is the only one that is not already fixed by durable state.
 func serverToolUseType(definition TurnTool, mcpToolEvents bool) string {
 	if mcpToolEvents && definition.Kind == TurnToolMCP {
 		return domain.EvAgentMcpToolUse
@@ -530,18 +529,24 @@ func serverToolUseType(definition TurnTool, mcpToolEvents bool) string {
 }
 
 // toolResultDraft builds the result event that answers one server-executed tool
-// call. agent.mcp_tool_result correlates through mcp_tool_use_id and carries no
-// mcp_server_name: upstream documents attribution as a join back to the
-// agent.mcp_tool_use event, so inventing a server name here would be a field
+// call, deriving the variant from the tool-use event that was actually
+// committed. agent.mcp_tool_result correlates through mcp_tool_use_id and
+// carries no mcp_server_name: upstream documents attribution as a join back to
+// the agent.mcp_tool_use event, so inventing a server name here would be a field
 // the contract does not have.
+//
+// The use type is read from state rather than recomputed from the tool
+// definition and the version gate, because a parked call is answered by whatever
+// execution happens to resume it. That execution can be running newer code than
+// the one that wrote the call, and an mcp_tool_use_id pointing at an
+// agent.tool_use event would be an unreadable public ledger.
 func toolResultDraft(
-	definition TurnTool,
-	mcpToolEvents bool,
+	toolUseEventType string,
 	toolUseEventID string,
 	content []any,
 	isError bool,
 ) domain.EventDraft {
-	if mcpToolEvents && definition.Kind == TurnToolMCP {
+	if domain.AgentToolResultTypeFor(toolUseEventType) == domain.EvAgentMcpToolResult {
 		return domain.EventDraft{
 			Type: domain.EvAgentMcpToolResult,
 			Payload: map[string]any{
@@ -640,6 +645,7 @@ func planToolBatch(
 			plan.executable = append(plan.executable, plannedToolUse{
 				use:           use,
 				publicEventID: planned.ToolUseEventID,
+				useEventType:  draft.Type,
 				stepID:        planned.ToolStepID,
 				definition:    definition,
 			})
@@ -752,8 +758,7 @@ func executeToolBatch(
 			), nil
 		}
 		execution.resultDrafts = append(execution.resultDrafts, toolResultDraft(
-			planned.definition,
-			turn.mcpToolEvents,
+			planned.useEventType,
 			planned.publicEventID,
 			executed.Result.Content,
 			executed.Result.IsError,

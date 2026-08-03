@@ -22,10 +22,24 @@ const (
 
 	// mcpToolEventsChangeID gates the wire-breaking move of MCP tool calls from
 	// agent.tool_use/agent.tool_result onto the documented
-	// agent.mcp_tool_use/agent.mcp_tool_result pair. A Workflow that recorded no
-	// marker for this change keeps emitting the legacy pair for its whole run, so
-	// an in-flight turn replays deterministically and its already-published
-	// public ledger stays internally consistent.
+	// agent.mcp_tool_use/agent.mcp_tool_result pair. A Workflow execution that
+	// recorded no marker for this change keeps writing new MCP calls as
+	// agent.tool_use, so an in-flight turn replays deterministically.
+	//
+	// The gate governs exactly one decision: which type a *new* tool use is
+	// written as. It cannot govern anything more, because workflow.GetVersion
+	// memoizes per Workflow execution while the public event ledger is
+	// cross-execution. SessionWorkflow continues-as-new (see
+	// continueAsNewThreshold), which starts a fresh history whose gate re-resolves
+	// to the current version on an upgraded worker, while PostgreSQL still holds
+	// every event the previous executions published.
+	//
+	// General principle: a version gate guarantees code-branch consistency within
+	// one execution; it cannot guarantee consistency of cross-execution persisted
+	// state. Any semantic that must survive Continue-As-New has to be derived from
+	// durable state. Here the tool-result variant is derived from the committed
+	// tool-use event type (ResumeAction.ActionEventType for a resumed barrier,
+	// plannedToolUse.useEventType within a round), never from this gate.
 	mcpToolEventsChangeID = "mcp-tool-event-types"
 	mcpToolEventsVersion  = 1
 )
@@ -90,9 +104,10 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		liveModelSpanStartVersion,
 	) == liveModelSpanStartVersion
-	// Evaluated before any tool draft is built so both the resume round and every
-	// model round of this turn agree on one naming scheme. Ordering relative to
-	// the gate above is part of replay history and must not change.
+	// Evaluated once before the tool loop so every model round of this turn writes
+	// new tool uses under one naming scheme. Its position in the command stream is
+	// part of replay history and must not change. Resumed barriers deliberately do
+	// not consult it; they follow the type their parked event already carries.
 	mcpToolEvents := workflow.GetVersion(
 		actx,
 		mcpToolEventsChangeID,
@@ -107,7 +122,6 @@ func runWorkflowTurnInternal(
 		resolutionEventIDs:     resolutionEventIDs,
 		interrupts:             interrupts,
 		usesProviderTranscript: prepared.UsesProviderTranscript,
-		mcpToolEvents:          mcpToolEvents,
 		output:                 append([]domain.EventDraft(nil), prepared.PreludeEvents...),
 		transcriptDelta: append(
 			[]domain.Message(nil),

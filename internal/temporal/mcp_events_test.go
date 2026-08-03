@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -236,6 +237,7 @@ func TestWorkflowTurn_AllowedMCPConfirmationEmitsMcpToolResult(t *testing.T) {
 			Tools:     []TurnTool{mcpTurnTool("always_ask")},
 			ResumeActions: []ResumeAction{{
 				ActionEventID:     "sevt_mcp_ask",
+				ActionEventType:   domain.EvAgentMcpToolUse,
 				Kind:              domain.PendingToolConfirmation,
 				ToolName:          "mcp__github__list_issues",
 				Input:             map[string]any{"repo": "mango"},
@@ -299,6 +301,7 @@ func TestWorkflowTurn_DeniedMCPConfirmationEmitsMcpToolResult(t *testing.T) {
 			Tools:   []TurnTool{mcpTurnTool("always_ask")},
 			ResumeActions: []ResumeAction{{
 				ActionEventID:     "sevt_mcp_ask",
+				ActionEventType:   domain.EvAgentMcpToolUse,
 				Kind:              domain.PendingToolConfirmation,
 				ToolName:          "mcp__github__list_issues",
 				Input:             map[string]any{"repo": "mango"},
@@ -334,6 +337,137 @@ func TestWorkflowTurn_DeniedMCPConfirmationEmitsMcpToolResult(t *testing.T) {
 	require.Equal(t, true, result.Payload["is_error"])
 }
 
+// The cross-execution case the version gate cannot cover. A confirmation parked
+// before the upgrade is durably an agent.tool_use; SessionWorkflow then
+// continues-as-new, so the resuming execution has a fresh history and its gate
+// resolves to the new version. The result must still pair with what PostgreSQL
+// actually holds, so it stays agent.tool_result carrying tool_use_id.
+func TestWorkflowTurn_LegacyParkResumedOnUpgradedExecutionKeepsLegacyResult(t *testing.T) {
+	prepared := prepareLegacyMCPParkResume(t)
+	require.Len(t, prepared.ResumeActions, 1)
+
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return prepared, nil
+	}
+	callModel := func(context.Context, CallModelInput) (CallModelResult, error) {
+		return CallModelResult{
+			MessageEventID: "sevt_answer",
+			Response: model.Response{
+				StopReason: "end_turn",
+				Content:    []domain.ContentBlock{{Type: "text", Text: "done"}},
+			},
+		}, nil
+	}
+	executeTool := func(_ context.Context, in ExecuteToolInput) (ExecuteToolResult, error) {
+		require.Equal(t, "sevt_legacy_mcp_ask", in.ToolUseEventID)
+		return ExecuteToolResult{Result: domain.ToolStepResult{
+			Content: []any{map[string]any{"type": "text", "text": "#1, #2"}},
+		}}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnCompleted}, nil
+	}
+	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
+
+	// A fresh execution records no marker for the change id, so the gate resolves
+	// to the current version exactly as it would on an upgraded worker after
+	// Continue-As-New.
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID:          "sess_legacy_park",
+		TriggerEventID:     "sevt_confirmation",
+		ResolutionEventIDs: []string{"sevt_confirmation"},
+	})
+	require.NoError(t, env.GetWorkflowError())
+
+	result := completed.Output[0]
+	require.Equal(t, domain.EvAgentToolResult, result.Type,
+		"a park durably recorded as agent.tool_use must be answered on the legacy type")
+	require.Equal(t, "sevt_legacy_mcp_ask", result.Payload["tool_use_id"])
+	require.NotContains(t, result.Payload, "mcp_tool_use_id",
+		"mcp_tool_use_id must never point at an agent.tool_use event")
+}
+
+// prepareLegacyMCPParkResume runs the real PrepareTurn Activity over a ledger
+// that parked an MCP confirmation on the legacy agent.tool_use type, which is
+// what a session parked before this change durably holds.
+func prepareLegacyMCPParkResume(t *testing.T) PrepareTurnResult {
+	t.Helper()
+	processedAt := time.Now().UTC()
+	resolutionID := "sevt_confirmation"
+	base := newFakeSource([]domain.Event{
+		{
+			ID: "sevt_user", Sequence: 1, Type: domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "check github"},
+			}},
+			ProcessedAt: &processedAt,
+		},
+		{
+			ID: "sevt_legacy_mcp_ask", Sequence: 2, Type: domain.EvAgentToolUse,
+			Payload: map[string]any{
+				"name":                 "list_issues",
+				"mcp_server_name":      "github",
+				"input":                map[string]any{"repo": "mango"},
+				"evaluated_permission": "ask",
+			},
+		},
+		{
+			ID: resolutionID, Sequence: 3, Type: domain.EvUserToolConfirmation,
+			Payload: map[string]any{
+				"tool_use_id": "sevt_legacy_mcp_ask",
+				"result":      "allow",
+			},
+			ProcessedAt: &processedAt,
+		},
+	})
+	base.pendingActions = []domain.PendingAction{{
+		ID:               "pact_legacy",
+		SessionID:        "sess_legacy_park",
+		ActionEventID:    "sevt_legacy_mcp_ask",
+		Kind:             domain.PendingToolConfirmation,
+		ResolvingEventID: &resolutionID,
+	}}
+	source := &mcpPrepareSource{
+		fakeSource: base,
+		session: domain.Session{
+			ID:     "sess_legacy_park",
+			Status: domain.StatusRunning,
+			AgentSnapshot: domain.Agent{
+				Model: domain.Model{ID: "model"},
+				MCPServers: []any{map[string]any{
+					"type": "url", "name": "github",
+					"url": "https://mcp.example.com",
+				}},
+				Tools: []any{map[string]any{
+					"type": "mcp_toolset", "mcp_server_name": "github",
+					"permission": map[string]any{"type": "always_ask"},
+				}},
+			},
+		},
+	}
+	client := &fakeMCPClient{tools: []mcpclient.Tool{{
+		Name:        "list_issues",
+		InputSchema: map[string]any{"type": "object"},
+	}}}
+
+	prepared, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithMCPClient(client).PrepareTurn(context.Background(), PrepareTurnInput{
+		SessionID:          "sess_legacy_park",
+		TriggerEventID:     resolutionID,
+		ResolutionEventIDs: []string{resolutionID},
+	})
+	require.NoError(t, err)
+	require.Empty(t, prepared.FatalError)
+	return prepared
+}
+
 // A Workflow history recorded before the mcp-tool-event-types change replays
 // with the gate closed and must keep emitting the legacy pair, so its already
 // published ledger stays internally consistent.
@@ -354,20 +488,20 @@ func TestPlanToolBatch_LegacyHistoryKeepsMCPOnToolUse(t *testing.T) {
 	require.Equal(t, domain.EvAgentToolUse, legacy.actionDrafts[0].Type)
 	require.Equal(t, "list_issues", legacy.actionDrafts[0].Payload["name"])
 	require.Equal(t, "github", legacy.actionDrafts[0].Payload["mcp_server_name"])
+	// The executable entry carries the type it just committed, so the result the
+	// same round produces cannot drift from the use event.
+	require.Equal(t, domain.EvAgentToolUse, legacy.executable[0].useEventType)
 
 	current, failure := planToolBatch(uses, tools, steps, true)
 	require.Empty(t, failure)
 	require.Equal(t, domain.EvAgentMcpToolUse, current.actionDrafts[0].Type)
+	require.Equal(t, domain.EvAgentMcpToolUse, current.executable[0].useEventType)
 
-	legacyResult := toolResultDraft(
-		tools["mcp__github__list_issues"], false, "sevt_mcp", nil, false,
-	)
+	legacyResult := toolResultDraft(domain.EvAgentToolUse, "sevt_mcp", nil, false)
 	require.Equal(t, domain.EvAgentToolResult, legacyResult.Type)
 	require.Equal(t, "sevt_mcp", legacyResult.Payload["tool_use_id"])
 
-	currentResult := toolResultDraft(
-		tools["mcp__github__list_issues"], true, "sevt_mcp", nil, false,
-	)
+	currentResult := toolResultDraft(domain.EvAgentMcpToolUse, "sevt_mcp", nil, false)
 	require.Equal(t, domain.EvAgentMcpToolResult, currentResult.Type)
 	require.Equal(t, "sevt_mcp", currentResult.Payload["mcp_tool_use_id"])
 
@@ -380,7 +514,7 @@ func TestPlanToolBatch_LegacyHistoryKeepsMCPOnToolUse(t *testing.T) {
 	require.Equal(
 		t,
 		domain.EvAgentToolResult,
-		toolResultDraft(builtin, true, "sevt_bash", nil, false).Type,
+		toolResultDraft(serverToolUseType(builtin, true), "sevt_bash", nil, false).Type,
 	)
 }
 
@@ -458,6 +592,12 @@ func TestPrepareTurn_ResumedMCPConfirmationRebuildsAliasedToolName(t *testing.T)
 	require.Len(t, prepared.ResumeActions, 1)
 	require.Equal(
 		t,
+		domain.EvAgentMcpToolUse,
+		prepared.ResumeActions[0].ActionEventType,
+		"the durable park type must reach the Workflow so the result can pair with it",
+	)
+	require.Equal(
+		t,
 		"mcp__github__list_issues",
 		prepared.ResumeActions[0].ToolName,
 		"the bare name plus mcp_server_name must rebuild the model-facing alias",
@@ -475,4 +615,33 @@ func TestPrepareTurn_ResumedMCPConfirmationRebuildsAliasedToolName(t *testing.T)
 	require.True(t, ok)
 	require.Equal(t, TurnToolMCP, definition.Kind)
 	require.Equal(t, "list_issues", definition.MCPToolName)
+}
+
+// An execution that is mid-turn when the worker is upgraded replays a
+// PrepareTurn result the previous binary recorded, which has no
+// action_event_type field. The zero value must mean the legacy agent.tool_use
+// spelling, because that is what every park written before this change is.
+func TestResumeAction_MissingActionEventTypeMeansLegacyPair(t *testing.T) {
+	recordedByPreviousBinary := []byte(`{
+		"action_event_id": "sevt_park",
+		"kind": "tool_confirmation",
+		"tool_name": "mcp__github__list_issues",
+		"input": {"repo": "mango"},
+		"resolution_event_id": "sevt_confirmation",
+		"confirmation": "allow",
+		"tool_step_id": "tstep_resume"
+	}`)
+
+	var action ResumeAction
+	require.NoError(t, json.Unmarshal(recordedByPreviousBinary, &action))
+	require.Empty(t, action.ActionEventType)
+
+	draft := toolResultDraft(
+		action.ActionEventType,
+		action.ActionEventID,
+		nil,
+		false,
+	)
+	require.Equal(t, domain.EvAgentToolResult, draft.Type)
+	require.Equal(t, "sevt_park", draft.Payload["tool_use_id"])
 }

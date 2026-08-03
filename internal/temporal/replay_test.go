@@ -418,8 +418,6 @@ func TestReplay_MCPToolTurnRecordedWithMCPEventTypesGate(t *testing.T) {
 	require.NoError(t, replayTurnHistory(t, history))
 }
 
-// A history whose Activity sequence no longer matches the Workflow code must be
-// rejected. Without this the fixtures above could pass vacuously.
 // An always_ask MCP call recorded before this change parked the run on an
 // agent.tool_use. Replaying that history must keep the same barrier shape: the
 // gate is closed, so the resumed naming stays legacy and the recorded command
@@ -435,6 +433,47 @@ func TestReplay_AlwaysAskMCPParkRecordedBeforeMCPEventTypesGate(t *testing.T) {
 		versionMarker(liveModelSpanStartChangeID, liveModelSpanStartVersion).
 		activity(ActivityStartModelRequest, nil).
 		activity(ActivityCallModel, mcpToolRoundCall()).
+		activity(ActivityCompleteWorkflowTurn, RunTurnResult{
+			Disposition: TurnCompleted,
+		}).
+		finish(RunTurnResult{Disposition: TurnCompleted})
+
+	require.NoError(t, replayTurnHistory(t, history))
+}
+
+// The cross-execution case. SessionWorkflow continues-as-new, so a barrier
+// parked by an earlier execution is resumed by a fresh history that records the
+// mcp-tool-event-types marker at its current version. The resume must still
+// replay deterministically while answering the legacy agent.tool_use park it was
+// handed, which is exactly why the result variant comes from
+// ResumeAction.ActionEventType and not from the gate.
+func TestReplay_LegacyParkResumedByExecutionWithMCPEventTypesGate(t *testing.T) {
+	prepared := mcpToolRoundPrepared()
+	prepared.Tools = []TurnTool{mcpTurnTool("always_ask")}
+	prepared.Request.Messages = nil
+	prepared.ResumeActions = []ResumeAction{{
+		ActionEventID:     "sevt_legacy_park",
+		ActionEventType:   domain.EvAgentToolUse,
+		Kind:              domain.PendingToolConfirmation,
+		ToolName:          "mcp__github__list_issues",
+		Input:             map[string]any{"repo": "mango"},
+		ResolutionEventID: "sevt_confirmation",
+		Confirmation:      "allow",
+		ToolStepID:        "tstep_legacy_resume",
+	}}
+	input := PrepareTurnInput{
+		SessionID:          "sess_replay_legacy_resume",
+		TriggerEventID:     "sevt_confirmation",
+		ResolutionEventIDs: []string{"sevt_confirmation"},
+	}
+	history := newHistoryFixture(t, input).
+		activity(ActivityPrepareTurn, prepared).
+		versionMarker(liveModelSpanStartChangeID, liveModelSpanStartVersion).
+		versionMarker(mcpToolEventsChangeID, mcpToolEventsVersion).
+		activity(ActivityExecuteTool, mcpToolRoundExecuted()).
+		activity(ActivityAppendWorkflowEvents, nil).
+		activity(ActivityStartModelRequest, nil).
+		activity(ActivityCallModel, mcpToolRoundFinalCall()).
 		activity(ActivityCompleteWorkflowTurn, RunTurnResult{
 			Disposition: TurnCompleted,
 		}).
