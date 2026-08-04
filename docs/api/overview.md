@@ -17,8 +17,9 @@ matrix](core-conformance.md) inventories each SDK-visible operation and its
 current test evidence. The [Files conformance matrix](files-conformance.md) and
 [Session Resources conformance matrix](session-resources-conformance.md) track
 the first post-core resource slices. The [Skills conformance
-matrix](skills-conformance.md) separately records custom Skill resource and
-Version support without implying runtime materialization.
+matrix](skills-conformance.md) separately records custom Skill resources,
+reference validation, and Version pinning without implying runtime
+materialization.
 
 :::
 

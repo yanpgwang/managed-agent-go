@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"gopkg.in/yaml.v3"
 )
 
@@ -421,5 +422,57 @@ func TestOpenAPISkillsContract(t *testing.T) {
 		"list Versions",
 	)
 	assertOpenAPIParameterNames(t, doc, versions["parameters"], []string{"limit", "page"})
+	validateOpenAPIRefs(t, doc, doc)
+}
+
+func TestOpenAPISkillReferenceContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	components := openAPIMap(t, doc["components"], "components")
+	schemas := openAPIMap(t, components["schemas"], "schemas")
+	for _, name := range []string{"CustomSkillReferenceInput", "AnthropicSkillReferenceInput"} {
+		schema := openAPIMap(t, schemas[name], name)
+		if additional, ok := schema["additionalProperties"].(bool); !ok || additional {
+			t.Fatalf("%s additionalProperties = %v, want false", name, schema["additionalProperties"])
+		}
+		required, _ := schema["required"].([]any)
+		if fmt.Sprint(required) != "[type skill_id]" {
+			t.Fatalf("%s required = %v", name, required)
+		}
+		version := openAPIMap(t, openAPIMap(t, schema["properties"], name+" properties")["version"], name+" version")
+		if version["minLength"] != 1 || version["pattern"] != `^\S(?:[\s\S]*\S)?$` {
+			t.Fatalf("%s Version constraints = %#v", name, version)
+		}
+	}
+	resolved := openAPIMap(t, schemas["ResolvedSkillReference"], "resolved Skill reference")
+	if required, _ := resolved["required"].([]any); fmt.Sprint(required) != "[type skill_id version]" {
+		t.Fatalf("resolved Skill required = %v", required)
+	}
+	resolvedType := openAPIMap(t, openAPIMap(t, resolved["properties"], "resolved Skill properties")["type"], "resolved Skill type")
+	if resolvedType["const"] != "custom" {
+		t.Fatalf("resolved Skill type = %v, want custom", resolvedType["const"])
+	}
+	legacy := openAPIMap(t, schemas["LegacySkillReference"], "legacy Skill reference")
+	assertOpenAPIRef(t, legacy["not"], "#/components/schemas/ResolvedSkillReference")
+	response := openAPIMap(t, schemas["SkillReferenceResponse"], "Skill reference response")
+	variants, _ := response["oneOf"].([]any)
+	if len(variants) != 2 {
+		t.Fatalf("Skill response variants = %v, want resolved and legacy", variants)
+	}
+	assertOpenAPIRef(t, variants[0], "#/components/schemas/ResolvedSkillReference")
+	assertOpenAPIRef(t, variants[1], "#/components/schemas/LegacySkillReference")
+
+	create := openAPIMap(t, schemas["AgentCreateRequest"], "Agent create")
+	createSkills := openAPIMap(t, openAPIMap(t, create["properties"], "Agent create properties")["skills"], "Agent create skills")
+	if max, _ := createSkills["maxItems"].(int); max != app.MaxSessionSkills {
+		t.Fatalf("Agent create max Skills = %v, want %d", createSkills["maxItems"], app.MaxSessionSkills)
+	}
+	assertOpenAPIRef(t, createSkills["items"], "#/components/schemas/SkillReferenceInput")
+
+	agent := openAPIMap(t, schemas["Agent"], "Agent")
+	agentSkills := openAPIMap(t, openAPIMap(t, agent["properties"], "Agent properties")["skills"], "Agent skills")
+	assertOpenAPIRef(t, agentSkills["items"], "#/components/schemas/SkillReferenceResponse")
+	snapshot := openAPIMap(t, schemas["AgentSnapshot"], "Agent snapshot")
+	snapshotSkills := openAPIMap(t, openAPIMap(t, snapshot["properties"], "Agent snapshot properties")["skills"], "Agent snapshot skills")
+	assertOpenAPIRef(t, snapshotSkills["items"], "#/components/schemas/SkillReferenceResponse")
 	validateOpenAPIRefs(t, doc, doc)
 }

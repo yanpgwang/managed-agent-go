@@ -7,19 +7,34 @@ import (
 )
 
 type AgentService struct {
-	repo  AgentRepository
-	ids   domain.IDGenerator
-	clock domain.Clock
+	repo     AgentRepository
+	ids      domain.IDGenerator
+	clock    domain.Clock
+	skillRef SkillReferenceResolver
 }
 
-func NewAgentService(repo AgentRepository, ids domain.IDGenerator, clock domain.Clock) *AgentService {
-	return &AgentService{repo: repo, ids: ids, clock: clock}
+func NewAgentService(
+	repo AgentRepository,
+	ids domain.IDGenerator,
+	clock domain.Clock,
+	skillResolvers ...SkillReferenceResolver,
+) *AgentService {
+	service := &AgentService{repo: repo, ids: ids, clock: clock}
+	if len(skillResolvers) > 0 {
+		service.skillRef = skillResolvers[0]
+	}
+	return service
 }
 
 func (s *AgentService) Create(ctx context.Context, a domain.Agent) (domain.Agent, error) {
 	if err := validateAgent(a); err != nil {
 		return domain.Agent{}, err
 	}
+	resolved, err := ResolveAgentSkillReferences(ctx, s.skillRef, a.Skills)
+	if err != nil {
+		return domain.Agent{}, err
+	}
+	a.Skills = resolved
 	a.Model = domain.NormalizeModel(a.Model)
 	now := s.clock.Now().UTC()
 	a.ID = s.ids.NewID(domain.PrefixAgent)
@@ -55,11 +70,33 @@ func (s *AgentService) Versions(
 }
 
 func (s *AgentService) Update(ctx context.Context, id string, patch domain.AgentPatch) (domain.Agent, error) {
+	effectivePatch := patch
+	if patch.Skills != nil {
+		// Resolve before UpdateVersion opens its serialization transaction. A
+		// production resolver may use the same connection pool as the Agent
+		// repository; calling it from the mutation callback can exhaust that pool
+		// while every transaction is holding an Agent row lock.
+		current, err := s.repo.Latest(ctx, id)
+		if err != nil {
+			return domain.Agent{}, err
+		}
+		if current.ArchivedAt != nil {
+			return domain.Agent{}, domain.Validation("archived agent is read-only")
+		}
+		if patch.ExpectedVersion != nil && *patch.ExpectedVersion != current.Version {
+			return domain.Agent{}, domain.Conflict("agent version mismatch")
+		}
+		resolved, err := ResolveAgentSkillReferences(ctx, s.skillRef, *patch.Skills)
+		if err != nil {
+			return domain.Agent{}, err
+		}
+		effectivePatch.Skills = &resolved
+	}
 	return s.repo.UpdateVersion(ctx, id, func(cur domain.Agent) (domain.Agent, bool, error) {
 		if cur.ArchivedAt != nil {
 			return domain.Agent{}, false, domain.Validation("archived agent is read-only")
 		}
-		next, changed, err := cur.Apply(patch)
+		next, changed, err := cur.Apply(effectivePatch)
 		if err != nil {
 			return domain.Agent{}, false, err
 		}

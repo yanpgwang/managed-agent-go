@@ -457,6 +457,68 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 	assertAPIStatus(t, err, 400)
 }
 
+func TestSDK_SkillReferencesPinAcrossAgentAndSessionSnapshots(t *testing.T) {
+	client, server, sessions := sdkClientServerAndSessions(t)
+	ctx := context.Background()
+	const skillID = "skill_sdk_pin"
+	sessions.setLatestSkillVersion(skillID, "100")
+	agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name: "Skill Agent",
+		Model: anthropic.BetaManagedAgentsModelConfigParams{
+			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_8,
+		},
+		Skills: []anthropic.BetaManagedAgentsSkillParamsUnion{{
+			OfCustom: &anthropic.BetaManagedAgentsCustomSkillParams{
+				Type:    anthropic.BetaManagedAgentsCustomSkillParamsTypeCustom,
+				SkillID: skillID,
+				Version: anthropic.String("latest"),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create Agent with Skill: %v", err)
+	}
+	if len(agent.Skills) != 1 || agent.Skills[0].Version != "100" {
+		t.Fatalf("resolved Agent Skills = %#v", agent.Skills)
+	}
+
+	sessions.setLatestSkillVersion(skillID, "200")
+	environmentID := mustEnv(t, server.URL)
+	inherited, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: environmentID,
+	})
+	if err != nil {
+		t.Fatalf("create inherited Session: %v", err)
+	}
+	if len(inherited.Agent.Skills) != 1 || inherited.Agent.Skills[0].Version != "100" {
+		t.Fatalf("inherited Session Skills = %#v, want Agent pin 100", inherited.Agent.Skills)
+	}
+
+	overridden, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent: anthropic.BetaSessionNewParamsAgentUnion{
+			OfBetaManagedAgentsAgentWithOverridess: &anthropic.BetaManagedAgentsAgentWithOverridesParams{
+				ID:   agent.ID,
+				Type: anthropic.BetaManagedAgentsAgentWithOverridesParamsTypeAgentWithOverrides,
+				Skills: []anthropic.BetaManagedAgentsSkillParamsUnion{{
+					OfCustom: &anthropic.BetaManagedAgentsCustomSkillParams{
+						Type:    anthropic.BetaManagedAgentsCustomSkillParamsTypeCustom,
+						SkillID: skillID,
+						Version: anthropic.String("latest"),
+					},
+				}},
+			},
+		},
+		EnvironmentID: environmentID,
+	})
+	if err != nil {
+		t.Fatalf("create overridden Session: %v", err)
+	}
+	if len(overridden.Agent.Skills) != 1 || overridden.Agent.Skills[0].Version != "200" {
+		t.Fatalf("overridden Session Skills = %#v, want resolved latest 200", overridden.Agent.Skills)
+	}
+}
+
 func TestSDK_SessionLifecycleAndSnapshot(t *testing.T) {
 	client, ts := sdkClientAndServer(t)
 	ctx := context.Background()

@@ -45,7 +45,8 @@ func newTestHandlerWithSessions(
 	clock := domain.FixedClock{T: time.Unix(1000, 0).UTC()}
 	agentsRepo := newTestAgentRepository()
 	environmentsRepo := newTestEnvironmentRepository()
-	agents := app.NewAgentService(agentsRepo, ids, clock)
+	skillResolver := newTestSkillResolver()
+	agents := app.NewAgentService(agentsRepo, ids, clock, skillResolver)
 	environments := app.NewEnvironmentService(
 		environmentsRepo, ids, clock,
 		app.EnvironmentCapabilities{PackageSetup: true, LimitedNetwork: true},
@@ -58,6 +59,7 @@ func newTestHandlerWithSessions(
 		clock,
 		hub,
 		previews,
+		skillResolver,
 	)
 	resources := &testSessionResourceService{sessions: sessions, ids: ids, clock: clock}
 	return NewServer(Deps{
@@ -360,6 +362,7 @@ type testSessionService struct {
 	clock        domain.Clock
 	hub          *app.Hub
 	previews     bool
+	skillRef     app.SkillReferenceResolver
 	sessions     map[string]domain.Session
 	events       map[string][]domain.Event
 	sequences    map[string]int64
@@ -372,11 +375,13 @@ func newTestSessionService(
 	clock domain.Clock,
 	hub *app.Hub,
 	previews bool,
+	skillRef app.SkillReferenceResolver,
 ) *testSessionService {
 	return &testSessionService{
 		agents: agents, environments: environments, ids: ids, clock: clock,
-		hub: hub, previews: previews, sessions: make(map[string]domain.Session),
-		events: make(map[string][]domain.Event), sequences: make(map[string]int64),
+		hub: hub, previews: previews, skillRef: skillRef,
+		sessions: make(map[string]domain.Session),
+		events:   make(map[string][]domain.Event), sequences: make(map[string]int64),
 	}
 }
 
@@ -412,6 +417,10 @@ func (s *testSessionService) Create(
 	snapshot := agent
 	if input.Overrides != nil {
 		snapshot = snapshot.WithOverrides(*input.Overrides)
+	}
+	snapshot.Skills, err = app.ResolveAgentSkillReferences(ctx, s.skillRef, snapshot.Skills)
+	if err != nil {
+		return domain.Session{}, err
 	}
 	metadata := input.Metadata
 	if metadata == nil {
@@ -450,6 +459,58 @@ func (s *testSessionService) Create(
 		}
 	}
 	return session, nil
+}
+
+type testSkillResolver struct {
+	mu      sync.Mutex
+	latest  map[string]string
+	missing map[string]bool
+}
+
+func newTestSkillResolver() *testSkillResolver {
+	return &testSkillResolver{
+		latest: map[string]string{}, missing: map[string]bool{"skill_missing": true},
+	}
+}
+
+func (r *testSkillResolver) ResolveSkillReferences(
+	_ context.Context,
+	references []domain.SkillReference,
+) ([]domain.SkillReference, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	resolved := make([]domain.SkillReference, len(references))
+	for index, reference := range references {
+		if reference.Type != "custom" {
+			return nil, domain.Unsupported("Anthropic-managed Skills are not supported")
+		}
+		if r.missing[reference.SkillID] {
+			return nil, domain.Validation("custom Skill Version not found")
+		}
+		version := reference.Version
+		if version == "" || version == "latest" {
+			version = r.latest[reference.SkillID]
+			if version == "" {
+				version = "1759178010641129"
+			}
+		}
+		resolved[index] = domain.SkillReference{
+			Type: "custom", SkillID: reference.SkillID, Version: version,
+		}
+	}
+	return resolved, nil
+}
+
+func (r *testSkillResolver) setLatest(skillID, version string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.latest[skillID] = version
+}
+
+func (s *testSessionService) setLatestSkillVersion(skillID, version string) {
+	if resolver, ok := s.skillRef.(*testSkillResolver); ok {
+		resolver.setLatest(skillID, version)
+	}
 }
 
 type testSessionResourceService struct {

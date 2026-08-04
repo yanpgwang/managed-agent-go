@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,7 +37,12 @@ func (r *AgentRepository) PutVersion(ctx context.Context, agent domain.Agent) er
 	if err != nil {
 		return err
 	}
-	return r.store.q.InsertAgentVersion(ctx, params)
+	return r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+		if err := q.InsertAgentVersion(ctx, params); err != nil {
+			return err
+		}
+		return replaceAgentSkillVersions(ctx, tx, agent, true)
+	})
 }
 
 func (r *AgentRepository) UpdateVersion(
@@ -45,7 +51,7 @@ func (r *AgentRepository) UpdateVersion(
 	mutate func(domain.Agent) (domain.Agent, bool, error),
 ) (domain.Agent, error) {
 	var result domain.Agent
-	err := r.store.withTx(ctx, func(q *pgstore.Queries) error {
+	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		row, err := q.LockLatestAgent(ctx, id)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("agent not found")
@@ -70,6 +76,7 @@ func (r *AgentRepository) UpdateVersion(
 		next.Version = current.Version + 1
 		next.CreatedAt = current.CreatedAt
 		next.ArchivedAt = nil
+		skillsChanged := !reflect.DeepEqual(current.Skills, next.Skills)
 		params, err := agentInsertParams(next)
 		if err != nil {
 			return err
@@ -78,6 +85,9 @@ func (r *AgentRepository) UpdateVersion(
 			if isUniqueViolation(err) {
 				return domain.Conflict("agent version changed during update")
 			}
+			return err
+		}
+		if err := replaceAgentSkillVersions(ctx, tx, next, skillsChanged); err != nil {
 			return err
 		}
 		result = next
@@ -92,7 +102,17 @@ func (r *AgentRepository) Archive(
 	archivedAt time.Time,
 ) (domain.Agent, error) {
 	var result domain.Agent
-	err := r.store.withTx(ctx, func(q *pgstore.Queries) error {
+	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+		// Serialize archival with version creation before updating every Agent
+		// row. Without this fence, an UpdateVersion blocked inside ArchiveAgent's
+		// statement snapshot can commit a new active version and pin; the archive
+		// statement then misses that version while its later pin cleanup sees and
+		// deletes the new pin.
+		if _, err := q.LockLatestAgent(ctx, id); errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("agent not found")
+		} else if err != nil {
+			return err
+		}
 		affected, err := q.ArchiveAgent(ctx, pgstore.ArchiveAgentParams{
 			ArchivedAt: tsUTC(archivedAt),
 			ID:         id,
@@ -103,6 +123,9 @@ func (r *AgentRepository) Archive(
 		if affected == 0 {
 			return domain.NotFound("agent not found")
 		}
+		if _, err := tx.Exec(ctx, `DELETE FROM agent_skill_versions WHERE agent_id = $1`, id); err != nil {
+			return err
+		}
 		row, err := q.GetLatestAgent(ctx, id)
 		if err != nil {
 			return err
@@ -111,6 +134,48 @@ func (r *AgentRepository) Archive(
 		return err
 	})
 	return result, err
+}
+
+func replaceAgentSkillVersions(
+	ctx context.Context,
+	tx pgx.Tx,
+	agent domain.Agent,
+	strict bool,
+) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM agent_skill_versions WHERE agent_id = $1`, agent.ID); err != nil {
+		return err
+	}
+	for position, reference := range agent.Skills {
+		// Opaque pre-feature values and unsupported provider references remain
+		// readable, but they are not execution pins. New API writes have already
+		// passed strict application validation and cannot reach these branches.
+		if reference.IsLegacy() || reference.Type != "custom" ||
+			reference.SkillID == "" || reference.Version == "" || reference.Version == "latest" {
+			continue
+		}
+		locked, err := lockReadySkillVersion(ctx, tx, reference)
+		if err != nil {
+			return err
+		}
+		if !locked {
+			if strict {
+				return domain.Validation("Agent references a missing custom Skill Version")
+			}
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+INSERT INTO agent_skill_versions (
+    agent_id, agent_version, position, skill_id, skill_version
+) VALUES ($1, $2, $3, $4, $5)`,
+			agent.ID, agent.Version, position, reference.SkillID, reference.Version,
+		); err != nil {
+			if isForeignKeyViolation(err) {
+				return domain.Validation("Agent references a missing custom Skill Version")
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *AgentRepository) Latest(ctx context.Context, id string) (domain.Agent, error) {

@@ -70,8 +70,8 @@ known differences are published in the
 endpoint/model context profiles, hosted differential testing,
 deployment-managed MCP authentication, memory/vaults, multi-agent
 orchestration, schedules, and webhooks remain outside that claim. Custom Skill
-reference validation, Version pinning, and sandbox materialization are also
-still open; the current Skills slice is resource lifecycle only.
+resources, reference validation, and immutable Agent/Session Version pinning
+are implemented; sandbox materialization and model discovery remain open.
 
 The runtime is the product; Claude API compatibility is an integration surface.
 Public behavior is derived from official documentation and tested through raw

@@ -1,0 +1,119 @@
+package controlplane
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/pg"
+	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
+)
+
+func TestPostgresAgentAndSessionSkillVersionResolution(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	skillRepo := pg.NewSkillRepository(fixture.store)
+	base := time.Date(2026, 8, 4, 15, 0, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_controlplane_pin", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Control Plane Pin", Source: "custom", TitleExplicit: true,
+	}
+	first := controlplaneSkillVersion(skill.ID, "100", base, true)
+	if err := skillRepo.BeginSkill(ctx, skill, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, first.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "first",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	skillService := app.NewSkillService(skillRepo, nil, fixture.ids, fixture.clock)
+	agents := app.NewAgentService(fixture.agentRepo, fixture.ids, fixture.clock, skillService)
+	agent, err := agents.Create(ctx, domain.Agent{
+		Name: "skill-agent", Model: domain.Model{ID: "claude-test"},
+		Skills: []domain.SkillReference{{
+			Type: "custom", SkillID: skill.ID, Version: "latest",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create Agent: %v", err)
+	}
+	if agent.Skills[0].Version != first.Version {
+		t.Fatalf("Agent pin = %+v", agent.Skills)
+	}
+
+	second := controlplaneSkillVersion(skill.ID, "200", base.Add(time.Second), false)
+	if err := skillRepo.BeginVersion(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, second.Version, app.BlobInfo{
+		SizeBytes: 20, ChecksumSHA256: "second",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	environments := app.NewEnvironmentService(
+		fixture.environmentRepo,
+		fixture.ids,
+		fixture.clock,
+		app.EnvironmentCapabilities{PackageSetup: true, LimitedNetwork: true},
+	)
+	environment, err := environments.Create(ctx, domain.Environment{
+		Name: "cloud", ConfigType: "cloud", Config: map[string]any{"type": "cloud"},
+	})
+	if err != nil {
+		t.Fatalf("create Environment: %v", err)
+	}
+	sessions := NewSessionService(
+		fixture.store,
+		fixture.agentRepo,
+		fixture.environmentRepo,
+		temporalpkg.NewOrchestrator(fixture.store, nil),
+		fixture.ids,
+		fixture.clock,
+		skillService,
+	)
+	inherited, err := sessions.Create(ctx, app.CreateSessionInput{
+		AgentID: agent.ID, EnvironmentID: environment.ID,
+	})
+	if err != nil {
+		t.Fatalf("create inherited Session: %v", err)
+	}
+	if inherited.AgentSnapshot.Skills[0].Version != first.Version {
+		t.Fatalf("inherited Session pin = %+v", inherited.AgentSnapshot.Skills)
+	}
+	overrideSkills := []domain.SkillReference{{
+		Type: "custom", SkillID: skill.ID, Version: "latest",
+	}}
+	overridden, err := sessions.Create(ctx, app.CreateSessionInput{
+		AgentID: agent.ID, EnvironmentID: environment.ID,
+		Overrides: &domain.AgentOverrides{Skills: &overrideSkills},
+	})
+	if err != nil {
+		t.Fatalf("create overridden Session: %v", err)
+	}
+	if overridden.AgentSnapshot.Skills[0].Version != second.Version {
+		t.Fatalf("overridden Session pin = %+v", overridden.AgentSnapshot.Skills)
+	}
+	for _, version := range []string{first.Version, second.Version} {
+		if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, version); err == nil {
+			t.Fatalf("deleted Version %s while a Session pins it", version)
+		}
+	}
+}
+
+func controlplaneSkillVersion(
+	skillID string,
+	version string,
+	createdAt time.Time,
+	initial bool,
+) domain.SkillVersion {
+	return domain.SkillVersion{
+		ID: version, SkillID: skillID, Version: version, CreatedAt: createdAt,
+		Description: "Resolves and pins a custom Skill Version.",
+		Directory:   "controlplane-pin", Name: "controlplane-pin",
+		BlobKey: "skills/" + skillID + "/" + version + ".zip",
+		State:   domain.SkillVersionUploading, Initial: initial,
+	}
+}

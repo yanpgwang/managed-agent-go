@@ -52,6 +52,17 @@ only. They do not mutate or renumber the agent. A model override may change the
 model ID or speed; effort remains an Agent-level setting and a session override
 does not replace it.
 
+The effective custom Skill list is revalidated when the Session is created.
+Every omitted or `latest` value is replaced by a concrete immutable Version in
+the returned `session.agent.skills` snapshot. PostgreSQL pins those Versions in
+the same transaction as the Session; deleting a pinned Version is rejected
+until the Session is physically deleted. The pin migration backfills concrete,
+still-ready custom references from existing Session snapshots; former opaque
+values remain readable but are not treated as executable references. Up to 500
+Skills are accepted. The
+archive-mounting/runtime discovery boundary is still in progress, so a pinned
+Skill is not yet available to the model or sandbox.
+
 Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.
 The optional `title`, `metadata`, `initial_events`, `resources`, and `vault_ids`

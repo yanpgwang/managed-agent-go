@@ -2,7 +2,10 @@ package pg
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -112,6 +115,419 @@ func TestSkillRepository_ImmutableLifecyclePagingAndDeleteGuard(t *testing.T) {
 	}
 }
 
+func TestAgentSkillPinsUseOneConnectionAndGuardDeletion(t *testing.T) {
+	store := testStoreWithMaxConns(t, 1)
+	skillRepo := NewSkillRepository(store)
+	agentRepo := NewAgentRepository(store)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	base := time.Date(2026, 8, 4, 16, 0, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_agent_pin", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Agent Pin", Source: "custom", TitleExplicit: true,
+	}
+	first := repositorySkillVersion(skill.ID, "600", base, true)
+	if err := skillRepo.BeginSkill(ctx, skill, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, first.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "first",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	skillService := app.NewSkillService(skillRepo, nil, &seqIDGen{}, fixedClock{})
+	agents := app.NewAgentService(agentRepo, &seqIDGen{}, fixedClock{}, skillService)
+	agent, err := agents.Create(ctx, domain.Agent{
+		Name: "skill-agent", Model: domain.Model{ID: "claude-test"},
+		Skills: []domain.SkillReference{{
+			Type: "custom", SkillID: skill.ID, Version: "latest",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create Agent with one pool connection: %v", err)
+	}
+	if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, first.Version); err == nil {
+		t.Fatal("deleted Skill Version pinned by an Agent")
+	}
+
+	second := repositorySkillVersion(skill.ID, "700", base.Add(time.Second), false)
+	if err := skillRepo.BeginVersion(ctx, second); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, second.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "second",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replacement := []domain.SkillReference{{
+		Type: "custom", SkillID: skill.ID, Version: "latest",
+	}}
+	agent, err = agents.Update(ctx, agent.ID, domain.AgentPatch{Skills: &replacement})
+	if err != nil {
+		t.Fatalf("update Agent with one pool connection: %v", err)
+	}
+	if agent.Skills[0].Version != second.Version {
+		t.Fatalf("updated Agent pin = %+v", agent.Skills)
+	}
+	if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, first.Version); err != nil {
+		t.Fatalf("delete released old Agent pin: %v", err)
+	}
+	if err := skillRepo.RemoveIncompleteVersion(ctx, skill.ID, first.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agents.Archive(ctx, agent.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, second.Version); err != nil {
+		t.Fatalf("delete Version after Agent archive: %v", err)
+	}
+}
+
+func TestAgentSkillPinAndVersionDeletionLinearize(t *testing.T) {
+	store := testStore(t)
+	skillRepo := NewSkillRepository(store)
+	agentRepo := NewAgentRepository(store)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 4, 17, 0, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_agent_pin_race", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Agent Pin Race", Source: "custom", TitleExplicit: true,
+	}
+	version := repositorySkillVersion(skill.ID, "800", base, true)
+	if err := skillRepo.BeginSkill(ctx, skill, version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, version.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "race",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := domain.Agent{
+		ID: "agent_skill_pin_race", Version: 1, Name: "race",
+		Model: domain.Model{ID: "claude-test"},
+		Skills: []domain.SkillReference{{
+			Type: "custom", SkillID: skill.ID, Version: version.Version,
+		}},
+		CreatedAt: base, UpdatedAt: base,
+	}
+
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Add(2)
+	var agentErr, deleteErr error
+	go func() {
+		defer wait.Done()
+		<-start
+		agentErr = agentRepo.PutVersion(ctx, agent)
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		_, deleteErr = skillRepo.BeginDeleteVersion(ctx, skill.ID, version.Version)
+	}()
+	close(start)
+	wait.Wait()
+	if (agentErr == nil) == (deleteErr == nil) {
+		t.Fatalf("Agent/Delete race = agent:%v delete:%v; exactly one must commit", agentErr, deleteErr)
+	}
+	if agentErr == nil {
+		if _, err := agentRepo.Archive(ctx, agent.ID, base.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := skillRepo.RemoveIncompleteVersion(ctx, skill.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAgentArchiveSerializesWithVersionAndPinCreation(t *testing.T) {
+	store := testStore(t)
+	skillRepo := NewSkillRepository(store)
+	agentRepo := NewAgentRepository(store)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	base := time.Date(2026, 8, 4, 17, 30, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_archive_race", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Archive Race", Source: "custom", TitleExplicit: true,
+	}
+	version := repositorySkillVersion(skill.ID, "850", base, true)
+	if err := skillRepo.BeginSkill(ctx, skill, version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, version.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "archive-race",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := domain.Agent{
+		ID: "agent_archive_race", Version: 1, Name: "before",
+		Model: domain.Model{ID: "claude-test"},
+		Skills: []domain.SkillReference{{
+			Type: "custom", SkillID: skill.ID, Version: version.Version,
+		}},
+		CreatedAt: base, UpdatedAt: base,
+	}
+	if err := agentRepo.PutVersion(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+
+	updateLocked := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := agentRepo.UpdateVersion(ctx, agent.ID, func(current domain.Agent) (domain.Agent, bool, error) {
+			close(updateLocked)
+			<-releaseUpdate
+			current.Name = "after"
+			current.UpdatedAt = base.Add(time.Second)
+			return current, true, nil
+		})
+		updateDone <- err
+	}()
+	<-updateLocked
+
+	archiveDone := make(chan error, 1)
+	go func() {
+		_, err := agentRepo.Archive(ctx, agent.ID, base.Add(2*time.Second))
+		archiveDone <- err
+	}()
+	if err := waitForBlockedAgentStatement(ctx, store); err != nil {
+		close(releaseUpdate)
+		t.Fatal(err)
+	}
+	close(releaseUpdate)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("concurrent Agent update: %v", err)
+	}
+	if err := <-archiveDone; err != nil {
+		t.Fatalf("concurrent Agent archive: %v", err)
+	}
+	latest, err := agentRepo.Latest(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Version != 2 || latest.ArchivedAt == nil {
+		t.Fatalf("latest Agent after Update/Archive race = %+v, want archived v2", latest)
+	}
+	var pins int
+	if err := store.pool.QueryRow(ctx, `
+SELECT count(*) FROM agent_skill_versions WHERE agent_id = $1`, agent.ID).Scan(&pins); err != nil {
+		t.Fatal(err)
+	}
+	if pins != 0 {
+		t.Fatalf("archived Agent retained %d Skill pins", pins)
+	}
+	if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, version.Version); err != nil {
+		t.Fatalf("delete Version after serialized archive: %v", err)
+	}
+}
+
+func waitForBlockedAgentStatement(ctx context.Context, store *Store) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		err := store.pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_stat_activity
+    WHERE application_name = current_setting('application_name')
+      AND pid <> pg_backend_pid()
+      AND wait_event_type = 'Lock'
+      AND query ILIKE '%agents%'
+)`).Scan(&waiting)
+		if err != nil {
+			return err
+		}
+		if waiting {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for blocked Agent statement: %w", ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func TestSkillPinMigrationBackfillsExistingAgentsAndSessions(t *testing.T) {
+	store := testStoreAtMigration(t, 13)
+	skillRepo := NewSkillRepository(store)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 4, 18, 0, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_backfill", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Backfill", Source: "custom", TitleExplicit: true,
+	}
+	version := repositorySkillVersion(skill.ID, "900", base, true)
+	if err := skillRepo.BeginSkill(ctx, skill, version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, version.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "backfill",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := domain.Agent{
+		ID: "agent_backfill", Version: 1, Name: "backfill",
+		Model: domain.Model{ID: "claude-test"},
+		Skills: []domain.SkillReference{{
+			Type: "custom", SkillID: skill.ID, Version: version.Version,
+		}},
+		CreatedAt: base, UpdatedAt: base,
+	}
+	agentBody, err := json.Marshal(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO agents (id, version, name, body, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6)`,
+		agent.ID, agent.Version, agent.Name, agentBody, base, base,
+	); err != nil {
+		t.Fatal(err)
+	}
+	session := newSession("sesn_backfill")
+	session.AgentID = agent.ID
+	session.AgentVersion = agent.Version
+	session.AgentSnapshot = agent
+	sessionBody, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO sessions (
+    id, status, body, created_at, updated_at, agent_id, agent_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		session.ID, session.Status, sessionBody, session.CreatedAt, session.UpdatedAt,
+		session.AgentID, session.AgentVersion,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, store.pool); err != nil {
+		t.Fatalf("apply pin migration: %v", err)
+	}
+	var agentPins, sessionPins int
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM agent_skill_versions`).Scan(&agentPins); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM session_skill_versions`).Scan(&sessionPins); err != nil {
+		t.Fatal(err)
+	}
+	if agentPins != 1 || sessionPins != 1 {
+		t.Fatalf("backfilled pins = Agent:%d Session:%d, want 1 each", agentPins, sessionPins)
+	}
+	if _, err := NewAgentRepository(store).Archive(ctx, agent.ID, base.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, version.Version); err == nil {
+		t.Fatal("existing Session backfill did not guard Version deletion")
+	}
+	if err := store.PrepareSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinalizeSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, version.Version); err != nil {
+		t.Fatalf("delete after backfilled pins released: %v", err)
+	}
+}
+
+func TestLegacyAgentSkillsSurviveReadAndUnrelatedUpdate(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 4, 19, 0, 0, 0, time.UTC)
+	body := map[string]any{
+		"ID": "agent_legacy_skills", "Version": 1, "Name": "legacy",
+		"Model": map[string]any{"ID": "claude-test"},
+		"Skills": []any{
+			"former-provider-value",
+			map[string]any{
+				"type": "custom", "skill_id": "skill_old", "version": "1",
+				"extension": true,
+			},
+		},
+		"CreatedAt": base, "UpdatedAt": base,
+	}
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO agents (id, version, name, body, created_at, updated_at)
+VALUES ($1, 1, $2, $3, $4, $4)`,
+		"agent_legacy_skills", "legacy", encoded, base,
+	); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewAgentRepository(store)
+	agents := app.NewAgentService(repo, &seqIDGen{}, fixedClock{})
+	persisted, err := agents.Get(ctx, "agent_legacy_skills")
+	if err != nil || len(persisted.Skills) != 2 ||
+		!persisted.Skills[0].IsLegacy() || !persisted.Skills[1].IsLegacy() {
+		t.Fatalf("read legacy Agent Skills = %+v, %v", persisted.Skills, err)
+	}
+	name := "legacy-renamed"
+	updated, err := agents.Update(ctx, persisted.ID, domain.AgentPatch{Name: &name})
+	if err != nil {
+		t.Fatalf("unrelated legacy Agent update: %v", err)
+	}
+	if updated.Version != 2 || len(updated.Skills) != 2 {
+		t.Fatalf("updated legacy Agent = %+v", updated)
+	}
+	marshaled, err := json.Marshal(updated.Skills)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var values []any
+	if err := json.Unmarshal(marshaled, &values); err != nil {
+		t.Fatal(err)
+	}
+	object, ok := values[1].(map[string]any)
+	if !ok || object["extension"] != true {
+		t.Fatalf("legacy Skill fields were lost: %s", marshaled)
+	}
+}
+
+func TestLegacySessionSkillsRemainReadableAndDeletable(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_legacy_skills")
+	if err := json.Unmarshal(
+		[]byte(`["former-provider-value"]`),
+		&session.AgentSnapshot.Skills,
+	); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO sessions (id, status, body, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5)`,
+		session.ID, session.Status, body, session.CreatedAt, session.UpdatedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := store.GetSession(ctx, session.ID)
+	if err != nil || len(persisted.AgentSnapshot.Skills) != 1 ||
+		!persisted.AgentSnapshot.Skills[0].IsLegacy() {
+		t.Fatalf("read legacy Session Skills = %+v, %v", persisted.AgentSnapshot.Skills, err)
+	}
+	if err := store.PrepareSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatalf("prepare legacy Session deletion: %v", err)
+	}
+	if err := store.FinalizeSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatalf("finalize legacy Session deletion: %v", err)
+	}
+}
+
 func repositorySkillVersion(skillID, version string, createdAt time.Time, initial bool) domain.SkillVersion {
 	return domain.SkillVersion{
 		ID: version, SkillID: skillID, Version: version, CreatedAt: createdAt,
@@ -131,5 +547,127 @@ func assertSkillVersions(t *testing.T, items []domain.SkillVersion, want ...stri
 		if items[index].Version != version {
 			t.Fatalf("Version[%d] = %s, want %s", index, items[index].Version, version)
 		}
+	}
+}
+
+func TestSessionSkillPinsGuardVersionDeletionAndRollbackMissingReferences(t *testing.T) {
+	store := testStore(t)
+	repo := NewSkillRepository(store)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 4, 13, 0, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_session_pin", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Session Pin", Source: "custom", TitleExplicit: true,
+	}
+	version := repositorySkillVersion(skill.ID, "400", base, true)
+	if err := repo.BeginSkill(ctx, skill, version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.CompleteVersion(ctx, skill.ID, version.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "pin",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	session := newSession("sesn_skill_pin")
+	session.AgentSnapshot.Skills = []domain.SkillReference{{
+		Type: "custom", SkillID: skill.ID, Version: version.Version,
+	}}
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("CreateSession with Skill pin: %v", err)
+	}
+	persisted, err := store.GetSession(ctx, session.ID)
+	if err != nil || len(persisted.AgentSnapshot.Skills) != 1 ||
+		persisted.AgentSnapshot.Skills[0].Version != version.Version {
+		t.Fatalf("persisted Session Skill pin = %+v, %v", persisted.AgentSnapshot.Skills, err)
+	}
+	if _, err := repo.BeginDeleteVersion(ctx, skill.ID, version.Version); err == nil {
+		t.Fatal("deleted Skill Version referenced by Session")
+	} else {
+		var domainErr *domain.DomainError
+		if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindValidation {
+			t.Fatalf("delete referenced Version = %T %v", err, err)
+		}
+	}
+	if err := store.PrepareSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinalizeSessionDeletion(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.BeginDeleteVersion(ctx, skill.ID, version.Version); err != nil {
+		t.Fatalf("delete Version after Session release: %v", err)
+	}
+	if err := repo.RemoveIncompleteVersion(ctx, skill.ID, version.Version); err != nil {
+		t.Fatal(err)
+	}
+
+	missing := newSession("sesn_missing_skill_pin")
+	missing.AgentSnapshot.Skills = []domain.SkillReference{{
+		Type: "custom", SkillID: skill.ID, Version: "missing",
+	}}
+	if _, err := store.CreateSession(ctx, missing, nil); err == nil {
+		t.Fatal("Session with missing Skill Version was created")
+	}
+	if _, err := store.GetSession(ctx, missing.ID); err == nil {
+		t.Fatal("failed Skill pin left a partial Session")
+	}
+}
+
+func TestSessionSkillPinAndVersionDeletionLinearize(t *testing.T) {
+	store := testStore(t)
+	repo := NewSkillRepository(store)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 4, 14, 0, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_pin_race", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Pin Race", Source: "custom", TitleExplicit: true,
+	}
+	version := repositorySkillVersion(skill.ID, "500", base, true)
+	if err := repo.BeginSkill(ctx, skill, version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.CompleteVersion(ctx, skill.ID, version.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "race",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := newSession("sesn_skill_pin_race")
+	session.AgentSnapshot.Skills = []domain.SkillReference{{
+		Type: "custom", SkillID: skill.ID, Version: version.Version,
+	}}
+
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	wait.Add(2)
+	var sessionErr, deleteErr error
+	go func() {
+		defer wait.Done()
+		<-start
+		_, sessionErr = store.CreateSession(ctx, session, nil)
+	}()
+	go func() {
+		defer wait.Done()
+		<-start
+		_, deleteErr = repo.BeginDeleteVersion(ctx, skill.ID, version.Version)
+	}()
+	close(start)
+	wait.Wait()
+	if (sessionErr == nil) == (deleteErr == nil) {
+		t.Fatalf("Session/Delete race = session:%v delete:%v; exactly one must commit", sessionErr, deleteErr)
+	}
+	if sessionErr == nil {
+		if err := store.PrepareSessionDeletion(ctx, session.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.FinalizeSessionDeletion(ctx, session.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := repo.BeginDeleteVersion(ctx, skill.ID, version.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := repo.RemoveIncompleteVersion(ctx, skill.ID, version.Version); err != nil {
+		t.Fatal(err)
 	}
 }

@@ -34,6 +34,7 @@ func TestPostgresSessionFileResourcesAreIndependentAndRecoverable(t *testing.T) 
 		temporalpkg.NewOrchestrator(fixture.store, nil),
 		fixture.ids,
 		fixture.clock,
+		nil,
 		resources,
 	)
 	handler := httpapi.NewServer(httpapi.Deps{
@@ -60,6 +61,7 @@ func TestPostgresSessionFileResourcesAreIndependentAndRecoverable(t *testing.T) 
 		temporalpkg.NewOrchestrator(fixture.store, nil),
 		fixture.ids,
 		fixture.clock,
+		nil,
 		disabledResources,
 	)
 	disabledHandler := httpapi.NewServer(httpapi.Deps{

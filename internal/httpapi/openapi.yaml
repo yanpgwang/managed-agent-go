@@ -689,6 +689,8 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/SkillVersionDeletedResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
@@ -1704,10 +1706,77 @@ components:
           type: string
           format: uri
           maxLength: 2048
-    Skill:
+    CustomSkillReferenceInput:
       type: object
-      description: Stored for compatibility; execution is outside the supported core.
-      additionalProperties: true
+      additionalProperties: false
+      required: [type, skill_id]
+      properties:
+        type:
+          type: string
+          const: custom
+        skill_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          minLength: 1
+          pattern: '^\S(?:[\s\S]*\S)?$'
+          description: Concrete Version identifier or latest; omission also resolves latest.
+    AnthropicSkillReferenceInput:
+      type: object
+      description: >-
+        Upstream Managed Agents union variant. This implementation does not
+        mirror Anthropic-managed archives and returns 422 when it is attached.
+      additionalProperties: false
+      required: [type, skill_id]
+      properties:
+        type:
+          type: string
+          const: anthropic
+        skill_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          minLength: 1
+          pattern: '^\S(?:[\s\S]*\S)?$'
+          description: Concrete Version identifier or latest; omission also resolves latest.
+    SkillReferenceInput:
+      description: >-
+        Tagged Skill reference. Custom references are resolved; the Anthropic
+        variant is represented for SDK compatibility but is currently rejected
+        with an explicit unsupported response.
+      oneOf:
+        - $ref: '#/components/schemas/CustomSkillReferenceInput'
+        - $ref: '#/components/schemas/AnthropicSkillReferenceInput'
+    ResolvedSkillReference:
+      type: object
+      additionalProperties: false
+      required: [type, skill_id, version]
+      properties:
+        type:
+          type: string
+          const: custom
+        skill_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          minLength: 1
+    LegacySkillReference:
+      description: >-
+        Read-only value preserved from the opaque Skills array accepted before
+        tagged references were enforced. It cannot be supplied by current
+        create/update requests or used to start a new Session.
+      not:
+        $ref: '#/components/schemas/ResolvedSkillReference'
+    SkillReferenceResponse:
+      description: >-
+        A resolved custom reference, or a read-only legacy value from a
+        pre-upgrade Agent or Session projection.
+      oneOf:
+        - $ref: '#/components/schemas/ResolvedSkillReference'
+        - $ref: '#/components/schemas/LegacySkillReference'
     Multiagent:
       type: [object, 'null']
       description: Stored opaquely; multi-agent execution is outside the supported core.
@@ -1739,8 +1808,9 @@ components:
             $ref: '#/components/schemas/MCPServer'
         skills:
           type: array
+          maxItems: 500
           items:
-            $ref: '#/components/schemas/Skill'
+            $ref: '#/components/schemas/SkillReferenceInput'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
         metadata:
@@ -1778,8 +1848,9 @@ components:
         skills:
           oneOf:
             - type: array
+              maxItems: 500
               items:
-                $ref: '#/components/schemas/Skill'
+                $ref: '#/components/schemas/SkillReferenceInput'
             - type: 'null'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
@@ -1832,7 +1903,7 @@ components:
         skills:
           type: array
           items:
-            $ref: '#/components/schemas/Skill'
+            $ref: '#/components/schemas/SkillReferenceResponse'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
         metadata:
@@ -1888,7 +1959,7 @@ components:
         skills:
           type: array
           items:
-            $ref: '#/components/schemas/Skill'
+            $ref: '#/components/schemas/SkillReferenceResponse'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
     AgentList:
@@ -2171,8 +2242,9 @@ components:
         skills:
           oneOf:
             - type: array
+              maxItems: 500
               items:
-                $ref: '#/components/schemas/Skill'
+                $ref: '#/components/schemas/SkillReferenceInput'
             - type: 'null'
     SessionAgentInput:
       oneOf:

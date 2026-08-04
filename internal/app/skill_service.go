@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strconv"
 	"strings"
@@ -239,6 +240,55 @@ func (s *SkillService) GetVersion(
 	version string,
 ) (domain.SkillVersion, error) {
 	return s.repo.GetVersion(ctx, skillID, version)
+}
+
+// ResolveSkillReferences replaces omitted or "latest" aliases with concrete
+// ready custom Skill Versions. Agent and Session persistence therefore never
+// depends on a mutable latest-version pointer.
+func (s *SkillService) ResolveSkillReferences(
+	ctx context.Context,
+	references []domain.SkillReference,
+) ([]domain.SkillReference, error) {
+	if err := validateSkillReferenceInputs(references); err != nil {
+		return nil, err
+	}
+	resolved := make([]domain.SkillReference, len(references))
+	for index, reference := range references {
+		if reference.Type != "custom" {
+			return nil, domain.Unsupported(fmt.Sprintf(
+				"skills[%d]: Anthropic-managed Skills are not supported", index,
+			))
+		}
+		version := reference.Version
+		if version == "" || version == "latest" {
+			skill, err := s.repo.GetSkill(ctx, reference.SkillID)
+			if err != nil {
+				return nil, skillReferenceLookupError(index, err)
+			}
+			if skill.LatestVersion == "" {
+				return nil, domain.Validation(fmt.Sprintf(
+					"skills[%d]: custom Skill has no ready Versions", index,
+				))
+			}
+			version = skill.LatestVersion
+		}
+		item, err := s.repo.GetVersion(ctx, reference.SkillID, version)
+		if err != nil {
+			return nil, skillReferenceLookupError(index, err)
+		}
+		resolved[index] = domain.SkillReference{
+			Type: "custom", SkillID: item.SkillID, Version: item.Version,
+		}
+	}
+	return resolved, nil
+}
+
+func skillReferenceLookupError(index int, err error) error {
+	var domainErr *domain.DomainError
+	if errors.As(err, &domainErr) && domainErr.Kind == domain.KindNotFound {
+		return domain.Validation(fmt.Sprintf("skills[%d]: custom Skill Version not found", index))
+	}
+	return err
 }
 
 func (s *SkillService) ListVersions(

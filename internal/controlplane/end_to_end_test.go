@@ -71,6 +71,7 @@ func TestHTTPPostgresTemporalNATSEndToEnd(t *testing.T) {
 		runtime.Orchestrator(),
 		fixture.ids,
 		fixture.clock,
+		nil,
 	)
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: app.NewAgentService(

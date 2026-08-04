@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 func TestAgents_CreateGetVersionArchive(t *testing.T) {
@@ -136,7 +139,7 @@ func TestAgents_UpdateArrayNullClears(t *testing.T) {
 			`"tools":[{"type":"custom","name":"x","description":"x",`+
 			`"input_schema":{"type":"object"}},{"type":"mcp_toolset","mcp_server_name":"m"}],`+
 			`"mcp_servers":[{"type":"url","name":"m","url":"https://example.com"}],`+
-			`"skills":[{"type":"anthropic","skill_id":"xlsx","version":"1"}]}`)
+			`"skills":[{"type":"custom","skill_id":"skill_clear","version":"1"}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create: %d: %s", rec.Code, rec.Body)
 	}
@@ -161,6 +164,77 @@ func TestAgents_UpdateArrayNullClears(t *testing.T) {
 	rec = do(srv, "POST", "/v1/agents/"+id, `{"tools":"not-an-array"}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid tools status = %d, want 400: %s", rec.Code, rec.Body)
+	}
+}
+
+func TestAgents_SkillReferencesAreStrictResolvedAndProviderAware(t *testing.T) {
+	srv := newTestServer(t)
+	rec := do(srv, "POST", "/v1/agents",
+		`{"name":"Agent","model":"claude-opus-4-8",`+
+			`"skills":[{"type":"custom","skill_id":"skill_reports","version":"latest"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create custom Skill reference: %d: %s", rec.Code, rec.Body)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	resolved := created["skills"].([]any)[0].(map[string]any)
+	if resolved["version"] != "1759178010641129" {
+		t.Fatalf("resolved Skill = %#v", resolved)
+	}
+
+	cases := []struct {
+		name   string
+		skills string
+		status int
+	}{
+		{"anthropic unsupported", `[{"type":"anthropic","skill_id":"xlsx"}]`, http.StatusUnprocessableEntity},
+		{"missing custom", `[{"type":"custom","skill_id":"skill_missing"}]`, http.StatusBadRequest},
+		{"unknown provider", `[{"type":"third_party","skill_id":"x"}]`, http.StatusBadRequest},
+		{"unknown field", `[{"type":"custom","skill_id":"skill_x","extra":true}]`, http.StatusBadRequest},
+		{"numeric version", `[{"type":"custom","skill_id":"skill_x","version":1}]`, http.StatusBadRequest},
+		{"empty version", `[{"type":"custom","skill_id":"skill_x","version":""}]`, http.StatusBadRequest},
+		{"not an array", `{}`, http.StatusBadRequest},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			rec := do(srv, "POST", "/v1/agents",
+				`{"name":"Agent","model":"claude-opus-4-8","skills":`+test.skills+`}`)
+			if rec.Code != test.status {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, test.status, rec.Body)
+			}
+		})
+	}
+}
+
+func TestAgents_LegacySkillResponsePreservesOpaqueValues(t *testing.T) {
+	var skills []domain.SkillReference
+	if err := json.Unmarshal([]byte(`[
+        "former-provider-value",
+        {"type":"custom","skill_id":"skill_old","version":"1","extension":true}
+    ]`), &skills); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(agentToJSON(domain.Agent{
+		ID: "agent_legacy", Version: 1, Name: "legacy",
+		Model: domain.Model{ID: "claude-test"}, Skills: skills,
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatal(err)
+	}
+	values, ok := response["skills"].([]any)
+	if !ok || len(values) != 2 || values[0] != "former-provider-value" {
+		t.Fatalf("legacy Skill response = %#v", response["skills"])
+	}
+	object, ok := values[1].(map[string]any)
+	if !ok || object["extension"] != true {
+		t.Fatalf("legacy Skill response lost extension: %#v", response["skills"])
 	}
 }
 
