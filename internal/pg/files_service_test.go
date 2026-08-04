@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http/httptest"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -199,6 +201,91 @@ func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
 	}
 	if _, err := service.Delete(ctx, output.ID); err != nil {
 		t.Fatalf("Delete output: %v", err)
+	}
+}
+
+func TestFileService_PostgresS3ConcurrentLifecycle(t *testing.T) {
+	endpoint := os.Getenv("MANAGED_AGENT_TEST_S3_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("MANAGED_AGENT_TEST_S3_ENDPOINT not set; skipping concurrent Files conformance")
+	}
+	store := testStore(t)
+	blobs, err := blob.NewS3Store(context.Background(), blob.S3Config{
+		Endpoint: endpoint, Region: "us-east-1",
+		Bucket:       os.Getenv("MANAGED_AGENT_TEST_S3_BUCKET"),
+		AccessKey:    os.Getenv("MANAGED_AGENT_TEST_S3_ACCESS_KEY"),
+		SecretKey:    os.Getenv("MANAGED_AGENT_TEST_S3_SECRET_KEY"),
+		UsePathStyle: true, CreateBucket: true, UploadTempDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewS3Store: %v", err)
+	}
+	service := app.NewFileService(
+		NewFileRepository(store), blobs, domain.NewSeqIDGen(), fixedClock{},
+	)
+	ctx := context.Background()
+	const count = 8
+	files := make(chan domain.File, count)
+	errs := make(chan error, count)
+	var uploads sync.WaitGroup
+	for index := 0; index < count; index++ {
+		uploads.Add(1)
+		go func(index int) {
+			defer uploads.Done()
+			created, uploadErr := service.Upload(ctx, app.FileUploadInput{
+				Filename: fmt.Sprintf("concurrent-%d.bin", index),
+				MimeType: "application/octet-stream",
+				Body:     bytes.NewReader(bytes.Repeat([]byte{byte('a' + index)}, 32<<10)),
+			})
+			if uploadErr != nil {
+				errs <- uploadErr
+				return
+			}
+			files <- created
+		}(index)
+	}
+	uploads.Wait()
+	close(files)
+	close(errs)
+	for uploadErr := range errs {
+		t.Errorf("concurrent Upload: %v", uploadErr)
+	}
+	created := make([]domain.File, 0, count)
+	for file := range files {
+		created = append(created, file)
+	}
+	if len(created) != count {
+		t.Fatalf("created %d Files, want %d", len(created), count)
+	}
+	t.Cleanup(func() {
+		for _, file := range created {
+			_, _ = service.Delete(context.Background(), file.ID)
+		}
+	})
+	page, err := service.List(ctx, app.FileListQuery{Limit: 100})
+	if err != nil || len(page.Files) != count {
+		t.Fatalf("List after concurrent upload = %d Files, %v", len(page.Files), err)
+	}
+
+	errs = make(chan error, count)
+	var deletes sync.WaitGroup
+	for _, file := range created {
+		deletes.Add(1)
+		go func(file domain.File) {
+			defer deletes.Done()
+			if _, deleteErr := service.Delete(ctx, file.ID); deleteErr != nil {
+				errs <- deleteErr
+			}
+		}(file)
+	}
+	deletes.Wait()
+	close(errs)
+	for deleteErr := range errs {
+		t.Errorf("concurrent Delete: %v", deleteErr)
+	}
+	page, err = service.List(ctx, app.FileListQuery{Limit: 100})
+	if err != nil || len(page.Files) != 0 {
+		t.Fatalf("List after concurrent delete = %d Files, %v", len(page.Files), err)
 	}
 }
 
