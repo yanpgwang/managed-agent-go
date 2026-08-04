@@ -293,6 +293,9 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 		if strings.HasPrefix(path, "/v1/files") {
 			continue
 		}
+		if strings.Contains(path, "/resources") {
+			continue
+		}
 		pathItem := openAPIMap(t, rawPathItem, "path "+path)
 		for _, method := range []string{"delete", "get", "post"} {
 			if operation, ok := pathItem[method]; ok {
@@ -305,6 +308,40 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 	}
 	if count != 21 {
 		t.Fatalf("core operation count = %d, want 21", count)
+	}
+}
+
+func TestOpenAPISessionResourcesContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	operations := map[string][]string{
+		"/v1/sessions/{session_id}/resources":               {"get", "post"},
+		"/v1/sessions/{session_id}/resources/{resource_id}": {"delete", "get", "post"},
+	}
+	count := 0
+	for path, methods := range operations {
+		pathItem := openAPIMap(t, paths[path], "path "+path)
+		for _, method := range methods {
+			operation := openAPIMap(t, pathItem[method], method+" "+path)
+			if id, _ := operation["operationId"].(string); id == "" {
+				t.Fatalf("%s %s has no operationId", method, path)
+			}
+			count++
+		}
+	}
+	if count != 5 {
+		t.Fatalf("Session Resources operation count = %d, want 5", count)
+	}
+	schemas := openAPIMap(
+		t,
+		openAPIMap(t, doc["components"], "components")["schemas"],
+		"schemas",
+	)
+	session := openAPIMap(t, schemas["Session"], "Session schema")
+	properties := openAPIMap(t, session["properties"], "Session properties")
+	resources := openAPIMap(t, properties["resources"], "Session resources")
+	if fmt.Sprint(resources["maxItems"]) != "500" {
+		t.Fatalf("Session resources maxItems = %v, want 500", resources["maxItems"])
 	}
 }
 

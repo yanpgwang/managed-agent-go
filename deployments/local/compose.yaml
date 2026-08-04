@@ -162,6 +162,12 @@ services:
       MANAGED_AGENT_TEMPORAL_HOSTPORT: temporal:7233
       MANAGED_AGENT_TEMPORAL_NAMESPACE: default
       MANAGED_AGENT_NATS_URL: nats://nats:4222
+      MANAGED_AGENT_FILE_S3_ENDPOINT: http://minio:9000
+      MANAGED_AGENT_FILE_S3_REGION: us-east-1
+      MANAGED_AGENT_FILE_S3_BUCKET: managed-agent-files
+      MANAGED_AGENT_FILE_S3_ACCESS_KEY: minioadmin
+      MANAGED_AGENT_FILE_S3_SECRET_KEY: minioadmin
+      MANAGED_AGENT_FILE_S3_PATH_STYLE: "true"
 
 volumes:
   postgres-data:

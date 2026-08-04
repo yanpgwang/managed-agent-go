@@ -59,9 +59,10 @@ func newTestHandlerWithSessions(
 		hub,
 		previews,
 	)
+	resources := &testSessionResourceService{sessions: sessions, ids: ids, clock: clock}
 	return NewServer(Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
-		Events: sessions, Stream: hub,
+		Events: sessions, Stream: hub, SessionResources: resources,
 	}, cfg).Handler(), sessions
 }
 
@@ -425,6 +426,20 @@ func (s *testSessionService) Create(
 		Status:            domain.StatusIdle,
 		Title:             input.Title, Metadata: metadata, CreatedAt: now, UpdatedAt: now,
 	}
+	for _, inputResource := range input.Resources {
+		mountPath, err := domain.NormalizeSessionFileMountPath(
+			inputResource.FileID, inputResource.MountPath,
+		)
+		if err != nil {
+			return domain.Session{}, err
+		}
+		session.Resources = append(session.Resources, domain.SessionResource{
+			ID: s.ids.NewID(domain.PrefixSessionResource), SessionID: session.ID,
+			SourceFileID: inputResource.FileID, FileID: s.ids.NewID(domain.PrefixFile),
+			MountPath: mountPath, CreatedAt: now, UpdatedAt: now,
+			State: domain.SessionResourceActive,
+		})
+	}
 	s.mu.Lock()
 	s.sessions[session.ID] = session
 	s.mu.Unlock()
@@ -435,6 +450,134 @@ func (s *testSessionService) Create(
 		}
 	}
 	return session, nil
+}
+
+type testSessionResourceService struct {
+	sessions *testSessionService
+	ids      domain.IDGenerator
+	clock    domain.Clock
+}
+
+func (s *testSessionResourceService) Add(
+	_ context.Context,
+	sessionID string,
+	input app.FileSessionResourceInput,
+) (domain.SessionResource, error) {
+	s.sessions.mu.Lock()
+	defer s.sessions.mu.Unlock()
+	session, ok := s.sessions.sessions[sessionID]
+	if !ok {
+		return domain.SessionResource{}, domain.NotFound("session not found")
+	}
+	mountPath, err := domain.NormalizeSessionFileMountPath(input.FileID, input.MountPath)
+	if err != nil {
+		return domain.SessionResource{}, err
+	}
+	for _, existing := range session.Resources {
+		if existing.MountPath == mountPath {
+			return domain.SessionResource{}, domain.Conflict("mount_path is already in use")
+		}
+	}
+	now := s.clock.Now().UTC()
+	resource := domain.SessionResource{
+		ID: s.ids.NewID(domain.PrefixSessionResource), SessionID: sessionID,
+		SourceFileID: input.FileID, FileID: s.ids.NewID(domain.PrefixFile),
+		MountPath: mountPath, CreatedAt: now, UpdatedAt: now,
+		State: domain.SessionResourceActive,
+	}
+	session.Resources = append(session.Resources, resource)
+	s.sessions.sessions[sessionID] = session
+	return resource, nil
+}
+
+func (s *testSessionResourceService) Get(
+	_ context.Context,
+	sessionID string,
+	resourceID string,
+) (domain.SessionResource, error) {
+	s.sessions.mu.Lock()
+	defer s.sessions.mu.Unlock()
+	session, ok := s.sessions.sessions[sessionID]
+	if !ok {
+		return domain.SessionResource{}, domain.NotFound("session not found")
+	}
+	for _, resource := range session.Resources {
+		if resource.ID == resourceID {
+			return resource, nil
+		}
+	}
+	return domain.SessionResource{}, domain.NotFound("session resource not found")
+}
+
+func (s *testSessionResourceService) List(
+	_ context.Context,
+	sessionID string,
+	query app.SessionResourceListQuery,
+) (app.SessionResourceListPage, error) {
+	s.sessions.mu.Lock()
+	defer s.sessions.mu.Unlock()
+	session, ok := s.sessions.sessions[sessionID]
+	if !ok {
+		return app.SessionResourceListPage{}, domain.NotFound("session not found")
+	}
+	start := 0
+	if query.Boundary != nil {
+		for index, resource := range session.Resources {
+			if resource.ID == query.Boundary.ID {
+				start = index + 1
+				break
+			}
+		}
+	}
+	limit := query.Limit
+	if limit == 0 {
+		limit = len(session.Resources)
+	}
+	end := start + limit
+	if end > len(session.Resources) {
+		end = len(session.Resources)
+	}
+	page := app.SessionResourceListPage{
+		Resources: append([]domain.SessionResource(nil), session.Resources[start:end]...),
+	}
+	page.HasMore = end < len(session.Resources)
+	return page, nil
+}
+
+func (s *testSessionResourceService) Update(
+	ctx context.Context,
+	sessionID string,
+	resourceID string,
+	_ string,
+) (domain.SessionResource, error) {
+	if _, err := s.Get(ctx, sessionID, resourceID); err != nil {
+		return domain.SessionResource{}, err
+	}
+	return domain.SessionResource{}, domain.Unsupported(
+		"File resources do not support authorization_token rotation",
+	)
+}
+
+func (s *testSessionResourceService) Delete(
+	_ context.Context,
+	sessionID string,
+	resourceID string,
+) (domain.SessionResource, error) {
+	s.sessions.mu.Lock()
+	defer s.sessions.mu.Unlock()
+	session, ok := s.sessions.sessions[sessionID]
+	if !ok {
+		return domain.SessionResource{}, domain.NotFound("session not found")
+	}
+	for index, resource := range session.Resources {
+		if resource.ID != resourceID {
+			continue
+		}
+		session.Resources = append(session.Resources[:index], session.Resources[index+1:]...)
+		s.sessions.sessions[sessionID] = session
+		return resource, nil
+	}
+	return domain.SessionResource{}, domain.NotFound("session resource not found")
 }
 
 func (s *testSessionService) Get(

@@ -92,13 +92,15 @@ transactional outbox, tool journal, interrupt ordering, and sandbox lifecycle.
 | Runtime | Multi-round model/tool loop with durable park and resume |
 | Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
-| Files | Five-operation API backed by PostgreSQL and optional S3-compatible storage; Session integration remains open |
+| Files and Session Resources | Five-operation Files API plus create-time/runtime File attachments and durable read-only Docker mounts |
 
 Web Search/Fetch currently require a supporting Messages API endpoint and
 `always_allow`. MCP supports unauthenticated public Streamable HTTP servers;
 deployment-managed authentication remains future work. Files metadata and byte
-lifecycle are implemented when object storage is configured, but Session
-Resources, file-sourced messages, file-backed outcomes, skills, memory, vaults,
+lifecycle are implemented when object storage is configured. File-backed
+Session Resources additionally require the Docker sandbox provider; local and
+current remote providers reject them rather than weakening the mount contract.
+File-sourced messages, file-backed outcomes, skills, memory, vaults,
 multi-agent orchestration, schedules, and webhooks are not implemented.
 See [Claude API coverage](docs/compatibility.md) for current behavior, the
 [versioned core statement](docs/compatibility/core-v1.md) for the frozen claim, and the

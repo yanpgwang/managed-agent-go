@@ -10,7 +10,12 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
-const outcomeEvaluationHeartbeatInterval = 30 * time.Second
+const (
+	outcomeEvaluationHeartbeatInterval     = 30 * time.Second
+	resourceMaterializationTimeoutChangeID = "session-resource-materialization-timeout"
+	resourceMaterializationTimeoutVersion  = 1
+	resourceMaterializationToolTimeout     = 30 * time.Minute
+)
 
 // turnFailure is a typed terminal reason produced by deterministic turn logic.
 // It is deliberately distinct from error: errors retry an Activity, while a
@@ -400,20 +405,32 @@ func (t *workflowTurnState) executeTool(
 		MCPToolName:    definition.MCPToolName,
 		Input:          use.Input,
 	}
+	toolActx := t.actx
+	if workflow.GetVersion(
+		t.actx,
+		resourceMaterializationTimeoutChangeID,
+		workflow.DefaultVersion,
+		resourceMaterializationTimeoutVersion,
+	) == resourceMaterializationTimeoutVersion {
+		options := workflow.GetActivityOptions(t.actx)
+		options.StartToCloseTimeout = resourceMaterializationToolTimeout
+		toolActx = workflow.WithActivityOptions(t.actx, options)
+	}
 	var executed ExecuteToolResult
 	if t.interrupts == nil {
 		err := workflow.ExecuteActivity(
-			t.actx,
+			toolActx,
 			ActivityExecuteTool,
 			input,
-		).Get(t.actx, &executed)
+		).Get(toolActx, &executed)
 		if err != nil {
 			return ExecuteToolResult{}, interruptibleActivityOutcome{}, err
 		}
 		t.ordinal++
 		return executed, interruptibleActivityOutcome{Completed: true}, nil
 	}
-	outcome, err := t.interrupts.executeActivity(
+	outcome, err := t.interrupts.executeActivityOn(
+		toolActx,
 		ActivityExecuteTool,
 		input,
 		&executed,

@@ -57,9 +57,23 @@ Optional `initial_events` may contain up to 50 `user.message` or
 The optional `title`, `metadata`, `initial_events`, `resources`, and `vault_ids`
 fields must use their documented non-null shapes when present; omission supplies
 the empty/default value.
-Non-empty `resources` and `vault_ids` are currently unsupported by Mango at
-creation time. The `vault_ids` rejection is a Mango limitation: the official
-Create Session API accepts vault IDs.
+`resources` accepts up to 500 File inputs when Files storage and the Docker
+sandbox provider are configured:
+
+```json
+{
+  "type": "file",
+  "file_id": "file_...",
+  "mount_path": "/reports/input.csv"
+}
+```
+
+Each attachment creates an independent, downloadable Session-scoped File copy
+and a read-only mount beneath `/mnt/session/uploads`. GitHub repository, Memory
+Store, self-hosted Environment, local-process, and current remote-provider
+resources return `422`. Non-empty `vault_ids` remain unsupported at creation
+time; this is a Mango limitation because the official Create Session API
+accepts vault IDs.
 
 ## Get and update
 
@@ -157,9 +171,8 @@ Delete removes the session and persisted history, sends a final
 The response embeds the resolved agent snapshot and includes `resources`,
 `vault_ids`, `outcome_evaluations`, `stats`, `usage`, and `deployment_id`.
 `stats` and `usage` are cumulative live projections, and
-`outcome_evaluations` reflects each admitted outcome. Non-empty resources and
-vaults are rejected at create time, so their required response arrays are
-truthfully empty. Create-time vault rejection is a Mango limitation; update-time
+`outcome_evaluations` reflects each admitted outcome. `resources` embeds the
+active File Resource objects; create-time vault rejection is a Mango limitation; update-time
 vault rejection matches the official API. `deployment_id` is null because
 deployment-created sessions are not implemented.
 See [Claude API coverage](../compatibility.md).

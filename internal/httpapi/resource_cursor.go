@@ -30,10 +30,11 @@ type agentVersionCursor struct {
 }
 
 const (
-	agentListCursorKind       = "agent_list"
-	agentVersionCursorKind    = "agent_version_list"
-	environmentListCursorKind = "environment_list"
-	resourceCursorPrefix      = "page_"
+	agentListCursorKind           = "agent_list"
+	agentVersionCursorKind        = "agent_version_list"
+	environmentListCursorKind     = "environment_list"
+	sessionResourceListCursorKind = "session_resource_list"
+	resourceCursorPrefix          = "page_"
 )
 
 func encodeResourceCursor(cursor resourceCursor) string {
@@ -103,6 +104,14 @@ func (filter agentCursorFilter) fingerprint() string {
 
 type environmentCursorFilter struct {
 	IncludeArchived bool `json:"include_archived"`
+}
+
+type sessionResourceCursorFilter struct {
+	SessionID string `json:"session_id"`
+}
+
+func (filter sessionResourceCursorFilter) fingerprint() string {
+	return resourceFilterFingerprint(filter)
 }
 
 func (filter environmentCursorFilter) fingerprint() string {

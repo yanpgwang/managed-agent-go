@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -43,6 +44,113 @@ func sdkClientServerAndSessions(
 		option.WithAPIKey("sk-test"),
 	)
 	return client, ts, sessions
+}
+
+func TestSDK_SessionFileResourceLifecycle(t *testing.T) {
+	client, ts, _ := sdkClientServerAndSessions(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "opus", "sys")
+	environmentID := mustEnv(t, ts.URL)
+
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: environmentID,
+		Resources: []anthropic.BetaSessionNewParamsResourceUnion{{
+			OfFile: &anthropic.BetaManagedAgentsFileResourceParams{
+				FileID: "file_create_source",
+				Type:   anthropic.BetaManagedAgentsFileResourceParamsTypeFile,
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create session with resource: %v", err)
+	}
+	if len(session.Resources) != 1 {
+		t.Fatalf("create-time resources = %d, want 1", len(session.Resources))
+	}
+	created := session.Resources[0].AsFile()
+	assertRawObjectHasFields(
+		t, created.RawJSON(), "id", "created_at", "file_id", "mount_path", "type", "updated_at",
+	)
+	if created.MountPath != "/mnt/session/uploads/file_create_source" ||
+		created.FileID == "file_create_source" {
+		t.Fatalf("create-time resource = %s", created.RawJSON())
+	}
+
+	added, err := client.Beta.Sessions.Resources.Add(
+		ctx,
+		session.ID,
+		anthropic.BetaSessionResourceAddParams{
+			BetaManagedAgentsFileResourceParams: anthropic.BetaManagedAgentsFileResourceParams{
+				FileID:    "file_runtime_source",
+				Type:      anthropic.BetaManagedAgentsFileResourceParamsTypeFile,
+				MountPath: anthropic.String("/reports/receipt.pdf"),
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("add resource: %v", err)
+	}
+	if added.MountPath != "/mnt/session/uploads/reports/receipt.pdf" ||
+		added.Type != anthropic.BetaManagedAgentsFileResourceTypeFile {
+		t.Fatalf("added resource = %s", added.RawJSON())
+	}
+
+	got, err := client.Beta.Sessions.Resources.Get(
+		ctx,
+		added.ID,
+		anthropic.BetaSessionResourceGetParams{SessionID: session.ID},
+	)
+	if err != nil {
+		t.Fatalf("get resource: %v", err)
+	}
+	if file := got.AsFile(); file.ID != added.ID || file.FileID != added.FileID {
+		t.Fatalf("get resource = %s", got.RawJSON())
+	}
+
+	firstPage, err := client.Beta.Sessions.Resources.List(
+		ctx,
+		session.ID,
+		anthropic.BetaSessionResourceListParams{Limit: anthropic.Int(1)},
+	)
+	if err != nil {
+		t.Fatalf("list first page: %v", err)
+	}
+	if len(firstPage.Data) != 1 || firstPage.NextPage == "" {
+		t.Fatalf("first resource page = %#v", firstPage)
+	}
+	secondPage, err := client.Beta.Sessions.Resources.List(
+		ctx,
+		session.ID,
+		anthropic.BetaSessionResourceListParams{
+			Limit: anthropic.Int(1), Page: anthropic.String(firstPage.NextPage),
+		},
+	)
+	if err != nil || len(secondPage.Data) != 1 || secondPage.Data[0].AsFile().ID != added.ID {
+		t.Fatalf("list second page = %#v, err=%v", secondPage, err)
+	}
+
+	_, err = client.Beta.Sessions.Resources.Update(
+		ctx,
+		added.ID,
+		anthropic.BetaSessionResourceUpdateParams{
+			SessionID: session.ID, AuthorizationToken: "not-applicable",
+		},
+	)
+	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+
+	deleted, err := client.Beta.Sessions.Resources.Delete(
+		ctx,
+		added.ID,
+		anthropic.BetaSessionResourceDeleteParams{SessionID: session.ID},
+	)
+	if err != nil {
+		t.Fatalf("delete resource: %v", err)
+	}
+	if deleted.ID != added.ID ||
+		deleted.Type != anthropic.BetaManagedAgentsDeleteSessionResourceTypeSessionResourceDeleted {
+		t.Fatalf("delete response = %s", deleted.RawJSON())
+	}
 }
 
 func TestSDK_TerminalSessionErrorEvent(t *testing.T) {

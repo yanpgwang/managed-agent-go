@@ -80,6 +80,12 @@ verification where applicable.
   500 MB limit, ID-based bidirectional pagination, filename restrictions,
   scope, and downloadable semantics. Verified 2026-08-04 against the API
   reference and official Go SDK v1.61.0 types and methods.
+- [Session Resources API](https://platform.claude.com/docs/en/api/beta/sessions/resources)
+  and [Managed Agents Files](https://platform.claude.com/docs/en/managed-agents/files) —
+  the five operations, File-only runtime Add request, required response fields,
+  cursor semantics, absolute/default mount paths, read-only attachment copies,
+  runtime add/delete behavior, and the 500-resource Session limit. Verified
+  2026-08-04 against the current documentation and official Go SDK v1.61.0.
 
 ## Tool and sandbox sources
 
@@ -170,9 +176,9 @@ forwarding upstream frames.
 - Opaque multiagent configuration persists with tested replace/null-clear
   behavior. Resolved rosters, reference validation, and multiagent
   execution/orchestration are not implemented.
-- The Files API has its own conditional conformance matrix. It is not part of
-  the frozen Managed Agents core claim, and its Session integration is still
-  unsupported.
+- The Files API and File-backed Session Resources have separate conditional
+  conformance matrices. They are not part of the frozen Managed Agents core
+  claim.
 - Other unsupported product surfaces are excluded from compatibility claims
   until their wire behavior is implemented and tested.
 - Only official documentation and official SDKs are normative for the public

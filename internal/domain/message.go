@@ -332,6 +332,38 @@ func ProjectSystemContext(base string, events []Event, trigger Event) string {
 	return projected.String()
 }
 
+// ProjectSessionResourceContext tells the model which immutable files are
+// available before it chooses a tool. Validated mount paths and generated IDs
+// are JSON-encoded inside the tagged section so path text cannot alter its
+// structure; file contents are never injected into the prompt.
+func ProjectSessionResourceContext(base string, resources []SessionResource) string {
+	active := make([]SessionResource, 0, len(resources))
+	for _, resource := range resources {
+		if resource.State == SessionResourceActive {
+			active = append(active, resource)
+		}
+	}
+	if len(active) == 0 {
+		return base
+	}
+	var section strings.Builder
+	section.WriteString("<session_resources>\nRead-only files available in the sandbox:\n")
+	for _, resource := range active {
+		section.WriteString("- ")
+		encoded, _ := json.Marshal(struct {
+			MountPath string `json:"mount_path"`
+			FileID    string `json:"file_id"`
+		}{MountPath: resource.MountPath, FileID: resource.FileID})
+		section.Write(encoded)
+		section.WriteByte('\n')
+	}
+	section.WriteString("</session_resources>")
+	if strings.TrimSpace(base) == "" {
+		return section.String()
+	}
+	return base + "\n\n" + section.String()
+}
+
 func rawContentItems(raw any) []map[string]any {
 	items, ok := raw.([]any)
 	if !ok {

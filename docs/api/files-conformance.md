@@ -47,10 +47,12 @@ Service tests run the same HTTP lifecycle against real PostgreSQL and MinIO.
 ## Current limits
 
 - The public runtime does not yet produce downloadable Agent output files.
-  Their successful content path is retained and tested for the upcoming
-  Session Resources and output integration.
-- Files cannot yet be mounted into a Session, referenced by message content,
-  or used as outcome rubrics.
+  File-backed Session Resources do create downloadable session-scoped copies,
+  but arbitrary sandbox output export remains open. A scoped copy is deleted by
+  detaching its Session Resource, not through the top-level Files delete route.
+- Files can be mounted through the conditional Docker-backed Session Resources
+  slice. They cannot yet be referenced by message content or used as outcome
+  rubrics. See the [Session Resources conformance matrix](session-resources-conformance.md).
 - Files metadata and bytes are not tenant-isolated. Strict mode checks header
   presence but is not production authentication.
 - Startup reconciliation currently assumes one Files-enabled API process.

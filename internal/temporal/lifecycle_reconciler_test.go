@@ -69,6 +69,22 @@ type fakeProvisioningReconciler struct {
 	limit     int
 }
 
+type fakeSessionResourceDeletionReconciler struct {
+	mu    sync.Mutex
+	calls []string
+	fail  map[string]error
+}
+
+func (r *fakeSessionResourceDeletionReconciler) CleanupSession(
+	_ context.Context,
+	sessionID string,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, sessionID)
+	return r.fail[sessionID]
+}
+
 func (r *fakeProvisioningReconciler) ReconcileProvisioning(
 	_ context.Context,
 	limit int,
@@ -140,6 +156,43 @@ func TestLifecycleReconciler_FailureStaysDurableAndDoesNotBlockBatch(t *testing.
 	}
 	if len(store.pending) != 0 {
 		t.Fatalf("pending after recovery = %v", store.pending)
+	}
+}
+
+func TestLifecycleReconciler_ResourceCleanupFailurePreventsFinalization(t *testing.T) {
+	store := &fakeDeletionStore{pending: []string{"sesn_resource"}}
+	terminator := &fakeSessionTerminator{}
+	resources := &fakeSessionResourceDeletionReconciler{
+		fail: map[string]error{"sesn_resource": errors.New("object store unavailable")},
+	}
+	reconciler := NewLifecycleReconciler(
+		store,
+		terminator,
+		nil,
+		LifecycleReconcilerConfig{AttemptTimeout: time.Second},
+		resources,
+	)
+
+	result, err := reconciler.RunOnce(context.Background())
+	if err == nil {
+		t.Fatal("run once succeeded despite File Resource cleanup failure")
+	}
+	if result.Deletions != 0 || len(store.finalized) != 0 {
+		t.Fatalf("deletion finalized early: result=%+v finalized=%v", result, store.finalized)
+	}
+	if !equalStrings(resources.calls, []string{"sesn_resource"}) ||
+		!equalStrings(store.pending, []string{"sesn_resource"}) {
+		t.Fatalf("cleanup calls=%v pending=%v", resources.calls, store.pending)
+	}
+
+	delete(resources.fail, "sesn_resource")
+	result, err = reconciler.RunOnce(context.Background())
+	if err != nil || result.Deletions != 1 {
+		t.Fatalf("retry result=%+v err=%v", result, err)
+	}
+	if !equalStrings(resources.calls, []string{"sesn_resource", "sesn_resource"}) ||
+		!equalStrings(store.finalized, []string{"sesn_resource"}) {
+		t.Fatalf("cleanup calls=%v finalized=%v", resources.calls, store.finalized)
 	}
 }
 

@@ -209,6 +209,10 @@ type SandboxLease interface {
 	Release(ctx context.Context, sessionID string) error
 }
 
+type SandboxResourceReconciler interface {
+	Reconcile(context.Context, string, sandbox.Sandbox) error
+}
+
 // PreviewPublisher carries best-effort model deltas to live subscribers. It is
 // never part of turn correctness and may be nil.
 type PreviewPublisher interface {
@@ -263,6 +267,7 @@ type Activities struct {
 	source             EventSource
 	journal            JournalStore
 	sandboxes          SandboxLease
+	resources          SandboxResourceReconciler
 	ids                domain.IDGenerator
 	previews           PreviewPublisher
 	mcp                mcpclient.Client
@@ -299,6 +304,13 @@ func (a *Activities) WithContextTokenBudget(tokens int) *Activities {
 // Go SDK-backed client by default; tests can inject a deterministic fake.
 func (a *Activities) WithMCPClient(client mcpclient.Client) *Activities {
 	a.mcp = client
+	return a
+}
+
+func (a *Activities) WithSandboxResourceReconciler(
+	reconciler SandboxResourceReconciler,
+) *Activities {
+	a.resources = reconciler
 	return a
 }
 
@@ -549,6 +561,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		system = *session.AgentSnapshot.System
 	}
 	system = domain.ProjectSystemContext(system, history, trigger)
+	system = domain.ProjectSessionResourceContext(system, session.Resources)
 	toolSchemas := agentruntime.EnabledToolSchemas(toolSet)
 	if selfHosted {
 		toolSchemas = agentruntime.EnabledSelfHostedToolSchemas(toolSet)
@@ -1410,7 +1423,20 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	}
 	box, err := a.sandboxes.Acquire(ctx, in.SessionID, spec)
 	if err != nil {
+		if sandbox.IsPermanent(err) {
+			out.FatalError = err.Error()
+			return out, nil
+		}
 		return ExecuteToolResult{}, err
+	}
+	if a.resources != nil {
+		if err := a.resources.Reconcile(ctx, in.SessionID, box); err != nil {
+			if sandbox.IsPermanent(err) {
+				out.FatalError = err.Error()
+				return out, nil
+			}
+			return ExecuteToolResult{}, err
+		}
 	}
 	dctx, cancel := durableCtx(ctx)
 	err = a.journal.StartToolStep(dctx, step.ID)

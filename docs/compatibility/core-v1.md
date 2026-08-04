@@ -78,10 +78,13 @@ after this statement.
 
 ### Resource and wire boundaries
 
-- Non-empty Session `resources` and create-time `vault_ids` are rejected.
-  Upstream accepts create-time vault IDs. File-sourced message content and
-  file-backed outcome rubrics are rejected because the Files and Session
-  Resources surfaces are outside this claim.
+- At the time this v1.0.0 statement was frozen, non-empty Session `resources`
+  and create-time `vault_ids` were rejected. Current Files-enabled Docker
+  deployments conditionally support File-backed Session Resources, as recorded
+  in the separate [Session Resources conformance matrix](../api/session-resources-conformance.md);
+  that later capability does not expand this frozen claim. Create-time vault
+  IDs, File-sourced message content, and File-backed outcome rubrics remain
+  outside this claim.
 - Agent skills and `multiagent` configuration can round-trip, but skill
   execution, resolved rosters, Session Threads, delegation, and targeted
   thread interrupts are outside this claim and do not execute.

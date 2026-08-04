@@ -242,6 +242,7 @@ func (o *recordingOrchestrator) CreateAPISession(
 	context.Context,
 	domain.Session,
 	[]domain.EventDraft,
+	...[]app.PreparedSessionResource,
 ) (domain.Session, []domain.Event, error) {
 	panic("not used")
 }

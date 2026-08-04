@@ -14,8 +14,9 @@ This reference documents repository behavior. [Claude API
 coverage](../compatibility.md) summarizes which integration workflows are
 supported, limited, or not supported. The [core API conformance
 matrix](core-conformance.md) inventories each SDK-visible operation and its
-current test evidence. The [Files conformance matrix](files-conformance.md)
-tracks the separate post-core Files slice.
+current test evidence. The [Files conformance matrix](files-conformance.md) and
+[Session Resources conformance matrix](session-resources-conformance.md) track
+the separate post-core resource slices.
 
 :::
 
@@ -28,6 +29,7 @@ tracks the separate post-core Files slice.
 | Sessions | `POST/GET /v1/sessions`, get, update, archive, delete |
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
 | Files | `POST/GET /v1/files`, metadata, content download, delete |
+| Session Resources | Add, list, get, update contract, and delete under `/v1/sessions/{id}/resources` |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
 
 Resource-specific request shapes are covered in:
@@ -38,6 +40,7 @@ Resource-specific request shapes are covered in:
 - [Events and streaming](events.md)
 - [Core API conformance matrix](core-conformance.md)
 - [Files API conformance matrix](files-conformance.md)
+- [Session Resources conformance matrix](session-resources-conformance.md)
 
 ## Headers
 
@@ -110,6 +113,10 @@ List responses use `data` and nullable cursor fields:
 Session lists also include `prev_page`. Agent, Agent Version, and Environment
 lists are forward-only and include `next_page`.
 
+Session Resource lists use a forward-only opaque `page` cursor. Omitting
+`limit` returns all resources for the Session, whose active-resource limit is
+500.
+
 Files use their upstream ID-based pagination instead: `after_id` and
 `before_id` select a direction, while the response contains `has_more`,
 `first_id`, and `last_id`. The two direction parameters cannot be combined.
@@ -117,7 +124,8 @@ Files use their upstream ID-based pagination instead: `after_id` and
 ## OpenAPI
 
 The running server exposes `/openapi.yaml`, sourced from
-`internal/httpapi/openapi.yaml`. All 21 core operations and five Files
+`internal/httpapi/openapi.yaml`. All 21 core operations, five Files operations,
+and five Session Resources operations
 operations define stable operation IDs, path and query parameters, request and
 response schemas, list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core

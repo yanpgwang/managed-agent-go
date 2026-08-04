@@ -6,6 +6,11 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
+const (
+	MaxSessionResources     = 500
+	MaxSessionResourceBytes = MaxFileBytes
+)
+
 // CreateSessionInput is the storage-independent command accepted by the
 // control-plane session service.
 type CreateSessionInput struct {
@@ -16,6 +21,33 @@ type CreateSessionInput struct {
 	Title         string
 	Metadata      map[string]any
 	InitialEvents []domain.EventDraft
+	Resources     []FileSessionResourceInput
+}
+
+type FileSessionResourceInput struct {
+	FileID    string
+	MountPath *string
+}
+
+type PreparedSessionResource struct {
+	Resource domain.SessionResource
+	File     domain.File
+	Blob     BlobInfo
+}
+
+type SessionResourcePageBoundary struct {
+	CreatedAt time.Time
+	ID        string
+}
+
+type SessionResourceListQuery struct {
+	Limit    int
+	Boundary *SessionResourcePageBoundary
+}
+
+type SessionResourceListPage struct {
+	Resources []domain.SessionResource
+	HasMore   bool
 }
 
 // ListPage describes a keyset-paginated session query.

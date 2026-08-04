@@ -26,6 +26,7 @@ type ProviderFactory func() (Provider, error)
 type ProviderCapabilities struct {
 	PackageSetup   bool
 	LimitedNetwork bool
+	FileResources  bool
 }
 
 // ProviderRegistration is one deployment-selectable sandbox adapter.
@@ -146,6 +147,17 @@ func (r *ProviderRegistry) Open(name string) (Provider, error) {
 			name,
 			declaredNetwork,
 			actualNetwork,
+		)
+	}
+	declaredFiles := r.capabilities[name].FileResources
+	fileCapability, implementsFileCapability := provider.(FileResourceProvider)
+	actualFiles := implementsFileCapability && fileCapability.SupportsFileResources()
+	if declaredFiles != actualFiles {
+		return nil, fmt.Errorf(
+			"sandbox: provider %q file resource capability is registered as %t but reports %t",
+			name,
+			declaredFiles,
+			actualFiles,
 		)
 	}
 	return provider, nil
