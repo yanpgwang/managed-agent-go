@@ -37,5 +37,5 @@ make local-health
 make local-down
 ```
 
-See [Deployment model](../docs/deployment.mdx) for the current guarantees and
+See [Deployment model](../docs/deployment.md) for the current guarantees and
 the promotion criteria for Docker and Kubernetes assets.
