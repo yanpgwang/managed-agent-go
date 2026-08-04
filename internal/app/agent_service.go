@@ -7,19 +7,34 @@ import (
 )
 
 type AgentService struct {
-	repo  AgentRepository
-	ids   domain.IDGenerator
-	clock domain.Clock
+	repo     AgentRepository
+	ids      domain.IDGenerator
+	clock    domain.Clock
+	skillRef SkillReferenceResolver
 }
 
-func NewAgentService(repo AgentRepository, ids domain.IDGenerator, clock domain.Clock) *AgentService {
-	return &AgentService{repo: repo, ids: ids, clock: clock}
+func NewAgentService(
+	repo AgentRepository,
+	ids domain.IDGenerator,
+	clock domain.Clock,
+	skillResolvers ...SkillReferenceResolver,
+) *AgentService {
+	service := &AgentService{repo: repo, ids: ids, clock: clock}
+	if len(skillResolvers) > 0 {
+		service.skillRef = skillResolvers[0]
+	}
+	return service
 }
 
 func (s *AgentService) Create(ctx context.Context, a domain.Agent) (domain.Agent, error) {
 	if err := validateAgent(a); err != nil {
 		return domain.Agent{}, err
 	}
+	resolved, err := ResolveAgentSkillReferences(ctx, s.skillRef, a.Skills)
+	if err != nil {
+		return domain.Agent{}, err
+	}
+	a.Skills = resolved
 	a.Model = domain.NormalizeModel(a.Model)
 	now := s.clock.Now().UTC()
 	a.ID = s.ids.NewID(domain.PrefixAgent)
@@ -59,7 +74,21 @@ func (s *AgentService) Update(ctx context.Context, id string, patch domain.Agent
 		if cur.ArchivedAt != nil {
 			return domain.Agent{}, false, domain.Validation("archived agent is read-only")
 		}
-		next, changed, err := cur.Apply(patch)
+		effectivePatch := patch
+		if patch.Skills != nil {
+			// Resolve under the same Agent-version serialization boundary as the
+			// update. This preserves archived/version-conflict error precedence and
+			// makes latest resolution part of the versioned mutation.
+			if patch.ExpectedVersion != nil && *patch.ExpectedVersion != cur.Version {
+				return domain.Agent{}, false, domain.Conflict("agent version mismatch")
+			}
+			resolved, err := ResolveAgentSkillReferences(ctx, s.skillRef, *patch.Skills)
+			if err != nil {
+				return domain.Agent{}, false, err
+			}
+			effectivePatch.Skills = &resolved
+		}
+		next, changed, err := cur.Apply(effectivePatch)
 		if err != nil {
 			return domain.Agent{}, false, err
 		}

@@ -141,9 +141,9 @@ func agentSnapshotJSON(a domain.Agent) map[string]any {
 	return a.SessionSnapshotJSON()
 }
 
-func orEmpty(v []any) []any {
+func orEmpty[T any](v []T) []T {
 	if v == nil {
-		return []any{}
+		return []T{}
 	}
 	return v
 }

@@ -178,6 +178,9 @@ func (s *Store) createSession(
 		if err := q.InsertSession(ctx, insertSessionParams(session, body)); err != nil {
 			return err
 		}
+		if err := insertSessionSkillVersions(ctx, tx, session); err != nil {
+			return err
+		}
 		if err := insertPreparedSessionResources(ctx, tx, session.ID, resources); err != nil {
 			return err
 		}
@@ -190,6 +193,43 @@ func (s *Store) createSession(
 	}
 	s.notifySession(ctx, session.ID)
 	return admission, nil
+}
+
+func insertSessionSkillVersions(ctx context.Context, tx pgx.Tx, session domain.Session) error {
+	if len(session.AgentSnapshot.Skills) > app.MaxSessionSkills {
+		return domain.Validation("skills must contain at most 500 entries")
+	}
+	for position, reference := range session.AgentSnapshot.Skills {
+		if reference.Type != "custom" || reference.SkillID == "" ||
+			reference.Version == "" || reference.Version == "latest" {
+			return domain.Validation("Session Skill references must use concrete custom Versions")
+		}
+		var locked int
+		err := tx.QueryRow(ctx, `
+SELECT 1
+FROM skill_versions AS version
+JOIN skills AS skill ON skill.id = version.skill_id AND skill.ready
+WHERE version.skill_id = $1 AND version.version = $2 AND version.state = 'ready'
+FOR SHARE OF version`, reference.SkillID, reference.Version).Scan(&locked)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.Validation("Session references a missing custom Skill Version")
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+INSERT INTO session_skill_versions (
+    session_id, position, skill_id, skill_version
+) VALUES ($1, $2, $3, $4)`,
+			session.ID, position, reference.SkillID, reference.Version,
+		); err != nil {
+			if isForeignKeyViolation(err) {
+				return domain.Validation("Session references a missing custom Skill Version")
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func insertSessionParams(session domain.Session, body []byte) pgstore.InsertSessionParams {

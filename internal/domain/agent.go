@@ -62,7 +62,7 @@ type Agent struct {
 	Description *string
 	Tools       []any
 	MCPServers  []any
-	Skills      []any
+	Skills      []SkillReference
 	Multiagent  map[string]any
 	Metadata    map[string]any
 	CreatedAt   time.Time
@@ -82,7 +82,7 @@ type AgentPatch struct {
 	Description     *NullableString
 	Tools           *[]any
 	MCPServers      *[]any
-	Skills          *[]any
+	Skills          *[]SkillReference
 	Multiagent      *map[string]any
 	Metadata        map[string]any
 	ExpectedVersion *int
@@ -188,9 +188,9 @@ func (a Agent) SessionSnapshotJSON() map[string]any {
 	}
 }
 
-func orEmptyList(values []any) []any {
+func orEmptyList[T any](values []T) []T {
 	if values == nil {
-		return []any{}
+		return []T{}
 	}
 	return values
 }
@@ -203,7 +203,7 @@ type AgentOverrides struct {
 	System     *NullableString
 	Tools      *[]any
 	MCPServers *[]any
-	Skills     *[]any
+	Skills     *[]SkillReference
 }
 
 // WithOverrides returns a copy of the agent with session-local overrides

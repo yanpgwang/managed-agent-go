@@ -434,7 +434,6 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	pgStore.SetEventNotifier(broker)
 	agentsRepo := pg.NewAgentRepository(pgStore)
 	environmentsRepo := pg.NewEnvironmentRepository(pgStore)
-	agents := app.NewAgentService(agentsRepo, ids, clock)
 	providerRegistry, err := sandboxProviderRegistry()
 	if err != nil {
 		log.Fatalf("serve: sandbox registry: %v", err)
@@ -488,6 +487,11 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 			)
 		}
 	}
+	var skillResolver app.SkillReferenceResolver
+	if skills != nil {
+		skillResolver = skills
+	}
+	agents := app.NewAgentService(agentsRepo, ids, clock, skillResolver)
 
 	temporalClient, err := temporalpkg.Dial(temporalpkg.ClientConfig{
 		HostPort:  os.Getenv(envTemporalHostPort),
@@ -507,6 +511,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	)
 	sessions := controlplane.NewSessionService(
 		pgStore, agentsRepo, environmentsRepo, orchestrator, ids, clock,
+		skillResolver,
 		sessionResourceLifecycle,
 	)
 	events := controlplane.NewEventService(pgStore)

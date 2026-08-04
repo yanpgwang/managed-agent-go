@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"gopkg.in/yaml.v3"
 )
 
@@ -421,5 +422,37 @@ func TestOpenAPISkillsContract(t *testing.T) {
 		"list Versions",
 	)
 	assertOpenAPIParameterNames(t, doc, versions["parameters"], []string{"limit", "page"})
+	validateOpenAPIRefs(t, doc, doc)
+}
+
+func TestOpenAPISkillReferenceContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	components := openAPIMap(t, doc["components"], "components")
+	schemas := openAPIMap(t, components["schemas"], "schemas")
+	for _, name := range []string{"CustomSkillReferenceInput", "AnthropicSkillReferenceInput"} {
+		schema := openAPIMap(t, schemas[name], name)
+		if additional, ok := schema["additionalProperties"].(bool); !ok || additional {
+			t.Fatalf("%s additionalProperties = %v, want false", name, schema["additionalProperties"])
+		}
+		required, _ := schema["required"].([]any)
+		if fmt.Sprint(required) != "[type skill_id]" {
+			t.Fatalf("%s required = %v", name, required)
+		}
+	}
+	resolved := openAPIMap(t, schemas["ResolvedSkillReference"], "resolved Skill reference")
+	if required, _ := resolved["required"].([]any); fmt.Sprint(required) != "[type skill_id version]" {
+		t.Fatalf("resolved Skill required = %v", required)
+	}
+
+	create := openAPIMap(t, schemas["AgentCreateRequest"], "Agent create")
+	createSkills := openAPIMap(t, openAPIMap(t, create["properties"], "Agent create properties")["skills"], "Agent create skills")
+	if max, _ := createSkills["maxItems"].(int); max != app.MaxSessionSkills {
+		t.Fatalf("Agent create max Skills = %v, want %d", createSkills["maxItems"], app.MaxSessionSkills)
+	}
+	assertOpenAPIRef(t, createSkills["items"], "#/components/schemas/SkillReferenceInput")
+
+	agent := openAPIMap(t, schemas["Agent"], "Agent")
+	agentSkills := openAPIMap(t, openAPIMap(t, agent["properties"], "Agent properties")["skills"], "Agent skills")
+	assertOpenAPIRef(t, agentSkills["items"], "#/components/schemas/ResolvedSkillReference")
 	validateOpenAPIRefs(t, doc, doc)
 }

@@ -37,6 +37,18 @@ does not resolve or execute its topology.
 Optional collection and metadata fields may be omitted or supplied with their
 documented array/object shape; explicit `null` is not a create-time default.
 
+Custom Skills use the documented tagged reference:
+
+```json
+{"type": "custom", "skill_id": "skill_...", "version": "latest"}
+```
+
+`version` may be omitted or set to `latest`. Mango validates the Skill and
+stores the concrete immutable Version in the Agent response and version
+history. Updating unrelated Agent fields preserves that pin; replacing
+`skills` resolves the replacement list again. Anthropic-managed references
+return `422` because Mango does not mirror their archives.
+
 A successful create returns `200` and version `1`.
 
 ## Get and list
@@ -121,5 +133,6 @@ their stored snapshot.
 }
 ```
 
-Skills and multi-agent topology execution remain outside the supported core;
-accepted Agent tool and MCP shapes are validated before a version is stored.
+Custom Skill references are validated and version-pinned, but Skill execution
+and multi-agent topology execution remain outside the supported core. Accepted
+Agent tool and MCP shapes are validated before a version is stored.

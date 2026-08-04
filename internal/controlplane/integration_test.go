@@ -97,7 +97,7 @@ func postgresHandlerWithFixture(t *testing.T) (http.Handler, postgresFixture) {
 	environmentRepo := fixture.environmentRepo
 	orchestrator := temporalpkg.NewOrchestrator(store, nil)
 	sessions := NewSessionService(
-		store, agentRepo, environmentRepo, orchestrator, ids, clock,
+		store, agentRepo, environmentRepo, orchestrator, ids, clock, nil,
 	)
 	server := httpapi.NewServer(httpapi.Deps{
 		Agents: app.NewAgentService(agentRepo, ids, clock),
@@ -189,7 +189,7 @@ func TestDeleteFencesAdmissionBeforeWorkflowTermination(t *testing.T) {
 	orchestrator := &recordingOrchestrator{}
 	service := NewSessionService(
 		fixture.store, fixture.agentRepo, fixture.environmentRepo,
-		orchestrator, fixture.ids, fixture.clock,
+		orchestrator, fixture.ids, fixture.clock, nil,
 	)
 	if err := service.Delete(ctx, session.ID); err == nil {
 		t.Fatal("delete running session succeeded")
@@ -213,7 +213,7 @@ func TestDeleteTerminationFailureKeepsFenceAndRetryCompletes(t *testing.T) {
 	orchestrator := &recordingOrchestrator{terminateErr: errors.New("temporal unavailable")}
 	service := NewSessionService(
 		fixture.store, fixture.agentRepo, fixture.environmentRepo,
-		orchestrator, fixture.ids, fixture.clock,
+		orchestrator, fixture.ids, fixture.clock, nil,
 	)
 	if err := service.Delete(ctx, session.ID); err == nil {
 		t.Fatal("delete succeeded despite termination failure")

@@ -33,6 +33,7 @@ type SessionService struct {
 	ids          domain.IDGenerator
 	clock        domain.Clock
 	resources    *SessionResourceService
+	skillRef     app.SkillReferenceResolver
 }
 
 func NewSessionService(
@@ -42,11 +43,12 @@ func NewSessionService(
 	orchestrator SessionOrchestrator,
 	ids domain.IDGenerator,
 	clock domain.Clock,
+	skillRef app.SkillReferenceResolver,
 	resourceServices ...*SessionResourceService,
 ) *SessionService {
 	service := &SessionService{
 		store: store, agents: agents, environments: environments,
-		orchestrator: orchestrator, ids: ids, clock: clock,
+		orchestrator: orchestrator, ids: ids, clock: clock, skillRef: skillRef,
 	}
 	if len(resourceServices) > 0 {
 		service.resources = resourceServices[0]
@@ -97,6 +99,14 @@ func (s *SessionService) Create(
 	snapshot := agent
 	if input.Overrides != nil {
 		snapshot = agent.WithOverrides(*input.Overrides)
+	}
+	snapshot.Skills, err = app.ResolveAgentSkillReferences(
+		ctx,
+		s.skillRef,
+		snapshot.Skills,
+	)
+	if err != nil {
+		return domain.Session{}, err
 	}
 	if err := domain.ValidateToolConfiguration(
 		snapshot.Tools,

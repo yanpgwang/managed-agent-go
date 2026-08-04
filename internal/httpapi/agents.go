@@ -51,7 +51,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	skills, err := parseOptionalNonNullJSON[[]any](in.Skills, "skills")
+	skills, err := parseOptionalNonNullSkillReferences(in.Skills, "skills")
 	if err != nil {
 		writeError(w, err)
 		return
@@ -269,7 +269,7 @@ func (s *Server) updateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	skills, err := parseOptionalArray(in.Skills, "skills")
+	skills, err := parseOptionalSkillReferenceReplacement(in.Skills, "skills")
 	if err != nil {
 		writeError(w, err)
 		return

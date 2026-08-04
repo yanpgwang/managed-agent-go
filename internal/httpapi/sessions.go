@@ -167,7 +167,10 @@ func parseAgentRef(raw json.RawMessage) (agentRef, error) {
 		if ov.MCPServers, err = parseOptionalArray(obj.MCPServers, "agent override mcp_servers"); err != nil {
 			return agentRef{}, err
 		}
-		if ov.Skills, err = parseOptionalArray(obj.Skills, "agent override skills"); err != nil {
+		if ov.Skills, err = parseOptionalSkillReferenceReplacement(
+			obj.Skills,
+			"agent override skills",
+		); err != nil {
 			return agentRef{}, err
 		}
 		ref.Overrides = ov

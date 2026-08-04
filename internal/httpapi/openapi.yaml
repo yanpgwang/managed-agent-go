@@ -689,6 +689,8 @@ paths:
       responses:
         '200':
           $ref: '#/components/responses/SkillVersionDeletedResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
         '404':
           $ref: '#/components/responses/NotFound'
         '422':
@@ -1704,10 +1706,52 @@ components:
           type: string
           format: uri
           maxLength: 2048
-    Skill:
+    CustomSkillReferenceInput:
       type: object
-      description: Stored for compatibility; execution is outside the supported core.
-      additionalProperties: true
+      additionalProperties: false
+      required: [type, skill_id]
+      properties:
+        type:
+          type: string
+          const: custom
+        skill_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          description: Concrete Version identifier or latest; omission also resolves latest.
+    AnthropicSkillReferenceInput:
+      type: object
+      additionalProperties: false
+      required: [type, skill_id]
+      properties:
+        type:
+          type: string
+          const: anthropic
+        skill_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          description: Concrete Version identifier or latest; omission also resolves latest.
+    SkillReferenceInput:
+      oneOf:
+        - $ref: '#/components/schemas/CustomSkillReferenceInput'
+        - $ref: '#/components/schemas/AnthropicSkillReferenceInput'
+    ResolvedSkillReference:
+      type: object
+      additionalProperties: false
+      required: [type, skill_id, version]
+      properties:
+        type:
+          type: string
+          enum: [custom, anthropic]
+        skill_id:
+          type: string
+          minLength: 1
+        version:
+          type: string
+          minLength: 1
     Multiagent:
       type: [object, 'null']
       description: Stored opaquely; multi-agent execution is outside the supported core.
@@ -1739,8 +1783,9 @@ components:
             $ref: '#/components/schemas/MCPServer'
         skills:
           type: array
+          maxItems: 500
           items:
-            $ref: '#/components/schemas/Skill'
+            $ref: '#/components/schemas/SkillReferenceInput'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
         metadata:
@@ -1778,8 +1823,9 @@ components:
         skills:
           oneOf:
             - type: array
+              maxItems: 500
               items:
-                $ref: '#/components/schemas/Skill'
+                $ref: '#/components/schemas/SkillReferenceInput'
             - type: 'null'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
@@ -1832,7 +1878,7 @@ components:
         skills:
           type: array
           items:
-            $ref: '#/components/schemas/Skill'
+            $ref: '#/components/schemas/ResolvedSkillReference'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
         metadata:
@@ -1888,7 +1934,7 @@ components:
         skills:
           type: array
           items:
-            $ref: '#/components/schemas/Skill'
+            $ref: '#/components/schemas/ResolvedSkillReference'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
     AgentList:
@@ -2171,8 +2217,9 @@ components:
         skills:
           oneOf:
             - type: array
+              maxItems: 500
               items:
-                $ref: '#/components/schemas/Skill'
+                $ref: '#/components/schemas/SkillReferenceInput'
             - type: 'null'
     SessionAgentInput:
       oneOf:

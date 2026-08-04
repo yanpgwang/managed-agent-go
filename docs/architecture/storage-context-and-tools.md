@@ -178,9 +178,11 @@ pattern without becoming Files. PostgreSQL owns the Skill identity, latest
 Version pointer, extracted `SKILL.md` metadata, and upload/delete intent. The
 S3-compatible store owns a canonical zip archive under a Skill-specific key.
 Only a completed `ready` Version is public; restart reconciliation deletes
-orphaned uploading archives and completes interrupted deletions. The current
-resource slice stops at archive download. Session reference pinning and sandbox
-materialization must consume this boundary in a later slice rather than reading
+orphaned uploading archives and completes interrupted deletions. Agent and
+Session inputs resolve `latest` to an immutable Version, and PostgreSQL commits
+Session-Version pins with the Session projection so archive deletion cannot
+race admission. The current slice stops before sandbox materialization; the
+runtime must consume this boundary in a later slice rather than reading
 uncommitted object-store state directly.
 
 For a large tool result:

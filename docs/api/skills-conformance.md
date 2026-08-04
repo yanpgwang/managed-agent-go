@@ -27,6 +27,15 @@ requests use `anthropic-beta: skills-2025-10-02`; they do not expand the core
 The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.61.0`.
 Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
 
+## Reference evidence
+
+| Boundary | Official Go SDK | Durable/service evidence |
+| --- | --- | --- |
+| Agent create/update | Custom Skill union request and resolved response | Strict tagged-union validation; omitted or `latest` Versions resolve before an Agent Version is stored |
+| Session create | Inherited and `agent_with_overrides` Skill lists | Effective references are revalidated and resolved into the immutable Session agent snapshot |
+| Session persistence | Resolved Version in retrieve/list responses | PostgreSQL records relational Session-Version pins in the same transaction as the Session projection |
+| Version deletion | SDK error decoding | Deletion is rejected while a committed Session pins the Version; physical Session deletion releases its pins |
+
 ## Implemented contract
 
 - Create accepts a zip archive or path-qualified multipart files. Every bundle
@@ -43,17 +52,25 @@ Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
   uploads and finishes interrupted deletions.
 - Skills and Version lists return `data`, `has_more`, and nullable `next_page`.
   Cursors are bound to source filters or the parent Skill ID.
+- Agent and Session references accept the documented `custom` union. Omitted
+  Versions and the `latest` alias resolve to a concrete ready Version before the
+  Agent Version or Session snapshot is persisted. A Session supports at most
+  500 effective Skill references.
+- Session pins and Skill Version deletion linearize on the PostgreSQL Version
+  row. A deleting Version cannot enter a new Session, and a committed Session
+  prevents its archive from being deleted until the Session is physically
+  removed.
 - Skills routes return `422` when S3-compatible storage is not configured or
   its startup reconciliation cannot complete.
 
 ## Current limits
 
-- This slice implements custom Skill resources, not Agent/Session execution.
-  Existing `skills` arrays are still stored opaquely: references are not yet
-  validated, omitted Versions are not pinned, archives are not mounted into a
-  sandbox, and Skill metadata is not added to model context.
+- Custom references are validated and pinned, but archives are not yet mounted
+  into a sandbox and Skill metadata is not added to model context. This slice
+  therefore does not claim Skill execution yet.
 - Anthropic-managed Skills are not bundled or mirrored. Listing with
-  `source=anthropic` returns an empty page.
+  `source=anthropic` returns an empty page, and attaching one returns an
+  explicit `422` unsupported error.
 - Metadata and archives are not tenant-isolated. Strict mode checks header
   presence but is not production authentication.
 - Startup reconciliation currently assumes one Skills-enabled API process.

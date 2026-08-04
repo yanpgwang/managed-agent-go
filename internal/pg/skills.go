@@ -266,20 +266,38 @@ func (r *SkillRepository) BeginDeleteVersion(
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
 		var err error
 		item, err = scanSkillVersion(tx.QueryRow(ctx, `
-UPDATE skill_versions AS target
-SET state = 'deleting'
-FROM skills AS skill
+SELECT target.skill_id, target.version, target.created_at, target.description,
+       target.directory, target.name, target.blob_key, target.size_bytes,
+       target.checksum_sha256, target.state, target.initial
+FROM skill_versions AS target
+JOIN skills AS skill ON skill.id = target.skill_id AND skill.ready
 WHERE target.skill_id = $1 AND target.version = $2 AND target.state = 'ready'
-  AND skill.id = target.skill_id AND skill.ready
-RETURNING target.skill_id, target.version, target.created_at, target.description,
-          target.directory, target.name, target.blob_key, target.size_bytes,
-          target.checksum_sha256, target.state, target.initial`, skillID, version))
+FOR UPDATE OF target`, skillID, version))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("Skill Version not found")
 		}
 		if err != nil {
 			return err
 		}
+		var referenced bool
+		if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM session_skill_versions
+    WHERE skill_id = $1 AND skill_version = $2
+)`, skillID, version).Scan(&referenced); err != nil {
+			return err
+		}
+		if referenced {
+			return domain.Validation("Skill Version is in use by a Session")
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE skill_versions
+SET state = 'deleting'
+WHERE skill_id = $1 AND version = $2 AND state = 'ready'`, skillID, version); err != nil {
+			return err
+		}
+		item.State = domain.SkillVersionDeleting
 		_, err = tx.Exec(ctx, `
 UPDATE skills
 SET latest_version = (
