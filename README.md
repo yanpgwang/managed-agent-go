@@ -6,47 +6,98 @@
   </picture>
 </p>
 
-<hr>
-
 <p align="center">
-  <strong>Open-source Claude Managed Agents runtime, built for durable self-hosting.</strong>
+  <strong>The independent, open-source runtime for Claude Managed Agents.</strong>
 </p>
 
-Mango is an independent implementation of the core Claude Managed Agents API
-in Go. It runs agent sessions on your infrastructure with PostgreSQL-backed
-state, Temporal-powered execution, and pluggable sandboxes.
+<p align="center">
+  <a href="https://yanpgwang.github.io/managed-agent-go/">Documentation</a> ·
+  <a href="https://yanpgwang.github.io/managed-agent-go/getting-started">Getting started</a> ·
+  <a href="https://yanpgwang.github.io/managed-agent-go/compatibility">Compatibility</a> ·
+  <a href="https://yanpgwang.github.io/managed-agent-go/architecture">Architecture</a> ·
+  <a href="https://yanpgwang.github.io/managed-agent-go/roadmap">Roadmap</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/yanpgwang/managed-agent-go/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/yanpgwang/managed-agent-go/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/yanpgwang/managed-agent-go/actions/workflows/pages.yml"><img alt="Documentation" src="https://github.com/yanpgwang/managed-agent-go/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/github/license/yanpgwang/managed-agent-go"></a>
+</p>
+
+Mango implements the documented Managed Agents API as a self-hosted runtime:
+durable sessions, event streaming, tool orchestration, File resources, and
+pluggable sandbox execution. Its production-oriented architecture is built in
+Go on PostgreSQL and Temporal.
 
 ## Why Mango
 
-- **Compatible:** use the supported API through raw HTTP or the official
-  Anthropic Go SDK with a different base URL.
-- **Durable:** accepted work, interrupts, tool orchestration, and client-action
-  waits survive process failures.
-- **Pluggable:** run tools in local, Docker, E2B, CubeSandbox, OpenSandbox, or
-  Daytona sandboxes.
-- **Observable:** persist the event history and stream results over SSE.
+- **Own the runtime.** Use the supported Anthropic wire contract through raw
+  HTTP or the official Go SDK while keeping state and execution on your
+  infrastructure.
+- **Keep accepted work durable.** Sessions, events, interrupts, tool calls, and
+  client-action waits survive API and worker restarts.
+- **Bring your own execution environment.** Choose local, Docker, E2B,
+  CubeSandbox, OpenSandbox, or Daytona sandbox adapters.
+- **Run the whole stack locally.** Start a credential-free development stack
+  with an offline model, PostgreSQL, Temporal, NATS, and MinIO.
+- **Inspect every turn.** Query the persisted event history, stream live
+  previews over SSE, and inspect active workflows in Temporal UI.
 
 ## Quick start
 
-Requirements: Docker with Compose.
+You need Docker with Compose and `make`.
 
 ```bash
+git clone https://github.com/yanpgwang/managed-agent-go.git
+cd managed-agent-go
 make local-up
 make local-health
-curl http://localhost:8080/readyz
 ```
 
-No credentials are required. The local stack runs PostgreSQL, Temporal, NATS,
-MinIO, the API, and a worker with a deterministic offline model.
+Verify that Mango is ready:
 
-Follow the [five-minute walkthrough](docs/getting-started.md) to create an
-Environment, Agent, and Session and send the first message.
+```bash
+curl -i http://localhost:8080/readyz
+```
+
+The local stack uses a deterministic offline model, so no API key is required.
+Follow the [five-minute walkthrough](https://yanpgwang.github.io/managed-agent-go/getting-started)
+to create an Environment, Agent, and Session, then send and stream your first
+message.
 
 ```bash
 make local-down
 ```
 
-## How it works
+## API compatibility
+
+> [!IMPORTANT]
+> Mango is in alpha. It implements a documented subset of the API and is not an
+> Anthropic product or a drop-in replacement for every Managed Agents feature.
+> Its architecture is designed for production operation, but the project does
+> not yet claim production readiness.
+> Review the [compatibility matrix](https://yanpgwang.github.io/managed-agent-go/compatibility)
+> before relying on a capability. The default local sandbox is for development
+> and is not a security boundary.
+
+| Area | Current support |
+| --- | --- |
+| Core resources | Agent, Environment, and Session lifecycle, versioning, filtering, and pagination |
+| Events and runtime | Messages, interrupts, custom-tool results, confirmations, outcomes, retries, SSE, and durable park/resume |
+| Tools | Sandbox built-ins, provider-native Web Search/Fetch, and unauthenticated remote MCP tools |
+| Files | Five-operation Files API with configured object storage; File-backed Session Resources with durable read-only Docker mounts |
+| Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
+
+The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
+freezes the first scoped single-agent claim. The living conformance matrices
+for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-conformance),
+[Files](https://yanpgwang.github.io/managed-agent-go/api/files-conformance), and
+[Session Resources](https://yanpgwang.github.io/managed-agent-go/api/session-resources-conformance)
+record operation-level evidence and known limitations. Skills, memory, vaults,
+deployments, multi-agent orchestration, schedules, and webhooks remain
+[roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
+
+## Architecture
 
 ```mermaid
 flowchart LR
@@ -63,72 +114,43 @@ flowchart LR
 
 PostgreSQL owns public state, event history, and File lifecycle intents. An
 S3-compatible store owns File bytes. Temporal owns in-flight execution. NATS
-carries only ephemeral wakeups and previews. A lost signal, worker restart, or
-NATS outage cannot discard accepted work.
+carries only ephemeral wakeups and previews; persisted events are always
+reconciled from PostgreSQL. A lost signal, process restart, or NATS outage
+cannot discard accepted work.
 
-This separation is consistent with the architecture Anthropic describes for
-[Managed Agents](https://www.anthropic.com/engineering/managed-agents) and
-Cursor's published lessons on
-[durable cloud agents](https://cursor.com/blog/cloud-agent-lessons). These are
-non-normative references, not endorsements or compatibility evidence.
+Read the [architecture overview](https://yanpgwang.github.io/managed-agent-go/architecture)
+for the failure model, transactional outbox, tool journal, interrupt ordering,
+and sandbox lifecycle.
 
-Read the [architecture overview](docs/architecture.md) for the failure model,
-transactional outbox, tool journal, interrupt ordering, and sandbox lifecycle.
+## Documentation
 
-## Current scope
-
-> [!IMPORTANT]
-> **Alpha.** Mango implements a documented subset of the API and is not an
-> Anthropic product or a drop-in production service. Check the
-> [compatibility matrix](docs/compatibility.md) before depending on a capability.
-> The [core compatibility statement v1.0.0](docs/compatibility/core-v1.md)
-> freezes the first scoped single-agent claim.
-> The default local sandbox is not a security boundary.
-
-| Area | Status |
+| I want to… | Read |
 | --- | --- |
-| Agents, Environments, Sessions | Core lifecycle, package setup, and capability-gated networking implemented |
-| Events | Messages, interrupts, custom-tool results, confirmations, pagination, and SSE |
-| Runtime | Multi-round model/tool loop with durable park and resume |
-| Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools |
-| Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
-| Files and Session Resources | Five-operation Files API plus create-time/runtime File attachments and durable read-only Docker mounts |
+| Run my first agent session | [Getting started](https://yanpgwang.github.io/managed-agent-go/getting-started) |
+| Connect a real model endpoint | [Use a real model endpoint](https://yanpgwang.github.io/managed-agent-go/getting-started#use-a-real-model-endpoint) |
+| Choose an execution backend | [Sandbox backends](https://yanpgwang.github.io/managed-agent-go/sandboxes) |
+| Check an API operation | [API reference](https://yanpgwang.github.io/managed-agent-go/api) |
+| Understand compatibility claims | [Compatibility and provenance](https://yanpgwang.github.io/managed-agent-go/compatibility) |
+| Plan a deployment | [Deployment model](https://yanpgwang.github.io/managed-agent-go/deployment) |
 
-Web Search/Fetch currently require a supporting Messages API endpoint and
-`always_allow`. MCP supports unauthenticated public Streamable HTTP servers;
-deployment-managed authentication remains future work. Files metadata and byte
-lifecycle are implemented when object storage is configured. File-backed
-Session Resources additionally require the Docker sandbox provider; local and
-current remote providers reject them rather than weakening the mount contract.
-File-sourced messages, file-backed outcomes, skills, memory, vaults,
-multi-agent orchestration, schedules, and webhooks are not implemented.
-See [Claude API coverage](docs/compatibility.md) for current behavior, the
-[versioned core statement](docs/compatibility/core-v1.md) for the frozen claim, and the
-[roadmap](docs/roadmap.md) for planned work.
-
-## Next steps
-
-- [Use a real model endpoint](docs/getting-started.md#use-a-real-model-endpoint)
-- [Choose a sandbox backend](docs/sandboxes.md)
-- [Understand the deployment model](docs/deployment.md)
-- [Browse the API reference](docs/api/overview.md)
-- [Read the hosted documentation](https://yanpgwang.github.io/managed-agent-go/)
+The complete documentation is also published at
+[yanpgwang.github.io/managed-agent-go](https://yanpgwang.github.io/managed-agent-go/).
 
 ## Development
 
 ```bash
-make verify
-make docs-check
-make image-smoke
+make verify       # lint, unit tests, race tests, and vet
+make docs-check   # type-check and build the documentation site
+make image-smoke  # build and smoke-test the container image
 ```
 
-Default tests are offline. PostgreSQL, Temporal, NATS, MinIO, Docker, and remote
-sandbox integrations have opt-in suites. See
-[`deployments/local`](deployments/local/README.md) and
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Default tests are offline. PostgreSQL, Temporal, NATS, MinIO, Docker, model,
+and remote-sandbox integrations have explicit opt-in suites. See the
+[local stack guide](deployments/local/README.md) and
+[contribution guide](CONTRIBUTING.md).
 
-Report vulnerabilities through [SECURITY.md](SECURITY.md).
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-Apache License 2.0. See [LICENSE](LICENSE).
+Mango is licensed under the [Apache License 2.0](LICENSE).
