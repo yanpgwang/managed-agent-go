@@ -58,8 +58,22 @@ create-time and runtime attachment, independent session-scoped File copies,
 and durable read-only Docker mounts. It remains provider-gated; see the
 [Session Resources conformance matrix](api/session-resources-conformance.md).
 Self-hosted Environment work dispatch is the next dependency-ordered boundary.
-Skills, memory, vaults,
-deployments, and multi-agent surfaces remain later roadmap work.
+
+After that boundary, post-core work is ordered as reusable single-agent
+capability layers:
+
+1. Skills and immutable Skill Versions, including real runtime materialization;
+2. Memory Stores, Memories, and Memory Versions, including Memory-backed
+   Session Resources and cross-Session retrieval;
+3. Vaults and Credentials, with isolation and redaction guarantees before any
+   secret reaches a worker or sandbox;
+4. Deployments and Deployment Runs, built on the stable execution and
+   credential layers.
+
+Skills and Memory are not deferred to multi-agent work. They provide reusable
+capabilities and continuity to one Agent today, and later become foundations
+that multi-agent orchestration can consume without inventing a second storage
+or materialization model.
 
 ## Runtime integrations
 
@@ -74,11 +88,11 @@ unauthenticated remote MCP tool discovery and execution. Remaining work is:
 
 ## M2: multi-agent
 
-After M1 conformance is stable, implement the official roster, Session thread,
-delegation/message, cross-posted confirmation, context-compaction, and targeted
-interrupt events. The single-agent event ledger, pending-action barrier, private
-provider transcript, and Temporal turn loop are intended to be reused rather
-than replaced.
+After the single-agent capability layers above are stable, implement the
+official roster, Session thread, delegation/message, cross-posted confirmation,
+context-compaction, and targeted interrupt events. The single-agent event
+ledger, pending-action barrier, private provider transcript, Skills, Memory,
+and Temporal turn loop are intended to be reused rather than replaced.
 
 ## Deferred platform hardening
 
@@ -94,7 +108,7 @@ Production deployments additionally need:
 
 Authentication/tenancy, provider routing, quotas, audit, metrics, backups, and
 deployment management are intentionally not prerequisites for M1 API alignment.
-Skills, memory, vaults, schedules, and webhooks remain outside the current core
-harness. Current behavior is tracked in the
+The post-core Skills, Memory, Vaults, Schedules, and Webhooks surfaces do not
+expand the frozen M1 claim. Current behavior is tracked in the
 [compatibility matrix](compatibility.md); architectural guarantees are
 documented in the [architecture overview](architecture.md).
