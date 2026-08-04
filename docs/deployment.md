@@ -15,7 +15,7 @@ Compose bundle or Kubernetes chart.
 | Asset | Status | Intended use |
 | --- | --- | --- |
 | Root `Dockerfile` | Buildable | Produce the API/worker image on Linux AMD64 or ARM64 |
-| `deployments/local/compose.yaml` | Development | Run PostgreSQL, Temporal, NATS, API, and worker from the current checkout |
+| `deployments/local/compose.yaml` | Development | Run PostgreSQL, Temporal, NATS, MinIO, API, and worker from the current checkout |
 | Production Docker Compose | Planned | Supported single-host installation using versioned release images |
 | Helm chart | Planned | Kubernetes API and worker deployments with external stateful dependencies |
 
@@ -33,9 +33,32 @@ managed-agent serve -addr :8080
 managed-agent orchestrate
 ```
 
-The API owns HTTP resources, SSE, and event admission. The worker owns Temporal
-Workflow/Activity execution, model calls, sandbox tools, and the outbox relay.
-They share a release artifact but not a scaling or rollout policy.
+The API owns HTTP resources, SSE, event admission, and Files metadata/object
+coordination. The worker owns Temporal Workflow/Activity execution, model
+calls, sandbox tools, and the outbox relay. They share a release artifact but
+not a scaling or rollout policy.
+
+Files add an S3-compatible dependency beside PostgreSQL, Temporal, and NATS.
+Set `MANAGED_AGENT_FILE_S3_BUCKET` to enable the five Files routes; leaving it
+empty keeps the rest of the API available and makes Files requests return
+`422`. Failure to initialize or reconcile the configured object store also
+disables only Files so the Managed Agents core remains available. The API
+process uses these settings:
+
+| Variable | Meaning |
+| --- | --- |
+| `MANAGED_AGENT_FILE_S3_BUCKET` | Required bucket name; empty disables Files |
+| `MANAGED_AGENT_FILE_S3_REGION` | AWS region; defaults to `us-east-1` |
+| `MANAGED_AGENT_FILE_S3_ENDPOINT` | Optional S3-compatible endpoint |
+| `MANAGED_AGENT_FILE_S3_ACCESS_KEY` / `MANAGED_AGENT_FILE_S3_SECRET_KEY` | Optional static credentials; configure both together |
+| `MANAGED_AGENT_FILE_S3_PATH_STYLE` | Use path-style addressing for providers such as MinIO |
+| `MANAGED_AGENT_FILE_S3_CREATE_BUCKET` | Development convenience; create a missing bucket |
+| `MANAGED_AGENT_FILE_UPLOAD_TEMP_DIR` | Directory for bounded upload spool files |
+
+The first Files slice assumes one Files-enabled API process during startup
+reconciliation. It also needs temporary disk capacity up to 500 MB per
+concurrent upload. These are explicit limits until distributed intent leasing
+and direct multipart object-store uploads are implemented.
 
 Before production deployment bundles are promoted, database migration will be
 removed from normal API/worker startup and exposed as an explicit one-shot
@@ -70,13 +93,13 @@ make local-up
 make local-health
 ```
 
-Stop it while retaining PostgreSQL data:
+Stop it while retaining PostgreSQL and MinIO data:
 
 ```sh
 make local-down
 ```
 
-Set `VOLUMES=1` only when local data should be removed:
+Set `VOLUMES=1` only when all local state should be removed:
 
 ```sh
 make local-down VOLUMES=1
@@ -90,8 +113,10 @@ A supported Docker or Kubernetes bundle requires:
 2. dependency-aware API and worker readiness;
 3. graceful API shutdown and worker draining;
 4. repeatable live conformance for remote sandbox adapters;
-5. real PostgreSQL, Temporal, NATS, and sandbox integration tests in CI;
-6. versioned images with upgrade and rollback documentation.
+5. real PostgreSQL, Temporal, NATS, S3-compatible storage, and sandbox
+   integration tests in CI;
+6. distributed Files reconciliation and documented temporary-disk sizing;
+7. versioned images with upgrade and rollback documentation.
 
 Kubernetes packaging will use separate API and worker Deployments from the same
 image. Stateful services remain external by default. An Operator is not part

@@ -9,6 +9,7 @@ infrastructure versions and health checks.
 | Temporal   | `temporalio/auto-setup:1.29.7` | `7233` (gRPC)               | Durable session/thread orchestration.                |
 | Temporal UI| `temporalio/ui:2.52.1`         | `8233` → container `8080`   | Workflow explorer at <http://localhost:8233>.        |
 | NATS Core  | `nats:2.11.17-alpine`          | `4222` (client), `8222` (monitoring) | Ephemeral previews and SSE wakeups; PostgreSQL cursor reads repair loss. |
+| MinIO      | `minio/minio:RELEASE.2025-09-07T16-13-09Z` | `9000` | S3-compatible File bytes for development and service conformance. |
 | API        | `managed-agent-go:local`        | `8080`                      | PostgreSQL-backed Managed Agents-compatible HTTP API. |
 | Worker     | `managed-agent-go:local`        | —                           | Temporal worker and PostgreSQL outbox relay. |
 
@@ -26,8 +27,8 @@ make local-health   # block until all services are healthy
 ```
 
 `make health` returns only once Postgres accepts connections, the Temporal
-frontend answers `cluster health`, NATS `/healthz` is green, and the API
-answers `/readyz`.
+frontend answers `cluster health`, NATS `/healthz` is green, MinIO answers its
+live probe, and the API answers `/readyz`.
 
 Without `make`:
 
@@ -48,6 +49,15 @@ export MANAGED_AGENT_TEMPORAL_NAMESPACE="default"
 
 # NATS Core live channel
 export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
+
+# Files API object store
+export MANAGED_AGENT_FILE_S3_ENDPOINT="http://localhost:9000"
+export MANAGED_AGENT_FILE_S3_REGION="us-east-1"
+export MANAGED_AGENT_FILE_S3_BUCKET="managed-agent-files"
+export MANAGED_AGENT_FILE_S3_ACCESS_KEY="minioadmin"
+export MANAGED_AGENT_FILE_S3_SECRET_KEY="minioadmin"
+export MANAGED_AGENT_FILE_S3_PATH_STYLE="true"
+export MANAGED_AGENT_FILE_S3_CREATE_BUCKET="true"
 ```
 
 The `default` Temporal namespace is created automatically by `auto-setup`.
@@ -58,15 +68,15 @@ Start only the infrastructure dependencies, then run every test that can be
 executed without an external model or sandbox account:
 
 ```sh
-docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats
+docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats minio
 make test-service
 ```
 
 This is the same suite run by CI. It covers real PostgreSQL migrations and
 transactions, Temporal workflows and Activities, NATS reconciliation and
-previews, the HTTP-to-service vertical slice, and a Docker sandbox tool step.
-Each database test uses an isolated schema; workflow and sandbox cleanup is part
-of the assertions.
+previews, the Files lifecycle through real MinIO, the HTTP-to-service vertical
+slice, and a Docker sandbox tool step. Each database test uses an isolated
+schema; workflow, object, and sandbox cleanup is part of the assertions.
 
 ## Health checks
 
@@ -75,6 +85,7 @@ Each service declares a Docker `healthcheck`:
 - **postgres** — `pg_isready -U postgres -d managed_agent`
 - **temporal** — `tctl --address temporal:7233 cluster health`
 - **nats** — HTTP `GET /healthz` on the monitoring port
+- **minio** — HTTP `GET /minio/health/live`
 - **api** — HTTP `GET /readyz`
 
 `docker compose ps` shows `(healthy)` once each passes.
@@ -83,7 +94,7 @@ Each service declares a Docker `healthcheck`:
 
 ```sh
 make local-down            # stop containers, keep data
-make local-down VOLUMES=1  # also delete the Postgres volume
+make local-down VOLUMES=1  # also delete the Postgres and MinIO volumes
 ```
 
 ## Scope
@@ -91,6 +102,8 @@ make local-down VOLUMES=1  # also delete the Postgres volume
 This stack is for local development and integration tests only. It already
 keeps API and worker process roles separate, but it is not a production
 deployment manifest: authentication, TLS, secrets, rolling worker versioning,
-managed persistence, observability, resource limits, and object storage remain
-deployment work. See
+managed persistence, observability, resource limits, and production object
+storage remain deployment work. The bundled MinIO and its development
+credentials are not a production recommendation. Files startup reconciliation
+also currently requires one Files-enabled API process. See
 [the deployment model](../../docs/deployment.md).

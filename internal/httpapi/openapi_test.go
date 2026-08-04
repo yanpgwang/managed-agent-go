@@ -290,6 +290,9 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 		if !strings.HasPrefix(path, "/v1/") {
 			continue
 		}
+		if strings.HasPrefix(path, "/v1/files") {
+			continue
+		}
 		pathItem := openAPIMap(t, rawPathItem, "path "+path)
 		for _, method := range []string{"delete", "get", "post"} {
 			if operation, ok := pathItem[method]; ok {
@@ -303,4 +306,37 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 	if count != 21 {
 		t.Fatalf("core operation count = %d, want 21", count)
 	}
+}
+
+func TestOpenAPIFilesContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	operations := map[string][]string{
+		"/v1/files":                   {"get", "post"},
+		"/v1/files/{file_id}":         {"delete", "get"},
+		"/v1/files/{file_id}/content": {"get"},
+	}
+	count := 0
+	for path, methods := range operations {
+		pathItem := openAPIMap(t, paths[path], "path "+path)
+		for _, method := range methods {
+			operation := openAPIMap(t, pathItem[method], method+" "+path)
+			if id, _ := operation["operationId"].(string); id == "" {
+				t.Fatalf("%s %s has no operationId", method, path)
+			}
+			count++
+		}
+	}
+	if count != 5 {
+		t.Fatalf("Files operation count = %d, want 5", count)
+	}
+	upload := openAPIMap(t, openAPIMap(t, paths["/v1/files"], "Files path")["post"], "upload")
+	request := openAPIMap(t, upload["requestBody"], "upload request")
+	content := openAPIMap(t, request["content"], "upload content")
+	assertOpenAPIRef(t, openAPIMap(t, content["multipart/form-data"], "multipart")["schema"],
+		"#/components/schemas/FileUploadRequest")
+	list := openAPIMap(t, openAPIMap(t, paths["/v1/files"], "Files path")["get"], "list")
+	assertOpenAPIParameterNames(t, doc, list["parameters"],
+		[]string{"after_id", "before_id", "limit", "scope_id"})
+	validateOpenAPIRefs(t, doc, doc)
 }

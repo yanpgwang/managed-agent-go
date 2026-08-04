@@ -41,11 +41,12 @@ The PostgreSQL/Temporal control plane currently accepts:
 
 Content blocks are validated as closed tagged unions. Images accept `base64`
 and `url` sources; documents accept `base64`, `text`, and `url` sources, with
-`text` sources requiring `media_type: text/plain`. File sources return
-`422 unsupported_error` until the Files API is implemented. Tool-result search
-blocks require `source`, `title`, `citations.enabled`, and an array of text
-blocks. Unknown fields are rejected at every nested level. Text outcome rubrics
-are limited to 262,144 characters.
+`text` sources requiring `media_type: text/plain`. File sources still return
+`422 unsupported_error`: the independent Files resource exists, but Session
+Resources and file-content projection are not yet wired into messages.
+Tool-result search blocks require `source`, `title`, `citations.enabled`, and
+an array of text blocks. Unknown fields are rejected at every nested level.
+Text outcome rubrics are limited to 262,144 characters.
 
 An interrupt is first committed to PostgreSQL and then delivered to the
 Session Workflow as a metadata-only wakeup. An interrupt that commits before

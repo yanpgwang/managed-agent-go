@@ -3,8 +3,9 @@ info:
   title: managed-agent-go
   version: 0.1.0
   description: >-
-    Clean-room implementation of the supported Claude Managed Agents API core.
-    This project is Apache-2.0 licensed and is not an Anthropic product.
+    Clean-room implementation of the supported Claude Managed Agents API core
+    and a conditional Files API slice. This project is Apache-2.0 licensed and
+    is not an Anthropic product.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -24,6 +25,8 @@ tags:
     description: Durable single-agent Sessions.
   - name: Session Events
     description: Durable Session input and output events.
+  - name: Files
+    description: Durable file metadata and S3-compatible byte storage.
 paths:
   /v1/agents:
     post:
@@ -384,6 +387,84 @@ paths:
         '404':
           $ref: '#/components/responses/NotFound'
 
+  /v1/files:
+    post:
+      operationId: uploadFile
+      tags: [Files]
+      summary: Upload a File
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/FileUploadRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/FileResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '413':
+          $ref: '#/components/responses/RequestTooLarge'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listFiles
+      tags: [Files]
+      summary: List Files
+      parameters:
+        - $ref: '#/components/parameters/FileListLimit'
+        - $ref: '#/components/parameters/AfterID'
+        - $ref: '#/components/parameters/BeforeID'
+        - $ref: '#/components/parameters/ScopeID'
+      responses:
+        '200':
+          $ref: '#/components/responses/FileListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/files/{file_id}:
+    parameters:
+      - $ref: '#/components/parameters/FileID'
+    get:
+      operationId: getFileMetadata
+      tags: [Files]
+      summary: Get File metadata
+      responses:
+        '200':
+          $ref: '#/components/responses/FileResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteFile
+      tags: [Files]
+      summary: Delete a File
+      responses:
+        '200':
+          $ref: '#/components/responses/FileDeletedResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/files/{file_id}/content:
+    parameters:
+      - $ref: '#/components/parameters/FileID'
+    get:
+      operationId: downloadFile
+      tags: [Files]
+      summary: Download a File marked as downloadable
+      responses:
+        '200':
+          $ref: '#/components/responses/FileContentResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+
   /healthz:
     get:
       operationId: health
@@ -435,6 +516,13 @@ components:
       schema:
         type: string
         minLength: 1
+    FileID:
+      name: file_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
     AgentListLimit:
       name: limit
       in: query
@@ -467,6 +555,35 @@ components:
         minimum: 1
         maximum: 1000
         default: 100
+    FileListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 20
+    AfterID:
+      name: after_id
+      in: query
+      description: Return the page immediately after this File ID.
+      schema:
+        type: string
+        minLength: 1
+    BeforeID:
+      name: before_id
+      in: query
+      description: Return the page immediately before this File ID.
+      schema:
+        type: string
+        minLength: 1
+    ScopeID:
+      name: scope_id
+      in: query
+      description: Filter Files by their producing Session ID.
+      schema:
+        type: string
+        minLength: 1
     EventOrder:
       name: order
       in: query
@@ -664,6 +781,51 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/SessionEventList'
+    FileResponse:
+      description: File metadata
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/File'
+    FileListResponse:
+      description: File page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FileList'
+    FileDeletedResponse:
+      description: File deleted
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FileDeleted'
+    FileContentResponse:
+      description: Downloadable File bytes
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+        Content-Disposition:
+          description: Attachment filename derived from File metadata.
+          schema:
+            type: string
+        X-Content-Type-Options:
+          schema:
+            type: string
+            const: nosniff
+      content:
+        application/binary:
+          schema:
+            type: string
+            format: binary
     InvalidRequest:
       description: Invalid request
       headers:
@@ -693,6 +855,15 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     UnsupportedRequest:
       description: Well-formed capability that this implementation cannot enforce
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    RequestTooLarge:
+      description: Request exceeds the endpoint size limit
       headers:
         request-id:
           $ref: '#/components/headers/RequestID'
@@ -743,6 +914,92 @@ components:
               type: string
         request_id:
           type: string
+
+    FileUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [file]
+      properties:
+        file:
+          type: string
+          format: binary
+    FileScope:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          const: session
+    File:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - created_at
+        - filename
+        - mime_type
+        - size_bytes
+        - type
+        - downloadable
+        - scope
+      properties:
+        id:
+          type: string
+          minLength: 1
+        created_at:
+          type: string
+          format: date-time
+        filename:
+          type: string
+          minLength: 1
+          maxLength: 255
+        mime_type:
+          type: string
+          minLength: 1
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 524288000
+        type:
+          type: string
+          const: file
+        downloadable:
+          type: boolean
+        scope:
+          oneOf:
+            - $ref: '#/components/schemas/FileScope'
+            - type: 'null'
+    FileList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more, first_id, last_id]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/File'
+        has_more:
+          type: boolean
+        first_id:
+          type: [string, 'null']
+        last_id:
+          type: [string, 'null']
+    FileDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          minLength: 1
+        type:
+          type: string
+          const: file_deleted
 
     Metadata:
       type: object

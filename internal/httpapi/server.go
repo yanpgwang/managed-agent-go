@@ -51,12 +51,21 @@ type EventSubscriber interface {
 	SubscribeContext(context.Context, string, map[string]bool) (<-chan app.Frame, func(), error)
 }
 
+type FileService interface {
+	Upload(context.Context, app.FileUploadInput) (domain.File, error)
+	Get(context.Context, string) (domain.File, error)
+	List(context.Context, app.FileListQuery) (app.FileListPage, error)
+	Download(context.Context, string) (app.FileDownload, error)
+	Delete(context.Context, string) (domain.File, error)
+}
+
 type Deps struct {
 	Agents   AgentService
 	Envs     EnvironmentService
 	Sessions SessionService
 	Events   EventService
 	Stream   EventSubscriber
+	Files    FileService
 }
 
 type Server struct {
@@ -92,6 +101,12 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/environments/{id}", s.updateEnvironment)
 	s.mux.HandleFunc("POST /v1/environments/{id}/archive", s.archiveEnvironment)
 	s.mux.HandleFunc("DELETE /v1/environments/{id}", s.deleteEnvironment)
+
+	s.mux.HandleFunc("POST /v1/files", s.uploadFile)
+	s.mux.HandleFunc("GET /v1/files", s.listFiles)
+	s.mux.HandleFunc("GET /v1/files/{id}", s.getFile)
+	s.mux.HandleFunc("GET /v1/files/{id}/content", s.downloadFile)
+	s.mux.HandleFunc("DELETE /v1/files/{id}", s.deleteFile)
 
 	s.registerSessionRoutes()
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

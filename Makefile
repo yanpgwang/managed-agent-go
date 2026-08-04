@@ -16,6 +16,10 @@ LINT_BASE ?= origin/main
 MANAGED_AGENT_TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable
 MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT ?= localhost:7233
 MANAGED_AGENT_TEST_NATS_URL ?= nats://localhost:4222
+MANAGED_AGENT_TEST_S3_ENDPOINT ?= http://localhost:9000
+MANAGED_AGENT_TEST_S3_BUCKET ?= managed-agent-test
+MANAGED_AGENT_TEST_S3_ACCESS_KEY ?= minioadmin
+MANAGED_AGENT_TEST_S3_SECRET_KEY ?= minioadmin
 
 DOCKER_BUILD_ARGS := --build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION)
 ifneq ($(strip $(GOPROXY)),)
@@ -34,7 +38,7 @@ help:
 	@echo "  make lint           lint changes relative to $(LINT_BASE)"
 	@echo "  make test           run unit tests"
 	@echo "  make test-race      run tests with the race detector"
-	@echo "  make test-service   run tests against PostgreSQL, Temporal, NATS, and Docker"
+	@echo "  make test-service   run tests against PostgreSQL, Temporal, NATS, MinIO, and Docker"
 	@echo "  make test-model-live     test an explicitly configured Messages endpoint"
 	@echo "  make test-platform-live  run durable text and Docker tool turns against that live model"
 	@echo "  make vet            run go vet"
@@ -72,6 +76,10 @@ test-service:
 	MANAGED_AGENT_TEST_DATABASE_URL='$(MANAGED_AGENT_TEST_DATABASE_URL)' \
 	MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT='$(MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT)' \
 	MANAGED_AGENT_TEST_NATS_URL='$(MANAGED_AGENT_TEST_NATS_URL)' \
+	MANAGED_AGENT_TEST_S3_ENDPOINT='$(MANAGED_AGENT_TEST_S3_ENDPOINT)' \
+	MANAGED_AGENT_TEST_S3_BUCKET='$(MANAGED_AGENT_TEST_S3_BUCKET)' \
+	MANAGED_AGENT_TEST_S3_ACCESS_KEY='$(MANAGED_AGENT_TEST_S3_ACCESS_KEY)' \
+	MANAGED_AGENT_TEST_S3_SECRET_KEY='$(MANAGED_AGENT_TEST_S3_SECRET_KEY)' \
 	$(GO) test ./... -count=1
 
 test-model-live:

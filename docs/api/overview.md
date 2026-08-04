@@ -5,8 +5,8 @@ slug: /api
 
 # API overview
 
-The server implements a practical subset of the Claude Managed Agents HTTP API
-under `/v1`.
+The server implements a practical subset of the Claude Managed Agents and
+Files HTTP APIs under `/v1`.
 
 :::info[Supported surface]
 
@@ -14,7 +14,8 @@ This reference documents repository behavior. [Claude API
 coverage](../compatibility.md) summarizes which integration workflows are
 supported, limited, or not supported. The [core API conformance
 matrix](core-conformance.md) inventories each SDK-visible operation and its
-current test evidence.
+current test evidence. The [Files conformance matrix](files-conformance.md)
+tracks the separate post-core Files slice.
 
 :::
 
@@ -26,6 +27,7 @@ current test evidence.
 | Environments | `POST/GET /v1/environments`, get, update, archive, delete |
 | Sessions | `POST/GET /v1/sessions`, get, update, archive, delete |
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
+| Files | `POST/GET /v1/files`, metadata, content download, delete |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
 
 Resource-specific request shapes are covered in:
@@ -35,6 +37,7 @@ Resource-specific request shapes are covered in:
 - [Sessions](sessions.md)
 - [Events and streaming](events.md)
 - [Core API conformance matrix](core-conformance.md)
+- [Files API conformance matrix](files-conformance.md)
 
 ## Headers
 
@@ -48,11 +51,16 @@ anthropic-beta: managed-agents-2026-04-01
 content-type: application/json
 ```
 
+Files routes instead require `anthropic-beta: files-api-2025-04-14` in strict
+mode. Upload uses `multipart/form-data`; the other Files requests do not require
+a JSON content type.
+
 `authorization` may replace `x-api-key`. Strict mode currently validates header
 presence and version/beta values; it is not a production authentication system.
 
 Every response includes a `request-id` header. JSON request bodies are limited
-to 32 MiB and unknown top-level fields are rejected.
+to 32 MiB and unknown top-level fields are rejected. A file upload is limited
+to 500 MB and requires configured S3-compatible storage.
 
 ## Errors
 
@@ -102,14 +110,18 @@ List responses use `data` and nullable cursor fields:
 Session lists also include `prev_page`. Agent, Agent Version, and Environment
 lists are forward-only and include `next_page`.
 
+Files use their upstream ID-based pagination instead: `after_id` and
+`before_id` select a direction, while the response contains `has_more`,
+`first_id`, and `last_id`. The two direction parameters cannot be combined.
+
 ## OpenAPI
 
 The running server exposes `/openapi.yaml`, sourced from
-`internal/httpapi/openapi.yaml`. All 21 core operations define stable operation
-IDs, path and query parameters, request and response schemas, list envelopes,
-and shared error responses. The Session Event contract includes the seven
-client-submittable variants, the 25 persisted core variants, and the ephemeral
-SSE `event_start` and `event_delta` preview frames.
+`internal/httpapi/openapi.yaml`. All 21 core operations and five Files
+operations define stable operation IDs, path and query parameters, request and
+response schemas, list envelopes, and shared error responses. The Session Event
+contract includes the seven client-submittable variants, the 25 persisted core
+variants, and the ephemeral SSE `event_start` and `event_delta` preview frames.
 
 Repository tests keep all local references resolvable and lock both the core
 operation inventory and the event unions.
