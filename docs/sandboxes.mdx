@@ -1,0 +1,70 @@
+---
+title: "Sandboxes"
+description: "Choose where Mango executes session tools"
+---
+
+Mango gives each Session one logical workspace and reconnects it after worker
+restarts when the backend supports that lifecycle.
+
+## Available backends
+
+| Backend | Status | Best for | Important limitation |
+| --- | --- | --- | --- |
+| Local process | Available; default | Offline tests and trusted development | Runs on the host and is **not** a security boundary |
+| Docker | Available | Controlled single-host self-hosting, File Resources, and custom Skills | Not audited for hostile multi-tenant workloads |
+| [E2B](https://github.com/e2b-dev/E2B) | Preview | Managed remote sandboxes | Requires service credentials and live validation |
+| [CubeSandbox](https://github.com/TencentCloud/CubeSandbox) | Preview | Self-hosted Linux/KVM sandboxes | Requires an independently operated Cube service |
+| [OpenSandbox](https://github.com/opensandbox-group/OpenSandbox) | Preview | Docker- or Kubernetes-backed remote sandboxes | Docker runtime was manually live-verified; production support is not claimed |
+| [Daytona](https://www.daytona.io/docs/en/sandboxes/) | Preview | Managed or self-hosted remote sandboxes | Requires service credentials and live validation |
+
+“Preview” means the adapter has offline tests and opt-in live conformance. It
+does not mean the project certifies the backend's isolation or production
+service level.
+
+File-backed Session Resources and custom Skill execution currently require a
+Docker-backed cloud Session. Local, self-hosted, and remote providers reject
+those features until they can prove an equivalent read-only mount lifecycle.
+
+## Select a backend
+
+Set one provider on the worker:
+
+```bash
+export MANAGED_AGENT_SANDBOX=docker
+go run ./cmd/managed-agent orchestrate
+```
+
+Accepted values are `local`, `docker`, `e2b`, `cube`, `opensandbox`, and
+`daytona`. An unknown value fails startup instead of falling back to host
+execution.
+
+<Warning>
+  Mango refuses a real model with the local sandbox by default. You can bypass
+  the guard with `MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1`, but that executes
+  model-directed commands on the host. Use it only for deliberate, trusted
+  development.
+</Warning>
+
+## Remote provider configuration
+
+Credentials stay in worker environment variables and are never returned by the
+Managed Agents API.
+
+| Provider | Required | Common optional values |
+| --- | --- | --- |
+| `e2b` | `E2B_API_KEY` | `E2B_API_URL`, `E2B_TEMPLATE_ID`, `E2B_DOMAIN`, `E2B_IDLE_TIMEOUT` |
+| `cube` | `CUBE_API_URL`, `CUBE_TEMPLATE_ID` | `CUBE_API_KEY`, `CUBE_SANDBOX_DOMAIN`, `CUBE_PROXY_*`, `CUBE_IDLE_TIMEOUT` |
+| `opensandbox` | `OPEN_SANDBOX_DOMAIN` | `OPEN_SANDBOX_API_KEY`, `OPEN_SANDBOX_IMAGE`, `OPEN_SANDBOX_USE_SERVER_PROXY` |
+| `daytona` | `DAYTONA_API_KEY` | `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_SNAPSHOT`, `DAYTONA_IMAGE`, `DAYTONA_AUTO_PAUSE_MINUTES` |
+
+Create a repository-external development file from the checked-in template:
+
+```bash
+make dev-env-init
+$EDITOR ~/.config/mango/dev.env
+scripts/with-dev-env go run ./cmd/managed-agent orchestrate
+```
+
+Remote conformance tests are opt-in and can create billable resources. Their
+gates are `MANGO_LIVE_E2B`, `MANGO_LIVE_CUBE`, `MANGO_LIVE_OPENSANDBOX`, and
+`MANGO_LIVE_DAYTONA`.

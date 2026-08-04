@@ -11,16 +11,15 @@
 </p>
 
 <p align="center">
-  <a href="https://yanpgwang.github.io/managed-agent-go/">Documentation</a> ·
-  <a href="https://yanpgwang.github.io/managed-agent-go/getting-started">Getting started</a> ·
-  <a href="https://yanpgwang.github.io/managed-agent-go/compatibility">Compatibility</a> ·
-  <a href="https://yanpgwang.github.io/managed-agent-go/architecture">Architecture</a> ·
-  <a href="https://yanpgwang.github.io/managed-agent-go/roadmap">Roadmap</a>
+  <a href="docs/index.mdx">Documentation</a> ·
+  <a href="docs/quickstart.mdx">Quickstart</a> ·
+  <a href="docs/compatibility.mdx">Compatibility</a> ·
+  <a href="docs/architecture.mdx">Architecture</a> ·
+  <a href="docs/roadmap.mdx">Roadmap</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/yanpgwang/managed-agent-go/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/yanpgwang/managed-agent-go/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/yanpgwang/managed-agent-go/actions/workflows/pages.yml"><img alt="Documentation" src="https://github.com/yanpgwang/managed-agent-go/actions/workflows/pages.yml/badge.svg"></a>
   <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/github/license/yanpgwang/managed-agent-go"></a>
 </p>
 
@@ -61,7 +60,7 @@ curl -i http://localhost:8080/readyz
 ```
 
 The local stack uses a deterministic offline model, so no API key is required.
-Follow the [five-minute walkthrough](https://yanpgwang.github.io/managed-agent-go/getting-started)
+Follow the [five-minute walkthrough](docs/quickstart.mdx)
 to create an Environment, Agent, and Session, then send and stream your first
 message.
 
@@ -76,7 +75,7 @@ make local-down
 > Anthropic product or a drop-in replacement for every Managed Agents feature.
 > Its architecture is designed for production operation, but the project does
 > not yet claim production readiness.
-> Review the [compatibility matrix](https://yanpgwang.github.io/managed-agent-go/compatibility)
+> Review the [compatibility matrix](docs/compatibility.mdx)
 > before relying on a capability. The default local sandbox is for development
 > and is not a security boundary.
 
@@ -89,15 +88,10 @@ make local-down
 | Skills | Nine custom resource operations, immutable Version pins, and Claude Code-style on-demand instruction loading in Docker Sessions |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
-The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
-freezes the first scoped single-agent claim. The living conformance matrices
-for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-conformance),
-[Files](https://yanpgwang.github.io/managed-agent-go/api/files-conformance), and
-[Session Resources](https://yanpgwang.github.io/managed-agent-go/api/session-resources-conformance),
-and [Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance)
-record operation-level evidence and known limitations. Memory, vaults,
-deployments, multi-agent orchestration, schedules, and webhooks remain
-[roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
+The [compatibility matrix](docs/compatibility.mdx) is the concise source of
+truth for supported workflows and known limits. Memory, vaults, deployments,
+multi-agent orchestration, schedules, and webhooks remain
+[roadmap work](docs/roadmap.mdx).
 
 ## Architecture
 
@@ -121,29 +115,30 @@ carries only ephemeral wakeups and previews; persisted events are always
 reconciled from PostgreSQL. A lost signal, process restart, or NATS outage
 cannot discard accepted work.
 
-Read the [architecture overview](https://yanpgwang.github.io/managed-agent-go/architecture)
-for the failure model, transactional outbox, tool journal, interrupt ordering,
-and sandbox lifecycle.
+This direction is independently supported by Anthropic's engineering article
+on [decoupling the brain from the hands](https://www.anthropic.com/engineering/managed-agents)
+and Cursor's lessons from
+[building cloud agents](https://cursor.com/blog/cloud-agent-lessons). They are
+important design references, not endorsements or compatibility evidence.
+
+Read the [architecture overview](docs/architecture.mdx) for the short version
+of Mango's durability and recovery model.
 
 ## Documentation
 
 | I want to… | Read |
 | --- | --- |
-| Run my first agent session | [Getting started](https://yanpgwang.github.io/managed-agent-go/getting-started) |
-| Connect a real model endpoint | [Use a real model endpoint](https://yanpgwang.github.io/managed-agent-go/getting-started#use-a-real-model-endpoint) |
-| Choose an execution backend | [Sandbox backends](https://yanpgwang.github.io/managed-agent-go/sandboxes) |
-| Check an API operation | [API reference](https://yanpgwang.github.io/managed-agent-go/api) |
-| Understand compatibility claims | [Compatibility and provenance](https://yanpgwang.github.io/managed-agent-go/compatibility) |
-| Plan a deployment | [Deployment model](https://yanpgwang.github.io/managed-agent-go/deployment) |
-
-The complete documentation is also published at
-[yanpgwang.github.io/managed-agent-go](https://yanpgwang.github.io/managed-agent-go/).
+| Run my first agent session | [Quickstart](docs/quickstart.mdx) |
+| Connect a real model endpoint | [Use a real model endpoint](docs/deployment.mdx#use-a-real-model-endpoint) |
+| Choose an execution backend | [Sandboxes](docs/sandboxes.mdx) |
+| Check what the official API supports | [Compatibility](docs/compatibility.mdx) |
+| Plan a deployment | [Deployment](docs/deployment.mdx) |
 
 ## Development
 
 ```bash
 make verify       # lint, unit tests, race tests, and vet
-make docs-check   # type-check and build the documentation site
+make docs-check   # validate the Mintlify site and its links
 make image-smoke  # build and smoke-test the container image
 ```
 

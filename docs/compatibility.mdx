@@ -1,0 +1,63 @@
+---
+title: "Claude API compatibility"
+description: "A direct comparison between the official Managed Agents platform and Mango"
+---
+
+This is the compatibility contract. It compares the public
+[Claude Managed Agents platform](https://platform.claude.com/docs/en/managed-agents/overview)
+with behavior available in Mango today.
+
+- **Supported** — the listed workflow is implemented and covered end to end.
+- **Partial** — useful today, with the stated limitations.
+- **Not supported** — do not depend on this surface in Mango.
+
+## Coverage
+
+| Official Managed Agents surface | Mango | Status |
+| --- | --- | --- |
+| **Agents and versions** — create, list, get, update, archive, and list versions | Lifecycle, optimistic version updates, documented filters, and forward pagination work. | ✓ Supported |
+| **Environments** — cloud and self-hosted execution environments | Create, list, get, update, archive, delete, filters, package setup, and limited networking work. Cloud tools run on the worker; self-hosted tools wait for a client result. | ✓ Supported |
+| **Sessions** — create, list, get, update, archive, and delete | Lifecycle, pinned Agent versions, session overrides, cursor pagination, usage, and outcomes work. Deployment/memory filters and Vault attachment do not. | ◐ Partial |
+| **Events and streaming** — send/list events, SSE, message and thinking previews | Single-agent inputs, persisted history, filters, pagination, SSE, text deltas, and safe thinking previews work. There is no history replay, `Last-Event-ID`, or targeted multi-agent support. | ◐ Partial |
+| **Built-in and custom tools** — bash, file tools, Web Search/Fetch, MCP, custom tools, and permission prompts | Bash/read/write/edit/glob/grep, provider-native Web, custom tools, confirmations, and unauthenticated public Streamable HTTP MCP tools work. MCP auth/private networking/resources/prompts and `always_ask` for Web tools do not. | ◐ Partial |
+| **Outcomes** — rubric-based evaluation and revision | Text rubrics, grading, revisions, heartbeats, usage, and interrupts work. File rubrics do not. | ◐ Partial |
+| **Files and Session Resources** — upload/download Files and attach resources to Sessions | Upload, list, metadata, download, delete, and the five File Resource operations work with configured S3 storage. Resource mounts require a cloud Environment and Docker; GitHub/Memory resources and sandbox-output export are absent. | ◐ Partial |
+| **Skills** — custom Skills, immutable versions, and Agent/Session references | Nine custom resource operations and immutable version pins work with configured S3 storage. Docker cloud Sessions support on-demand instruction loading; Anthropic-managed Skills and other sandbox backends do not. | ◐ Partial |
+| **Memory and Vaults** | Not implemented. | — Not supported |
+| **Multi-agent orchestration and threads** | Multi-agent configuration is not executed; rosters, delegation, threads, and targeted interrupts are absent. | — Not supported |
+| **Deployments, schedules, and webhooks** | Not implemented. Mango currently runs as an API process plus worker process. | — Not supported |
+
+## SDK compatibility
+
+Mango's implemented resource flows are tested through raw HTTP and the official
+Anthropic Go SDK pinned by this repository. Point the client at Mango by
+changing the base URL:
+
+```go
+client := anthropic.NewClient(
+    option.WithBaseURL("http://localhost:8080"),
+)
+```
+
+SDK decoding proves interoperability for the tested methods; it does not imply
+that every SDK method or field is supported.
+
+## HTTP surface
+
+Mango exposes the implemented resources under `/v1`. The running server
+publishes the current endpoint inventory at
+`GET /openapi.yaml`; the repository copy is
+[`internal/httpapi/openapi.yaml`](https://github.com/yanpgwang/managed-agent-go/blob/main/internal/httpapi/openapi.yaml).
+
+There are intentionally no handwritten endpoint-by-endpoint pages here. The
+OpenAPI file is the route inventory; this page is the product-level answer to
+what works.
+
+## Sources
+
+Compatibility is shaped by the official
+[Managed Agents documentation](https://platform.claude.com/docs/en/managed-agents/overview),
+[API reference](https://platform.claude.com/docs/en/api/beta/agents), and
+[Anthropic Go SDK](https://github.com/anthropics/anthropic-sdk-go). Mango is an
+independent implementation, not an Anthropic product, and does not claim parity
+for undocumented behavior or Anthropic's hosted isolation and operations.

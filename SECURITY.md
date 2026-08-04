@@ -37,5 +37,5 @@ maintainer contact without disclosing vulnerability details.
 - Model credentials are read from environment variables. Operators are
   responsible for secret storage, rotation, logging policy, and endpoint trust.
 
-See the [architecture](docs/architecture.md) and
-[roadmap](docs/roadmap.md) for planned hardening.
+See the [architecture](docs/architecture.mdx) and
+[roadmap](docs/roadmap.mdx) for planned hardening.
