@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -19,16 +20,22 @@ type Config struct {
 }
 
 const betaValue = "managed-agents-2026-04-01"
+const filesBetaValue = "files-api-2025-04-14"
 const anthropicVersion = "2023-06-01"
 
 // maxBodyBytes is the documented request-size limit for Sessions, Agents, and
 // Environments: 32 MiB. Exceeding it yields a 413 request_too_large.
 const maxBodyBytes = 32 << 20
+const maxFileRequestBytes = app.MaxFileBytes + (1 << 20)
 
 func betaMiddleware(cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		betaHeaders := strings.Join(r.Header.Values("anthropic-beta"), ",")
-		if cfg.RequireBeta && !headerHasToken(betaHeaders, betaValue) {
+		requiredBeta := betaValue
+		if isFilePath(r.URL.Path) {
+			requiredBeta = filesBetaValue
+		}
+		if cfg.RequireBeta && !headerHasToken(betaHeaders, requiredBeta) {
 			writeErrorEnvelope(w, http.StatusBadRequest, "invalid_request_error",
 				"missing or invalid anthropic-beta header")
 			return
@@ -66,9 +73,13 @@ func contentTypeMiddleware(cfg Config, next http.Handler) http.Handler {
 			return
 		}
 		mediaType, _, err := mime.ParseMediaType(r.Header.Get("content-type"))
-		if err != nil || mediaType != "application/json" {
+		requiredType := "application/json"
+		if isFileUpload(r) {
+			requiredType = "multipart/form-data"
+		}
+		if err != nil || mediaType != requiredType {
 			writeErrorEnvelope(w, http.StatusBadRequest, "invalid_request_error",
-				"content-type must be application/json")
+				"content-type must be "+requiredType)
 			return
 		}
 		next.ServeHTTP(w, r)
@@ -87,16 +98,30 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 // carry a body.
 func bodyLimitMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.ContentLength > maxBodyBytes {
+		limit := int64(maxBodyBytes)
+		message := "request body exceeds 32 MiB limit"
+		if isFileUpload(r) {
+			limit = maxFileRequestBytes
+			message = "file request exceeds 500 MB limit"
+		}
+		if r.ContentLength > limit {
 			writeErrorEnvelope(w, http.StatusRequestEntityTooLarge, "request_too_large",
-				"request body exceeds 32 MiB limit")
+				message)
 			return
 		}
 		if r.Body != nil {
-			r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func isFilePath(path string) bool {
+	return path == "/v1/files" || strings.HasPrefix(path, "/v1/files/")
+}
+
+func isFileUpload(r *http.Request) bool {
+	return r.Method == http.MethodPost && r.URL.Path == "/v1/files"
 }
 
 // decodeJSONBody centralizes JSON parsing so known-length and chunked bodies

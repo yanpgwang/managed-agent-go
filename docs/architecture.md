@@ -11,14 +11,16 @@ orchestration, and NATS Core carries ephemeral wakeups and previews. The local
 Compose stack runs those roles separately; they can also be packaged in one
 deployment for development.
 
-The selected stack is Temporal orchestration, PostgreSQL, NATS Core, and
-replaceable sandbox providers. Provider sandbox bindings are persisted in
-PostgreSQL; object storage is not implemented.
+The selected stack is Temporal orchestration, PostgreSQL, NATS Core,
+S3-compatible File storage, and replaceable sandbox providers. Provider
+sandbox bindings and File lifecycle intents are persisted in PostgreSQL; File
+bytes live in object storage when that optional surface is enabled.
 
 ```mermaid
 flowchart LR
   Client["Managed Agents client"] --> API["HTTP API"]
   API --> PG[("PostgreSQL resources<br/>events + outbox")]
+  API --> Objects[("S3-compatible<br/>File bytes")]
   API --> Temporal["Temporal frontend"]
   API <--> NATS["NATS Core"]
   Relay["Outbox relay"] --> PG
@@ -83,6 +85,7 @@ model vendor, sandbox backend, or worker topology.
 | `cmd/managed-agent` | Composition root, configuration, process lifecycle |
 | `internal/httpapi` | HTTP routes, strict validation, DTO mapping, SSE |
 | `internal/app` | Shared resource validation and transport-neutral use-case types |
+| `internal/blob` | S3-compatible storage for public File bytes |
 | `internal/controlplane` | PostgreSQL-backed public Session/Event use cases |
 | `internal/domain` | Resource, event, message, tool, and run semantics |
 | `internal/pg` | PostgreSQL repositories, ledger, outbox, and tool journal |

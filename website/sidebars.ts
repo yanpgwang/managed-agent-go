@@ -23,6 +23,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'api/overview',
         'api/core-conformance',
+        'api/files-conformance',
         'api/agents',
         'api/environments',
         'api/sessions',

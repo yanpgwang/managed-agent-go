@@ -37,7 +37,7 @@ curl http://localhost:8080/readyz
 ```
 
 No credentials are required. The local stack runs PostgreSQL, Temporal, NATS,
-the API, and a worker with a deterministic offline model.
+MinIO, the API, and a worker with a deterministic offline model.
 
 Follow the [five-minute walkthrough](docs/getting-started.md) to create an
 Environment, Agent, and Session and send the first message.
@@ -52,6 +52,7 @@ make local-down
 flowchart LR
   Client --> API["Managed Agents API"]
   API --> PG[("PostgreSQL")]
+  API --> Objects[("S3-compatible storage")]
   PG -- "durable outbox" --> Worker
   Worker <--> Temporal
   Worker --> Model["Messages API"]
@@ -60,9 +61,10 @@ flowchart LR
   NATS -.-> API
 ```
 
-PostgreSQL owns public state and event history. Temporal owns in-flight
-execution. NATS carries only ephemeral wakeups and previews. A lost signal,
-worker restart, or NATS outage cannot discard accepted work.
+PostgreSQL owns public state, event history, and File lifecycle intents. An
+S3-compatible store owns File bytes. Temporal owns in-flight execution. NATS
+carries only ephemeral wakeups and previews. A lost signal, worker restart, or
+NATS outage cannot discard accepted work.
 
 This separation is consistent with the architecture Anthropic describes for
 [Managed Agents](https://www.anthropic.com/engineering/managed-agents) and
@@ -90,11 +92,14 @@ transactional outbox, tool journal, interrupt ordering, and sandbox lifecycle.
 | Runtime | Multi-round model/tool loop with durable park and resume |
 | Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
+| Files | Five-operation API backed by PostgreSQL and optional S3-compatible storage; Session integration remains open |
 
 Web Search/Fetch currently require a supporting Messages API endpoint and
 `always_allow`. MCP supports unauthenticated public Streamable HTTP servers;
-deployment-managed authentication remains future work. Files, skills, memory,
-vaults, multi-agent orchestration, schedules, and webhooks are not implemented.
+deployment-managed authentication remains future work. Files metadata and byte
+lifecycle are implemented when object storage is configured, but Session
+Resources, file-sourced messages, file-backed outcomes, skills, memory, vaults,
+multi-agent orchestration, schedules, and webhooks are not implemented.
 See [Claude API coverage](docs/compatibility.md) for current behavior, the
 [versioned core statement](docs/compatibility/core-v1.md) for the frozen claim, and the
 [roadmap](docs/roadmap.md) for planned work.
@@ -115,7 +120,7 @@ make docs-check
 make image-smoke
 ```
 
-Default tests are offline. PostgreSQL, Temporal, NATS, Docker, and remote
+Default tests are offline. PostgreSQL, Temporal, NATS, MinIO, Docker, and remote
 sandbox integrations have opt-in suites. See
 [`deployments/local`](deployments/local/README.md) and
 [CONTRIBUTING.md](CONTRIBUTING.md).

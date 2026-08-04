@@ -61,6 +61,7 @@ authorities:
 | What exact context continues the model conversation? | Provider Transcript | PostgreSQL JSONB |
 | Did a tool possibly change the world? | Operation Journal | PostgreSQL |
 | Where are large tool bytes, mutable files, and processes? | Session Sandbox | Sandbox provider |
+| Where are independent public File bytes? | Files API | S3-compatible object storage |
 | What knowledge is shared across Sessions? | Memory Store | Separate versioned resource |
 | Where are credentials? | Deployment/worker configuration | Environment or operator-managed secret injection |
 | What should execute next? | Temporal Workflow state | IDs and small control projections only |
@@ -68,9 +69,9 @@ authorities:
 These are logical boundaries, not a requirement for separate services.
 PostgreSQL initially holds small transactional records and the lossless
 provider transcript. Large tool output and binary MCP content live in the
-Session sandbox. There is intentionally no general Artifact/S3 subsystem in the
-first implementation. Independent Files remain a separate API resource and can
-later reuse object-storage infrastructure without changing tool-result paths.
+Session sandbox. There is intentionally no general Artifact subsystem in the
+first implementation. Independent public Files use a narrow S3-compatible byte
+store without changing the existing tool-result and provider-transcript paths.
 
 ### Public Event Ledger
 
@@ -159,10 +160,11 @@ filesystem in CCB: tools write files there and the agent reads them through
 The sandbox is not the model-context database. Provider-native blocks remain in
 the Provider Transcript even when a tool also creates files.
 
-Files uploaded through the public Files API are independent resources. They may
-eventually use S3-compatible object storage and be mounted or copied into a
-sandbox, but ordinary tool output does not automatically become a File or a
-separate Artifact resource.
+Files uploaded through the public Files API are independent resources backed by
+S3-compatible object storage. They are not yet mounted or copied into a
+sandbox, and ordinary tool output does not automatically become a File or a
+separate Artifact resource. Client uploads are non-downloadable; the public
+runtime does not yet produce downloadable Agent output Files.
 
 For a large tool result:
 

@@ -56,17 +56,18 @@ make local-config
 make image-smoke
 ```
 
-Run the same PostgreSQL, Temporal, NATS, and Docker conformance suite as CI:
+Run the same PostgreSQL, Temporal, NATS, MinIO, and Docker conformance suite as
+CI:
 
 ```bash
-docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats
+docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats minio
 make test-service
 ```
 
 Default tests must stay offline and deterministic. Service tests must use
-isolated database schemas and clean up their workflows and sandboxes. A real
-model endpoint is a separate, explicitly enabled test tier because it uses a
-credentialed network call and may incur cost:
+isolated database schemas and clean up their workflows, File objects, and
+sandboxes. A real model endpoint is a separate, explicitly enabled test tier
+because it uses a credentialed network call and may incur cost:
 
 ```bash
 make test-model-live

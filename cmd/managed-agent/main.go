@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/blob"
 	"github.com/yanpgwang/managed-agent-go/internal/controlplane"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
@@ -65,6 +66,15 @@ const (
 	daytonaSnapshotEnv  = "DAYTONA_SNAPSHOT"
 	daytonaImageEnv     = "DAYTONA_IMAGE"
 	daytonaAutoPauseEnv = "DAYTONA_AUTO_PAUSE_MINUTES"
+
+	fileS3EndpointEnv     = "MANAGED_AGENT_FILE_S3_ENDPOINT"
+	fileS3RegionEnv       = "MANAGED_AGENT_FILE_S3_REGION"
+	fileS3BucketEnv       = "MANAGED_AGENT_FILE_S3_BUCKET"
+	fileS3AccessKeyEnv    = "MANAGED_AGENT_FILE_S3_ACCESS_KEY"
+	fileS3SecretKeyEnv    = "MANAGED_AGENT_FILE_S3_SECRET_KEY"
+	fileS3PathStyleEnv    = "MANAGED_AGENT_FILE_S3_PATH_STYLE"
+	fileS3CreateBucketEnv = "MANAGED_AGENT_FILE_S3_CREATE_BUCKET"
+	fileUploadTempDirEnv  = "MANAGED_AGENT_FILE_UPLOAD_TEMP_DIR"
 )
 
 // resolveModelClient returns the worker model client and reports whether it is
@@ -243,6 +253,44 @@ func envBool(name string) (bool, error) {
 	return parsed, nil
 }
 
+func resolveFileService(
+	ctx context.Context,
+	store *pg.Store,
+	ids domain.IDGenerator,
+	clock domain.Clock,
+) (*app.FileService, error) {
+	bucket := strings.TrimSpace(os.Getenv(fileS3BucketEnv))
+	if bucket == "" {
+		return nil, nil
+	}
+	pathStyle, err := envBool(fileS3PathStyleEnv)
+	if err != nil {
+		return nil, err
+	}
+	createBucket, err := envBool(fileS3CreateBucketEnv)
+	if err != nil {
+		return nil, err
+	}
+	blobs, err := blob.NewS3Store(ctx, blob.S3Config{
+		Endpoint:      strings.TrimSpace(os.Getenv(fileS3EndpointEnv)),
+		Region:        strings.TrimSpace(os.Getenv(fileS3RegionEnv)),
+		Bucket:        bucket,
+		AccessKey:     strings.TrimSpace(os.Getenv(fileS3AccessKeyEnv)),
+		SecretKey:     strings.TrimSpace(os.Getenv(fileS3SecretKeyEnv)),
+		UsePathStyle:  pathStyle,
+		UploadTempDir: strings.TrimSpace(os.Getenv(fileUploadTempDirEnv)),
+		CreateBucket:  createBucket,
+	})
+	if err != nil {
+		return nil, err
+	}
+	files := app.NewFileService(pg.NewFileRepository(store), blobs, ids, clock)
+	if err := files.Reconcile(ctx); err != nil {
+		return nil, fmt.Errorf("files: reconcile incomplete operations: %w", err)
+	}
+	return files, nil
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if trimmed := strings.TrimSpace(value); trimmed != "" {
@@ -391,6 +439,15 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 			LimitedNetwork: providerCapabilities.LimitedNetwork,
 		},
 	)
+	files, err := resolveFileService(ctx, pgStore, ids, clock)
+	if err != nil {
+		log.Printf("serve: Files API disabled: %v", err)
+		files = nil
+	} else if files == nil {
+		log.Printf("serve: Files API disabled; %s is not configured", fileS3BucketEnv)
+	} else {
+		log.Printf("serve: Files API object store connected and reconciled")
+	}
 
 	temporalClient, err := temporalpkg.Dial(temporalpkg.ClientConfig{
 		HostPort:  os.Getenv(envTemporalHostPort),
@@ -415,7 +472,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
-		Events: events, Stream: stream,
+		Events: events, Stream: stream, Files: files,
 	}, cfg).Handler()
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")
 	serveHTTP(addr, handler)

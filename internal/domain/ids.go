@@ -15,6 +15,7 @@ const (
 	PrefixEvent   = "sevt_"
 	PrefixRun     = "run_"
 	PrefixOutcome = "outc_"
+	PrefixFile    = "file_"
 )
 
 type Clock interface{ Now() time.Time }

@@ -44,6 +44,20 @@ useful optional validation when a Managed Agents-capable credential is
 available. It is not a blocker for implementing behavior documented by the
 public API contract.
 
+## Post-core API alignment
+
+The first broader resource slice is the five-operation Files API. PostgreSQL
+stores metadata and lifecycle intents, S3-compatible storage holds bytes, and
+the official Go SDK exercises upload, bidirectional list, metadata, content,
+and delete behavior. This remains a conditional capability rather than an
+expansion of the frozen M1 claim; see the [Files conformance
+matrix](api/files-conformance.md).
+
+The next dependency-ordered slice is Session Resources: attach and list Files
+for a Session, then expose the resulting mounts to sandbox and message paths.
+Environment work dispatch follows that boundary. Skills, memory, vaults,
+deployments, and multi-agent surfaces remain later roadmap work.
+
 ## Runtime integrations
 
 The first integration slice now includes provider-native Web Search/Fetch and
@@ -70,7 +84,8 @@ Production deployments additionally need:
 - authentication, authorization, and tenant isolation;
 - Worker Versioning and rolling-upgrade coverage;
 - metrics, traces, audit logs, and operational runbooks;
-- object storage for large histories and artifacts;
+- production object-storage policy, distributed Files reconciliation, and
+  lifecycle operations for large histories and artifacts;
 - quotas and resource policy;
 - versioned deployment manifests and migration procedures.
 

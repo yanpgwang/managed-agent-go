@@ -5,7 +5,7 @@ level rather than by container technology.
 
 | Directory | Support level | Purpose |
 | --- | --- | --- |
-| [`local`](local/) | Development | Reproducible PostgreSQL, Temporal, NATS, API, and worker stack for local development and integration tests |
+| [`local`](local/) | Development | Reproducible PostgreSQL, Temporal, NATS, MinIO, API, and worker stack for local development and integration tests |
 
 `deployments/local` is the only committed deployment bundle today. It builds
 the current checkout and is not a production manifest.

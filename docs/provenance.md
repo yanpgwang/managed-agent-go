@@ -26,7 +26,7 @@ internal design, is secondary and cannot establish a compatibility claim.
 
 ## Official documentation and API Reference
 
-Baseline verified through 2026-08-03. Entries below record later focused
+Baseline verified through 2026-08-04. Entries below record later focused
 verification where applicable.
 
 - [API overview](https://platform.claude.com/docs/en/api/overview) — auth
@@ -74,6 +74,12 @@ verification where applicable.
   — filters, pagination envelope, and per-event shapes.
 - [Multiagent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration)
   — multiagent input shape and resolved-roster behavior.
+- [Files API](https://platform.claude.com/docs/en/api/beta/files) and
+  [Files guide](https://platform.claude.com/docs/en/build-with-claude/files) —
+  the five operations, `files-api-2025-04-14` beta header, multipart upload,
+  500 MB limit, ID-based bidirectional pagination, filename restrictions,
+  scope, and downloadable semantics. Verified 2026-08-04 against the API
+  reference and official Go SDK v1.61.0 types and methods.
 
 ## Tool and sandbox sources
 
@@ -131,8 +137,9 @@ repository is referenced only as an experimental candidate backend. It does
 not establish Managed Agents API compatibility and no SRT integration is
 currently implemented.
 
-Beta header for all Managed Agents routes covered here:
-`anthropic-beta: managed-agents-2026-04-01`.
+Beta header for Managed Agents core routes covered here:
+`anthropic-beta: managed-agents-2026-04-01`. Files routes use the independent
+`anthropic-beta: files-api-2025-04-14` header.
 
 ## Streaming sources
 
@@ -163,8 +170,11 @@ forwarding upstream frames.
 - Opaque multiagent configuration persists with tested replace/null-clear
   behavior. Resolved rosters, reference validation, and multiagent
   execution/orchestration are not implemented.
-- Unsupported product surfaces are excluded from compatibility claims until
-  their wire behavior is implemented and tested.
+- The Files API has its own conditional conformance matrix. It is not part of
+  the frozen Managed Agents core claim, and its Session integration is still
+  unsupported.
+- Other unsupported product surfaces are excluded from compatibility claims
+  until their wire behavior is implemented and tested.
 - Only official documentation and official SDKs are normative for the public
   compatibility surface.
 

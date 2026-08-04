@@ -47,13 +47,13 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Start PostgreSQL, Temporal, and NATS
-        run: docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats
+      - name: Start PostgreSQL, Temporal, NATS, and MinIO
+        run: docker compose -f deployments/local/compose.yaml up -d --wait postgres temporal nats minio
       - name: Run service conformance tests
         run: make test-service
       - name: Show dependency logs after failure
         if: failure()
-        run: docker compose -f deployments/local/compose.yaml logs --no-color postgres temporal nats
+        run: docker compose -f deployments/local/compose.yaml logs --no-color postgres temporal nats minio
       - name: Stop service dependencies
         if: always()
         run: docker compose -f deployments/local/compose.yaml down --volumes
