@@ -15,9 +15,6 @@
 # Go
 /vendor/
 /bin/
-/docs/node_modules/
-
-# Stale local artifacts from the retired Docusaurus site
 /website/node_modules/
 /website/build/
 /website/.docusaurus/

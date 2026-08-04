@@ -71,7 +71,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: docs/package-lock.json
+          cache-dependency-path: website/package-lock.json
       - run: make security
 
   container:
@@ -87,7 +87,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: docs
+        working-directory: website
     steps:
       - uses: actions/checkout@v7
         with:
@@ -96,9 +96,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: docs/package-lock.json
+          cache-dependency-path: website/package-lock.json
       - run: npm ci
-        env:
-          PUPPETEER_SKIP_DOWNLOAD: "1"
-      - run: npm run validate
-      - run: npm run check-links
+      - run: npm run typecheck
+      - run: npm run build

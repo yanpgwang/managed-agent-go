@@ -24,8 +24,7 @@ Requirements:
 - Go 1.26 or newer;
 - [golangci-lint](https://golangci-lint.run/docs/welcome/install/local/)
   2.12.x for local lint checks;
-- Node.js 20.17 through 24 for the documentation site (Node.js 22 LTS is used
-  in CI);
+- Node.js 20 or newer for the documentation site;
 - Docker with Compose for service-conformance and Docker sandbox tests.
 
 Run the core checks:
@@ -42,11 +41,6 @@ Run the documentation checks:
 ```bash
 make docs-check
 ```
-
-The documentation lives in `docs/` and uses Mintlify with the Sequoia theme.
-Preview it locally with `npm --prefix docs run dev`. Publishing is handled by
-the Mintlify GitHub App with `docs` configured as the content root; the retired
-GitHub Pages workflow is intentionally absent.
 
 Run reachable Go vulnerability scanning and fail on high-severity production
 dependency advisories for the documentation toolchain:
@@ -81,19 +75,19 @@ make test-platform-live
 ```
 
 The live targets require the `MANAGED_AGENT_MODEL_*` variables documented in
-the deployment guide. They are intentionally not run in public CI and must
+the getting-started guide. They are intentionally not run in public CI and must
 never print or persist API keys.
 
 ## Compatibility changes
 
 When changing the public HTTP surface:
 
-1. cite the relevant official source in the change or compatibility table;
+1. cite an official source in `docs/provenance.md`;
 2. add or update raw HTTP golden tests for exact JSON and status behavior;
 3. add an official SDK black-box test when the SDK exposes the capability;
-4. update `docs/compatibility.mdx` when the supported integration surface or a
+4. update `docs/compatibility.md` when the supported integration surface or a
    user-visible limitation changes;
-5. update the embedded `internal/httpapi/openapi.yaml` route inventory.
+5. update the API docs and embedded `internal/httpapi/openapi.yaml`.
 
 Do not copy upstream implementation code or internal types. Official public
 documentation and public SDK behavior may establish the wire contract; internal
@@ -106,7 +100,7 @@ use case, trust boundary, host dependencies, network defaults, resource
 controls, session persistence, and restart behavior.
 
 Backend changes should preserve the provider contract and session-scoped
-ownership described in the [sandbox backend guide](docs/sandboxes.mdx). Keep
+ownership described in the [sandbox backend guide](docs/sandboxes.md). Keep
 external runtimes optional, keep default tests offline, add shared lifecycle
 and tool-contract coverage, and label experimental integrations honestly.
 Command execution alone is not evidence that a backend is production-ready or

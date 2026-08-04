@@ -106,4 +106,4 @@ managed persistence, observability, resource limits, and production object
 storage remain deployment work. The bundled MinIO and its development
 credentials are not a production recommendation. Files startup reconciliation
 also currently requires one Files-enabled API process. See
-[the deployment model](../../docs/deployment.mdx).
+[the deployment model](../../docs/deployment.md).
