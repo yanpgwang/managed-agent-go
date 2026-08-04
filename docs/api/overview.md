@@ -16,7 +16,9 @@ supported, limited, or not supported. The [core API conformance
 matrix](core-conformance.md) inventories each SDK-visible operation and its
 current test evidence. The [Files conformance matrix](files-conformance.md) and
 [Session Resources conformance matrix](session-resources-conformance.md) track
-the separate post-core resource slices.
+the first post-core resource slices. The [Skills conformance
+matrix](skills-conformance.md) separately records custom Skill resource and
+Version support without implying runtime materialization.
 
 :::
 
@@ -29,6 +31,7 @@ the separate post-core resource slices.
 | Sessions | `POST/GET /v1/sessions`, get, update, archive, delete |
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
 | Files | `POST/GET /v1/files`, metadata, content download, delete |
+| Skills | Create/list/get/delete custom Skills and immutable Versions; download Version zip archives |
 | Session Resources | Add, list, get, update contract, and delete under `/v1/sessions/{id}/resources` |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
 
@@ -40,6 +43,7 @@ Resource-specific request shapes are covered in:
 - [Events and streaming](events.md)
 - [Core API conformance matrix](core-conformance.md)
 - [Files API conformance matrix](files-conformance.md)
+- [Skills API conformance matrix](skills-conformance.md)
 - [Session Resources conformance matrix](session-resources-conformance.md)
 
 ## Headers
@@ -57,6 +61,10 @@ content-type: application/json
 Files routes instead require `anthropic-beta: files-api-2025-04-14` in strict
 mode. Upload uses `multipart/form-data`; the other Files requests do not require
 a JSON content type.
+
+Skills routes require `anthropic-beta: skills-2025-10-02`. Creating a Skill or
+Skill Version uses `multipart/form-data` and is limited to a bundle smaller
+than 30 MB.
 
 `authorization` may replace `x-api-key`. Strict mode currently validates header
 presence and version/beta values; it is not a production authentication system.
@@ -96,10 +104,11 @@ the [compatibility matrix](../compatibility.md) for parity limits.
 ## Pagination
 
 Top-level Agent, Environment, and Session lists, Agent version histories, and
-Event lists use opaque `page` tokens. A cursor is bound to its resource and
-normalized filters; Agent version cursors are additionally bound to the Agent
-ID, and session cursors are bound to sort order. Reusing a cursor outside its
-scope returns `400`.
+Event lists use opaque `page` tokens. Skill and Skill Version lists use the same
+forward-only token convention. A cursor is bound to its resource and normalized
+filters; Agent and Skill version cursors are additionally bound to their parent
+resource ID, and Session cursors are bound to sort order. Reusing a cursor
+outside its scope returns `400`.
 
 List responses use `data` and nullable cursor fields:
 
@@ -125,9 +134,9 @@ Files use their upstream ID-based pagination instead: `after_id` and
 
 The running server exposes `/openapi.yaml`, sourced from
 `internal/httpapi/openapi.yaml`. All 21 core operations, five Files operations,
-and five Session Resources operations
-operations define stable operation IDs, path and query parameters, request and
-response schemas, list envelopes, and shared error responses. The Session Event
+five Session Resources operations, and nine custom Skills operations define
+stable operation IDs, path and query parameters, request and response schemas,
+list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core
 variants, and the ephemeral SSE `event_start` and `event_delta` preview frames.
 

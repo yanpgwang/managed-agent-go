@@ -59,6 +59,18 @@ type FileService interface {
 	Delete(context.Context, string) (domain.File, error)
 }
 
+type SkillService interface {
+	Create(context.Context, app.SkillCreateInput) (domain.Skill, error)
+	Get(context.Context, string) (domain.Skill, error)
+	List(context.Context, app.SkillListQuery) (app.SkillListPage, error)
+	Delete(context.Context, string) (domain.Skill, error)
+	CreateVersion(context.Context, string, []app.SkillUploadFile) (domain.SkillVersion, error)
+	GetVersion(context.Context, string, string) (domain.SkillVersion, error)
+	ListVersions(context.Context, string, app.SkillVersionListQuery) (app.SkillVersionListPage, error)
+	DeleteVersion(context.Context, string, string) (domain.SkillVersion, error)
+	Download(context.Context, string, string) (app.SkillVersionDownload, error)
+}
+
 type SessionResourceService interface {
 	Add(context.Context, string, app.FileSessionResourceInput) (domain.SessionResource, error)
 	Get(context.Context, string, string) (domain.SessionResource, error)
@@ -74,6 +86,7 @@ type Deps struct {
 	Events           EventService
 	Stream           EventSubscriber
 	Files            FileService
+	Skills           SkillService
 	SessionResources SessionResourceService
 }
 
@@ -116,6 +129,16 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/files/{id}", s.getFile)
 	s.mux.HandleFunc("GET /v1/files/{id}/content", s.downloadFile)
 	s.mux.HandleFunc("DELETE /v1/files/{id}", s.deleteFile)
+
+	s.mux.HandleFunc("POST /v1/skills", s.createSkill)
+	s.mux.HandleFunc("GET /v1/skills", s.listSkills)
+	s.mux.HandleFunc("GET /v1/skills/{id}", s.getSkill)
+	s.mux.HandleFunc("DELETE /v1/skills/{id}", s.deleteSkill)
+	s.mux.HandleFunc("POST /v1/skills/{id}/versions", s.createSkillVersion)
+	s.mux.HandleFunc("GET /v1/skills/{id}/versions", s.listSkillVersions)
+	s.mux.HandleFunc("GET /v1/skills/{id}/versions/{version}", s.getSkillVersion)
+	s.mux.HandleFunc("DELETE /v1/skills/{id}/versions/{version}", s.deleteSkillVersion)
+	s.mux.HandleFunc("GET /v1/skills/{id}/versions/{version}/content", s.downloadSkillVersion)
 
 	s.registerSessionRoutes()
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

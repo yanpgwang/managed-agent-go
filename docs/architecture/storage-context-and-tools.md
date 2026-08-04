@@ -173,6 +173,16 @@ local and current remote adapters reject this feature because they cannot
 provide the same absolute-path read-only boundary. Ordinary tool output still
 does not automatically become a File or a separate Artifact resource.
 
+Custom Skill metadata and immutable Version state follow the same split-source
+pattern without becoming Files. PostgreSQL owns the Skill identity, latest
+Version pointer, extracted `SKILL.md` metadata, and upload/delete intent. The
+S3-compatible store owns a canonical zip archive under a Skill-specific key.
+Only a completed `ready` Version is public; restart reconciliation deletes
+orphaned uploading archives and completes interrupted deletions. The current
+resource slice stops at archive download. Session reference pinning and sandbox
+materialization must consume this boundary in a later slice rather than reading
+uncommitted object-store state directly.
+
 For a large tool result:
 
 1. write the complete serialized output into the Session sandbox;

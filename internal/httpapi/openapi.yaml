@@ -29,6 +29,8 @@ tags:
     description: Read-only File copies attached to durable Sessions.
   - name: Files
     description: Durable file metadata and S3-compatible byte storage.
+  - name: Skills
+    description: Custom filesystem Skills with immutable archived Versions.
 paths:
   /v1/agents:
     post:
@@ -563,6 +565,150 @@ paths:
         '422':
           $ref: '#/components/responses/UnsupportedRequest'
 
+  /v1/skills:
+    post:
+      operationId: createSkill
+      tags: [Skills]
+      summary: Create a custom Skill and its first immutable Version
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SkillUploadRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '413':
+          $ref: '#/components/responses/RequestTooLarge'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listSkills
+      tags: [Skills]
+      summary: List Skills
+      parameters:
+        - $ref: '#/components/parameters/SkillListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/SkillSource'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/skills/{skill_id}:
+    parameters:
+      - $ref: '#/components/parameters/SkillID'
+    get:
+      operationId: getSkill
+      tags: [Skills]
+      summary: Get a Skill
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteSkill
+      tags: [Skills]
+      summary: Delete a Skill after all of its Versions have been deleted
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillDeletedResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/skills/{skill_id}/versions:
+    parameters:
+      - $ref: '#/components/parameters/SkillID'
+    post:
+      operationId: createSkillVersion
+      tags: [Skills]
+      summary: Create an immutable Skill Version
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SkillVersionUploadRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/RequestTooLarge'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listSkillVersions
+      tags: [Skills]
+      summary: List immutable Skill Versions
+      parameters:
+        - $ref: '#/components/parameters/SkillVersionListLimit'
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersionListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/skills/{skill_id}/versions/{version}:
+    parameters:
+      - $ref: '#/components/parameters/SkillID'
+      - $ref: '#/components/parameters/SkillVersion'
+    get:
+      operationId: getSkillVersion
+      tags: [Skills]
+      summary: Get a Skill Version
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersionResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteSkillVersion
+      tags: [Skills]
+      summary: Delete a Skill Version and its archived contents
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersionDeletedResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/skills/{skill_id}/versions/{version}/content:
+    parameters:
+      - $ref: '#/components/parameters/SkillID'
+      - $ref: '#/components/parameters/SkillVersion'
+    get:
+      operationId: downloadSkillVersion
+      tags: [Skills]
+      summary: Download a Skill Version as a zip archive
+      responses:
+        '200':
+          $ref: '#/components/responses/SkillVersionContentResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+
   /healthz:
     get:
       operationId: health
@@ -621,6 +767,20 @@ components:
       schema:
         type: string
         minLength: 1
+    SkillID:
+      name: skill_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^skill_'
+    SkillVersion:
+      name: version
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9]+$'
     AgentListLimit:
       name: limit
       in: query
@@ -661,6 +821,28 @@ components:
         minimum: 1
         maximum: 1000
         default: 20
+    SkillListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    SkillVersionListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 20
+    SkillSource:
+      name: source
+      in: query
+      schema:
+        type: string
+        enum: [custom, anthropic]
     AfterID:
       name: after_id
       in: query
@@ -966,6 +1148,78 @@ components:
           schema:
             type: string
             format: binary
+    SkillResponse:
+      description: Custom Skill resource
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SkillResource'
+    SkillListResponse:
+      description: Skill page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SkillList'
+    SkillDeletedResponse:
+      description: Skill deleted
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SkillDeleted'
+    SkillVersionResponse:
+      description: Immutable Skill Version
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SkillVersion'
+    SkillVersionListResponse:
+      description: Skill Version page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SkillVersionList'
+    SkillVersionDeletedResponse:
+      description: Skill Version deleted
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SkillVersionDeleted'
+    SkillVersionContentResponse:
+      description: Skill Version zip archive
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+        Content-Disposition:
+          description: Attachment filename derived from Skill Version metadata.
+          schema:
+            type: string
+        X-Content-Type-Options:
+          schema:
+            type: string
+            const: nosniff
+      content:
+        application/zip:
+          schema:
+            type: string
+            format: binary
     InvalidRequest:
       description: Invalid request
       headers:
@@ -1140,6 +1394,138 @@ components:
         type:
           type: string
           const: file_deleted
+
+    SkillUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [files]
+      properties:
+        files:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: string
+            format: binary
+        display_title:
+          type: string
+          minLength: 1
+          maxLength: 255
+    SkillVersionUploadRequest:
+      type: object
+      additionalProperties: false
+      required: [files]
+      properties:
+        files:
+          type: array
+          minItems: 1
+          maxItems: 1000
+          items:
+            type: string
+            format: binary
+    SkillResource:
+      type: object
+      additionalProperties: false
+      required: [id, created_at, display_title, latest_version, source, type, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: '^skill_'
+        created_at:
+          type: string
+          format: date-time
+        display_title:
+          type: string
+        latest_version:
+          type: [string, 'null']
+        source:
+          type: string
+          const: custom
+        type:
+          type: string
+          const: skill
+        updated_at:
+          type: string
+          format: date-time
+    SkillList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkillResource'
+        has_more:
+          type: boolean
+        next_page:
+          type: [string, 'null']
+    SkillDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          pattern: '^skill_'
+        type:
+          type: string
+          const: skill_deleted
+    SkillVersion:
+      type: object
+      additionalProperties: false
+      required: [id, created_at, description, directory, name, skill_id, type, version]
+      properties:
+        id:
+          type: string
+          pattern: '^[0-9]+$'
+        created_at:
+          type: string
+          format: date-time
+        description:
+          type: string
+          minLength: 1
+          maxLength: 1024
+        directory:
+          type: string
+          minLength: 1
+        name:
+          type: string
+          pattern: '^[a-z0-9-]+$'
+          maxLength: 64
+        skill_id:
+          type: string
+          pattern: '^skill_'
+        type:
+          type: string
+          const: skill_version
+        version:
+          type: string
+          pattern: '^[0-9]+$'
+    SkillVersionList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/SkillVersion'
+        has_more:
+          type: boolean
+        next_page:
+          type: [string, 'null']
+    SkillVersionDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          pattern: '^[0-9]+$'
+        type:
+          type: string
+          const: skill_version_deleted
 
     Metadata:
       type: object

@@ -17,6 +17,7 @@ const (
 	PrefixOutcome         = "outc_"
 	PrefixFile            = "file_"
 	PrefixSessionResource = "sesrsc_"
+	PrefixSkill           = "skill_"
 )
 
 type Clock interface{ Now() time.Time }

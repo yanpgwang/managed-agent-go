@@ -293,6 +293,9 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 		if strings.HasPrefix(path, "/v1/files") {
 			continue
 		}
+		if strings.HasPrefix(path, "/v1/skills") {
+			continue
+		}
 		if strings.Contains(path, "/resources") {
 			continue
 		}
@@ -375,5 +378,48 @@ func TestOpenAPIFilesContract(t *testing.T) {
 	list := openAPIMap(t, openAPIMap(t, paths["/v1/files"], "Files path")["get"], "list")
 	assertOpenAPIParameterNames(t, doc, list["parameters"],
 		[]string{"after_id", "before_id", "limit", "scope_id"})
+	validateOpenAPIRefs(t, doc, doc)
+}
+
+func TestOpenAPISkillsContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	operations := map[string][]string{
+		"/v1/skills":                                       {"get", "post"},
+		"/v1/skills/{skill_id}":                            {"delete", "get"},
+		"/v1/skills/{skill_id}/versions":                   {"get", "post"},
+		"/v1/skills/{skill_id}/versions/{version}":         {"delete", "get"},
+		"/v1/skills/{skill_id}/versions/{version}/content": {"get"},
+	}
+	count := 0
+	for path, methods := range operations {
+		pathItem := openAPIMap(t, paths[path], "path "+path)
+		for _, method := range methods {
+			operation := openAPIMap(t, pathItem[method], method+" "+path)
+			if id, _ := operation["operationId"].(string); id == "" {
+				t.Fatalf("%s %s has no operationId", method, path)
+			}
+			count++
+		}
+	}
+	if count != 9 {
+		t.Fatalf("Skills operation count = %d, want 9", count)
+	}
+	for path, schema := range map[string]string{
+		"/v1/skills":                     "#/components/schemas/SkillUploadRequest",
+		"/v1/skills/{skill_id}/versions": "#/components/schemas/SkillVersionUploadRequest",
+	} {
+		post := openAPIMap(t, openAPIMap(t, paths[path], path)["post"], "post "+path)
+		request := openAPIMap(t, post["requestBody"], "request "+path)
+		content := openAPIMap(t, request["content"], "content "+path)
+		assertOpenAPIRef(t, openAPIMap(t, content["multipart/form-data"], "multipart")["schema"], schema)
+	}
+	list := openAPIMap(t, openAPIMap(t, paths["/v1/skills"], "Skills path")["get"], "list Skills")
+	assertOpenAPIParameterNames(t, doc, list["parameters"], []string{"limit", "page", "source"})
+	versions := openAPIMap(t,
+		openAPIMap(t, paths["/v1/skills/{skill_id}/versions"], "Versions path")["get"],
+		"list Versions",
+	)
+	assertOpenAPIParameterNames(t, doc, versions["parameters"], []string{"limit", "page"})
 	validateOpenAPIRefs(t, doc, doc)
 }
