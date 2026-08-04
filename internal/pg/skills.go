@@ -282,14 +282,16 @@ FOR UPDATE OF target`, skillID, version))
 		var referenced bool
 		if err := tx.QueryRow(ctx, `
 SELECT EXISTS (
-    SELECT 1
-    FROM session_skill_versions
+    SELECT 1 FROM agent_skill_versions
+    WHERE skill_id = $1 AND skill_version = $2
+    UNION ALL
+    SELECT 1 FROM session_skill_versions
     WHERE skill_id = $1 AND skill_version = $2
 )`, skillID, version).Scan(&referenced); err != nil {
 			return err
 		}
 		if referenced {
-			return domain.Validation("Skill Version is in use by a Session")
+			return domain.Validation("Skill Version is in use by an Agent or Session")
 		}
 		if _, err := tx.Exec(ctx, `
 UPDATE skill_versions

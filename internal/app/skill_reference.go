@@ -67,6 +67,12 @@ func validateSkillReferenceInputs(references []domain.SkillReference) error {
 		return domain.Validation("skills must contain at most 500 entries")
 	}
 	for index, reference := range references {
+		if reference.IsLegacy() {
+			return domain.Unsupported(fmt.Sprintf(
+				"skills[%d] uses a legacy opaque value; replace the Agent Skills list before creating a Session",
+				index,
+			))
+		}
 		switch reference.Type {
 		case "custom", "anthropic":
 		default:

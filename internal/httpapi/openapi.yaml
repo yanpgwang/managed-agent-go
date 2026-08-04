@@ -1722,6 +1722,9 @@ components:
           description: Concrete Version identifier or latest; omission also resolves latest.
     AnthropicSkillReferenceInput:
       type: object
+      description: >-
+        Upstream Managed Agents union variant. This implementation does not
+        mirror Anthropic-managed archives and returns 422 when it is attached.
       additionalProperties: false
       required: [type, skill_id]
       properties:
@@ -1735,6 +1738,10 @@ components:
           type: string
           description: Concrete Version identifier or latest; omission also resolves latest.
     SkillReferenceInput:
+      description: >-
+        Tagged Skill reference. Custom references are resolved; the Anthropic
+        variant is represented for SDK compatibility but is currently rejected
+        with an explicit unsupported response.
       oneOf:
         - $ref: '#/components/schemas/CustomSkillReferenceInput'
         - $ref: '#/components/schemas/AnthropicSkillReferenceInput'
@@ -1745,7 +1752,7 @@ components:
       properties:
         type:
           type: string
-          enum: [custom, anthropic]
+          const: custom
         skill_id:
           type: string
           minLength: 1

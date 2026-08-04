@@ -2,12 +2,50 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
+
+type mutationAwareAgentRepository struct {
+	*memoryAgentRepository
+	inMutation bool
+}
+
+func (r *mutationAwareAgentRepository) UpdateVersion(
+	ctx context.Context,
+	id string,
+	update func(domain.Agent) (domain.Agent, bool, error),
+) (domain.Agent, error) {
+	return r.memoryAgentRepository.UpdateVersion(ctx, id, func(agent domain.Agent) (domain.Agent, bool, error) {
+		r.inMutation = true
+		defer func() { r.inMutation = false }()
+		return update(agent)
+	})
+}
+
+type mutationAwareSkillResolver struct {
+	repo               *mutationAwareAgentRepository
+	resolvedInMutation bool
+}
+
+func (r *mutationAwareSkillResolver) ResolveSkillReferences(
+	_ context.Context,
+	references []domain.SkillReference,
+) ([]domain.SkillReference, error) {
+	if r.repo.inMutation {
+		r.resolvedInMutation = true
+	}
+	resolved := make([]domain.SkillReference, len(references))
+	for index, reference := range references {
+		reference.Version = "100"
+		resolved[index] = reference
+	}
+	return resolved, nil
+}
 
 type mutableSkillResolver struct {
 	latest map[string]string
@@ -78,6 +116,64 @@ func TestAgentService_ResolvesAndPinsSkillVersions(t *testing.T) {
 	noOp, err := service.Update(ctx, agent.ID, domain.AgentPatch{Skills: &replacement})
 	if err != nil || noOp.Version != 3 {
 		t.Fatalf("same resolved Skill update = v%d, %v; want no-op v3", noOp.Version, err)
+	}
+}
+
+func TestAgentService_ResolvesSkillsBeforeRepositoryMutation(t *testing.T) {
+	repo := &mutationAwareAgentRepository{memoryAgentRepository: newMemoryAgentRepository()}
+	resolver := &mutationAwareSkillResolver{repo: repo}
+	service := NewAgentService(
+		repo,
+		domain.NewSeqIDGen(),
+		domain.FixedClock{T: time.Unix(1, 0).UTC()},
+		resolver,
+	)
+	agent, err := service.Create(context.Background(), domain.Agent{
+		Name: "reports", Model: domain.Model{ID: "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement := []domain.SkillReference{{
+		Type: "custom", SkillID: "skill_reports", Version: "latest",
+	}}
+	if _, err := service.Update(context.Background(), agent.ID, domain.AgentPatch{
+		Skills: &replacement,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if resolver.resolvedInMutation {
+		t.Fatal("Skill resolver ran while the Agent repository mutation was holding its serialization boundary")
+	}
+}
+
+func TestLegacySkillReferencesRemainReadableAndAreRejectedForNewExecution(t *testing.T) {
+	var references []domain.SkillReference
+	if err := json.Unmarshal([]byte(`[
+        "former-provider-value",
+        {"type":"custom","skill_id":"skill_old","version":"100","extension":true}
+    ]`), &references); err != nil {
+		t.Fatalf("decode legacy references: %v", err)
+	}
+	if len(references) != 2 || !references[0].IsLegacy() || !references[1].IsLegacy() {
+		t.Fatalf("legacy references = %+v", references)
+	}
+	encoded, err := json.Marshal(references)
+	if err != nil {
+		t.Fatalf("encode legacy references: %v", err)
+	}
+	var roundTrip []any
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatalf("decode round trip: %v", err)
+	}
+	object, ok := roundTrip[1].(map[string]any)
+	if !ok || object["extension"] != true {
+		t.Fatalf("legacy extension was lost: %s", encoded)
+	}
+	_, err = ResolveAgentSkillReferences(context.Background(), &mutableSkillResolver{}, references)
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindUnsupported {
+		t.Fatalf("legacy execution error = %T %v, want unsupported", err, err)
 	}
 }
 

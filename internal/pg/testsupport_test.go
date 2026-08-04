@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -32,6 +34,18 @@ var schemaSeq atomic.Int64
 // test database is configured. Each test gets its own schema so parallel tests
 // never collide, and the schema is dropped on cleanup.
 func testStore(t *testing.T) *Store {
+	return testStoreWithOptions(t, 0, 0)
+}
+
+func testStoreWithMaxConns(t *testing.T, maxConns int32) *Store {
+	return testStoreWithOptions(t, maxConns, 0)
+}
+
+func testStoreAtMigration(t *testing.T, version int64) *Store {
+	return testStoreWithOptions(t, 0, version)
+}
+
+func testStoreWithOptions(t *testing.T, maxConns int32, migrationVersion int64) *Store {
 	t.Helper()
 	url := baseURL()
 	if url == "" {
@@ -47,6 +61,9 @@ func testStore(t *testing.T) *Store {
 	// never collide with another test's tables.
 	schema := "test_" + sanitize(t.Name()) + "_" + itoa(schemaSeq.Add(1))
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	if maxConns > 0 {
+		cfg.MaxConns = maxConns
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
@@ -56,9 +73,24 @@ func testStore(t *testing.T) *Store {
 		pool.Close()
 		t.Skipf("cannot create schema (database unreachable?): %v", err)
 	}
-	if err := Migrate(ctx, pool); err != nil {
+	var migrateErr error
+	if migrationVersion > 0 {
+		goose.SetBaseFS(migrationsFS)
+		if err := goose.SetDialect("postgres"); err != nil {
+			migrateErr = err
+		} else {
+			sqlDB := stdlib.OpenDBFromPool(pool)
+			migrateErr = goose.UpToContext(ctx, sqlDB, "migrations", migrationVersion)
+			if closeErr := sqlDB.Close(); migrateErr == nil {
+				migrateErr = closeErr
+			}
+		}
+	} else {
+		migrateErr = Migrate(ctx, pool)
+	}
+	if migrateErr != nil {
 		pool.Close()
-		t.Fatalf("migrate: %v", err)
+		t.Fatalf("migrate: %v", migrateErr)
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")

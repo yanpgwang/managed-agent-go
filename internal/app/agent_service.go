@@ -70,23 +70,31 @@ func (s *AgentService) Versions(
 }
 
 func (s *AgentService) Update(ctx context.Context, id string, patch domain.AgentPatch) (domain.Agent, error) {
+	effectivePatch := patch
+	if patch.Skills != nil {
+		// Resolve before UpdateVersion opens its serialization transaction. A
+		// production resolver may use the same connection pool as the Agent
+		// repository; calling it from the mutation callback can exhaust that pool
+		// while every transaction is holding an Agent row lock.
+		current, err := s.repo.Latest(ctx, id)
+		if err != nil {
+			return domain.Agent{}, err
+		}
+		if current.ArchivedAt != nil {
+			return domain.Agent{}, domain.Validation("archived agent is read-only")
+		}
+		if patch.ExpectedVersion != nil && *patch.ExpectedVersion != current.Version {
+			return domain.Agent{}, domain.Conflict("agent version mismatch")
+		}
+		resolved, err := ResolveAgentSkillReferences(ctx, s.skillRef, *patch.Skills)
+		if err != nil {
+			return domain.Agent{}, err
+		}
+		effectivePatch.Skills = &resolved
+	}
 	return s.repo.UpdateVersion(ctx, id, func(cur domain.Agent) (domain.Agent, bool, error) {
 		if cur.ArchivedAt != nil {
 			return domain.Agent{}, false, domain.Validation("archived agent is read-only")
-		}
-		effectivePatch := patch
-		if patch.Skills != nil {
-			// Resolve under the same Agent-version serialization boundary as the
-			// update. This preserves archived/version-conflict error precedence and
-			// makes latest resolution part of the versioned mutation.
-			if patch.ExpectedVersion != nil && *patch.ExpectedVersion != cur.Version {
-				return domain.Agent{}, false, domain.Conflict("agent version mismatch")
-			}
-			resolved, err := ResolveAgentSkillReferences(ctx, s.skillRef, *patch.Skills)
-			if err != nil {
-				return domain.Agent{}, false, err
-			}
-			effectivePatch.Skills = &resolved
 		}
 		next, changed, err := cur.Apply(effectivePatch)
 		if err != nil {

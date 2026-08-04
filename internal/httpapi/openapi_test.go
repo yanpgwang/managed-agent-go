@@ -443,6 +443,10 @@ func TestOpenAPISkillReferenceContract(t *testing.T) {
 	if required, _ := resolved["required"].([]any); fmt.Sprint(required) != "[type skill_id version]" {
 		t.Fatalf("resolved Skill required = %v", required)
 	}
+	resolvedType := openAPIMap(t, openAPIMap(t, resolved["properties"], "resolved Skill properties")["type"], "resolved Skill type")
+	if resolvedType["const"] != "custom" {
+		t.Fatalf("resolved Skill type = %v, want custom", resolvedType["const"])
+	}
 
 	create := openAPIMap(t, schemas["AgentCreateRequest"], "Agent create")
 	createSkills := openAPIMap(t, openAPIMap(t, create["properties"], "Agent create properties")["skills"], "Agent create skills")

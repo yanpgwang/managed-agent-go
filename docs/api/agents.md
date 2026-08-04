@@ -46,8 +46,10 @@ Custom Skills use the documented tagged reference:
 `version` may be omitted or set to `latest`. Mango validates the Skill and
 stores the concrete immutable Version in the Agent response and version
 history. Updating unrelated Agent fields preserves that pin; replacing
-`skills` resolves the replacement list again. Anthropic-managed references
-return `422` because Mango does not mirror their archives.
+`skills` resolves the replacement list again. The latest active Agent Version
+also holds a relational retention pin, so its Skill archive cannot be deleted
+until the list is replaced or the Agent is archived. Anthropic-managed
+references return `422` because Mango does not mirror their archives.
 
 A successful create returns `200` and version `1`.
 

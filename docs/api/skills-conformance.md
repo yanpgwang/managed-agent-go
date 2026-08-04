@@ -31,10 +31,10 @@ Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
 
 | Boundary | Official Go SDK | Durable/service evidence |
 | --- | --- | --- |
-| Agent create/update | Custom Skill union request and resolved response | Strict tagged-union validation; omitted or `latest` Versions resolve before an Agent Version is stored |
+| Agent create/update | Custom Skill union request and resolved response | Strict tagged-union validation; omitted or `latest` Versions resolve before an Agent Version is stored; the latest active Agent configuration holds relational pins |
 | Session create | Inherited and `agent_with_overrides` Skill lists | Effective references are revalidated and resolved into the immutable Session agent snapshot |
 | Session persistence | Resolved Version in retrieve/list responses | PostgreSQL records relational Session-Version pins in the same transaction as the Session projection |
-| Version deletion | SDK error decoding | Deletion is rejected while a committed Session pins the Version; physical Session deletion releases its pins |
+| Version deletion | SDK error decoding | Deletion is rejected while an active Agent or committed Session pins the Version; Agent replacement/archive or physical Session deletion releases the corresponding pins |
 
 ## Implemented contract
 
@@ -56,10 +56,11 @@ Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
   Versions and the `latest` alias resolve to a concrete ready Version before the
   Agent Version or Session snapshot is persisted. A Session supports at most
   500 effective Skill references.
-- Session pins and Skill Version deletion linearize on the PostgreSQL Version
-  row. A deleting Version cannot enter a new Session, and a committed Session
-  prevents its archive from being deleted until the Session is physically
-  removed.
+- Agent/Session pins and Skill Version deletion linearize on the PostgreSQL
+  Version row. A deleting Version cannot enter a new Agent configuration or
+  Session; the latest active Agent configuration and every committed Session
+  retain their archives. Migration backfills concrete, ready references from
+  pre-existing projections.
 - Skills routes return `422` when S3-compatible storage is not configured or
   its startup reconciliation cannot complete.
 
@@ -68,6 +69,9 @@ Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
 - Custom references are validated and pinned, but archives are not yet mounted
   into a sandbox and Skill metadata is not added to model context. This slice
   therefore does not claim Skill execution yet.
+- Opaque Skill values stored before tagged references were enforced remain
+  readable and round-trip without field loss. They must be replaced on the
+  Agent before that configuration can start a new Session.
 - Anthropic-managed Skills are not bundled or mirrored. Listing with
   `source=anthropic` returns an empty page, and attaching one returns an
   explicit `422` unsupported error.
