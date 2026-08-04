@@ -32,6 +32,13 @@ func (s storeSource) PutMCPDiscoverySnapshot(
 // workflow contract).
 type storeSource struct{ store *pg.Store }
 
+func (s storeSource) SessionSkillsForRuntime(
+	ctx context.Context,
+	sessionID string,
+) ([]domain.SkillVersion, error) {
+	return s.store.SessionSkillsForRuntime(ctx, sessionID)
+}
+
 // NewStoreSource wraps a PostgreSQL store as an Activity EventSource.
 func NewStoreSource(store *pg.Store) EventSource { return storeSource{store: store} }
 

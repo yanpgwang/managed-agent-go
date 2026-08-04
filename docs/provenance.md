@@ -96,6 +96,11 @@ verification where applicable.
   the custom/Anthropic reference union, omitted/`latest` Version resolution,
   and the 500-Skill Session limit. Verified 2026-08-04 against the current
   documentation and official Go SDK v1.61.0.
+- [Claude Code Skill content lifecycle](https://code.claude.com/docs/en/slash-commands#skill-content-lifecycle)
+  — on-demand main-instruction loading, supporting-file access, persistence
+  after invocation, and the documented 5,000-token per-Skill / 25,000-token
+  combined post-compaction budget. This informs the private runtime context
+  lifecycle, not the Managed Agents public resource wire. Verified 2026-08-04.
 
 ## Tool and sandbox sources
 
@@ -191,8 +196,9 @@ forwarding upstream frames.
   conformance matrices. They are not part of the frozen Managed Agents core
   claim.
 - The custom Skills resource API, reference validation, and immutable Version
-  pinning have a separate conditional conformance matrix. Runtime
-  materialization remains outside the current claim.
+  pinning have a separate conditional conformance matrix. Docker-backed cloud
+  runtime materialization is included in that conditional claim, not in the
+  frozen core claim.
 - Other unsupported product surfaces are excluded from compatibility claims
   until their wire behavior is implemented and tested.
 - Only official documentation and official SDKs are normative for the public

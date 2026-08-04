@@ -56,6 +56,12 @@ const (
 type ToolStepResult struct {
 	Content []any `json:"content"`
 	IsError bool  `json:"is_error"`
+	// InjectedContent is private provider-continuation content produced by an
+	// agent-runtime primitive after its ordinary tool_result. Skill activation
+	// uses it to persist the rendered SKILL.md as a sibling user content block,
+	// matching Claude Code's context lifecycle without exposing it as a public
+	// configurable tool.
+	InjectedContent []ContentBlock `json:"injected_content,omitempty"`
 	// Raw retains a bounded executor-native result for diagnostics/UI without
 	// placing it in model context. Large raw results are stored in the Session
 	// sandbox and referenced by RawPath instead.

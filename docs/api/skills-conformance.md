@@ -35,6 +35,10 @@ Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
 | Session create | Inherited and `agent_with_overrides` Skill lists | Effective references are revalidated and resolved into the immutable Session agent snapshot |
 | Session persistence | Resolved Version in retrieve/list responses | PostgreSQL records relational Session-Version pins in the same transaction as the Session projection |
 | Version deletion | SDK error decoding | Deletion is rejected while an active Agent or committed Session pins the Version; Agent replacement/archive or physical Session deletion releases the corresponding pins |
+| Runtime discovery | N/A | `PrepareTurn` projects bounded name, description, and `SKILL.md` path metadata and adds the private `Skill` dispatcher without eagerly injecting bundle contents |
+| Runtime activation | N/A | A `Skill` call reads the selected immutable pin, returns `Launching skill: <name>`, and injects the complete `SKILL.md` with its base directory into the provider conversation |
+| Runtime durability | N/A | The injected block is journaled with the tool result, retained in the provider transcript, recovered after worker restart, and not duplicated by an identical later activation |
+| Docker materialization | N/A | The worker verifies archive size and SHA-256, revalidates every zip entry, atomically publishes a read-only tree, repairs damaged staging, and reattaches it after worker restart |
 
 ## Implemented contract
 
@@ -61,14 +65,37 @@ Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
   Session; the latest active Agent configuration and every committed Session
   retain their archives. Migration backfills concrete, ready references from
   pre-existing projections.
+- Docker-backed cloud Sessions expose each pinned custom Skill at
+  `/workspace/skills/<name>/`. The uploaded top-level directory is stripped and
+  re-rooted under the validated frontmatter name, so case and underscore
+  normalization cannot make discovery disagree with the runtime path.
+- Skill contents are reconciled lazily before the first sandbox tool call. The
+  model initially receives only JSON-encoded name, description, and `SKILL.md`
+  path metadata. Selecting the private `Skill` dispatcher causes the runtime,
+  rather than a model-issued `read`, to inject the complete main instruction
+  file. Supporting files and scripts remain available through normal tools.
+- Admission rejects duplicate runtime names or more than 500 MB of aggregate
+  expanded bundle content. Discovery always retains every Skill name and uses
+  one percent of the configured context window for descriptions; once that
+  budget is exhausted, later entries remain invocable as name-only records.
+  Executable bits are preserved while the complete Docker bind mount remains
+  read-only.
 - Skills routes return `422` when S3-compatible storage is not configured or
   its startup reconciliation cannot complete.
 
 ## Current limits
 
-- Custom references are validated and pinned, but archives are not yet mounted
-  into a sandbox and Skill metadata is not added to model context. This slice
-  therefore does not claim Skill execution yet.
+- Runtime execution currently requires a cloud Session and the Docker sandbox
+  provider. Local, self-hosted, and current remote-provider Sessions reject
+  custom Skill execution explicitly.
+- A Docker container created before Skill mounts were introduced cannot gain a
+  bind mount in place. Reconciliation fails closed and requires that Session's
+  sandbox to be recreated; it never reports an unavailable path as mounted.
+- Request-time compaction follows the documented Claude Code budget: the most
+  recent invocation of each activated Skill keeps up to 5,000 estimated tokens,
+  with 25,000 estimated tokens shared across Skills. A truncated reattachment
+  may be invoked again to restore the complete body. Exact differential parity
+  with every hosted compaction path is not part of this matrix yet.
 - Opaque Skill values stored before tagged references were enforced remain
   readable and round-trip without field loss. They must be replaced on the
   Agent before that configuration can start a new Session.
@@ -88,3 +115,4 @@ Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
 - [Using Agent Skills with the API](https://platform.claude.com/docs/en/build-with-claude/skills-guide)
 - [Agent Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
 - [Skills API reference](https://platform.claude.com/docs/en/api/beta/skills)
+- [Claude Code Skill content lifecycle](https://code.claude.com/docs/en/slash-commands#skill-content-lifecycle)

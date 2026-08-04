@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 const (
@@ -110,6 +112,8 @@ func (*dockerProvider) SupportsPackageSetup() bool { return true }
 
 func (*dockerProvider) SupportsFileResources() bool { return true }
 
+func (*dockerProvider) SupportsSkillBundles() bool { return true }
+
 // runDocker invokes the docker CLI with the given args, capturing stdout/stderr
 // (capped) and the process exit code. The passed ctx bounds the whole call.
 func (p *dockerProvider) runDocker(ctx context.Context, stdin []byte, args ...string) (stdout, stderr []byte, exitCode int, err error) {
@@ -160,7 +164,7 @@ func (p *dockerProvider) Create(
 	if network == "" {
 		network = "none"
 	}
-	resourceRoot, resourceFiles, err := p.ensureResourceRoot(sessionKey)
+	resourceRoot, resourceFiles, resourceSkills, err := p.ensureResourceRoot(sessionKey)
 	if err != nil {
 		return Ref{}, nil, err
 	}
@@ -172,6 +176,7 @@ func (p *dockerProvider) Create(
 		"--label", dockerSessionKeyLabel + "=" + sessionKey,
 		"--network", network,
 		"--mount", "type=bind,source=" + resourceFiles + ",target=" + SessionUploadsRoot + ",readonly",
+		"--mount", "type=bind,source=" + resourceSkills + ",target=" + domain.SessionSkillsRoot + ",readonly",
 		"-w", dockerRoot,
 	}
 	if spec.Memory != "" {
@@ -234,6 +239,7 @@ func (p *dockerProvider) Create(
 		timeout:            spec.Timeout,
 		resourceRoot:       resourceRoot,
 		resourceMountReady: true,
+		skillMountReady:    true,
 	}, nil
 }
 
@@ -325,12 +331,17 @@ func (p *dockerProvider) attachTarget(
 	if err != nil {
 		return nil, err
 	}
+	skillMountReady, err := p.inspectSkillMount(ctx, fields[0], resourceRoot)
+	if err != nil {
+		return nil, err
+	}
 	return &dockerSandbox{
 		provider:           p,
 		cid:                fields[0],
 		timeout:            spec.Timeout,
 		resourceRoot:       resourceRoot,
 		resourceMountReady: resourceMountReady,
+		skillMountReady:    skillMountReady,
 	}, nil
 }
 
@@ -362,6 +373,7 @@ type dockerSandbox struct {
 
 	resourceRoot       string
 	resourceMountReady bool
+	skillMountReady    bool
 
 	// mu guards dead. Once the container is torn down (timed-out and killed, or
 	// destroyed), the sandbox is permanently dead: further calls must fail fast

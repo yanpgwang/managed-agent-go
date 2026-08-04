@@ -181,9 +181,17 @@ Only a completed `ready` Version is public; restart reconciliation deletes
 orphaned uploading archives and completes interrupted deletions. Agent and
 Session inputs resolve `latest` to an immutable Version, and PostgreSQL commits
 Session-Version pins with the Session projection so archive deletion cannot
-race admission. The current slice stops before sandbox materialization; the
-runtime must consume this boundary in a later slice rather than reading
-uncommitted object-store state directly.
+race admission. Before a Docker sandbox tool runs, the worker reads only those
+relational pins, verifies the corresponding object bytes and archive entries,
+and atomically publishes a read-only tree at `/workspace/skills/<name>/`.
+`PrepareTurn` projects bounded JSON-encoded name, description, and `SKILL.md`
+path metadata plus a private `Skill` schema. A successful dispatch returns the
+normal tool result first, then adds a sibling user-text block containing
+`Base directory for this skill: ...` and the complete `SKILL.md`. That exact
+block is stored in the provider transcript; only supporting files require later
+`read` or `bash` calls. The same provider-owned root, lock, attach inspection,
+stale-root audit, and destruction path serve File and Skill staging without
+merging their resource models.
 
 For a large tool result:
 

@@ -124,5 +124,8 @@ func validateAgent(a domain.Agent) error {
 	if err := domain.ValidateToolConfiguration(a.Tools, a.MCPServers); err != nil {
 		return domain.Validation("invalid tool configuration: " + err.Error())
 	}
+	if err := domain.ValidateSkillToolConfiguration(a.Tools, len(a.Skills) > 0); err != nil {
+		return domain.Validation("invalid Skill tool configuration: " + err.Error())
+	}
 	return validateMetadata(a.Metadata)
 }

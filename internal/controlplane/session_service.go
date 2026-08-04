@@ -108,12 +108,25 @@ func (s *SessionService) Create(
 	if err != nil {
 		return domain.Session{}, err
 	}
+	if environment.ConfigType == "self_hosted" && len(snapshot.Skills) > 0 {
+		return domain.Session{}, domain.Unsupported(
+			"custom Skills are unavailable for self-hosted Sessions",
+		)
+	}
 	if err := domain.ValidateToolConfiguration(
 		snapshot.Tools,
 		snapshot.MCPServers,
 	); err != nil {
 		return domain.Session{}, domain.Validation(
 			"invalid agent tool configuration: " + err.Error(),
+		)
+	}
+	if err := domain.ValidateSkillToolConfiguration(
+		snapshot.Tools,
+		len(snapshot.Skills) > 0,
+	); err != nil {
+		return domain.Session{}, domain.Validation(
+			"invalid agent Skill tool configuration: " + err.Error(),
 		)
 	}
 	metadata := input.Metadata

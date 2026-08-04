@@ -356,7 +356,6 @@ SELECT EXISTS (
 
 func TestSkillPinMigrationBackfillsExistingAgentsAndSessions(t *testing.T) {
 	store := testStoreAtMigration(t, 13)
-	skillRepo := NewSkillRepository(store)
 	ctx := context.Background()
 	base := time.Date(2026, 8, 4, 18, 0, 0, 0, time.UTC)
 	skill := domain.Skill{
@@ -364,12 +363,23 @@ func TestSkillPinMigrationBackfillsExistingAgentsAndSessions(t *testing.T) {
 		DisplayTitle: "Backfill", Source: "custom", TitleExplicit: true,
 	}
 	version := repositorySkillVersion(skill.ID, "900", base, true)
-	if err := skillRepo.BeginSkill(ctx, skill, version); err != nil {
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO skills (
+    id, created_at, updated_at, display_title, latest_version, source,
+    display_title_explicit, ready
+) VALUES ($1, $2, $3, $4, $5, 'custom', true, true)`,
+		skill.ID, skill.CreatedAt, skill.UpdatedAt, skill.DisplayTitle, version.Version,
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, version.Version, app.BlobInfo{
-		SizeBytes: 10, ChecksumSHA256: "backfill",
-	}); err != nil {
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO skill_versions (
+    skill_id, version, created_at, description, directory, name, blob_key,
+    size_bytes, checksum_sha256, state, initial
+) VALUES ($1, $2, $3, $4, $5, $6, $7, 10, 'backfill', 'ready', true)`,
+		version.SkillID, version.Version, version.CreatedAt, version.Description,
+		version.Directory, version.Name, version.BlobKey,
+	); err != nil {
 		t.Fatal(err)
 	}
 	agent := domain.Agent{
@@ -410,6 +420,11 @@ INSERT INTO sessions (
 	}
 	if err := Migrate(ctx, store.pool); err != nil {
 		t.Fatalf("apply pin migration: %v", err)
+	}
+	skillRepo := NewSkillRepository(store)
+	migratedVersion, err := skillRepo.GetVersion(ctx, skill.ID, version.Version)
+	if err != nil || migratedVersion.UncompressedSizeBytes != domain.UnknownSkillUncompressedSize {
+		t.Fatalf("migrated expanded size = %d, err=%v", migratedVersion.UncompressedSizeBytes, err)
 	}
 	var agentPins, sessionPins int
 	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM agent_skill_versions`).Scan(&agentPins); err != nil {
@@ -533,8 +548,10 @@ func repositorySkillVersion(skillID, version string, createdAt time.Time, initia
 		ID: version, SkillID: skillID, Version: version, CreatedAt: createdAt,
 		Description: "Performs repository tests when requested.",
 		Directory:   "repository-skill", Name: "repository-skill",
-		BlobKey: "skills/" + skillID + "/" + version + ".zip",
-		State:   domain.SkillVersionUploading, Initial: initial,
+		BlobKey:               "skills/" + skillID + "/" + version + ".zip",
+		UncompressedSizeBytes: 1024,
+		State:                 domain.SkillVersionUploading,
+		Initial:               initial,
 	}
 }
 
@@ -580,6 +597,13 @@ func TestSessionSkillPinsGuardVersionDeletionAndRollbackMissingReferences(t *tes
 	if err != nil || len(persisted.AgentSnapshot.Skills) != 1 ||
 		persisted.AgentSnapshot.Skills[0].Version != version.Version {
 		t.Fatalf("persisted Session Skill pin = %+v, %v", persisted.AgentSnapshot.Skills, err)
+	}
+	runtimeSkills, err := store.SessionSkillsForRuntime(ctx, session.ID)
+	if err != nil || len(runtimeSkills) != 1 ||
+		runtimeSkills[0].SkillID != skill.ID ||
+		runtimeSkills[0].Version != version.Version ||
+		runtimeSkills[0].UncompressedSizeBytes != version.UncompressedSizeBytes {
+		t.Fatalf("Session runtime Skills = %+v, err=%v", runtimeSkills, err)
 	}
 	if _, err := repo.BeginDeleteVersion(ctx, skill.ID, version.Version); err == nil {
 		t.Fatal("deleted Skill Version referenced by Session")

@@ -76,10 +76,11 @@ const (
 type TurnToolKind string
 
 const (
-	TurnToolBuiltin    TurnToolKind = "builtin"
-	TurnToolCustom     TurnToolKind = "custom"
-	TurnToolMCP        TurnToolKind = "mcp"
-	TurnToolSelfHosted TurnToolKind = "self_hosted"
+	TurnToolBuiltin      TurnToolKind = "builtin"
+	TurnToolCustom       TurnToolKind = "custom"
+	TurnToolMCP          TurnToolKind = "mcp"
+	TurnToolSelfHosted   TurnToolKind = "self_hosted"
+	TurnToolRuntimeSkill TurnToolKind = "runtime_skill"
 )
 
 // TurnTool is the immutable, Workflow-facing classification of an offered tool.
@@ -251,17 +252,18 @@ type ResumeModelRetryInput struct {
 // ExecuteToolInput identifies one logical built-in tool step. ToolUseEventID is
 // stable because it came from the completed CallModel Activity result.
 type ExecuteToolInput struct {
-	SessionID      string           `json:"session_id"`
-	TriggerEventID string           `json:"trigger_event_id"`
-	AttemptID      string           `json:"attempt_id"`
-	Ordinal        int              `json:"ordinal"`
-	ToolUseEventID string           `json:"tool_use_event_id"`
-	ToolStepID     string           `json:"tool_step_id"`
-	ToolName       string           `json:"tool_name"`
-	ToolKind       TurnToolKind     `json:"tool_kind,omitempty"`
-	MCPServer      domain.MCPServer `json:"mcp_server,omitempty"`
-	MCPToolName    string           `json:"mcp_tool_name,omitempty"`
-	Input          map[string]any   `json:"input"`
+	SessionID          string           `json:"session_id"`
+	TriggerEventID     string           `json:"trigger_event_id"`
+	AttemptID          string           `json:"attempt_id"`
+	Ordinal            int              `json:"ordinal"`
+	ToolUseEventID     string           `json:"tool_use_event_id"`
+	ToolStepID         string           `json:"tool_step_id"`
+	ToolName           string           `json:"tool_name"`
+	ToolKind           TurnToolKind     `json:"tool_kind,omitempty"`
+	MCPServer          domain.MCPServer `json:"mcp_server,omitempty"`
+	MCPToolName        string           `json:"mcp_tool_name,omitempty"`
+	Input              map[string]any   `json:"input"`
+	SkillAlreadyLoaded bool             `json:"skill_already_loaded,omitempty"`
 }
 
 // ExecuteToolResult is the durable result of one tool Activity. Ambiguous is a

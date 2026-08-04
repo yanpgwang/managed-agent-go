@@ -136,7 +136,7 @@ func TestAgents_UpdateArrayNullClears(t *testing.T) {
 	srv := newTestServer(t)
 	rec := do(srv, "POST", "/v1/agents",
 		`{"name":"Agent","model":"claude-opus-4-8",`+
-			`"tools":[{"type":"custom","name":"x","description":"x",`+
+			`"tools":[{"type":"agent_toolset_20260401"},{"type":"custom","name":"x","description":"x",`+
 			`"input_schema":{"type":"object"}},{"type":"mcp_toolset","mcp_server_name":"m"}],`+
 			`"mcp_servers":[{"type":"url","name":"m","url":"https://example.com"}],`+
 			`"skills":[{"type":"custom","skill_id":"skill_clear","version":"1"}]}`)
@@ -171,6 +171,7 @@ func TestAgents_SkillReferencesAreStrictResolvedAndProviderAware(t *testing.T) {
 	srv := newTestServer(t)
 	rec := do(srv, "POST", "/v1/agents",
 		`{"name":"Agent","model":"claude-opus-4-8",`+
+			`"tools":[{"type":"agent_toolset_20260401"}],`+
 			`"skills":[{"type":"custom","skill_id":"skill_reports","version":"latest"}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create custom Skill reference: %d: %s", rec.Code, rec.Body)
@@ -200,7 +201,9 @@ func TestAgents_SkillReferencesAreStrictResolvedAndProviderAware(t *testing.T) {
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
 			rec := do(srv, "POST", "/v1/agents",
-				`{"name":"Agent","model":"claude-opus-4-8","skills":`+test.skills+`}`)
+				`{"name":"Agent","model":"claude-opus-4-8",`+
+					`"tools":[{"type":"agent_toolset_20260401"}],`+
+					`"skills":`+test.skills+`}`)
 			if rec.Code != test.status {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, test.status, rec.Body)
 			}

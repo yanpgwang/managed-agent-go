@@ -364,6 +364,67 @@ func ProjectSessionResourceContext(base string, resources []SessionResource) str
 	return base + "\n\n" + section.String()
 }
 
+// ProjectSessionSkillContext exposes only trusted Skill discovery metadata.
+// Bundle contents stay on disk until the model invokes the runtime's private
+// Skill dispatcher, which injects the selected SKILL.md into the conversation.
+func ProjectSessionSkillContext(
+	base string,
+	skills []SkillVersion,
+	descriptionCharacterBudget int,
+) string {
+	section := sessionSkillContextSection(skills, descriptionCharacterBudget)
+	if section == "" {
+		return base
+	}
+	if strings.TrimSpace(base) == "" {
+		return section
+	}
+	return base + "\n\n" + section
+}
+
+func sessionSkillContextSection(
+	skills []SkillVersion,
+	descriptionCharacterBudget int,
+) string {
+	if len(skills) == 0 {
+		return ""
+	}
+	if descriptionCharacterBudget < 0 {
+		descriptionCharacterBudget = 0
+	}
+	var section strings.Builder
+	section.WriteString("<available_skills>\n")
+	section.WriteString("Custom Skills available to the Skill tool. Invoke a Skill only when its description matches the task; the runtime will load its main instructions into the conversation. Use read or bash only for supporting files referenced by those instructions:\n")
+	for _, skill := range skills {
+		section.WriteString("- ")
+		description := []rune(skill.Description)
+		if len(description) > descriptionCharacterBudget {
+			switch descriptionCharacterBudget {
+			case 0:
+				description = nil
+			case 1:
+				description = []rune("…")
+			default:
+				description = append(description[:descriptionCharacterBudget-1], '…')
+			}
+		}
+		descriptionCharacterBudget -= len(description)
+		encoded, _ := json.Marshal(struct {
+			Name        string `json:"name"`
+			Description string `json:"description,omitempty"`
+			SkillMD     string `json:"skill_md"`
+		}{
+			Name:        skill.Name,
+			Description: string(description),
+			SkillMD:     SessionSkillsRoot + "/" + skill.Name + "/SKILL.md",
+		})
+		section.Write(encoded)
+		section.WriteByte('\n')
+	}
+	section.WriteString("</available_skills>")
+	return section.String()
+}
+
 func rawContentItems(raw any) []map[string]any {
 	items, ok := raw.([]any)
 	if !ok {

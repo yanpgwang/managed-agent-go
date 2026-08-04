@@ -12,12 +12,14 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"go.temporal.io/sdk/activity"
 	temporalsdk "go.temporal.io/sdk/temporal"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime/tools"
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
@@ -213,6 +215,14 @@ type SandboxResourceReconciler interface {
 	Reconcile(context.Context, string, sandbox.Sandbox) error
 }
 
+type SkillRuntimeReconciler interface {
+	SupportsSkillRuntime() bool
+}
+
+type SessionSkillSource interface {
+	SessionSkillsForRuntime(context.Context, string) ([]domain.SkillVersion, error)
+}
+
 // PreviewPublisher carries best-effort model deltas to live subscribers. It is
 // never part of turn correctness and may be nil.
 type PreviewPublisher interface {
@@ -263,15 +273,16 @@ const toolResultWriteAttempts = 3
 // lives here, never in the workflow. journal and sandboxes may be nil for a
 // deployment that never routes tool-using turns.
 type Activities struct {
-	modelClient        model.Client
-	source             EventSource
-	journal            JournalStore
-	sandboxes          SandboxLease
-	resources          SandboxResourceReconciler
-	ids                domain.IDGenerator
-	previews           PreviewPublisher
-	mcp                mcpclient.Client
-	contextTokenBudget int
+	modelClient           model.Client
+	source                EventSource
+	journal               JournalStore
+	sandboxes             SandboxLease
+	resources             SandboxResourceReconciler
+	ids                   domain.IDGenerator
+	previews              PreviewPublisher
+	mcp                   mcpclient.Client
+	contextTokenBudget    int
+	skillRuntimeSupported bool
 }
 
 func NewActivities(
@@ -311,6 +322,14 @@ func (a *Activities) WithSandboxResourceReconciler(
 	reconciler SandboxResourceReconciler,
 ) *Activities {
 	a.resources = reconciler
+	return a
+}
+
+// WithSkillRuntimeSupported records that the configured sandbox provider can
+// expose the read-only custom Skill tree. It prevents a model from being told
+// about paths that a local or unsupported adapter cannot serve.
+func (a *Activities) WithSkillRuntimeSupported(supported bool) *Activities {
+	a.skillRuntimeSupported = supported
 	return a
 }
 
@@ -549,10 +568,46 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			FatalError: "invalid tool configuration: " + err.Error(),
 		}, nil
 	}
+	if err := domain.ValidateSkillToolConfiguration(
+		session.AgentSnapshot.Tools,
+		len(session.AgentSnapshot.Skills) > 0,
+	); err != nil {
+		return PrepareTurnResult{
+			FatalError: "invalid Skill tool configuration: " + err.Error(),
+		}, nil
+	}
 	selfHosted := session.EnvironmentType == "self_hosted"
 	if !selfHosted {
 		if err := agentruntime.ValidateToolCapabilities(toolSet); err != nil {
 			return PrepareTurnResult{FatalError: "unsupported tool capability: " + err.Error()}, nil
+		}
+	}
+	var runtimeSkills []domain.SkillVersion
+	if len(session.AgentSnapshot.Skills) > 0 {
+		if selfHosted {
+			return PrepareTurnResult{
+				FatalError: "custom Skills are unavailable for self-hosted Sessions",
+			}, nil
+		}
+		if !a.skillRuntimeSupported {
+			return PrepareTurnResult{
+				FatalError: "custom Skills are unavailable on the configured sandbox provider",
+			}, nil
+		}
+		source, ok := a.source.(SessionSkillSource)
+		if !ok {
+			return PrepareTurnResult{
+				FatalError: "custom Skill runtime metadata is unavailable",
+			}, nil
+		}
+		runtimeSkills, err = source.SessionSkillsForRuntime(ctx, in.SessionID)
+		if err != nil {
+			return PrepareTurnResult{}, err
+		}
+		if validationErr := validateRuntimeSkillPins(
+			session.AgentSnapshot.Skills, runtimeSkills,
+		); validationErr != "" {
+			return PrepareTurnResult{FatalError: validationErr}, nil
 		}
 	}
 
@@ -562,9 +617,17 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	}
 	system = domain.ProjectSystemContext(system, history, trigger)
 	system = domain.ProjectSessionResourceContext(system, session.Resources)
+	system = domain.ProjectSessionSkillContext(
+		system,
+		runtimeSkills,
+		a.contextTokenBudget/100,
+	)
 	toolSchemas := agentruntime.EnabledToolSchemas(toolSet)
 	if selfHosted {
 		toolSchemas = agentruntime.EnabledSelfHostedToolSchemas(toolSet)
+	}
+	if len(runtimeSkills) > 0 {
+		toolSchemas = append(toolSchemas, agentruntime.RuntimeSkillToolSchema())
 	}
 	result := PrepareTurnResult{
 		AttemptID: a.ids.NewID(domain.PrefixRunAttempt),
@@ -657,6 +720,13 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			}
 		}
 	}
+	if len(runtimeSkills) > 0 {
+		result.Tools = append(result.Tools, TurnTool{
+			Name:       agentruntime.RuntimeSkillToolName,
+			Kind:       TurnToolRuntimeSkill,
+			Permission: domain.PermissionPolicy{Type: "always_allow"},
+		})
+	}
 	for _, name := range domain.BuiltinToolNames {
 		enabled, policy := toolSet.BuiltinEnabled(name)
 		if enabled {
@@ -697,11 +767,55 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if availableContextTokens < 8000 {
 		availableContextTokens = 8000
 	}
+	fullMessages := result.Request.Messages
+	compactionBudget := availableContextTokens
+	if domain.EstimateMessagesTokens(fullMessages) > availableContextTokens {
+		compactionBudget -= agentruntime.RuntimeSkillReattachmentBudget(fullMessages)
+		if compactionBudget < 8000 {
+			compactionBudget = 8000
+		}
+	}
 	result.Request.Messages, result.ContextProjection = domain.CompactMessages(
-		result.Request.Messages,
-		availableContextTokens,
+		fullMessages,
+		compactionBudget,
 	)
+	if result.ContextProjection.Compacted {
+		result.Request.Messages = agentruntime.ReattachRuntimeSkillInjections(
+			fullMessages,
+			result.Request.Messages,
+		)
+		result.ContextProjection.ProjectedEstimatedTokens =
+			domain.EstimateMessagesTokens(result.Request.Messages)
+	}
 	return result, nil
+}
+
+func validateRuntimeSkillPins(
+	references []domain.SkillReference,
+	versions []domain.SkillVersion,
+) string {
+	if len(references) != len(versions) {
+		return "custom Skill runtime pins do not match the Session snapshot"
+	}
+	seenNames := make(map[string]struct{}, len(versions))
+	var expandedBytes int64
+	for index, reference := range references {
+		version := versions[index]
+		if reference.IsLegacy() || reference.Type != "custom" ||
+			reference.SkillID != version.SkillID || reference.Version != version.Version {
+			return "custom Skill runtime pins do not match the Session snapshot"
+		}
+		if _, exists := seenNames[version.Name]; exists {
+			return "custom Skill runtime names conflict"
+		}
+		seenNames[version.Name] = struct{}{}
+		expanded, valid := app.SkillExpandedBudgetBytes(version.UncompressedSizeBytes)
+		if !valid || expanded > app.MaxSessionSkillBytes-expandedBytes {
+			return "custom Skills exceed the expanded-size limit"
+		}
+		expandedBytes += expanded
+	}
+	return ""
 }
 
 func requestContextOverhead(request model.Request) int {
@@ -1362,6 +1476,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		return ExecuteToolResult{}, err
 	}
 	out := ExecuteToolResult{}
+	retrySafeStarted := false
 	switch step.State {
 	case domain.ToolStepCompleted:
 		if step.Result == nil {
@@ -1373,6 +1488,14 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		out.Ambiguous = true
 		return out, nil
 	case domain.ToolStepStarted:
+		if in.ToolKind == TurnToolRuntimeSkill {
+			// Skill activation is a read-only, deterministic context load. If the
+			// worker disappeared after crossing Start but before persisting the
+			// result, re-reading the immutable Session pin is safe and required to
+			// avoid losing an activated Skill on restart.
+			retrySafeStarted = true
+			break
+		}
 		dctx, cancel := durableCtx(ctx)
 		err := a.journal.MarkToolStepAmbiguous(dctx, step.ID)
 		cancel()
@@ -1392,6 +1515,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		kind = TurnToolBuiltin
 	}
 	var executor tools.Executor
+	var skillSource SessionSkillSource
 	switch kind {
 	case TurnToolBuiltin:
 		var ok bool
@@ -1404,6 +1528,13 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		if a.mcp == nil || in.MCPServer.Name == "" ||
 			in.MCPServer.URL == "" || in.MCPToolName == "" {
 			out.FatalError = "MCP tool execution is missing its pinned server definition"
+			return out, nil
+		}
+	case TurnToolRuntimeSkill:
+		var ok bool
+		skillSource, ok = a.source.(SessionSkillSource)
+		if !ok {
+			out.FatalError = "custom Skill runtime metadata is unavailable"
 			return out, nil
 		}
 	default:
@@ -1438,14 +1569,85 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 			return ExecuteToolResult{}, err
 		}
 	}
-	dctx, cancel := durableCtx(ctx)
-	err = a.journal.StartToolStep(dctx, step.ID)
-	cancel()
-	if err != nil {
-		return ExecuteToolResult{}, err
+	if !retrySafeStarted {
+		dctx, cancel := durableCtx(ctx)
+		err = a.journal.StartToolStep(dctx, step.ID)
+		cancel()
+		if err != nil {
+			return ExecuteToolResult{}, err
+		}
 	}
 
-	if kind == TurnToolMCP {
+	if kind == TurnToolRuntimeSkill {
+		name, inputErr := agentruntime.RuntimeSkillName(in.Input)
+		if inputErr != nil {
+			out.Result = domain.ToolStepResult{
+				Content: []any{map[string]any{"type": "text", "text": inputErr.Error()}},
+				IsError: true,
+			}
+		} else if in.SkillAlreadyLoaded {
+			out.Result = domain.ToolStepResult{
+				Content: []any{map[string]any{
+					"type": "text",
+					"text": "Skill " + name + " is already loaded",
+				}},
+			}
+		} else {
+			versions, err := skillSource.SessionSkillsForRuntime(ctx, in.SessionID)
+			if err != nil {
+				return ExecuteToolResult{}, err
+			}
+			available := false
+			for _, version := range versions {
+				if version.Name == name {
+					available = true
+					break
+				}
+			}
+			if !available {
+				out.Result = domain.ToolStepResult{
+					Content: []any{map[string]any{
+						"type": "text",
+						"text": "Skill: unknown or unavailable Skill " + name,
+					}},
+					IsError: true,
+				}
+			} else {
+				body, readErr := box.ReadFile(
+					ctx,
+					domain.SessionSkillsRoot+"/"+name+"/SKILL.md",
+				)
+				switch {
+				case readErr != nil:
+					out.Result = domain.ToolStepResult{
+						Content: []any{map[string]any{
+							"type": "text",
+							"text": "Skill: load failed: " + readErr.Error(),
+						}},
+						IsError: true,
+					}
+				case !utf8.Valid(body):
+					out.Result = domain.ToolStepResult{
+						Content: []any{map[string]any{
+							"type": "text",
+							"text": "Skill: SKILL.md is not valid UTF-8",
+						}},
+						IsError: true,
+					}
+				default:
+					out.Result = domain.ToolStepResult{
+						Content: []any{map[string]any{
+							"type": "text",
+							"text": "Launching skill: " + name,
+						}},
+						InjectedContent: []domain.ContentBlock{
+							agentruntime.RuntimeSkillInjection(name, body),
+						},
+					}
+				}
+			}
+		}
+	} else if kind == TurnToolMCP {
 		// Crossing StartToolStep is the side-effect uncertainty boundary. A
 		// transport failure after this point may have happened after the remote
 		// server executed the tool, so the Activity error intentionally becomes

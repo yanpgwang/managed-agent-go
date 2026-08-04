@@ -141,6 +141,11 @@ their stored snapshot.
 }
 ```
 
-Custom Skill references are validated and version-pinned, but Skill execution
-and multi-agent topology execution remain outside the supported core. Accepted
-Agent tool and MCP shapes are validated before a version is stored.
+Custom Skill references are validated and version-pinned. Docker-backed cloud
+Sessions materialize those pins read-only and expose a private `Skill`
+dispatcher that loads the selected `SKILL.md` into the conversation on demand;
+this remains a conditional post-core capability rather than part of the frozen
+core claim. Agents with Skills must enable `read` for referenced files, and may
+not define a custom tool named `Skill`. Multi-agent topology execution remains
+outside the supported core. Accepted Agent tool and MCP shapes are validated
+before a version is stored.

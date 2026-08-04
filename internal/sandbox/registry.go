@@ -27,6 +27,7 @@ type ProviderCapabilities struct {
 	PackageSetup   bool
 	LimitedNetwork bool
 	FileResources  bool
+	SkillBundles   bool
 }
 
 // ProviderRegistration is one deployment-selectable sandbox adapter.
@@ -158,6 +159,17 @@ func (r *ProviderRegistry) Open(name string) (Provider, error) {
 			name,
 			declaredFiles,
 			actualFiles,
+		)
+	}
+	declaredSkills := r.capabilities[name].SkillBundles
+	skillCapability, implementsSkillCapability := provider.(SkillBundleProvider)
+	actualSkills := implementsSkillCapability && skillCapability.SupportsSkillBundles()
+	if declaredSkills != actualSkills {
+		return nil, fmt.Errorf(
+			"sandbox: provider %q Skill bundle capability is registered as %t but reports %t",
+			name,
+			declaredSkills,
+			actualSkills,
 		)
 	}
 	return provider, nil

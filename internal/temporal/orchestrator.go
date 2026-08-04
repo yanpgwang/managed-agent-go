@@ -154,6 +154,25 @@ func NewRuntimeWithResources(
 	)
 }
 
+// NewRuntimeWithResourcesOnTaskQueue is the deployment/test-isolated variant
+// that retains runtime File/Skill reconciliation on a caller-selected queue.
+func NewRuntimeWithResourcesOnTaskQueue(
+	c client.Client,
+	store *pg.Store,
+	modelClient model.Client,
+	provider sandbox.Provider,
+	ids domain.IDGenerator,
+	relayCfg RelayConfig,
+	taskQueue string,
+	resources SandboxResourceReconciler,
+	previewPublisher ...PreviewPublisher,
+) *Runtime {
+	return newRuntimeOnTaskQueue(
+		c, store, modelClient, provider, ids, relayCfg, taskQueue, resources,
+		previewPublisher...,
+	)
+}
+
 // NewRuntimeOnTaskQueue is the deployment/test-isolated variant of NewRuntime.
 // Production normally uses TaskQueue; integration environments can select a
 // unique queue so another worker connected to the same Temporal namespace
@@ -188,6 +207,12 @@ func newRuntimeOnTaskQueue(
 	sandboxes := sandbox.NewSessionManager(provider, store)
 	src := storeSource{store: store} // satisfies both EventSource and JournalStore
 	acts := NewActivities(modelClient, src, src, sandboxes, ids, previewPublisher...)
+	skillCapability, hasSkillCapability := provider.(sandbox.SkillBundleProvider)
+	skillResources, hasSkillResources := resources.(SkillRuntimeReconciler)
+	acts.WithSkillRuntimeSupported(
+		hasSkillCapability && skillCapability.SupportsSkillBundles() &&
+			hasSkillResources && skillResources.SupportsSkillRuntime(),
+	)
 	if resources != nil {
 		acts.WithSandboxResourceReconciler(resources)
 	}
