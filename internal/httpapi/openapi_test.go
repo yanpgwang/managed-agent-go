@@ -438,6 +438,10 @@ func TestOpenAPISkillReferenceContract(t *testing.T) {
 		if fmt.Sprint(required) != "[type skill_id]" {
 			t.Fatalf("%s required = %v", name, required)
 		}
+		version := openAPIMap(t, openAPIMap(t, schema["properties"], name+" properties")["version"], name+" version")
+		if version["minLength"] != 1 || version["pattern"] != `^\S(?:[\s\S]*\S)?$` {
+			t.Fatalf("%s Version constraints = %#v", name, version)
+		}
 	}
 	resolved := openAPIMap(t, schemas["ResolvedSkillReference"], "resolved Skill reference")
 	if required, _ := resolved["required"].([]any); fmt.Sprint(required) != "[type skill_id version]" {

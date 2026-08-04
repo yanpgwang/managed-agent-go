@@ -1719,6 +1719,8 @@ components:
           minLength: 1
         version:
           type: string
+          minLength: 1
+          pattern: '^\S(?:[\s\S]*\S)?$'
           description: Concrete Version identifier or latest; omission also resolves latest.
     AnthropicSkillReferenceInput:
       type: object
@@ -1736,6 +1738,8 @@ components:
           minLength: 1
         version:
           type: string
+          minLength: 1
+          pattern: '^\S(?:[\s\S]*\S)?$'
           description: Concrete Version identifier or latest; omission also resolves latest.
     SkillReferenceInput:
       description: >-
