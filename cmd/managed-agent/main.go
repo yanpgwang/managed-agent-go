@@ -462,10 +462,20 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		log.Printf("serve: Files API object store connected and reconciled")
 	}
 	var files *app.FileService
+	var skills *app.SkillService
 	var sessionResources *controlplane.SessionResourceService
 	var sessionResourceLifecycle *controlplane.SessionResourceService
 	if fileRuntime != nil {
 		files = fileRuntime.service
+		skills = app.NewSkillService(
+			pg.NewSkillRepository(pgStore), fileRuntime.blobs, ids, clock,
+		)
+		if err := skills.Reconcile(ctx); err != nil {
+			log.Printf("serve: Skills API disabled: reconcile incomplete operations: %v", err)
+			skills = nil
+		} else {
+			log.Printf("serve: Skills API object store connected and reconciled")
+		}
 		sessionResourceLifecycle = controlplane.NewSessionResourceService(
 			pgStore, fileRuntime.repository, fileRuntime.blobs, ids, clock,
 			providerCapabilities.FileResources,
@@ -503,7 +513,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
-		Events: events, Stream: stream, Files: files,
+		Events: events, Stream: stream, Files: files, Skills: skills,
 		SessionResources: sessionResources,
 	}, cfg).Handler()
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")

@@ -61,14 +61,17 @@ messages and untargeted interrupts; cursor pagination and SSE; a multi-round
 model loop; durable custom-tool, confirmation, and self-hosted tool-result
 waits; outcome evaluation; eight built-ins; provider-native Web Search/Fetch;
 unauthenticated remote MCP tools; token-aware provider context; local and Docker
-sandboxes; and opt-in assistant text previews.
+sandboxes; opt-in assistant text previews; conditional File resources and
+File-backed Session Resources; and the conditional custom Skills resource API.
 
 The first core single-agent conformance gate is closed. Its exact claim and
 known differences are published in the
 [versioned statement](compatibility/core-v1.md). Files-backed rubrics, exact
 endpoint/model context profiles, hosted differential testing,
-deployment-managed MCP authentication, skills/memory/vaults, multi-agent
-orchestration, schedules, and webhooks remain outside that claim.
+deployment-managed MCP authentication, memory/vaults, multi-agent
+orchestration, schedules, and webhooks remain outside that claim. Custom Skill
+reference validation, Version pinning, and sandbox materialization are also
+still open; the current Skills slice is resource lifecycle only.
 
 The runtime is the product; Claude API compatibility is an integration surface.
 Public behavior is derived from official documentation and tested through raw

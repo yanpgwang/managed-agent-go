@@ -86,6 +86,15 @@ verification where applicable.
   cursor semantics, absolute/default mount paths, read-only attachment copies,
   runtime add/delete behavior, and the 500-resource Session limit. Verified
   2026-08-04 against the current documentation and official Go SDK v1.61.0.
+- [Managed Agents Skills](https://platform.claude.com/docs/en/managed-agents/skills),
+  [Using Agent Skills with the API](https://platform.claude.com/docs/en/build-with-claude/skills-guide),
+  [Agent Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview),
+  and [Skills API](https://platform.claude.com/docs/en/api/beta/skills) — the
+  nine custom resource operations, `skills-2025-10-02` beta header, multipart
+  and zip bundle forms, 30 MB limit, single-root and metadata requirements,
+  immutable Version lifecycle, cursor pages, archive download, and delete
+  ordering. Verified 2026-08-04 against the current documentation and official
+  Go SDK v1.61.0.
 
 ## Tool and sandbox sources
 
@@ -145,7 +154,8 @@ currently implemented.
 
 Beta header for Managed Agents core routes covered here:
 `anthropic-beta: managed-agents-2026-04-01`. Files routes use the independent
-`anthropic-beta: files-api-2025-04-14` header.
+`anthropic-beta: files-api-2025-04-14` header. Skills routes use
+`anthropic-beta: skills-2025-10-02`.
 
 ## Streaming sources
 
@@ -179,6 +189,9 @@ forwarding upstream frames.
 - The Files API and File-backed Session Resources have separate conditional
   conformance matrices. They are not part of the frozen Managed Agents core
   claim.
+- The custom Skills resource API has a separate conditional conformance matrix.
+  Agent/Session reference validation and runtime materialization remain outside
+  the current claim.
 - Other unsupported product surfaces are excluded from compatibility claims
   until their wire behavior is implemented and tested.
 - Only official documentation and official SDKs are normative for the public

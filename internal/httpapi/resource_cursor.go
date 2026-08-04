@@ -34,6 +34,8 @@ const (
 	agentVersionCursorKind        = "agent_version_list"
 	environmentListCursorKind     = "environment_list"
 	sessionResourceListCursorKind = "session_resource_list"
+	skillListCursorKind           = "skill_list"
+	skillVersionListCursorKind    = "skill_version_list"
 	resourceCursorPrefix          = "page_"
 )
 
@@ -110,7 +112,23 @@ type sessionResourceCursorFilter struct {
 	SessionID string `json:"session_id"`
 }
 
+type skillCursorFilter struct {
+	Source string `json:"source,omitempty"`
+}
+
+type skillVersionCursorFilter struct {
+	SkillID string `json:"skill_id"`
+}
+
 func (filter sessionResourceCursorFilter) fingerprint() string {
+	return resourceFilterFingerprint(filter)
+}
+
+func (filter skillCursorFilter) fingerprint() string {
+	return resourceFilterFingerprint(filter)
+}
+
+func (filter skillVersionCursorFilter) fingerprint() string {
 	return resourceFilterFingerprint(filter)
 }
 

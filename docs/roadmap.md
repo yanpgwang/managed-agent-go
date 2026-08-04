@@ -57,12 +57,16 @@ The File-backed Session Resources slice now implements all five SDK operations,
 create-time and runtime attachment, independent session-scoped File copies,
 and durable read-only Docker mounts. It remains provider-gated; see the
 [Session Resources conformance matrix](api/session-resources-conformance.md).
-Self-hosted Environment work dispatch is the next dependency-ordered boundary.
+The custom Skills resource API and immutable archive lifecycle are also in
+place, but Agent/Session references are not yet validated, pinned, or
+materialized. Self-hosted Environment work dispatch remains the next runtime
+boundary; Skill runtime materialization follows it on the shared sandbox path.
 
 After that boundary, post-core work is ordered as reusable single-agent
 capability layers:
 
-1. Skills and immutable Skill Versions, including real runtime materialization;
+1. Complete Skills after the resource/API foundation: reference validation,
+   immutable Session pinning, and real runtime materialization;
 2. Memory Stores, Memories, and Memory Versions, including Memory-backed
    Session Resources and cross-Session retrieval;
 3. Vaults and Credentials, with isolation and redaction guarantees before any
