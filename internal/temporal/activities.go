@@ -1613,9 +1613,11 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 					IsError: true,
 				}
 			} else {
+				// Sandbox file APIs are root-relative even though the model-visible
+				// CCB base directory remains /workspace/skills/<name>.
 				body, readErr := box.ReadFile(
 					ctx,
-					domain.SessionSkillsRoot+"/"+name+"/SKILL.md",
+					"skills/"+name+"/SKILL.md",
 				)
 				switch {
 				case readErr != nil:

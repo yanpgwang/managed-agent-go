@@ -332,7 +332,7 @@ func TestExecuteTool_RuntimeSkillLoadsFullInstructionsWithoutReadTool(t *testing
 	const body = "---\nname: report-tools\ndescription: Analyze reports\n---\n\nFollow the complete report workflow.\n"
 	require.NoError(t, box.WriteFile(
 		ctx,
-		domain.SessionSkillsRoot+"/report-tools/SKILL.md",
+		"skills/report-tools/SKILL.md",
 		[]byte(body),
 	))
 
@@ -397,7 +397,7 @@ func TestExecuteTool_RuntimeSkillStartedStepIsSafelyReloaded(t *testing.T) {
 	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
 	require.NoError(t, box.WriteFile(
 		ctx,
-		domain.SessionSkillsRoot+"/report-tools/SKILL.md",
+		"skills/report-tools/SKILL.md",
 		[]byte("---\nname: report-tools\ndescription: Analyze reports\n---\nbody\n"),
 	))
 

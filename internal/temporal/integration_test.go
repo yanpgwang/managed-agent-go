@@ -913,8 +913,9 @@ func (m skillProbeModel) CreateMessage(
 	}
 	if seenResult {
 		if !seenBody {
-			return model.Response{}, errors.New(
-				"Skill tool result returned without the complete SKILL.md injection",
+			return model.Response{}, fmt.Errorf(
+				"Skill tool result returned without the complete SKILL.md injection: %s",
+				summarizeSkillProbeMessages(req.Messages),
 			)
 		}
 		return model.Response{
@@ -930,6 +931,29 @@ func (m skillProbeModel) CreateMessage(
 		}},
 		StopReason: "tool_use",
 	}, nil
+}
+
+func summarizeSkillProbeMessages(messages []domain.Message) string {
+	const prefixLimit = 120
+	parts := make([]string, 0, len(messages))
+	for messageIndex, message := range messages {
+		for blockIndex, block := range message.Content {
+			text := block.Text
+			if len(text) > prefixLimit {
+				text = text[:prefixLimit] + "..."
+			}
+			parts = append(parts, fmt.Sprintf(
+				"message[%d](role=%q).content[%d](type=%q,text_len=%d,text_prefix=%q)",
+				messageIndex,
+				message.Role,
+				blockIndex,
+				block.Type,
+				len(block.Text),
+				text,
+			))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (m toolProbeModel) CreateMessage(_ context.Context, req model.Request) (model.Response, error) {

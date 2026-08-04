@@ -446,6 +446,10 @@ func TestDocker_SkillBundleSurvivesAttachRepairsCorruptionAndIsReadOnly(t *testi
 	if err != nil || !present {
 		t.Fatalf("initial Skill presence = %t, err=%v", present, err)
 	}
+	readBody, err := first.ReadFile(ctx, "skills/report-tool/SKILL.md")
+	if err != nil || !bytes.Contains(readBody, []byte("Analyze reports")) {
+		t.Fatalf("read mounted Skill: body=%q err=%v", readBody, err)
+	}
 	result, err := first.Exec(ctx, Command{
 		Path: "sh", Args: []string{"-c", "test -x /workspace/skills/report-tool/scripts/run.sh && /workspace/skills/report-tool/scripts/run.sh"},
 	})

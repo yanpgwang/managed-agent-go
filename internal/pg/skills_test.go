@@ -139,6 +139,7 @@ func TestAgentSkillPinsUseOneConnectionAndGuardDeletion(t *testing.T) {
 	agents := app.NewAgentService(agentRepo, &seqIDGen{}, fixedClock{}, skillService)
 	agent, err := agents.Create(ctx, domain.Agent{
 		Name: "skill-agent", Model: domain.Model{ID: "claude-test"},
+		Tools: []any{map[string]any{"type": domain.BuiltinToolsetType}},
 		Skills: []domain.SkillReference{{
 			Type: "custom", SkillID: skill.ID, Version: "latest",
 		}},
