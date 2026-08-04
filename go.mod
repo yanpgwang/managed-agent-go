@@ -16,8 +16,8 @@ require (
 	github.com/pressly/goose/v3 v3.27.3
 	github.com/stretchr/testify v1.11.1
 	github.com/tencentcloud/CubeSandbox/sdk/go v0.0.0-20260730082406-8ad40de9ed5f
-	go.temporal.io/api v1.63.0
-	go.temporal.io/sdk v1.46.0
+	go.temporal.io/api v1.63.4
+	go.temporal.io/sdk v1.47.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
 )
