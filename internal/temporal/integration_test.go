@@ -1,9 +1,11 @@
 package temporal_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,8 +16,11 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
+	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
 )
@@ -496,6 +501,62 @@ func TestVerticalSlice_DockerToolStepEndToEnd(t *testing.T) {
 	})
 }
 
+// TestVerticalSlice_DockerSkillRuntimeEndToEnd proves the complete custom Skill
+// execution path: PostgreSQL pins one immutable Version, PrepareTurn exposes its
+// discovery metadata and private Skill dispatcher, the pre-tool reconciler
+// extracts the canonical archive, and the runtime injects the complete SKILL.md
+// without asking the model to call read or bash.
+func TestVerticalSlice_DockerSkillRuntimeEndToEnd(t *testing.T) {
+	if os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL") == "" ||
+		os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT") == "" {
+		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the Docker Skill end-to-end slice")
+	}
+	provider := dockerProviderForTest(t, dockerOptional)
+	runToolStepEndToEnd(t, toolStepCase{
+		provider: provider,
+		modelClient: skillProbeModel{
+			skillName:      "runtime-probe",
+			marker:         "runtime-e2e-marker",
+			finalText:      "Skill probe completed",
+			requiredSystem: "/workspace/skills/runtime-probe/SKILL.md",
+		},
+		modelID:            "fake",
+		sessionPrefix:      "sess_docker_skill_e2e_",
+		prompt:             "use the runtime probe Skill",
+		tools:              []any{map[string]any{"type": domain.BuiltinToolsetType}},
+		expectedTool:       agentruntime.RuntimeSkillToolName,
+		expectedToolOutput: "Launching skill: runtime-probe",
+		timeout:            30 * time.Second,
+		setup: func(
+			t *testing.T,
+			ctx context.Context,
+			store *pg.Store,
+			ids domain.IDGenerator,
+		) ([]domain.SkillReference, temporalpkg.SandboxResourceReconciler) {
+			t.Helper()
+			blobs := newIntegrationBlobStore()
+			skills := app.NewSkillService(
+				pg.NewSkillRepository(store), blobs, ids,
+				domain.FixedClock{T: time.Now().UTC()},
+			)
+			created, err := skills.Create(ctx, app.SkillCreateInput{
+				Files: []app.SkillUploadFile{{
+					Filename: "Runtime_Probe/SKILL.md",
+					Body:     []byte("---\nname: runtime-probe\ndescription: Verify mounted runtime Skills\n---\nruntime-e2e-marker\n"),
+				}},
+			})
+			if err != nil {
+				t.Fatalf("create integration Skill: %v", err)
+			}
+			return []domain.SkillReference{{
+					Type: "custom", SkillID: created.ID, Version: created.LatestVersion,
+				}}, app.NewSessionRuntimeMaterializer(
+					nil, app.NewSessionSkillMaterializer(store, blobs),
+				)
+		},
+	})
+}
+
 type dockerRequirement bool
 
 const (
@@ -537,6 +598,12 @@ type toolStepCase struct {
 	expectedTool       string
 	expectedToolOutput string
 	timeout            time.Duration
+	setup              func(
+		*testing.T,
+		context.Context,
+		*pg.Store,
+		domain.IDGenerator,
+	) ([]domain.SkillReference, temporalpkg.SandboxResourceReconciler)
 }
 
 const bashToolName = "bash"
@@ -610,15 +677,26 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 	defer c.Close()
 
 	ids := domain.NewRandomIDGen()
-	runtime := temporalpkg.NewRuntimeOnTaskQueue(
-		c,
-		store,
-		tc.modelClient,
-		tc.provider,
-		ids,
-		temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
-		"managed-agent-test-"+ids.NewID(""),
-	)
+	var skills []domain.SkillReference
+	var resources temporalpkg.SandboxResourceReconciler
+	if tc.setup != nil {
+		skills, resources = tc.setup(t, ctx, store, ids)
+	}
+	taskQueue := "managed-agent-test-" + ids.NewID("")
+	var runtime *temporalpkg.Runtime
+	if resources != nil {
+		runtime = temporalpkg.NewRuntimeWithResourcesOnTaskQueue(
+			c, store, tc.modelClient, tc.provider, ids,
+			temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
+			taskQueue, resources,
+		)
+	} else {
+		runtime = temporalpkg.NewRuntimeOnTaskQueue(
+			c, store, tc.modelClient, tc.provider, ids,
+			temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
+			taskQueue,
+		)
+	}
 
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)
@@ -647,7 +725,7 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 		Metadata:      map[string]any{},
 		AgentSnapshot: domain.Agent{
 			ID: "agent_1", Version: 1, Model: domain.Model{ID: tc.modelID},
-			Tools: tc.tools,
+			Tools: tc.tools, Skills: skills,
 		},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
@@ -780,11 +858,111 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 // it ends the turn. Behavior depends only on projected history, not a mutable
 // call counter, so an Activity retry receives the same response.
 type toolProbeModel struct {
-	command   string
-	finalText string
+	command        string
+	finalText      string
+	requiredSystem string
+}
+
+// skillProbeModel proves the CCB context lifecycle rather than merely proving
+// that the files exist. It selects the runtime's private Skill dispatcher on
+// the first round and refuses to finish unless the next request contains the
+// complete injected SKILL.md body as a sibling user content block.
+type skillProbeModel struct {
+	skillName      string
+	marker         string
+	finalText      string
+	requiredSystem string
+}
+
+func (m skillProbeModel) CreateMessage(
+	_ context.Context,
+	req model.Request,
+) (model.Response, error) {
+	if m.requiredSystem != "" && !strings.Contains(req.System, m.requiredSystem) {
+		return model.Response{}, fmt.Errorf(
+			"model request did not discover required Skill path %q",
+			m.requiredSystem,
+		)
+	}
+	dispatcherOffered := false
+	for _, tool := range req.Tools {
+		if tool.Name == agentruntime.RuntimeSkillToolName {
+			dispatcherOffered = true
+			break
+		}
+	}
+	if !dispatcherOffered {
+		return model.Response{}, errors.New("runtime Skill dispatcher was not offered")
+	}
+	seenResult := false
+	seenBody := false
+	for _, message := range req.Messages {
+		for _, block := range message.Content {
+			switch block.Type {
+			case "tool_result":
+				seenResult = true
+			case "text":
+				if strings.HasPrefix(
+					block.Text,
+					"Base directory for this skill: /workspace/skills/"+m.skillName,
+				) && strings.Contains(block.Text, m.marker) {
+					seenBody = true
+				}
+			}
+		}
+	}
+	if seenResult {
+		if !seenBody {
+			return model.Response{}, fmt.Errorf(
+				"Skill tool result returned without the complete SKILL.md injection: %s",
+				summarizeSkillProbeMessages(req.Messages),
+			)
+		}
+		return model.Response{
+			Content:    []domain.ContentBlock{{Type: "text", Text: m.finalText}},
+			StopReason: "end_turn",
+		}, nil
+	}
+	return model.Response{
+		Content: []domain.ContentBlock{{
+			Type: "tool_use", ToolUseID: "probe_skill_1",
+			ToolName: agentruntime.RuntimeSkillToolName,
+			Input:    map[string]any{"skill": m.skillName},
+		}},
+		StopReason: "tool_use",
+	}, nil
+}
+
+func summarizeSkillProbeMessages(messages []domain.Message) string {
+	const prefixLimit = 120
+	parts := make([]string, 0, len(messages))
+	for messageIndex, message := range messages {
+		for blockIndex, block := range message.Content {
+			text := block.Text
+			if len(text) > prefixLimit {
+				text = text[:prefixLimit] + "..."
+			}
+			parts = append(parts, fmt.Sprintf(
+				"message[%d](role=%q).content[%d](type=%q,text_len=%d,text_prefix=%q)",
+				messageIndex,
+				message.Role,
+				blockIndex,
+				block.Type,
+				len(block.Text),
+				text,
+			))
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 func (m toolProbeModel) CreateMessage(_ context.Context, req model.Request) (model.Response, error) {
+	if m.requiredSystem != "" && !strings.Contains(req.System, m.requiredSystem) {
+		return model.Response{}, fmt.Errorf(
+			"model request did not discover required Skill path %q",
+			m.requiredSystem,
+		)
+	}
 	for _, message := range req.Messages {
 		for _, block := range message.Content {
 			if block.Type == "tool_result" {
@@ -802,6 +980,68 @@ func (m toolProbeModel) CreateMessage(_ context.Context, req model.Request) (mod
 		}},
 		StopReason: "tool_use",
 	}, nil
+}
+
+func (m skillProbeModel) CreateMessageStream(
+	ctx context.Context,
+	req model.Request,
+	onDelta func(index int, text string),
+) (model.Response, error) {
+	response, err := m.CreateMessage(ctx, req)
+	if err == nil && response.StopReason == "end_turn" &&
+		len(response.Content) == 1 && onDelta != nil {
+		onDelta(0, response.Content[0].Text)
+	}
+	return response, err
+}
+
+type integrationBlobStore struct {
+	mu      sync.Mutex
+	objects map[string][]byte
+}
+
+func newIntegrationBlobStore() *integrationBlobStore {
+	return &integrationBlobStore{objects: make(map[string][]byte)}
+}
+
+func (s *integrationBlobStore) Put(
+	_ context.Context,
+	key string,
+	_ string,
+	body io.Reader,
+	maxBytes int64,
+) (app.BlobInfo, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
+	if err != nil {
+		return app.BlobInfo{}, err
+	}
+	if int64(len(data)) > maxBytes {
+		return app.BlobInfo{}, app.ErrBlobTooLarge
+	}
+	s.mu.Lock()
+	s.objects[key] = append([]byte(nil), data...)
+	s.mu.Unlock()
+	return app.ComputeBlobInfo(data), nil
+}
+
+func (s *integrationBlobStore) Open(
+	_ context.Context,
+	key string,
+) (io.ReadCloser, error) {
+	s.mu.Lock()
+	data, ok := s.objects[key]
+	s.mu.Unlock()
+	if !ok {
+		return nil, errors.New("integration blob not found")
+	}
+	return io.NopCloser(bytes.NewReader(append([]byte(nil), data...))), nil
+}
+
+func (s *integrationBlobStore) Delete(_ context.Context, key string) error {
+	s.mu.Lock()
+	delete(s.objects, key)
+	s.mu.Unlock()
+	return nil
 }
 
 func (m toolProbeModel) CreateMessageStream(ctx context.Context, req model.Request, onDelta func(index int, text string)) (model.Response, error) {

@@ -76,6 +76,24 @@ have to write into the worker host's absolute `/mnt` path and therefore rejects
 the feature. Current remote adapters also reject it until their service APIs
 can prove an equivalent isolated read-only mount contract.
 
+## Custom Skill mounts
+
+Custom Skill execution uses a separate provider capability because a bundle is
+an immutable directory tree, not a File Resource. Docker stages pinned
+canonical archives beneath the same provider-owned per-Session root, verifies
+their compressed size and SHA-256, revalidates archive paths and entry types,
+and atomically publishes each tree beneath `/workspace/skills/<name>/`. The
+complete `skills` directory is an unconditional read-only bind mount on new
+containers, so attach after worker restart can recover the same host root.
+
+The worker checks the marker and materialized tree before every relevant tool
+step, repairs missing or damaged staging, and removes abandoned extraction
+directories. Sandbox destruction removes the shared root containing both File
+and Skill staging. Containers created before this mount existed fail closed for
+pinned Skills and must be recreated; Docker cannot add a bind mount to a live
+container. Local, self-hosted, and current remote adapters do not advertise the
+capability.
+
 ## Compatibility contract
 
 A backend implements the core lifecycle contract when it can:

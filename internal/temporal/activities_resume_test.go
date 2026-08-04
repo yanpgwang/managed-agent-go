@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -76,6 +77,7 @@ func (s *transcriptFakeSource) LoadProviderTranscript(
 type configuredTranscriptFakeSource struct {
 	*transcriptFakeSource
 	session domain.Session
+	skills  []domain.SkillVersion
 }
 
 func (s *configuredTranscriptFakeSource) GetSession(
@@ -83,6 +85,148 @@ func (s *configuredTranscriptFakeSource) GetSession(
 	string,
 ) (domain.Session, error) {
 	return s.session, nil
+}
+
+func (s *configuredTranscriptFakeSource) SessionSkillsForRuntime(
+	context.Context,
+	string,
+) ([]domain.SkillVersion, error) {
+	return append([]domain.SkillVersion(nil), s.skills...), nil
+}
+
+func TestPrepareTurn_ProjectsPinnedSkillDiscoveryMetadata(t *testing.T) {
+	base := newFakeSource([]domain.Event{{
+		ID: "sevt_skill", Sequence: 1, Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "analyze the report"},
+		}},
+	}})
+	source := &configuredTranscriptFakeSource{
+		transcriptFakeSource: &transcriptFakeSource{fakeSource: base},
+		session: domain.Session{
+			ID: "sess_skill", Status: domain.StatusRunning,
+			AgentSnapshot: domain.Agent{
+				Model: domain.Model{ID: "model"},
+				Tools: []any{map[string]any{"type": domain.BuiltinToolsetType}},
+				Skills: []domain.SkillReference{{
+					Type: "custom", SkillID: "skill_reports", Version: "100",
+				}},
+			},
+		},
+		skills: []domain.SkillVersion{{
+			SkillID: "skill_reports", Version: "100", Name: "report-tools",
+			Description: "Analyze reports", UncompressedSizeBytes: 1024,
+		}},
+	}
+	prepared, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithSkillRuntimeSupported(true).PrepareTurn(
+		context.Background(),
+		PrepareTurnInput{SessionID: "sess_skill", TriggerEventID: "sevt_skill"},
+	)
+	require.NoError(t, err)
+	require.Empty(t, prepared.FatalError)
+	require.Contains(t, prepared.Request.System, "<available_skills>")
+	require.Contains(t, prepared.Request.System, `"name":"report-tools"`)
+	require.Contains(t, prepared.Request.System, "/workspace/skills/report-tools/SKILL.md")
+	require.Contains(t, summarizeModelTools(prepared.Request.Tools), modelToolSummary{
+		Name: agentruntime.RuntimeSkillToolName,
+	})
+	require.Contains(t, prepared.Tools, TurnTool{
+		Name:       agentruntime.RuntimeSkillToolName,
+		Kind:       TurnToolRuntimeSkill,
+		Permission: domain.PermissionPolicy{Type: "always_allow"},
+	})
+
+	unsupported, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).PrepareTurn(
+		context.Background(),
+		PrepareTurnInput{SessionID: "sess_skill", TriggerEventID: "sevt_skill"},
+	)
+	require.NoError(t, err)
+	require.Contains(t, unsupported.FatalError, "configured sandbox provider")
+}
+
+func TestPrepareTurn_ReattachesInvokedSkillFromTranscriptAfterWorkerRestart(t *testing.T) {
+	processedAt := time.Now().UTC()
+	base := newFakeSource([]domain.Event{
+		{
+			ID: "sevt_prior_skill", Sequence: 1, Type: domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{map[string]any{
+				"type": "text", "text": "first request",
+			}}},
+			ProcessedAt: &processedAt,
+		},
+		{
+			ID: "sevt_current_skill", Sequence: 2, Type: domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{map[string]any{
+				"type": "text", "text": "continue the report",
+			}}},
+		},
+	})
+	injection := agentruntime.RuntimeSkillInjection(
+		"report-tools",
+		[]byte("---\nname: report-tools\ndescription: Analyze reports\n---\ncanonical workflow\n"),
+	)
+	source := &configuredTranscriptFakeSource{
+		transcriptFakeSource: &transcriptFakeSource{
+			fakeSource: base,
+			transcript: domain.ProviderTranscript{
+				TriggerEventIDs: []string{"sevt_prior_skill"},
+				Messages: []domain.Message{
+					{Role: domain.RoleUser, Content: []domain.ContentBlock{{
+						Type: "text", Text: "first request",
+					}}},
+					{Role: domain.RoleAssistant, Content: []domain.ContentBlock{{
+						Type: "tool_use", ToolUseID: "provider_skill",
+						ToolName: agentruntime.RuntimeSkillToolName,
+						Input:    map[string]any{"skill": "report-tools"},
+					}}},
+					{Role: domain.RoleUser, Content: []domain.ContentBlock{
+						{Type: "tool_result", ToolResultFor: "provider_skill", Text: "Launching skill: report-tools"},
+						injection,
+					}},
+					{Role: domain.RoleAssistant, Content: []domain.ContentBlock{{
+						Type: "text", Text: strings.Repeat("later analysis ", 6000),
+					}}},
+				},
+			},
+		},
+		session: domain.Session{
+			ID: "sess_restart_skill", Status: domain.StatusRunning,
+			AgentSnapshot: domain.Agent{
+				Model: domain.Model{ID: "model"},
+				Tools: []any{map[string]any{"type": domain.BuiltinToolsetType}},
+				Skills: []domain.SkillReference{{
+					Type: "custom", SkillID: "skill_reports", Version: "100",
+				}},
+			},
+		},
+		skills: []domain.SkillVersion{{
+			SkillID: "skill_reports", Version: "100", Name: "report-tools",
+			Description: "Analyze reports", UncompressedSizeBytes: 1024,
+		}},
+	}
+	prepared, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithSkillRuntimeSupported(true).WithContextTokenBudget(9000).PrepareTurn(
+		context.Background(),
+		PrepareTurnInput{
+			SessionID: "sess_restart_skill", TriggerEventID: "sevt_current_skill",
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, prepared.FatalError)
+	require.True(t, prepared.UsesProviderTranscript)
+	require.True(t, prepared.ContextProjection.Compacted)
+	require.Contains(t, agentruntime.LoadedRuntimeSkills(prepared.Request.Messages), "report-tools")
+	lastMessage := prepared.Request.Messages[len(prepared.Request.Messages)-1]
+	require.Equal(
+		t,
+		"continue the report",
+		lastMessage.Content[len(lastMessage.Content)-1].Text,
+	)
 }
 
 func TestPrepareTurn_ProcessedOnReceiptCustomResultStillResumesPendingBarrier(t *testing.T) {

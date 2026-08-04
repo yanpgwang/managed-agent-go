@@ -209,6 +209,32 @@ func TestValidateToolConfiguration_EnforcesCustomToolContract(t *testing.T) {
 	}
 }
 
+func TestValidateSkillToolConfigurationRequiresReadAndReservesDispatcher(t *testing.T) {
+	if err := ValidateSkillToolConfiguration(nil, false); err != nil {
+		t.Fatalf("tool-free agent without Skills was rejected: %v", err)
+	}
+	if err := ValidateSkillToolConfiguration(nil, true); err == nil ||
+		!strings.Contains(err.Error(), "require the read tool") {
+		t.Fatalf("Skills without read error = %v", err)
+	}
+	readOnly := []any{map[string]any{
+		"type":           BuiltinToolsetType,
+		"default_config": map[string]any{"enabled": false},
+		"configs":        []any{map[string]any{"name": "read", "enabled": true}},
+	}}
+	if err := ValidateSkillToolConfiguration(readOnly, true); err != nil {
+		t.Fatalf("Skills with read were rejected: %v", err)
+	}
+	withCollision := append(readOnly, map[string]any{
+		"type": "custom", "name": "Skill", "description": "collides",
+		"input_schema": map[string]any{"type": "object"},
+	})
+	if err := ValidateSkillToolConfiguration(withCollision, true); err == nil ||
+		!strings.Contains(err.Error(), "runtime Skill dispatcher") {
+		t.Fatalf("Skill dispatcher collision error = %v", err)
+	}
+}
+
 func TestStoredToolConfiguration_ToleratesHistoricalIncompleteCustomTool(t *testing.T) {
 	tool := map[string]any{"type": "custom", "name": "legacy_tool"}
 	if err := ValidateStoredToolConfiguration([]any{tool}, nil); err != nil {

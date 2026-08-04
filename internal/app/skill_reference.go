@@ -9,7 +9,23 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
-const MaxSessionSkills = 500
+const (
+	MaxSessionSkills     = 500
+	MaxSessionSkillBytes = 500 << 20
+)
+
+// SkillExpandedBudgetBytes returns the conservative sandbox footprint used for
+// Session admission. Legacy Versions without exact metadata consume the full
+// per-bundle allowance rather than bypassing the aggregate bound.
+func SkillExpandedBudgetBytes(size int64) (int64, bool) {
+	if size == domain.UnknownSkillUncompressedSize {
+		return MaxSkillUploadBytes - 1, true
+	}
+	if size < 0 || size >= MaxSkillUploadBytes {
+		return 0, false
+	}
+	return size, true
+}
 
 // SkillReferenceResolver resolves request-time aliases to immutable custom
 // Skill Versions. The Agent and Session services share this boundary so every

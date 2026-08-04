@@ -86,7 +86,7 @@ make local-down
 | Events and runtime | Messages, interrupts, custom-tool results, confirmations, outcomes, retries, SSE, and durable park/resume |
 | Tools | Sandbox built-ins, provider-native Web Search/Fetch, and unauthenticated remote MCP tools |
 | Files | Five-operation Files API with configured object storage; File-backed Session Resources with durable read-only Docker mounts |
-| Skills | Nine custom resource operations plus validated, immutable Agent/Session Version pins; runtime mounting remains in progress |
+| Skills | Nine custom resource operations, immutable Version pins, and Claude Code-style on-demand instruction loading in Docker Sessions |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
@@ -95,9 +95,8 @@ for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-confo
 [Files](https://yanpgwang.github.io/managed-agent-go/api/files-conformance), and
 [Session Resources](https://yanpgwang.github.io/managed-agent-go/api/session-resources-conformance),
 and [Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance)
-record operation-level evidence and known limitations. Skill runtime
-materialization, memory, vaults, deployments, multi-agent orchestration,
-schedules, and webhooks remain
+record operation-level evidence and known limitations. Memory, vaults,
+deployments, multi-agent orchestration, schedules, and webhooks remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
 ## Architecture

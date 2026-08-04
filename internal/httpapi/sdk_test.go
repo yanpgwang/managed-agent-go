@@ -467,6 +467,11 @@ func TestSDK_SkillReferencesPinAcrossAgentAndSessionSnapshots(t *testing.T) {
 		Model: anthropic.BetaManagedAgentsModelConfigParams{
 			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_8,
 		},
+		Tools: []anthropic.BetaAgentNewParamsToolUnion{{
+			OfAgentToolset20260401: &anthropic.BetaManagedAgentsAgentToolset20260401Params{
+				Type: anthropic.BetaManagedAgentsAgentToolset20260401ParamsTypeAgentToolset20260401,
+			},
+		}},
 		Skills: []anthropic.BetaManagedAgentsSkillParamsUnion{{
 			OfCustom: &anthropic.BetaManagedAgentsCustomSkillParams{
 				Type:    anthropic.BetaManagedAgentsCustomSkillParamsTypeCustom,

@@ -179,8 +179,10 @@ func (s *SkillService) newVersion(
 		ID: version, SkillID: skillID, Version: version,
 		CreatedAt: time.UnixMicro(epoch).UTC(),
 		Name:      bundle.Name, Description: bundle.Description, Directory: bundle.Directory,
-		BlobKey: "skills/" + skillID + "/" + version + ".zip",
-		State:   domain.SkillVersionUploading, Initial: initial,
+		BlobKey:               "skills/" + skillID + "/" + version + ".zip",
+		UncompressedSizeBytes: bundle.UncompressedSizeBytes,
+		State:                 domain.SkillVersionUploading,
+		Initial:               initial,
 	}
 }
 
@@ -253,6 +255,8 @@ func (s *SkillService) ResolveSkillReferences(
 		return nil, err
 	}
 	resolved := make([]domain.SkillReference, len(references))
+	seenNames := make(map[string]int, len(references))
+	var expandedBytes int64
 	for index, reference := range references {
 		if reference.Type != "custom" {
 			return nil, domain.Unsupported(fmt.Sprintf(
@@ -276,6 +280,18 @@ func (s *SkillService) ResolveSkillReferences(
 		if err != nil {
 			return nil, skillReferenceLookupError(index, err)
 		}
+		if previous, exists := seenNames[item.Name]; exists {
+			return nil, domain.Validation(fmt.Sprintf(
+				"skills[%d]: runtime name %q conflicts with skills[%d]",
+				index, item.Name, previous,
+			))
+		}
+		seenNames[item.Name] = index
+		expanded, valid := SkillExpandedBudgetBytes(item.UncompressedSizeBytes)
+		if !valid || expanded > MaxSessionSkillBytes-expandedBytes {
+			return nil, domain.TooLarge("Skills exceed the 500 MB expanded-size limit")
+		}
+		expandedBytes += expanded
 		resolved[index] = domain.SkillReference{
 			Type: "custom", SkillID: item.SkillID, Version: item.Version,
 		}

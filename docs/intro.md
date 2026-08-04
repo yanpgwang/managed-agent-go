@@ -71,7 +71,9 @@ endpoint/model context profiles, hosted differential testing,
 deployment-managed MCP authentication, memory/vaults, multi-agent
 orchestration, schedules, and webhooks remain outside that claim. Custom Skill
 resources, reference validation, and immutable Agent/Session Version pinning
-are implemented; sandbox materialization and model discovery remain open.
+are implemented; Docker-backed cloud Sessions also provide on-demand full
+instruction loading from restart-safe read-only materialization. Other sandbox
+providers remain outside the conditional Skill runtime claim.
 
 The runtime is the product; Claude API compatibility is an integration surface.
 Public behavior is derived from official documentation and tested through raw

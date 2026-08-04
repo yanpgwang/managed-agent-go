@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
@@ -309,6 +310,126 @@ func (l *fixedSandboxLease) Acquire(
 }
 
 func (*fixedSandboxLease) Release(context.Context, string) error { return nil }
+
+type skillExecutionSource struct {
+	*mcpPrepareSource
+	skills []domain.SkillVersion
+}
+
+func (s *skillExecutionSource) SessionSkillsForRuntime(
+	context.Context,
+	string,
+) ([]domain.SkillVersion, error) {
+	return append([]domain.SkillVersion(nil), s.skills...), nil
+}
+
+func TestExecuteTool_RuntimeSkillLoadsFullInstructionsWithoutReadTool(t *testing.T) {
+	ctx := context.Background()
+	_, box, err := sandbox.NewLocalProvider().Create(ctx, t.Name(), sandbox.Spec{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+
+	const body = "---\nname: report-tools\ndescription: Analyze reports\n---\n\nFollow the complete report workflow.\n"
+	require.NoError(t, box.WriteFile(
+		ctx,
+		"skills/report-tools/SKILL.md",
+		[]byte(body),
+	))
+
+	journal := &memoryMCPJournal{}
+	source := &skillExecutionSource{
+		mcpPrepareSource: &mcpPrepareSource{
+			fakeSource: newFakeSource(nil),
+			session: domain.Session{
+				ID: "sess_skill_execute", AgentSnapshot: domain.Agent{
+					Skills: []domain.SkillReference{{
+						Type: "custom", SkillID: "skill_reports", Version: "100",
+					}},
+				},
+			},
+		},
+		skills: []domain.SkillVersion{{
+			SkillID: "skill_reports", Version: "100", Name: "report-tools",
+		}},
+	}
+	activities := NewActivities(
+		nil,
+		source,
+		journal,
+		&fixedSandboxLease{box: box},
+		&testIDGen{},
+	)
+
+	result, err := activities.ExecuteTool(ctx, ExecuteToolInput{
+		SessionID: "sess_skill_execute", TriggerEventID: "sevt_trigger",
+		AttemptID: "ratm_skill", Ordinal: 0,
+		ToolUseEventID: "sevt_skill_use", ToolStepID: "tstep_skill",
+		ToolName: agentruntime.RuntimeSkillToolName,
+		ToolKind: TurnToolRuntimeSkill,
+		Input:    map[string]any{"skill": "report-tools"},
+	})
+	require.NoError(t, err)
+	require.False(t, result.Ambiguous)
+	require.False(t, result.Result.IsError)
+	require.Equal(t, "Launching skill: report-tools", result.Result.Content[0].(map[string]any)["text"])
+	require.Len(t, result.Result.InjectedContent, 1)
+	require.Contains(t, result.Result.InjectedContent[0].Text, body)
+	require.Equal(t, result.Result, journal.result)
+
+	// A completed Activity retry recovers the exact injected body from the
+	// durable journal without reacquiring or re-reading the sandbox.
+	recovered, err := activities.ExecuteTool(ctx, ExecuteToolInput{
+		SessionID: "sess_skill_execute", TriggerEventID: "sevt_trigger",
+		AttemptID: "ratm_skill", Ordinal: 0,
+		ToolUseEventID: "sevt_skill_use", ToolStepID: "tstep_skill",
+		ToolName: agentruntime.RuntimeSkillToolName,
+		ToolKind: TurnToolRuntimeSkill,
+		Input:    map[string]any{"skill": "report-tools"},
+	})
+	require.NoError(t, err)
+	require.Equal(t, result.Result, recovered.Result)
+}
+
+func TestExecuteTool_RuntimeSkillStartedStepIsSafelyReloaded(t *testing.T) {
+	ctx := context.Background()
+	_, box, err := sandbox.NewLocalProvider().Create(ctx, t.Name(), sandbox.Spec{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	require.NoError(t, box.WriteFile(
+		ctx,
+		"skills/report-tools/SKILL.md",
+		[]byte("---\nname: report-tools\ndescription: Analyze reports\n---\nbody\n"),
+	))
+
+	journal := &memoryMCPJournal{step: domain.ToolStep{
+		ID: "tstep_started_skill", AttemptID: "ratm_started_skill",
+		Ordinal: 0, ToolUseEventID: "sevt_started_skill",
+		ToolName: agentruntime.RuntimeSkillToolName,
+		Input:    map[string]any{"skill": "report-tools"},
+		State:    domain.ToolStepStarted,
+	}}
+	source := &skillExecutionSource{
+		mcpPrepareSource: &mcpPrepareSource{
+			fakeSource: newFakeSource(nil),
+			session:    domain.Session{ID: "sess_started_skill"},
+		},
+		skills: []domain.SkillVersion{{Name: "report-tools"}},
+	}
+	result, err := NewActivities(
+		nil, source, journal, &fixedSandboxLease{box: box}, &testIDGen{},
+	).ExecuteTool(ctx, ExecuteToolInput{
+		SessionID: "sess_started_skill", TriggerEventID: "sevt_trigger",
+		AttemptID: "ratm_started_skill", Ordinal: 0,
+		ToolUseEventID: "sevt_started_skill", ToolStepID: "tstep_started_skill",
+		ToolName: agentruntime.RuntimeSkillToolName,
+		ToolKind: TurnToolRuntimeSkill,
+		Input:    map[string]any{"skill": "report-tools"},
+	})
+	require.NoError(t, err)
+	require.False(t, result.Ambiguous)
+	require.False(t, result.Result.IsError)
+	require.Len(t, result.Result.InjectedContent, 1)
+}
 
 func TestExecuteTool_MCPJournalsRawAndProjectsModelContent(t *testing.T) {
 	_, box, err := sandbox.NewLocalProvider().Create(

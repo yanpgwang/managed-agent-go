@@ -28,12 +28,12 @@ type retryingSessionResourceReconciler struct {
 	resolve func(context.Context) (*resolvedFiles, error)
 
 	mu           sync.Mutex
-	materializer *app.SessionResourceMaterializer
+	materializer *app.SessionRuntimeMaterializer
 }
 
 func (r *retryingSessionResourceReconciler) resolveMaterializer(
 	ctx context.Context,
-) (*app.SessionResourceMaterializer, error) {
+) (*app.SessionRuntimeMaterializer, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.materializer != nil {
@@ -48,8 +48,11 @@ func (r *retryingSessionResourceReconciler) resolveMaterializer(
 			fileS3BucketEnv + " is not configured",
 		))
 	}
-	r.materializer = app.NewSessionResourceMaterializer(
-		r.store, runtime.repository, runtime.blobs,
+	r.materializer = app.NewSessionRuntimeMaterializer(
+		app.NewSessionResourceMaterializer(
+			r.store, runtime.repository, runtime.blobs,
+		),
+		app.NewSessionSkillMaterializer(r.store, runtime.blobs),
 	)
 	return r.materializer, nil
 }
@@ -60,7 +63,11 @@ func (r *retryingSessionResourceReconciler) Reconcile(
 	box sandbox.Sandbox,
 ) error {
 	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
-	if err != nil || len(resources) == 0 {
+	if err != nil {
+		return err
+	}
+	skills, err := r.store.SessionSkillsForRuntime(ctx, sessionID)
+	if err != nil || len(resources) == 0 && len(skills) == 0 {
 		return err
 	}
 	materializer, err := r.resolveMaterializer(ctx)
@@ -91,11 +98,15 @@ func (r unavailableSessionResourceReconciler) Reconcile(
 	_ sandbox.Sandbox,
 ) error {
 	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
-	if err != nil || len(resources) == 0 {
+	if err != nil {
+		return err
+	}
+	skills, err := r.store.SessionSkillsForRuntime(ctx, sessionID)
+	if err != nil || len(resources) == 0 && len(skills) == 0 {
 		return err
 	}
 	return sandbox.Permanent(fmt.Errorf(
-		"session File Resources are unavailable on this worker: %w",
+		"session File Resources or custom Skills are unavailable on this worker: %w",
 		r.cause,
 	))
 }
@@ -170,14 +181,9 @@ func runOrchestrate() {
 	}
 	fileRuntime, err := resolveFiles(ctx, store, ids, realClock{}, false)
 	var resourceReconciler temporalpkg.SandboxResourceReconciler
-	fileCapability, supportsFiles := provider.(sandbox.FileResourceProvider)
 	switch {
-	case !supportsFiles || !fileCapability.SupportsFileResources():
-		cause := fmt.Errorf("sandbox provider %q has no read-only File Resource capability", provider.Name())
-		resourceReconciler = unavailableSessionResourceReconciler{store: store, cause: cause}
-		log.Printf("orchestrate: Session File Resources disabled: %v", cause)
 	case err != nil:
-		log.Printf("orchestrate: Files object store unavailable; resource turns will retry connection: %v", err)
+		log.Printf("orchestrate: object store unavailable; File/Skill turns will retry connection: %v", err)
 		resourceReconciler = &retryingSessionResourceReconciler{
 			store: store,
 			resolve: func(resolveCtx context.Context) (*resolvedFiles, error) {
@@ -187,12 +193,15 @@ func runOrchestrate() {
 	case fileRuntime == nil:
 		cause := errors.New(fileS3BucketEnv + " is not configured")
 		resourceReconciler = unavailableSessionResourceReconciler{store: store, cause: cause}
-		log.Printf("orchestrate: Session File Resources disabled: %v", cause)
+		log.Printf("orchestrate: Session File Resources and custom Skill runtime disabled: %v", cause)
 	default:
-		resourceReconciler = app.NewSessionResourceMaterializer(
-			store, fileRuntime.repository, fileRuntime.blobs,
+		resourceReconciler = app.NewSessionRuntimeMaterializer(
+			app.NewSessionResourceMaterializer(
+				store, fileRuntime.repository, fileRuntime.blobs,
+			),
+			app.NewSessionSkillMaterializer(store, fileRuntime.blobs),
 		)
-		log.Printf("orchestrate: Session File Resource materializer enabled")
+		log.Printf("orchestrate: Session File Resource and custom Skill materializers enabled")
 	}
 
 	client, err := temporalpkg.Dial(temporalpkg.ClientConfig{

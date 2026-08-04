@@ -171,6 +171,7 @@ func runWorkflowTurnInternal(
 			[]domain.Message(nil),
 			prepared.TranscriptDelta...,
 		),
+		loadedSkills: agentruntime.LoadedRuntimeSkills(prepared.Request.Messages),
 	}
 	if prepared.FatalError != "" {
 		return turn.terminate(failTurn(prepared.FatalError))

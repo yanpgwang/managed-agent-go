@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 )
@@ -345,6 +347,170 @@ func TestWorkflowTurn_PreservesTextAndMultipleTools(t *testing.T) {
 	}, eventTypes)
 	require.Equal(t, "ratm_1", completed.AttemptID)
 	require.Equal(t, domain.RunAttemptCompleted, completed.AttemptState)
+}
+
+func TestWorkflowTurn_RuntimeSkillInjectsFullBodyAndSuppressesDuplicate(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	initial := []domain.Message{{
+		Role: domain.RoleUser,
+		Content: []domain.ContentBlock{{
+			Type: "text", Text: "analyze the report",
+		}},
+	}}
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{
+			AttemptID:              "ratm_skill",
+			UsesProviderTranscript: true,
+			TranscriptDelta:        initial,
+			Request: model.Request{
+				Model:    "test-model",
+				Messages: initial,
+				Tools:    []model.ToolSchema{agentruntime.RuntimeSkillToolSchema()},
+			},
+			Tools: []TurnTool{{
+				Name: agentruntime.RuntimeSkillToolName, Kind: TurnToolRuntimeSkill,
+				Permission: domain.PermissionPolicy{Type: "always_allow"},
+			}},
+		}, nil
+	}
+
+	const (
+		reportSkill = "---\nname: report-tools\ndescription: Analyze reports\n---\n\nUse the canonical report workflow.\n"
+		chartSkill  = "---\nname: chart-tools\ndescription: Build charts\n---\n\nUse the canonical chart workflow.\n"
+	)
+	countInjectedBodies := func(messages []domain.Message) int {
+		count := 0
+		for _, message := range messages {
+			for _, block := range message.Content {
+				if block.Type == "text" &&
+					(strings.Contains(block.Text, reportSkill) || strings.Contains(block.Text, chartSkill)) {
+					count++
+				}
+			}
+		}
+		return count
+	}
+
+	var mu sync.Mutex
+	var modelRequests []model.Request
+	callModel := func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+		mu.Lock()
+		modelRequests = append(modelRequests, in.Request)
+		call := len(modelRequests)
+		mu.Unlock()
+		switch call {
+		case 1:
+			return CallModelResult{
+				ToolSteps: []PlannedToolStep{
+					{
+						ToolUseEventID: "public_skill_1", ProviderToolUseID: "provider_skill_1",
+						ToolStepID: "tstep_skill_1",
+					},
+					{
+						ToolUseEventID: "public_skill_chart", ProviderToolUseID: "provider_skill_chart",
+						ToolStepID: "tstep_skill_chart",
+					},
+				},
+				Response: model.Response{
+					StopReason: "tool_use",
+					Content: []domain.ContentBlock{
+						{
+							Type: "tool_use", ToolUseID: "provider_skill_1",
+							ToolName: agentruntime.RuntimeSkillToolName,
+							Input:    map[string]any{"skill": "report-tools"},
+						},
+						{
+							Type: "tool_use", ToolUseID: "provider_skill_chart",
+							ToolName: agentruntime.RuntimeSkillToolName,
+							Input:    map[string]any{"skill": "chart-tools"},
+						},
+					},
+				},
+			}, nil
+		case 2:
+			require.Equal(t, 2, countInjectedBodies(in.Request.Messages))
+			blocks := in.Request.Messages[len(in.Request.Messages)-1].Content
+			require.Equal(t, []string{"tool_result", "tool_result", "text", "text"}, []string{
+				blocks[0].Type, blocks[1].Type, blocks[2].Type, blocks[3].Type,
+			})
+			return CallModelResult{
+				ToolSteps: []PlannedToolStep{{
+					ToolUseEventID: "public_skill_2", ProviderToolUseID: "provider_skill_2",
+					ToolStepID: "tstep_skill_2",
+				}},
+				Response: model.Response{
+					StopReason: "tool_use",
+					Content: []domain.ContentBlock{{
+						Type: "tool_use", ToolUseID: "provider_skill_2",
+						ToolName: agentruntime.RuntimeSkillToolName,
+						Input:    map[string]any{"skill": "report-tools"},
+					}},
+				},
+			}, nil
+		default:
+			require.Equal(t, 2, countInjectedBodies(in.Request.Messages))
+			return CallModelResult{
+				MessageEventID: "sevt_skill_answer",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content: []domain.ContentBlock{{
+						Type: "text", Text: "report analyzed",
+					}},
+				},
+			}, nil
+		}
+	}
+
+	var toolCalls []ExecuteToolInput
+	executeTool := func(_ context.Context, in ExecuteToolInput) (ExecuteToolResult, error) {
+		mu.Lock()
+		toolCalls = append(toolCalls, in)
+		mu.Unlock()
+		name, err := agentruntime.RuntimeSkillName(in.Input)
+		require.NoError(t, err)
+		result := domain.ToolStepResult{Content: []any{map[string]any{
+			"type": "text", "text": "Launching skill: " + name,
+		}}}
+		if in.SkillAlreadyLoaded {
+			result.Content = []any{map[string]any{
+				"type": "text", "text": "Skill " + name + " is already loaded",
+			}}
+		} else {
+			body := reportSkill
+			if name == "chart-tools" {
+				body = chartSkill
+			}
+			result.InjectedContent = []domain.ContentBlock{
+				agentruntime.RuntimeSkillInjection(name, []byte(body)),
+			}
+		}
+		return ExecuteToolResult{Result: result}, nil
+	}
+
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{}, nil
+	}
+	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_skill", TriggerEventID: "sevt_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Len(t, modelRequests, 3)
+	require.Len(t, toolCalls, 3)
+	require.False(t, toolCalls[0].SkillAlreadyLoaded)
+	require.False(t, toolCalls[1].SkillAlreadyLoaded)
+	require.True(t, toolCalls[2].SkillAlreadyLoaded)
+	require.Equal(t, 2, countInjectedBodies(completed.TranscriptDelta))
+	require.Len(t, completed.ToolUseMappings, 3)
+	for _, mapping := range completed.ToolUseMappings {
+		require.Equal(t, agentruntime.RuntimeSkillToolName, mapping.ToolName)
+	}
 }
 
 func TestWorkflowTurn_MixedExecutableAndPendingToolsCommitExecutedTranscriptResult(t *testing.T) {

@@ -492,6 +492,33 @@ func ValidateToolConfiguration(rawTools, rawServers []any) error {
 	return ValidateStoredToolConfiguration(rawTools, rawServers)
 }
 
+// ValidateSkillToolConfiguration checks the agent-runtime capabilities Skills
+// depend on. Skill is a private dispatcher, but its instructions may reference
+// supporting files and scripts, so the public read tool must remain enabled.
+// A user-defined tool named Skill would collide with the runtime dispatcher in
+// the provider request and is therefore reserved only while Skills are active.
+func ValidateSkillToolConfiguration(rawTools []any, hasSkills bool) error {
+	if !hasSkills {
+		return nil
+	}
+	toolSet, err := ParseTools(rawTools)
+	if err != nil {
+		return err
+	}
+	if enabled, _ := toolSet.BuiltinEnabled("read"); !enabled {
+		return fmt.Errorf("skills require the read tool")
+	}
+	for _, custom := range toolSet.Custom {
+		if custom.Name == "Skill" {
+			return fmt.Errorf(
+				"custom tool %q conflicts with the runtime Skill dispatcher",
+				custom.Name,
+			)
+		}
+	}
+	return nil
+}
+
 // ValidateStoredToolConfiguration checks the executable semantics of an
 // already-persisted Agent snapshot while tolerating unknown historical fields.
 // Admission must use ValidateToolConfiguration instead.

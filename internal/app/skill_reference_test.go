@@ -82,6 +82,7 @@ func TestAgentService_ResolvesAndPinsSkillVersions(t *testing.T) {
 	)
 	agent, err := service.Create(ctx, domain.Agent{
 		Name: "reports", Model: domain.Model{ID: "model"},
+		Tools: []any{map[string]any{"type": domain.BuiltinToolsetType}},
 		Skills: []domain.SkillReference{{
 			Type: "custom", SkillID: "skill_reports", Version: "latest",
 		}},
@@ -130,6 +131,7 @@ func TestAgentService_ResolvesSkillsBeforeRepositoryMutation(t *testing.T) {
 	)
 	agent, err := service.Create(context.Background(), domain.Agent{
 		Name: "reports", Model: domain.Model{ID: "model"},
+		Tools: []any{map[string]any{"type": domain.BuiltinToolsetType}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -230,8 +232,16 @@ func TestSkillService_ResolvesLatestAndExplicitVersions(t *testing.T) {
 		ID: "skill_a", Source: "custom", Ready: true, LatestVersion: "200",
 	}
 	repo.versions["skill_a"] = map[string]domain.SkillVersion{
-		"100": {ID: "100", SkillID: "skill_a", Version: "100", State: domain.SkillVersionReady},
-		"200": {ID: "200", SkillID: "skill_a", Version: "200", State: domain.SkillVersionReady},
+		"100": {
+			ID: "100", SkillID: "skill_a", Version: "100", Name: "skill-a-v1",
+			Description: "first version", UncompressedSizeBytes: 1,
+			State: domain.SkillVersionReady,
+		},
+		"200": {
+			ID: "200", SkillID: "skill_a", Version: "200", Name: "skill-a-v2",
+			Description: "second version", UncompressedSizeBytes: 1,
+			State: domain.SkillVersionReady,
+		},
 	}
 	service := NewSkillService(repo, nil, domain.NewSeqIDGen(), domain.FixedClock{})
 	resolved, err := service.ResolveSkillReferences(context.Background(), []domain.SkillReference{
@@ -249,4 +259,43 @@ func TestSkillService_ResolvesLatestAndExplicitVersions(t *testing.T) {
 	}}); err == nil {
 		t.Fatal("missing explicit Version was accepted")
 	}
+}
+
+func TestSkillService_RejectsRuntimeNameAndAggregateLimitConflicts(t *testing.T) {
+	repo := newMemorySkillRepository()
+	for _, id := range []string{"skill_a", "skill_b"} {
+		repo.skills[id] = domain.Skill{
+			ID: id, Source: "custom", Ready: true, LatestVersion: "100",
+		}
+		repo.versions[id] = map[string]domain.SkillVersion{
+			"100": {
+				ID: "100", SkillID: id, Version: "100", Name: "shared-name",
+				Description: "shared", UncompressedSizeBytes: 1,
+				State: domain.SkillVersionReady,
+			},
+		}
+	}
+	service := NewSkillService(repo, nil, domain.NewSeqIDGen(), domain.FixedClock{})
+	_, err := service.ResolveSkillReferences(context.Background(), []domain.SkillReference{
+		{Type: "custom", SkillID: "skill_a"},
+		{Type: "custom", SkillID: "skill_b"},
+	})
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindValidation {
+		t.Fatalf("runtime name conflict = %T %v", err, err)
+	}
+
+	repo.versions["skill_b"]["100"] = domain.SkillVersion{
+		ID: "100", SkillID: "skill_b", Version: "100", Name: "large-skill",
+		Description: "large", UncompressedSizeBytes: MaxSessionSkillBytes,
+		State: domain.SkillVersionReady,
+	}
+	_, err = service.ResolveSkillReferences(context.Background(), []domain.SkillReference{
+		{Type: "custom", SkillID: "skill_a"},
+		{Type: "custom", SkillID: "skill_b"},
+	})
+	if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindTooLarge {
+		t.Fatalf("expanded size limit = %T %v", err, err)
+	}
+
 }

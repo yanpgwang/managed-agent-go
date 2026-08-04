@@ -35,10 +35,11 @@ type SkillUploadFile struct {
 }
 
 type preparedSkillBundle struct {
-	Archive     []byte
-	Name        string
-	Description string
-	Directory   string
+	Archive               []byte
+	Name                  string
+	Description           string
+	Directory             string
+	UncompressedSizeBytes int64
 }
 
 type skillBundleEntry struct {
@@ -156,6 +157,7 @@ func validateAndArchiveSkillEntries(entries []skillBundleEntry) (preparedSkillBu
 	seen := make(map[string]struct{}, len(entries))
 	directory := ""
 	var skillMarkdown []byte
+	var uncompressedSize int64
 	for _, entry := range entries {
 		if _, exists := seen[entry.name]; exists {
 			return preparedSkillBundle{}, domain.Validation("Skill bundle contains duplicate paths")
@@ -173,6 +175,7 @@ func validateAndArchiveSkillEntries(entries []skillBundleEntry) (preparedSkillBu
 		if len(parts) == 2 && parts[1] == "SKILL.md" {
 			skillMarkdown = entry.body
 		}
+		uncompressedSize += int64(len(entry.body))
 	}
 	if skillMarkdown == nil {
 		return preparedSkillBundle{}, domain.Validation("Skill bundle must contain SKILL.md at its root")
@@ -210,6 +213,7 @@ func validateAndArchiveSkillEntries(entries []skillBundleEntry) (preparedSkillBu
 	}
 	return preparedSkillBundle{
 		Archive: archive.Bytes(), Name: name, Description: description, Directory: directory,
+		UncompressedSizeBytes: uncompressedSize,
 	}, nil
 }
 

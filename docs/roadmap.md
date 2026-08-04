@@ -59,19 +59,21 @@ and durable read-only Docker mounts. It remains provider-gated; see the
 [Session Resources conformance matrix](api/session-resources-conformance.md).
 The custom Skills resource API, immutable archive lifecycle, strict
 Agent/Session reference validation, and Session Version pinning are also in
-place. Self-hosted Environment work dispatch remains the next runtime boundary;
-Skill runtime materialization follows it on the shared sandbox path.
+place. Docker-backed cloud Sessions now add bounded model discovery, on-demand
+full `SKILL.md` injection, checksum-verified read-only materialization, worker
+reattachment, repair, and cleanup on the shared sandbox path. Other sandbox
+adapters must prove the same capability contract before advertising Skill
+runtime support. A hosted differential harness for post-compaction Skill
+behavior remains follow-up conformance work.
 
 After that boundary, post-core work is ordered as reusable single-agent
 capability layers:
 
-1. Complete Skills after the resource and pinning foundations: sandbox
-   materialization, runtime discovery, restart coverage, and cleanup;
-2. Memory Stores, Memories, and Memory Versions, including Memory-backed
+1. Memory Stores, Memories, and Memory Versions, including Memory-backed
    Session Resources and cross-Session retrieval;
-3. Vaults and Credentials, with isolation and redaction guarantees before any
+2. Vaults and Credentials, with isolation and redaction guarantees before any
    secret reaches a worker or sandbox;
-4. Deployments and Deployment Runs, built on the stable execution and
+3. Deployments and Deployment Runs, built on the stable execution and
    credential layers.
 
 Skills and Memory are not deferred to multi-agent work. They provide reusable

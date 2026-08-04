@@ -59,9 +59,16 @@ the same transaction as the Session; deleting a pinned Version is rejected
 until the Session is physically deleted. The pin migration backfills concrete,
 still-ready custom references from existing Session snapshots; former opaque
 values remain readable but are not treated as executable references. Up to 500
-Skills are accepted. The
-archive-mounting/runtime discovery boundary is still in progress, so a pinned
-Skill is not yet available to the model or sandbox.
+Skills are accepted, subject to a 500 MB aggregate expanded-size limit and
+unique runtime names. In Docker-backed cloud Sessions, pinned archives are
+verified and exposed read-only at
+`/workspace/skills/<name>/`. The model first receives every Skill name plus
+descriptions bounded to one percent of the configured context window.
+When it invokes the private `Skill` dispatcher, the runtime returns
+`Launching skill: <name>` and injects the complete selected `SKILL.md`, prefixed
+with its base directory, into the provider conversation. Referenced supporting
+files remain on disk for ordinary `read` or `bash` access. Local, self-hosted,
+and current remote-provider Sessions reject custom Skill execution.
 
 Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.

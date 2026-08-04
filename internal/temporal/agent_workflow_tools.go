@@ -47,6 +47,7 @@ type workflowTurnState struct {
 	usesProviderTranscript         bool
 	transcriptDelta                []domain.Message
 	toolUseMappings                []domain.ProviderToolUseMapping
+	loadedSkills                   map[string]struct{}
 	usage                          domain.TokenUsage
 	flushedEventCount              int
 }
@@ -405,6 +406,11 @@ func (t *workflowTurnState) executeTool(
 		MCPToolName:    definition.MCPToolName,
 		Input:          use.Input,
 	}
+	if definition.Kind == TurnToolRuntimeSkill {
+		if name, err := agentruntime.RuntimeSkillName(use.Input); err == nil {
+			_, input.SkillAlreadyLoaded = t.loadedSkills[name]
+		}
+	}
 	toolActx := t.actx
 	if workflow.GetVersion(
 		t.actx,
@@ -426,6 +432,7 @@ func (t *workflowTurnState) executeTool(
 		if err != nil {
 			return ExecuteToolResult{}, interruptibleActivityOutcome{}, err
 		}
+		t.rememberLoadedSkill(definition, use, executed)
 		t.ordinal++
 		return executed, interruptibleActivityOutcome{Completed: true}, nil
 	}
@@ -439,9 +446,28 @@ func (t *workflowTurnState) executeTool(
 		return ExecuteToolResult{}, interruptibleActivityOutcome{}, err
 	}
 	if outcome.Completed {
+		t.rememberLoadedSkill(definition, use, executed)
 		t.ordinal++
 	}
 	return executed, outcome, nil
+}
+
+func (t *workflowTurnState) rememberLoadedSkill(
+	definition TurnTool,
+	use domain.ContentBlock,
+	executed ExecuteToolResult,
+) {
+	if definition.Kind != TurnToolRuntimeSkill || executed.Result.IsError {
+		return
+	}
+	name, err := agentruntime.RuntimeSkillName(use.Input)
+	if err != nil {
+		return
+	}
+	if t.loadedSkills == nil {
+		t.loadedSkills = make(map[string]struct{})
+	}
+	t.loadedSkills[name] = struct{}{}
 }
 
 func (t *workflowTurnState) complete(
@@ -987,6 +1013,7 @@ func executeToolBatch(
 		resultDrafts: make([]domain.EventDraft, 0, len(plan.executable)),
 		resultBlocks: make([]domain.ContentBlock, 0, len(plan.executable)),
 	}
+	injectedBlocks := make([]domain.ContentBlock, 0, len(plan.executable))
 	for _, planned := range plan.executable {
 		executed, activityOutcome, err := turn.executeTool(
 			attemptID,
@@ -999,16 +1026,19 @@ func executeToolBatch(
 			return toolBatchExecution{}, false, "", err
 		}
 		if activityOutcome.Interrupted && !activityOutcome.Completed {
+			execution.resultBlocks = append(execution.resultBlocks, injectedBlocks...)
 			return execution, true, "", nil
 		}
 		if executed.FatalError != "" {
 			if activityOutcome.Interrupted {
+				execution.resultBlocks = append(execution.resultBlocks, injectedBlocks...)
 				return execution, true, "", nil
 			}
 			return toolBatchExecution{}, false, failTurn(executed.FatalError), nil
 		}
 		if executed.Ambiguous {
 			if activityOutcome.Interrupted {
+				execution.resultBlocks = append(execution.resultBlocks, injectedBlocks...)
 				return execution, true, "", nil
 			}
 			return toolBatchExecution{}, false, failTurn(
@@ -1029,10 +1059,13 @@ func executeToolBatch(
 			IsError:       executed.Result.IsError,
 			ResultContent: rawResultContent(executed.Result.Content),
 		})
+		injectedBlocks = append(injectedBlocks, executed.Result.InjectedContent...)
 		if activityOutcome.Interrupted {
+			execution.resultBlocks = append(execution.resultBlocks, injectedBlocks...)
 			return execution, true, "", nil
 		}
 	}
+	execution.resultBlocks = append(execution.resultBlocks, injectedBlocks...)
 	return execution, false, "", nil
 }
 

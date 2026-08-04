@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -15,6 +16,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 func dockerAvailable(t *testing.T) {
@@ -291,6 +294,25 @@ func TestDocker_AttachLegacyContainerAllowsResourceDetach(t *testing.T) {
 	if err := resources.RemoveReadOnlyFile(ctx, mount.RuntimePath, mount.Identity); err != nil {
 		t.Fatalf("legacy detach must be a no-op: %v", err)
 	}
+	archive, expanded := testSkillArchive(t, "legacy", map[string]skillTestFile{
+		"SKILL.md": {
+			body: []byte("---\nname: legacy\ndescription: Legacy test\n---\n"),
+			mode: 0o644,
+		},
+	})
+	skillMount := testReadOnlySkillMount(
+		"skill_legacy@100", "legacy", "legacy", archive, expanded,
+	)
+	skills := box.(SkillBundleSandbox)
+	present, err = skills.HasReadOnlySkill(ctx, skillMount)
+	if err != nil || present {
+		t.Fatalf("legacy HasReadOnlySkill = %t, err=%v", present, err)
+	}
+	if err := skills.ImportReadOnlySkill(
+		ctx, skillMount, bytes.NewReader(archive),
+	); err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), "predates") {
+		t.Fatalf("legacy Skill import error = %v, want permanent recreation error", err)
+	}
 }
 
 func TestDocker_FileResourceMountIsAtomicAndReadOnly(t *testing.T) {
@@ -390,6 +412,178 @@ func TestDocker_FileResourceMountIsAtomicAndReadOnly(t *testing.T) {
 	}
 }
 
+func TestDocker_SkillBundleSurvivesAttachRepairsCorruptionAndIsReadOnly(t *testing.T) {
+	dockerAvailable(t)
+	ctx := context.Background()
+	resourceBase := t.TempDir()
+	firstProviderInterface, err := NewDockerProvider(DockerConfig{
+		DefaultImage: "alpine:latest", ResourceBaseDir: resourceBase,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstProvider := firstProviderInterface.(*dockerProvider)
+	ref, first, err := firstProvider.Create(ctx, t.Name(), Spec{Timeout: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Destroy(context.Background()) })
+	archive, expanded := testSkillArchive(t, "Report_Tool", map[string]skillTestFile{
+		"SKILL.md": {
+			body: []byte("---\nname: report-tool\ndescription: Analyze reports\n---\nUse the helper.\n"),
+			mode: 0o644,
+		},
+		"scripts/run.sh": {body: []byte("#!/bin/sh\nprintf skill-ok"), mode: 0o755},
+	})
+	mount := testReadOnlySkillMount(
+		"skill_reports@100", "report-tool", "Report_Tool", archive, expanded,
+	)
+	skills := first.(SkillBundleSandbox)
+	if err := skills.ImportReadOnlySkill(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("initial Skill import: %v", err)
+	}
+	present, err := skills.HasReadOnlySkill(ctx, mount)
+	if err != nil || !present {
+		t.Fatalf("initial Skill presence = %t, err=%v", present, err)
+	}
+	readBody, err := first.ReadFile(ctx, "skills/report-tool/SKILL.md")
+	if err != nil || !bytes.Contains(readBody, []byte("Analyze reports")) {
+		t.Fatalf("read mounted Skill: body=%q err=%v", readBody, err)
+	}
+	result, err := first.Exec(ctx, Command{
+		Path: "sh", Args: []string{"-c", "test -x /workspace/skills/report-tool/scripts/run.sh && /workspace/skills/report-tool/scripts/run.sh"},
+	})
+	if err != nil || result.ExitCode != 0 || string(result.Stdout) != "skill-ok" {
+		t.Fatalf("execute mounted Skill helper: result=%+v err=%v", result, err)
+	}
+	result, err = first.Exec(ctx, Command{
+		Path: "sh", Args: []string{"-c", "printf changed > /workspace/skills/report-tool/SKILL.md"},
+	})
+	if err != nil || result.ExitCode == 0 {
+		t.Fatalf("write to read-only Skill mount: result=%+v err=%v", result, err)
+	}
+
+	firstBox := first.(*dockerSandbox)
+	stagedSkillMD := filepath.Join(
+		firstBox.resourceRoot, dockerResourceSkillsDir, "report-tool", "SKILL.md",
+	)
+	if err := os.Remove(stagedSkillMD); err != nil {
+		t.Fatalf("damage staged Skill: %v", err)
+	}
+	abandoned := filepath.Join(
+		firstBox.resourceRoot, dockerResourceSkillsDir, dockerSkillTempPrefix+"abandoned",
+	)
+	if err := os.Mkdir(abandoned, 0o700); err != nil {
+		t.Fatalf("create abandoned staging directory: %v", err)
+	}
+	present, err = skills.HasReadOnlySkill(ctx, mount)
+	if err != nil || present {
+		t.Fatalf("damaged Skill presence = %t, err=%v", present, err)
+	}
+	if err := skills.ImportReadOnlySkill(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("repair Skill: %v", err)
+	}
+	if _, err := os.Stat(abandoned); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("abandoned staging directory survived repair: %v", err)
+	}
+
+	secondProviderInterface, err := NewDockerProvider(DockerConfig{
+		DefaultImage: "alpine:latest", ResourceBaseDir: resourceBase,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attached, err := secondProviderInterface.Attach(
+		ctx, t.Name(), ref, Spec{Timeout: 30 * time.Second},
+	)
+	if err != nil {
+		t.Fatalf("attach after provider restart: %v", err)
+	}
+	restartedSkills := attached.(SkillBundleSandbox)
+	present, err = restartedSkills.HasReadOnlySkill(ctx, mount)
+	if err != nil || !present {
+		t.Fatalf("restarted Skill presence = %t, err=%v", present, err)
+	}
+	result, err = attached.Exec(ctx, Command{
+		Path: "sh", Args: []string{"-c", "grep -q 'Analyze reports' /workspace/skills/report-tool/SKILL.md"},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("read Skill after provider restart: result=%+v err=%v", result, err)
+	}
+	resourceRoot := firstBox.resourceRoot
+	if err := attached.Destroy(ctx); err != nil {
+		t.Fatalf("destroy attached sandbox: %v", err)
+	}
+	if _, err := os.Stat(resourceRoot); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Skill resource root survived sandbox destruction: %v", err)
+	}
+}
+
+func TestDocker_SkillBundleRejectsStoredArchiveTraversal(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{dockerResourceSkillsDir, dockerResourceStateDir} {
+		if err := os.Mkdir(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var raw bytes.Buffer
+	writer := zip.NewWriter(&raw)
+	header := &zip.FileHeader{Name: "Safe/../../escape", Method: zip.Deflate}
+	header.SetMode(0o644)
+	part, err := writer.CreateHeader(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write([]byte("escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := raw.Bytes()
+	mount := testReadOnlySkillMount(
+		"skill_safe@100", "safe", "Safe", archive, int64(len("escape")),
+	)
+	box := &dockerSandbox{resourceRoot: root, skillMountReady: true}
+	if err := box.ImportReadOnlySkill(
+		context.Background(), mount, bytes.NewReader(archive),
+	); err == nil || !strings.Contains(err.Error(), "unsafe path") {
+		t.Fatalf("traversal import error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "escape")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("archive traversal wrote outside Skill tree: %v", err)
+	}
+}
+
+func TestDocker_SkillBundleAcceptsLegacyUnknownExpandedSize(t *testing.T) {
+	root := t.TempDir()
+	for _, directory := range []string{dockerResourceSkillsDir, dockerResourceStateDir} {
+		if err := os.Mkdir(filepath.Join(root, directory), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archive, expanded := testSkillArchive(t, "legacy", map[string]skillTestFile{
+		"SKILL.md": {
+			body: []byte("---\nname: legacy\ndescription: Legacy Skill\n---\nUse it.\n"),
+			mode: 0o644,
+		},
+	})
+	mount := testReadOnlySkillMount(
+		"skill_legacy@100", "legacy", "legacy", archive, expanded,
+	)
+	mount.UncompressedSizeBytes = domain.UnknownSkillUncompressedSize
+	box := &dockerSandbox{resourceRoot: root, skillMountReady: true}
+	if err := box.ImportReadOnlySkill(
+		context.Background(), mount, bytes.NewReader(archive),
+	); err != nil {
+		t.Fatalf("import legacy Skill: %v", err)
+	}
+	present, err := box.HasReadOnlySkill(context.Background(), mount)
+	if err != nil || !present {
+		t.Fatalf("legacy Skill presence = %t, err=%v", present, err)
+	}
+}
+
 func TestDocker_FileResourceImportStreamsLargeContent(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, dockerResourceFilesDir), 0o755); err != nil {
@@ -435,7 +629,7 @@ func TestDocker_FileResourceDirectoryModesIgnoreUmask(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := providerInterface.(*dockerProvider)
-	root, _, err := provider.ensureResourceRoot(t.Name())
+	root, _, _, err := provider.ensureResourceRoot(t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -567,6 +761,57 @@ func testReadOnlyMount(runtimePath string, content []byte) ReadOnlyFileMount {
 	sum := sha256.Sum256(content)
 	return ReadOnlyFileMount{
 		Identity: "sesrsc_test", RuntimePath: runtimePath, SizeBytes: int64(len(content)),
+		ChecksumSHA256: hex.EncodeToString(sum[:]),
+	}
+}
+
+type skillTestFile struct {
+	body []byte
+	mode os.FileMode
+}
+
+func testSkillArchive(
+	t *testing.T,
+	root string,
+	files map[string]skillTestFile,
+) ([]byte, int64) {
+	t.Helper()
+	var archive bytes.Buffer
+	writer := zip.NewWriter(&archive)
+	var expanded int64
+	for _, relative := range []string{"SKILL.md", "scripts/run.sh"} {
+		file, ok := files[relative]
+		if !ok {
+			continue
+		}
+		header := &zip.FileHeader{Name: root + "/" + relative, Method: zip.Deflate}
+		header.SetMode(file.mode)
+		part, err := writer.CreateHeader(header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(file.body); err != nil {
+			t.Fatal(err)
+		}
+		expanded += int64(len(file.body))
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return archive.Bytes(), expanded
+}
+
+func testReadOnlySkillMount(
+	identity string,
+	name string,
+	archiveRoot string,
+	archive []byte,
+	expanded int64,
+) ReadOnlySkillMount {
+	sum := sha256.Sum256(archive)
+	return ReadOnlySkillMount{
+		Identity: identity, Name: name, ArchiveRoot: archiveRoot,
+		SizeBytes: int64(len(archive)), UncompressedSizeBytes: expanded,
 		ChecksumSHA256: hex.EncodeToString(sum[:]),
 	}
 }

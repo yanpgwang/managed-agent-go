@@ -107,6 +107,7 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 			Capabilities: sandbox.ProviderCapabilities{
 				PackageSetup:  true,
 				FileResources: true,
+				SkillBundles:  true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				return sandbox.NewDockerProvider(sandbox.DockerConfig{
@@ -488,8 +489,13 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		}
 	}
 	var skillResolver app.SkillReferenceResolver
-	if skills != nil {
+	if skills != nil && providerCapabilities.SkillBundles {
 		skillResolver = skills
+	} else if skills != nil {
+		log.Printf(
+			"serve: custom Skill references disabled; sandbox provider %q has no isolated read-only Skill capability",
+			configuredSandboxProviderName(),
+		)
 	}
 	agents := app.NewAgentService(agentsRepo, ids, clock, skillResolver)
 

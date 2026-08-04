@@ -76,13 +76,14 @@ func (r *SkillRepository) BeginVersion(ctx context.Context, version domain.Skill
 	tag, err := r.store.pool.Exec(ctx, `
 INSERT INTO skill_versions (
     skill_id, version, created_at, description, directory, name, blob_key,
-    size_bytes, checksum_sha256, state, initial
+    size_bytes, uncompressed_size_bytes, checksum_sha256, state, initial
 )
-SELECT $1, $2, $3, $4, $5, $6, $7, 0, '', $8, $9
+SELECT $1, $2, $3, $4, $5, $6, $7, 0, $8, '', $9, $10
 FROM skills
 WHERE id = $1 AND ready`,
 		version.SkillID, version.Version, version.CreatedAt, version.Description,
-		version.Directory, version.Name, version.BlobKey, string(version.State), version.Initial,
+		version.Directory, version.Name, version.BlobKey, version.UncompressedSizeBytes,
+		string(version.State), version.Initial,
 	)
 	if isUniqueViolation(err) {
 		return domain.Conflict("Skill Version already exists")
@@ -110,7 +111,7 @@ UPDATE skill_versions
 SET size_bytes = $3, checksum_sha256 = $4, state = 'ready'
 WHERE skill_id = $1 AND version = $2 AND state = 'uploading'
 RETURNING skill_id, version, created_at, description, directory, name, blob_key,
-          size_bytes, checksum_sha256, state, initial`,
+          size_bytes, uncompressed_size_bytes, checksum_sha256, state, initial`,
 			skillID, version, info.SizeBytes, info.ChecksumSHA256,
 		)
 		var err error
@@ -202,7 +203,8 @@ func (r *SkillRepository) GetVersion(
 ) (domain.SkillVersion, error) {
 	item, err := scanSkillVersion(r.store.pool.QueryRow(ctx, `
 SELECT v.skill_id, v.version, v.created_at, v.description, v.directory, v.name,
-       v.blob_key, v.size_bytes, v.checksum_sha256, v.state, v.initial
+       v.blob_key, v.size_bytes, v.uncompressed_size_bytes,
+       v.checksum_sha256, v.state, v.initial
 FROM skill_versions AS v
 JOIN skills AS s ON s.id = v.skill_id AND s.ready
 WHERE v.skill_id = $1 AND v.version = $2 AND v.state = 'ready'`, skillID, version))
@@ -229,7 +231,7 @@ func (r *SkillRepository) ListVersions(
 	args = append(args, query.Limit+1)
 	rows, err := r.store.pool.Query(ctx, fmt.Sprintf(`
 SELECT skill_id, version, created_at, description, directory, name, blob_key,
-       size_bytes, checksum_sha256, state, initial
+       size_bytes, uncompressed_size_bytes, checksum_sha256, state, initial
 FROM skill_versions
 WHERE %s
 ORDER BY created_at DESC, version DESC
@@ -268,7 +270,8 @@ func (r *SkillRepository) BeginDeleteVersion(
 		item, err = scanSkillVersion(tx.QueryRow(ctx, `
 SELECT target.skill_id, target.version, target.created_at, target.description,
        target.directory, target.name, target.blob_key, target.size_bytes,
-       target.checksum_sha256, target.state, target.initial
+       target.uncompressed_size_bytes, target.checksum_sha256,
+       target.state, target.initial
 FROM skill_versions AS target
 JOIN skills AS skill ON skill.id = target.skill_id AND skill.ready
 WHERE target.skill_id = $1 AND target.version = $2 AND target.state = 'ready'
@@ -330,10 +333,46 @@ WHERE skill_id = $1 AND version = $2 AND state <> 'ready'`, skillID, version)
 func (r *SkillRepository) ListIncompleteVersions(ctx context.Context) ([]domain.SkillVersion, error) {
 	rows, err := r.store.pool.Query(ctx, `
 SELECT skill_id, version, created_at, description, directory, name, blob_key,
-       size_bytes, checksum_sha256, state, initial
+       size_bytes, uncompressed_size_bytes, checksum_sha256, state, initial
 FROM skill_versions
 WHERE state <> 'ready'
 ORDER BY created_at, skill_id, version`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]domain.SkillVersion, 0)
+	for rows.Next() {
+		item, scanErr := scanSkillVersion(rows)
+		if scanErr != nil {
+			return nil, scanErr
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+// SessionSkillsForRuntime returns the immutable Version metadata pinned by a
+// Session in public-list order. The relational rows are the runtime authority;
+// joining ready Versions also fails closed if persisted lifecycle state is ever
+// repaired inconsistently.
+func (s *Store) SessionSkillsForRuntime(
+	ctx context.Context,
+	sessionID string,
+) ([]domain.SkillVersion, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT version.skill_id, version.version, version.created_at,
+       version.description, version.directory, version.name, version.blob_key,
+       version.size_bytes, version.uncompressed_size_bytes,
+       version.checksum_sha256, version.state, version.initial
+FROM session_skill_versions AS pin
+JOIN skill_versions AS version
+  ON version.skill_id = pin.skill_id
+ AND version.version = pin.skill_version
+ AND version.state = 'ready'
+JOIN skills AS skill ON skill.id = version.skill_id AND skill.ready
+WHERE pin.session_id = $1
+ORDER BY pin.position`, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -384,10 +423,11 @@ func insertSkillVersion(ctx context.Context, tx pgx.Tx, item domain.SkillVersion
 	_, err := tx.Exec(ctx, `
 INSERT INTO skill_versions (
     skill_id, version, created_at, description, directory, name, blob_key,
-    size_bytes, checksum_sha256, state, initial
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+    size_bytes, uncompressed_size_bytes, checksum_sha256, state, initial
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		item.SkillID, item.Version, item.CreatedAt, item.Description, item.Directory,
-		item.Name, item.BlobKey, item.SizeBytes, item.ChecksumSHA256,
+		item.Name, item.BlobKey, item.SizeBytes, item.UncompressedSizeBytes,
+		item.ChecksumSHA256,
 		string(item.State), item.Initial,
 	)
 	return err
@@ -420,7 +460,7 @@ func scanSkillVersion(row skillScanner) (domain.SkillVersion, error) {
 	err := row.Scan(
 		&item.SkillID, &item.Version, &item.CreatedAt, &item.Description,
 		&item.Directory, &item.Name, &item.BlobKey, &item.SizeBytes,
-		&item.ChecksumSHA256, &item.State, &item.Initial,
+		&item.UncompressedSizeBytes, &item.ChecksumSHA256, &item.State, &item.Initial,
 	)
 	if err != nil {
 		return domain.SkillVersion{}, err

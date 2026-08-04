@@ -202,6 +202,33 @@ type FileResourceSandbox interface {
 	RemoveReadOnlyFile(context.Context, string, string) error
 }
 
+// ReadOnlySkillMount describes one immutable canonical Skill archive expected
+// beneath /workspace/skills. Name is the safe runtime directory; ArchiveRoot is
+// the upload's validated top-level directory and is stripped during extraction.
+type ReadOnlySkillMount struct {
+	Identity              string
+	Name                  string
+	ArchiveRoot           string
+	SizeBytes             int64
+	UncompressedSizeBytes int64
+	ChecksumSHA256        string
+}
+
+// SkillBundleProvider declares support for isolated, read-only custom Skill
+// trees. Other sandbox adapters can implement the same capability without
+// exposing provider-specific staging details to orchestration.
+type SkillBundleProvider interface {
+	SupportsSkillBundles() bool
+}
+
+// SkillBundleSandbox reconciles immutable canonical Skill archives for a live
+// sandbox. ImportReadOnlySkill must validate and publish the complete tree as
+// one bundle; partial extraction must never become visible at the runtime path.
+type SkillBundleSandbox interface {
+	HasReadOnlySkill(context.Context, ReadOnlySkillMount) (bool, error)
+	ImportReadOnlySkill(context.Context, ReadOnlySkillMount, io.Reader) error
+}
+
 func validateSandbox(provider Provider, ref Ref, box Sandbox) error {
 	if provider == nil {
 		return errors.New("sandbox: provider is required")
