@@ -103,6 +103,16 @@ func (r *AgentRepository) Archive(
 ) (domain.Agent, error) {
 	var result domain.Agent
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+		// Serialize archival with version creation before updating every Agent
+		// row. Without this fence, an UpdateVersion blocked inside ArchiveAgent's
+		// statement snapshot can commit a new active version and pin; the archive
+		// statement then misses that version while its later pin cleanup sees and
+		// deletes the new pin.
+		if _, err := q.LockLatestAgent(ctx, id); errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("agent not found")
+		} else if err != nil {
+			return err
+		}
 		affected, err := q.ArchiveAgent(ctx, pgstore.ArchiveAgentParams{
 			ArchivedAt: tsUTC(archivedAt),
 			ID:         id,

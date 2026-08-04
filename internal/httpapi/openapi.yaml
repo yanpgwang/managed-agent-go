@@ -1759,6 +1759,20 @@ components:
         version:
           type: string
           minLength: 1
+    LegacySkillReference:
+      description: >-
+        Read-only value preserved from the opaque Skills array accepted before
+        tagged references were enforced. It cannot be supplied by current
+        create/update requests or used to start a new Session.
+      not:
+        $ref: '#/components/schemas/ResolvedSkillReference'
+    SkillReferenceResponse:
+      description: >-
+        A resolved custom reference, or a read-only legacy value from a
+        pre-upgrade Agent or Session projection.
+      oneOf:
+        - $ref: '#/components/schemas/ResolvedSkillReference'
+        - $ref: '#/components/schemas/LegacySkillReference'
     Multiagent:
       type: [object, 'null']
       description: Stored opaquely; multi-agent execution is outside the supported core.
@@ -1885,7 +1899,7 @@ components:
         skills:
           type: array
           items:
-            $ref: '#/components/schemas/ResolvedSkillReference'
+            $ref: '#/components/schemas/SkillReferenceResponse'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
         metadata:
@@ -1941,7 +1955,7 @@ components:
         skills:
           type: array
           items:
-            $ref: '#/components/schemas/ResolvedSkillReference'
+            $ref: '#/components/schemas/SkillReferenceResponse'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
     AgentList:

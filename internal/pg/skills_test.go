@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -239,6 +240,117 @@ func TestAgentSkillPinAndVersionDeletionLinearize(t *testing.T) {
 	}
 	if err := skillRepo.RemoveIncompleteVersion(ctx, skill.ID, version.Version); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAgentArchiveSerializesWithVersionAndPinCreation(t *testing.T) {
+	store := testStore(t)
+	skillRepo := NewSkillRepository(store)
+	agentRepo := NewAgentRepository(store)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	base := time.Date(2026, 8, 4, 17, 30, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_archive_race", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Archive Race", Source: "custom", TitleExplicit: true,
+	}
+	version := repositorySkillVersion(skill.ID, "850", base, true)
+	if err := skillRepo.BeginSkill(ctx, skill, version); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := skillRepo.CompleteVersion(ctx, skill.ID, version.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "archive-race",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agent := domain.Agent{
+		ID: "agent_archive_race", Version: 1, Name: "before",
+		Model: domain.Model{ID: "claude-test"},
+		Skills: []domain.SkillReference{{
+			Type: "custom", SkillID: skill.ID, Version: version.Version,
+		}},
+		CreatedAt: base, UpdatedAt: base,
+	}
+	if err := agentRepo.PutVersion(ctx, agent); err != nil {
+		t.Fatal(err)
+	}
+
+	updateLocked := make(chan struct{})
+	releaseUpdate := make(chan struct{})
+	updateDone := make(chan error, 1)
+	go func() {
+		_, err := agentRepo.UpdateVersion(ctx, agent.ID, func(current domain.Agent) (domain.Agent, bool, error) {
+			close(updateLocked)
+			<-releaseUpdate
+			current.Name = "after"
+			current.UpdatedAt = base.Add(time.Second)
+			return current, true, nil
+		})
+		updateDone <- err
+	}()
+	<-updateLocked
+
+	archiveDone := make(chan error, 1)
+	go func() {
+		_, err := agentRepo.Archive(ctx, agent.ID, base.Add(2*time.Second))
+		archiveDone <- err
+	}()
+	if err := waitForBlockedAgentStatement(ctx, store); err != nil {
+		close(releaseUpdate)
+		t.Fatal(err)
+	}
+	close(releaseUpdate)
+	if err := <-updateDone; err != nil {
+		t.Fatalf("concurrent Agent update: %v", err)
+	}
+	if err := <-archiveDone; err != nil {
+		t.Fatalf("concurrent Agent archive: %v", err)
+	}
+	latest, err := agentRepo.Latest(ctx, agent.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest.Version != 2 || latest.ArchivedAt == nil {
+		t.Fatalf("latest Agent after Update/Archive race = %+v, want archived v2", latest)
+	}
+	var pins int
+	if err := store.pool.QueryRow(ctx, `
+SELECT count(*) FROM agent_skill_versions WHERE agent_id = $1`, agent.ID).Scan(&pins); err != nil {
+		t.Fatal(err)
+	}
+	if pins != 0 {
+		t.Fatalf("archived Agent retained %d Skill pins", pins)
+	}
+	if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, version.Version); err != nil {
+		t.Fatalf("delete Version after serialized archive: %v", err)
+	}
+}
+
+func waitForBlockedAgentStatement(ctx context.Context, store *Store) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var waiting bool
+		err := store.pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1
+    FROM pg_stat_activity
+    WHERE application_name = current_setting('application_name')
+      AND pid <> pg_backend_pid()
+      AND wait_event_type = 'Lock'
+      AND query ILIKE '%agents%'
+)`).Scan(&waiting)
+		if err != nil {
+			return err
+		}
+		if waiting {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("wait for blocked Agent statement: %w", ctx.Err())
+		case <-ticker.C:
+		}
 	}
 }
 

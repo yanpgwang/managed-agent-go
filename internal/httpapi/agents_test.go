@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 func TestAgents_CreateGetVersionArchive(t *testing.T) {
@@ -202,6 +205,36 @@ func TestAgents_SkillReferencesAreStrictResolvedAndProviderAware(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, test.status, rec.Body)
 			}
 		})
+	}
+}
+
+func TestAgents_LegacySkillResponsePreservesOpaqueValues(t *testing.T) {
+	var skills []domain.SkillReference
+	if err := json.Unmarshal([]byte(`[
+        "former-provider-value",
+        {"type":"custom","skill_id":"skill_old","version":"1","extension":true}
+    ]`), &skills); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(agentToJSON(domain.Agent{
+		ID: "agent_legacy", Version: 1, Name: "legacy",
+		Model: domain.Model{ID: "claude-test"}, Skills: skills,
+		CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatal(err)
+	}
+	values, ok := response["skills"].([]any)
+	if !ok || len(values) != 2 || values[0] != "former-provider-value" {
+		t.Fatalf("legacy Skill response = %#v", response["skills"])
+	}
+	object, ok := values[1].(map[string]any)
+	if !ok || object["extension"] != true {
+		t.Fatalf("legacy Skill response lost extension: %#v", response["skills"])
 	}
 }
 

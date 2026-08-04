@@ -447,6 +447,15 @@ func TestOpenAPISkillReferenceContract(t *testing.T) {
 	if resolvedType["const"] != "custom" {
 		t.Fatalf("resolved Skill type = %v, want custom", resolvedType["const"])
 	}
+	legacy := openAPIMap(t, schemas["LegacySkillReference"], "legacy Skill reference")
+	assertOpenAPIRef(t, legacy["not"], "#/components/schemas/ResolvedSkillReference")
+	response := openAPIMap(t, schemas["SkillReferenceResponse"], "Skill reference response")
+	variants, _ := response["oneOf"].([]any)
+	if len(variants) != 2 {
+		t.Fatalf("Skill response variants = %v, want resolved and legacy", variants)
+	}
+	assertOpenAPIRef(t, variants[0], "#/components/schemas/ResolvedSkillReference")
+	assertOpenAPIRef(t, variants[1], "#/components/schemas/LegacySkillReference")
 
 	create := openAPIMap(t, schemas["AgentCreateRequest"], "Agent create")
 	createSkills := openAPIMap(t, openAPIMap(t, create["properties"], "Agent create properties")["skills"], "Agent create skills")
@@ -457,6 +466,9 @@ func TestOpenAPISkillReferenceContract(t *testing.T) {
 
 	agent := openAPIMap(t, schemas["Agent"], "Agent")
 	agentSkills := openAPIMap(t, openAPIMap(t, agent["properties"], "Agent properties")["skills"], "Agent skills")
-	assertOpenAPIRef(t, agentSkills["items"], "#/components/schemas/ResolvedSkillReference")
+	assertOpenAPIRef(t, agentSkills["items"], "#/components/schemas/SkillReferenceResponse")
+	snapshot := openAPIMap(t, schemas["AgentSnapshot"], "Agent snapshot")
+	snapshotSkills := openAPIMap(t, openAPIMap(t, snapshot["properties"], "Agent snapshot properties")["skills"], "Agent snapshot skills")
+	assertOpenAPIRef(t, snapshotSkills["items"], "#/components/schemas/SkillReferenceResponse")
 	validateOpenAPIRefs(t, doc, doc)
 }

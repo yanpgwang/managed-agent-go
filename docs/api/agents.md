@@ -51,6 +51,12 @@ also holds a relational retention pin, so its Skill archive cannot be deleted
 until the list is replaced or the Agent is archived. Anthropic-managed
 references return `422` because Mango does not mirror their archives.
 
+Agents stored before tagged references were enforced may still return a
+read-only legacy Skill value. The OpenAPI response union marks that compatibility
+branch explicitly. Mango preserves the value across reads and unrelated Agent
+updates, but it must be replaced with current custom references before the
+Agent can start a new Session.
+
 A successful create returns `200` and version `1`.
 
 ## Get and list

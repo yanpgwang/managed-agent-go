@@ -61,6 +61,7 @@ func testStoreWithOptions(t *testing.T, maxConns int32, migrationVersion int64) 
 	// never collide with another test's tables.
 	schema := "test_" + sanitize(t.Name()) + "_" + itoa(schemaSeq.Add(1))
 	cfg.ConnConfig.RuntimeParams["search_path"] = schema
+	cfg.ConnConfig.RuntimeParams["application_name"] = schema
 	if maxConns > 0 {
 		cfg.MaxConns = maxConns
 	}
