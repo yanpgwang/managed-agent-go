@@ -573,6 +573,65 @@ func TestWorkflowTurn_AmbiguousToolTerminatesHonestly(t *testing.T) {
 	}, draftTypes(completed.Output))
 }
 
+func TestWorkflowTurn_PermanentToolPreparationTerminatesHonestly(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	prepare := func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+		return PrepareTurnResult{
+			AttemptID: "ratm_resource_permanent",
+			Request: model.Request{
+				Model:    "test-model",
+				Messages: []domain.Message{{Role: domain.RoleUser}},
+				Tools:    []model.ToolSchema{{Name: "bash"}},
+			},
+			Tools: []TurnTool{{
+				Name: "bash", Kind: TurnToolBuiltin,
+				Permission: domain.PermissionPolicy{Type: "always_allow"},
+			}},
+		}, nil
+	}
+	callModel := func(context.Context, CallModelInput) (CallModelResult, error) {
+		return CallModelResult{
+			ToolSteps: []PlannedToolStep{{
+				ToolUseEventID: "sevt_resource_permanent",
+				ToolStepID:     "tstep_resource_permanent",
+			}},
+			Response: model.Response{Content: []domain.ContentBlock{{
+				Type: "tool_use", ToolUseID: "sevt_resource_permanent", ToolName: "bash",
+				Input: map[string]any{"command": "true"},
+			}}},
+		}, nil
+	}
+	executeTool := func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+		return ExecuteToolResult{FatalError: "File Resource mount is unavailable"}, nil
+	}
+	var completed CompleteWorkflowTurnInput
+	complete := func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+		completed = in
+		return RunTurnResult{Disposition: TurnTerminated}, nil
+	}
+	registerWorkflowTurnActivities(env, prepare, callModel, executeTool, complete)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_resource_permanent", TriggerEventID: "sevt_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	var result RunTurnResult
+	require.NoError(t, env.GetWorkflowResult(&result))
+	require.Equal(t, TurnTerminated, result.Disposition)
+	require.Equal(t, domain.StatusTerminated, completed.Status)
+	require.Equal(t, domain.RunAttemptFailed, completed.AttemptState)
+	require.NotNil(t, completed.AttemptError)
+	require.Contains(t, *completed.AttemptError, "File Resource mount")
+	require.Equal(t, []string{
+		domain.EvAgentToolUse,
+		domain.EvSessionError,
+		domain.EvSessionStatusTerminated,
+	}, draftTypes(completed.Output))
+}
+
 func TestWorkflowTurn_PermanentModelErrorTerminatesHonestly(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

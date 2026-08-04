@@ -26,6 +26,10 @@ type SandboxProvisioningReconciler interface {
 	ReconcileProvisioning(ctx context.Context, limit int) (int, error)
 }
 
+type SessionResourceDeletionReconciler interface {
+	CleanupSession(context.Context, string) error
+}
+
 type LifecycleReconcilerConfig struct {
 	// PollInterval is the idle delay between scans. A scan that completes work
 	// immediately repeats so a backlog drains without one interval per batch.
@@ -74,6 +78,7 @@ type LifecycleReconciler struct {
 	store      DeletionStore
 	terminator SessionTerminator
 	sandboxes  SandboxProvisioningReconciler
+	resources  SessionResourceDeletionReconciler
 	cfg        LifecycleReconcilerConfig
 }
 
@@ -82,13 +87,18 @@ func NewLifecycleReconciler(
 	terminator SessionTerminator,
 	sandboxes SandboxProvisioningReconciler,
 	cfg LifecycleReconcilerConfig,
+	resourceReconcilers ...SessionResourceDeletionReconciler,
 ) *LifecycleReconciler {
-	return &LifecycleReconciler{
+	reconciler := &LifecycleReconciler{
 		store:      store,
 		terminator: terminator,
 		sandboxes:  sandboxes,
 		cfg:        cfg.withDefaults(),
 	}
+	if len(resourceReconcilers) > 0 {
+		reconciler.resources = resourceReconcilers[0]
+	}
+	return reconciler
 }
 
 func (r *LifecycleReconciler) Run(ctx context.Context) error {
@@ -164,6 +174,19 @@ func (r *LifecycleReconciler) RunOnce(
 				err,
 			))
 			continue
+		}
+		if r.resources != nil {
+			cleanupCtx, cancel := context.WithTimeout(ctx, r.cfg.AttemptTimeout)
+			err = r.resources.CleanupSession(cleanupCtx, sessionID)
+			cancel()
+			if err != nil {
+				errs = append(errs, fmt.Errorf(
+					"cleanup File Resources for session %s: %w",
+					sessionID,
+					err,
+				))
+				continue
+			}
 		}
 
 		finalizeCtx, cancel := context.WithTimeout(ctx, r.cfg.AttemptTimeout)

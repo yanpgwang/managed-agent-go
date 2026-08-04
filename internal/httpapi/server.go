@@ -59,13 +59,22 @@ type FileService interface {
 	Delete(context.Context, string) (domain.File, error)
 }
 
+type SessionResourceService interface {
+	Add(context.Context, string, app.FileSessionResourceInput) (domain.SessionResource, error)
+	Get(context.Context, string, string) (domain.SessionResource, error)
+	List(context.Context, string, app.SessionResourceListQuery) (app.SessionResourceListPage, error)
+	Update(context.Context, string, string, string) (domain.SessionResource, error)
+	Delete(context.Context, string, string) (domain.SessionResource, error)
+}
+
 type Deps struct {
-	Agents   AgentService
-	Envs     EnvironmentService
-	Sessions SessionService
-	Events   EventService
-	Stream   EventSubscriber
-	Files    FileService
+	Agents           AgentService
+	Envs             EnvironmentService
+	Sessions         SessionService
+	Events           EventService
+	Stream           EventSubscriber
+	Files            FileService
+	SessionResources SessionResourceService
 }
 
 type Server struct {

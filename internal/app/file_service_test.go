@@ -119,6 +119,36 @@ func TestFileService_PreservesBlobWhenCompletionResultIsAmbiguous(t *testing.T) 
 	}
 }
 
+func TestFileService_RejectsDeletingSessionScopedFile(t *testing.T) {
+	repo := newMemoryFileRepository()
+	blobs := newMemoryBlobStore()
+	service := NewFileService(repo, blobs, domain.NewSeqIDGen(), domain.FixedClock{})
+	file := domain.File{
+		ID: "file_scoped", Filename: "resource.txt", MimeType: "text/plain",
+		Downloadable: true,
+		Scope:        &domain.FileScope{ID: "sesn_1", Type: "session"},
+		BlobKey:      "files/file_scoped", State: domain.FileStateUploading,
+	}
+	if err := repo.BeginUpload(context.Background(), file); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.CompleteUpload(context.Background(), file.ID, ComputeBlobInfo([]byte("safe"))); err != nil {
+		t.Fatal(err)
+	}
+	blobs.objects[file.BlobKey] = []byte("safe")
+	repo.protected[file.ID] = true
+
+	if _, err := service.Delete(context.Background(), file.ID); err == nil {
+		t.Fatal("Delete accepted a Session Resource File")
+	}
+	if _, err := repo.Get(context.Background(), file.ID); err != nil {
+		t.Fatalf("rejected delete changed File state: %v", err)
+	}
+	if got := string(blobs.objects[file.BlobKey]); got != "safe" {
+		t.Fatalf("rejected delete changed blob = %q", got)
+	}
+}
+
 func TestFileService_CleanupOutlivesCanceledRequest(t *testing.T) {
 	repo := newMemoryFileRepository()
 	repo.rejectCanceledCleanup = true
@@ -147,10 +177,13 @@ type memoryFileRepository struct {
 	files                  map[string]domain.File
 	completeErrAfterCommit error
 	rejectCanceledCleanup  bool
+	protected              map[string]bool
 }
 
 func newMemoryFileRepository() *memoryFileRepository {
-	return &memoryFileRepository{files: map[string]domain.File{}}
+	return &memoryFileRepository{
+		files: make(map[string]domain.File), protected: make(map[string]bool),
+	}
 }
 
 func (r *memoryFileRepository) BeginUpload(_ context.Context, file domain.File) error {
@@ -219,6 +252,11 @@ func (r *memoryFileRepository) BeginDelete(_ context.Context, id string) (domain
 	file, present := r.files[id]
 	if !present || file.State != domain.FileStateReady {
 		return domain.File{}, domain.NotFound("file not found")
+	}
+	if r.protected[id] {
+		return domain.File{}, domain.Conflict(
+			"file is owned by a Session Resource; detach the resource first",
+		)
 	}
 	file.State = domain.FileStateDeleting
 	r.files[id] = file

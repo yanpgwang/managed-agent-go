@@ -67,7 +67,36 @@ func (w *turnInterruptWatcher) executeActivity(
 	return w.executeActivityWithPulse(activityName, input, output, 0, nil)
 }
 
+func (w *turnInterruptWatcher) executeActivityOn(
+	activityCtx workflow.Context,
+	activityName string,
+	input any,
+	output any,
+) (interruptibleActivityOutcome, error) {
+	interruptibleCtx := workflow.WithHeartbeatTimeout(
+		activityCtx,
+		interruptActivityHeartbeatTimeout,
+	)
+	interruptibleCtx = workflow.WithWaitForCancellation(interruptibleCtx, true)
+	return w.executeActivityWithPulseOn(
+		interruptibleCtx, activityName, input, output, 0, nil,
+	)
+}
+
 func (w *turnInterruptWatcher) executeActivityWithPulse(
+	activityName string,
+	input any,
+	output any,
+	pulseInterval time.Duration,
+	pulse func() error,
+) (interruptibleActivityOutcome, error) {
+	return w.executeActivityWithPulseOn(
+		w.interruptibleActx, activityName, input, output, pulseInterval, pulse,
+	)
+}
+
+func (w *turnInterruptWatcher) executeActivityWithPulseOn(
+	interruptibleCtx workflow.Context,
 	activityName string,
 	input any,
 	output any,
@@ -89,7 +118,7 @@ func (w *turnInterruptWatcher) executeActivityWithPulse(
 		}
 	}
 
-	cctx, cancel := workflow.WithCancel(w.interruptibleActx)
+	cctx, cancel := workflow.WithCancel(interruptibleCtx)
 	defer cancel()
 
 	future := workflow.ExecuteActivity(cctx, activityName, input)

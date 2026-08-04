@@ -151,13 +151,26 @@ LIMIT $%d`, strings.Join(where, " AND "), order, len(args))
 
 func (r *FileRepository) BeginDelete(ctx context.Context, id string) (domain.File, error) {
 	row := r.store.pool.QueryRow(ctx, `
-UPDATE files
+UPDATE files AS target
 SET state = 'deleting', updated_at = now()
-WHERE id = $1 AND state = 'ready'
+WHERE target.id = $1 AND target.state = 'ready'
+  AND NOT EXISTS (
+      SELECT 1 FROM session_resources WHERE file_id = target.id
+  )
 RETURNING id, created_at, updated_at, filename, mime_type, size_bytes,
           downloadable, scope_id, scope_type, blob_key, checksum_sha256, state`, id)
 	file, err := scanFile(row)
 	if errors.Is(err, pgx.ErrNoRows) {
+		var protected bool
+		if queryErr := r.store.pool.QueryRow(ctx, `
+SELECT EXISTS (SELECT 1 FROM session_resources WHERE file_id = $1)`, id).Scan(&protected); queryErr != nil {
+			return domain.File{}, queryErr
+		}
+		if protected {
+			return domain.File{}, domain.Conflict(
+				"file is owned by a Session Resource; detach the resource first",
+			)
+		}
 		return domain.File{}, domain.NotFound("file not found")
 	}
 	return file, err

@@ -3,9 +3,9 @@ info:
   title: managed-agent-go
   version: 0.1.0
   description: >-
-    Clean-room implementation of the supported Claude Managed Agents API core
-    and a conditional Files API slice. This project is Apache-2.0 licensed and
-    is not an Anthropic product.
+    Clean-room implementation of the supported Claude Managed Agents API core,
+    a conditional Files API, and File-backed Session Resources. This project is
+    Apache-2.0 licensed and is not an Anthropic product.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -25,6 +25,8 @@ tags:
     description: Durable single-agent Sessions.
   - name: Session Events
     description: Durable Session input and output events.
+  - name: Session Resources
+    description: Read-only File copies attached to durable Sessions.
   - name: Files
     description: Durable file metadata and S3-compatible byte storage.
 paths:
@@ -228,6 +230,8 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+        '413':
+          $ref: '#/components/responses/RequestTooLarge'
         '422':
           $ref: '#/components/responses/UnsupportedRequest'
     get:
@@ -311,6 +315,98 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+
+  /v1/sessions/{session_id}/resources:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    post:
+      operationId: addSessionResource
+      tags: [Session Resources]
+      summary: Attach a File copy to a Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FileSessionResourceInput'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResourceResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/RequestTooLarge'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listSessionResources
+      tags: [Session Resources]
+      summary: List Session Resources
+      parameters:
+        - $ref: '#/components/parameters/SessionResourceListLimit'
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResourceListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+
+  /v1/sessions/{session_id}/resources/{resource_id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+      - $ref: '#/components/parameters/SessionResourceID'
+    get:
+      operationId: getSessionResource
+      tags: [Session Resources]
+      summary: Get a Session Resource
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResourceResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    post:
+      operationId: updateSessionResource
+      tags: [Session Resources]
+      summary: Update a Session Resource
+      description: File resources reject this GitHub-only token rotation operation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SessionResourceUpdateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResourceResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteSessionResource
+      tags: [Session Resources]
+      summary: Detach a File Resource from a Session
+      responses:
+        '200':
+          $ref: '#/components/responses/SessionResourceDeletedResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
 
   /v1/sessions/{session_id}/events:
     parameters:
@@ -446,6 +542,8 @@ paths:
           $ref: '#/components/responses/FileDeletedResponse'
         '404':
           $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
         '422':
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/files/{file_id}/content:
@@ -665,6 +763,21 @@ components:
       description: Accepted for compatibility; no current Session matches a memory store.
       schema:
         type: string
+    SessionResourceID:
+      name: resource_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^sesrsc_'
+    SessionResourceListLimit:
+      name: limit
+      in: query
+      description: Maximum resources per page. Omit to return all Session Resources.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
     CreatedAtGt:
       name: created_at[gt]
       in: query
@@ -754,6 +867,33 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/SessionList'
+    SessionResourceResponse:
+      description: File-backed Session Resource
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/FileSessionResource'
+    SessionResourceListResponse:
+      description: Session Resource page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SessionResourceList'
+    SessionResourceDeletedResponse:
+      description: Session Resource deletion confirmation
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/SessionResourceDeleted'
     SessionDeletedResponse:
       description: Session deleted
       headers:
@@ -1847,7 +1987,9 @@ components:
             $ref: '#/components/schemas/InitialEvent'
         resources:
           type: array
-          maxItems: 0
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/FileSessionResourceInput'
         vault_ids:
           type: array
           maxItems: 0
@@ -1889,6 +2031,77 @@ components:
     SessionStatus:
       type: string
       enum: [idle, running, rescheduling, terminated]
+    FileSessionResourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, file_id]
+      properties:
+        type:
+          type: string
+          const: file
+        file_id:
+          type: string
+          minLength: 1
+        mount_path:
+          type: string
+          minLength: 1
+          description: Absolute path normalized beneath /mnt/session/uploads.
+    FileSessionResource:
+      type: object
+      additionalProperties: false
+      required: [id, created_at, file_id, mount_path, type, updated_at]
+      properties:
+        id:
+          type: string
+          pattern: '^sesrsc_'
+        created_at:
+          type: string
+          format: date-time
+        file_id:
+          type: string
+          pattern: '^file_'
+          description: Independent downloadable Session-scoped File copy.
+        mount_path:
+          type: string
+        type:
+          type: string
+          const: file
+        updated_at:
+          type: string
+          format: date-time
+    SessionResourceUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [authorization_token]
+      properties:
+        authorization_token:
+          type: string
+          minLength: 1
+          description: GitHub-only field; File resources return 422.
+    SessionResourceDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          pattern: '^sesrsc_'
+        type:
+          type: string
+          const: session_resource_deleted
+    SessionResourceList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/FileSessionResource'
+        has_more:
+          type: boolean
+        next_page:
+          $ref: '#/components/schemas/Cursor'
     SessionStats:
       type: object
       additionalProperties: false
@@ -1988,7 +2201,9 @@ components:
             $ref: '#/components/schemas/OutcomeEvaluation'
         resources:
           type: array
-          maxItems: 0
+          maxItems: 500
+          items:
+            $ref: '#/components/schemas/FileSessionResource'
         stats:
           $ref: '#/components/schemas/SessionStats'
         usage:

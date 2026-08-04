@@ -53,9 +53,12 @@ and delete behavior. This remains a conditional capability rather than an
 expansion of the frozen M1 claim; see the [Files conformance
 matrix](api/files-conformance.md).
 
-The next dependency-ordered slice is Session Resources: attach and list Files
-for a Session, then expose the resulting mounts to sandbox and message paths.
-Environment work dispatch follows that boundary. Skills, memory, vaults,
+The File-backed Session Resources slice now implements all five SDK operations,
+create-time and runtime attachment, independent session-scoped File copies,
+and durable read-only Docker mounts. It remains provider-gated; see the
+[Session Resources conformance matrix](api/session-resources-conformance.md).
+Self-hosted Environment work dispatch is the next dependency-ordered boundary.
+Skills, memory, vaults,
 deployments, and multi-agent surfaces remain later roadmap work.
 
 ## Runtime integrations

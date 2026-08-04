@@ -489,7 +489,7 @@ func (s *Store) ArchiveSession(ctx context.Context, sessionID string) (domain.Se
 // Temporal Workflow and releases its sandbox. This prevents a concurrent
 // user.message from turning the projection running during external cleanup.
 func (s *Store) PrepareSessionDeletion(ctx context.Context, sessionID string) error {
-	return s.withTx(ctx, func(q *pgstore.Queries) error {
+	return s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		row, err := q.LockSession(ctx, sessionID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("session not found")
@@ -504,12 +504,33 @@ func (s *Store) PrepareSessionDeletion(ctx context.Context, sessionID string) er
 		if session.Status == domain.StatusRunning {
 			return domain.Conflict("cannot delete a running session; interrupt first")
 		}
+		now := s.clock.Now().UTC()
+		if _, err := tx.Exec(ctx, `
+UPDATE files
+SET state = 'deleting', updated_at = $2
+WHERE state = 'ready' AND id IN (
+    SELECT file_id FROM session_resources WHERE session_id = $1
+)`, sessionID, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE session_resources
+SET state = 'deleting', updated_at = $2
+WHERE session_id = $1 AND state = 'active'`, sessionID, now); err != nil {
+			return err
+		}
+		if len(session.Resources) > 0 {
+			session.Resources = []domain.SessionResource{}
+			session.UpdatedAt = now
+			if err := s.updateAPIProjection(ctx, q, session); err != nil {
+				return err
+			}
+		}
 		if row.DeletingAt.Valid {
 			return nil
 		}
 		return q.MarkSessionDeleting(ctx, pgstore.MarkSessionDeletingParams{
-			DeletingAt: tsUTC(s.clock.Now()),
-			ID:         sessionID,
+			DeletingAt: tsUTC(now), ID: sessionID,
 		})
 	})
 }
@@ -519,7 +540,7 @@ func (s *Store) FinalizeSessionDeletion(ctx context.Context, sessionID string) e
 	affected, err := s.q.DeleteMarkedSession(ctx, sessionID)
 	if err != nil {
 		if isForeignKeyViolation(err) {
-			return domain.Conflict("session sandbox cleanup is incomplete")
+			return domain.Conflict("session sandbox or File Resource cleanup is incomplete")
 		}
 		return err
 	}

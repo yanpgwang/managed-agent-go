@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,9 @@ type DockerConfig struct {
 	// DefaultImage is used when Spec.Image is empty. Empty defaults to
 	// "alpine:latest".
 	DefaultImage string
+	// ResourceBaseDir stores provider-owned File Resource staging directories.
+	// Empty uses a stable, non-hidden directory beneath the host user's home.
+	ResourceBaseDir string
 }
 
 // dockerRoot is the working directory inside every container.
@@ -51,9 +55,13 @@ const keepAlive = "sleep 2147483647"
 // dockerProvider provisions container-backed sandboxes by shelling out to the
 // docker CLI (no docker Go client, no extra module dependency).
 type dockerProvider struct {
-	dockerPath   string
-	defaultImage string
+	dockerPath      string
+	defaultImage    string
+	resourceBaseDir string
+	resourceAudit   sync.Once
 }
+
+const dockerResourceReapGrace = 24 * time.Hour
 
 // NewDockerProvider returns a Provider backed by the docker CLI. It resolves the
 // docker binary eagerly so a missing docker fails fast at construction.
@@ -70,12 +78,37 @@ func NewDockerProvider(cfg DockerConfig) (Provider, error) {
 	if image == "" {
 		image = "alpine:latest"
 	}
-	return &dockerProvider{dockerPath: path, defaultImage: image}, nil
+	resourceBaseDir := cfg.ResourceBaseDir
+	if resourceBaseDir == "" {
+		userDir, userErr := os.UserHomeDir()
+		if userErr != nil {
+			userDir = filepath.Join(
+				os.TempDir(), fmt.Sprintf("managed-agent-resources-%d", os.Getuid()),
+			)
+			resourceBaseDir = userDir
+		} else {
+			// Keep this directory non-hidden. Docker Desktop's macOS file sharing can
+			// retain a negative lookup for newly created descendants of hidden
+			// directories, causing otherwise valid bind mounts to fail until the VM is
+			// restarted. A visible, stable home-directory path avoids that daemon-side
+			// cache edge while remaining configurable for production deployments.
+			resourceBaseDir = filepath.Join(userDir, "managed-agent-resources")
+		}
+	}
+	resourceBaseDir, err := filepath.Abs(resourceBaseDir)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: resolve docker resource directory: %w", err)
+	}
+	return &dockerProvider{
+		dockerPath: path, defaultImage: image, resourceBaseDir: resourceBaseDir,
+	}, nil
 }
 
 func (p *dockerProvider) Name() string { return DockerProviderName }
 
 func (*dockerProvider) SupportsPackageSetup() bool { return true }
+
+func (*dockerProvider) SupportsFileResources() bool { return true }
 
 // runDocker invokes the docker CLI with the given args, capturing stdout/stderr
 // (capped) and the process exit code. The passed ctx bounds the whole call.
@@ -111,6 +144,7 @@ func (p *dockerProvider) Create(
 	if sessionKey == "" {
 		return Ref{}, nil, errors.New("sandbox: session key is required")
 	}
+	p.auditResourceRoots()
 	name := dockerContainerName(sessionKey)
 	if box, err := p.attachTarget(ctx, name, sessionKey, spec); err == nil {
 		return Ref{Provider: p.Name(), ID: box.cid}, box, nil
@@ -126,6 +160,10 @@ func (p *dockerProvider) Create(
 	if network == "" {
 		network = "none"
 	}
+	resourceRoot, resourceFiles, err := p.ensureResourceRoot(sessionKey)
+	if err != nil {
+		return Ref{}, nil, err
+	}
 
 	args := []string{
 		"create",
@@ -133,6 +171,7 @@ func (p *dockerProvider) Create(
 		"--label", dockerManagedLabel + "=true",
 		"--label", dockerSessionKeyLabel + "=" + sessionKey,
 		"--network", network,
+		"--mount", "type=bind,source=" + resourceFiles + ",target=" + SessionUploadsRoot + ",readonly",
 		"-w", dockerRoot,
 	}
 	if spec.Memory != "" {
@@ -153,6 +192,8 @@ func (p *dockerProvider) Create(
 	// and is rare; a container-lifecycle audit/reaper would be the general fix.
 	stdout, stderr, code, err := p.runDocker(ctx, nil, args...)
 	if err != nil {
+		// The CLI may have lost its response after the daemon created the
+		// container. Preserve the unique mount generation for later attach/audit.
 		return Ref{}, nil, fmt.Errorf("sandbox: docker create: %w", err)
 	}
 	if code != 0 {
@@ -160,12 +201,17 @@ func (p *dockerProvider) Create(
 		// unique container name is the provider-side idempotency key: the loser
 		// attaches to the winner rather than creating a second resource.
 		if box, attachErr := p.attachTarget(ctx, name, sessionKey, spec); attachErr == nil {
+			_ = os.RemoveAll(resourceRoot)
 			return Ref{Provider: p.Name(), ID: box.cid}, box, nil
 		}
+		_ = os.RemoveAll(resourceRoot)
 		return Ref{}, nil, fmt.Errorf("sandbox: docker create failed (exit %d): %s", code, strings.TrimSpace(string(stderr)))
 	}
 	cid := strings.TrimSpace(string(stdout))
 	if cid == "" {
+		// Treat an empty successful response as ambiguous for the same reason as
+		// a transport error: deleting the bind source could corrupt a container
+		// the daemon actually created.
 		return Ref{}, nil, errors.New("sandbox: docker create returned empty container id")
 	}
 
@@ -173,6 +219,8 @@ func (p *dockerProvider) Create(
 	// leak it.
 	if _, startErr, startCode, rerr := p.runDocker(ctx, nil, "start", cid); rerr != nil || startCode != 0 {
 		p.forceRemove(cid)
+		// forceRemove is best-effort. Keep the mount generation if daemon cleanup
+		// could not be acknowledged; a provider audit can remove both safely.
 		if rerr != nil {
 			return Ref{}, nil, fmt.Errorf("sandbox: docker start: %w", rerr)
 		}
@@ -181,9 +229,11 @@ func (p *dockerProvider) Create(
 
 	ref := Ref{Provider: p.Name(), ID: cid}
 	return ref, &dockerSandbox{
-		provider: p,
-		cid:      cid,
-		timeout:  spec.Timeout,
+		provider:           p,
+		cid:                cid,
+		timeout:            spec.Timeout,
+		resourceRoot:       resourceRoot,
+		resourceMountReady: true,
 	}, nil
 }
 
@@ -196,6 +246,7 @@ func (p *dockerProvider) Attach(
 	if sessionKey == "" {
 		return nil, Permanent(errors.New("sandbox: session key is required"))
 	}
+	p.auditResourceRoots()
 	if err := ref.validate(); err != nil {
 		return nil, Permanent(err)
 	}
@@ -268,10 +319,18 @@ func (p *dockerProvider) attachTarget(
 			)
 		}
 	}
+	resourceRoot, resourceMountReady, err := p.inspectResourceMount(
+		ctx, fields[0], expectedSessionKey,
+	)
+	if err != nil {
+		return nil, err
+	}
 	return &dockerSandbox{
-		provider: p,
-		cid:      fields[0],
-		timeout:  spec.Timeout,
+		provider:           p,
+		cid:                fields[0],
+		timeout:            spec.Timeout,
+		resourceRoot:       resourceRoot,
+		resourceMountReady: resourceMountReady,
 	}, nil
 }
 
@@ -300,6 +359,9 @@ type dockerSandbox struct {
 	provider *dockerProvider
 	cid      string
 	timeout  time.Duration
+
+	resourceRoot       string
+	resourceMountReady bool
 
 	// mu guards dead. Once the container is torn down (timed-out and killed, or
 	// destroyed), the sandbox is permanently dead: further calls must fail fast
@@ -473,10 +535,15 @@ func (s *dockerSandbox) Destroy(ctx context.Context) error {
 	if code != 0 {
 		msg := strings.TrimSpace(string(stderr))
 		// Idempotent: a container that is already gone is not an error.
-		if strings.Contains(msg, "No such container") {
-			return nil
+		if !strings.Contains(msg, "No such container") {
+			return fmt.Errorf("sandbox: docker rm failed (exit %d): %s", code, msg)
 		}
-		return fmt.Errorf("sandbox: docker rm failed (exit %d): %s", code, msg)
+	}
+	if s.resourceRoot == "" {
+		return nil
+	}
+	if err := os.RemoveAll(s.resourceRoot); err != nil {
+		return fmt.Errorf("sandbox: remove docker resource directory: %w", err)
 	}
 	return nil
 }

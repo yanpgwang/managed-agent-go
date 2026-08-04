@@ -9,13 +9,14 @@ import (
 )
 
 const (
-	PrefixAgent   = "agent_"
-	PrefixEnv     = "env_"
-	PrefixSession = "sesn_"
-	PrefixEvent   = "sevt_"
-	PrefixRun     = "run_"
-	PrefixOutcome = "outc_"
-	PrefixFile    = "file_"
+	PrefixAgent           = "agent_"
+	PrefixEnv             = "env_"
+	PrefixSession         = "sesn_"
+	PrefixEvent           = "sevt_"
+	PrefixRun             = "run_"
+	PrefixOutcome         = "outc_"
+	PrefixFile            = "file_"
+	PrefixSessionResource = "sesrsc_"
 )
 
 type Clock interface{ Now() time.Time }

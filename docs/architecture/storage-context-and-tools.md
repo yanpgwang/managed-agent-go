@@ -161,10 +161,17 @@ The sandbox is not the model-context database. Provider-native blocks remain in
 the Provider Transcript even when a tool also creates files.
 
 Files uploaded through the public Files API are independent resources backed by
-S3-compatible object storage. They are not yet mounted or copied into a
-sandbox, and ordinary tool output does not automatically become a File or a
-separate Artifact resource. Client uploads are non-downloadable; the public
-runtime does not yet produce downloadable Agent output Files.
+S3-compatible object storage. A File-backed Session Resource creates a second,
+downloadable, Session-scoped File object and records a durable desired mount.
+Before each sandbox tool execution the Docker adapter streams any missing copy
+into provider-owned staging, verifies size and SHA-256, atomically publishes
+it, and exposes the staging directory read-only at `/mnt/session/uploads`.
+Deletion records a tombstone until the worker removes the applied mount.
+Identity-bearing provider markers and a provider-side lock make delete/re-add
+safe even when a timed-out attempt overlaps its retry. The
+local and current remote adapters reject this feature because they cannot
+provide the same absolute-path read-only boundary. Ordinary tool output still
+does not automatically become a File or a separate Artifact resource.
 
 For a large tool result:
 

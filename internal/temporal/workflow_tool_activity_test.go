@@ -107,6 +107,28 @@ type countingSandboxLease struct {
 	count int
 }
 
+type permanentResourceReconciler struct{}
+
+type permanentSandboxLease struct{}
+
+func (permanentSandboxLease) Acquire(
+	context.Context,
+	string,
+	sandbox.Spec,
+) (sandbox.Sandbox, error) {
+	return nil, sandbox.Permanent(errors.New("sandbox ownership mismatch"))
+}
+
+func (permanentSandboxLease) Release(context.Context, string) error { return nil }
+
+func (permanentResourceReconciler) Reconcile(
+	context.Context,
+	string,
+	sandbox.Sandbox,
+) error {
+	return sandbox.Permanent(errors.New("resource provider mismatch"))
+}
+
 func (l *countingSandboxLease) Acquire(
 	context.Context,
 	string,
@@ -290,6 +312,58 @@ func TestExecuteTool_StartedStepBecomesAmbiguousWithoutReexecution(t *testing.T)
 	state, ok, err := store.ToolStepStateByEventID(ctx, "sevt_workflow_ambiguous")
 	if err != nil || !ok || state != domain.ToolStepAmbiguous {
 		t.Fatalf("state = %s ok=%v err=%v", state, ok, err)
+	}
+}
+
+func TestExecuteTool_ResourcePermanentErrorTerminatesTurn(t *testing.T) {
+	store := newToolTestStore(t)
+	ctx := context.Background()
+	const sessionID = "sess_resource_permanent"
+	trigger := toolSession(t, store, sessionID)
+	lease := &countingSandboxLease{}
+	source := storeSource{store: store}
+	activities := NewActivities(nil, source, source, lease, domain.NewRandomIDGen()).
+		WithSandboxResourceReconciler(permanentResourceReconciler{})
+
+	result, err := activities.ExecuteTool(ctx, ExecuteToolInput{
+		SessionID: sessionID, TriggerEventID: trigger,
+		AttemptID: "ratm_resource_permanent", Ordinal: 0,
+		ToolUseEventID: "sevt_resource_permanent",
+		ToolStepID:     "tstep_resource_permanent",
+		ToolName:       "bash",
+		Input:          map[string]any{"command": "true"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool error = %v, want terminal result", err)
+	}
+	if result.FatalError == "" {
+		t.Fatalf("ExecuteTool result = %+v, want fatal error", result)
+	}
+}
+
+func TestExecuteTool_SandboxPermanentErrorTerminatesTurn(t *testing.T) {
+	store := newToolTestStore(t)
+	ctx := context.Background()
+	const sessionID = "sess_sandbox_permanent"
+	trigger := toolSession(t, store, sessionID)
+	source := storeSource{store: store}
+	activities := NewActivities(
+		nil, source, source, permanentSandboxLease{}, domain.NewRandomIDGen(),
+	)
+
+	result, err := activities.ExecuteTool(ctx, ExecuteToolInput{
+		SessionID: sessionID, TriggerEventID: trigger,
+		AttemptID: "ratm_sandbox_permanent", Ordinal: 0,
+		ToolUseEventID: "sevt_sandbox_permanent",
+		ToolStepID:     "tstep_sandbox_permanent",
+		ToolName:       "bash",
+		Input:          map[string]any{"command": "true"},
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool error = %v, want terminal result", err)
+	}
+	if result.FatalError == "" {
+		t.Fatalf("ExecuteTool result = %+v, want fatal error", result)
 	}
 }
 

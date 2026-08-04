@@ -46,6 +46,7 @@ type Session struct {
 	AgentSnapshot Agent
 	Usage         TokenUsage
 	Outcomes      []OutcomeEvaluation
+	Resources     []SessionResource
 	// ActiveSeconds is the completed running time. RunningSince contributes a
 	// live suffix while the Session is running. TerminatedAt freezes duration.
 	ActiveSeconds float64

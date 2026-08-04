@@ -11,7 +11,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 // ErrNotFound means a durable provider reference no longer resolves to a
@@ -20,9 +23,9 @@ import (
 var ErrNotFound = errors.New("sandbox: durable reference not found")
 
 // PermanentError marks invalid ownership or configuration that retrying on the
-// same worker cannot repair. Temporal Activities translate it to a
-// non-retryable failure; a later public DELETE can start a fresh cleanup run
-// after operators correct the worker configuration.
+// same worker cannot repair. Turn Activities convert it into an honest public
+// terminal result; standalone cleanup Activities use a non-retryable failure
+// so operators can correct configuration before starting a fresh cleanup run.
 type PermanentError struct {
 	err error
 }
@@ -165,6 +168,38 @@ type LimitedNetworkProvider interface {
 // sandbox. It is optional because most providers cannot enforce FQDN policy.
 type LimitedNetworkSandbox interface {
 	ApplyLimitedNetwork(ctx context.Context, allowedHosts []string) error
+}
+
+// SessionUploadsRoot is the absolute runtime directory exposed by Managed
+// Agents for File-backed Session Resources.
+const SessionUploadsRoot = domain.SessionUploadsRoot
+
+// ReadOnlyFileMount describes one immutable File copy expected inside a
+// sandbox. RuntimePath must be a child of SessionUploadsRoot.
+type ReadOnlyFileMount struct {
+	// Identity distinguishes successive resources that reuse one runtime path.
+	// It must remain stable across worker restarts.
+	Identity       string
+	RuntimePath    string
+	SizeBytes      int64
+	ChecksumSHA256 string
+}
+
+// FileResourceProvider declares support for isolated, read-only Session File
+// resources. Providers must opt in explicitly: ordinary workspace writes are
+// neither absolute-path mounts nor a read-only boundary.
+type FileResourceProvider interface {
+	SupportsFileResources() bool
+}
+
+// FileResourceSandbox reconciles File-backed Session Resources for a live
+// sandbox. ImportReadOnlyFile must stream, validate, and publish atomically;
+// RemoveReadOnlyFile must be idempotent and must not remove a newer identity
+// that reused the same runtime path.
+type FileResourceSandbox interface {
+	HasReadOnlyFile(context.Context, ReadOnlyFileMount) (bool, error)
+	ImportReadOnlyFile(context.Context, ReadOnlyFileMount, io.Reader) error
+	RemoveReadOnlyFile(context.Context, string, string) error
 }
 
 func validateSandbox(provider Provider, ref Ref, box Sandbox) error {

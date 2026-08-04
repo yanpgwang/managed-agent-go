@@ -4,6 +4,7 @@ package controlplane
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
@@ -16,6 +17,7 @@ type SessionOrchestrator interface {
 		context.Context,
 		domain.Session,
 		[]domain.EventDraft,
+		...[]app.PreparedSessionResource,
 	) (domain.Session, []domain.Event, error)
 	Admit(context.Context, string, []domain.EventDraft) ([]domain.Event, error)
 	TerminateSession(context.Context, string) error
@@ -30,6 +32,7 @@ type SessionService struct {
 	orchestrator SessionOrchestrator
 	ids          domain.IDGenerator
 	clock        domain.Clock
+	resources    *SessionResourceService
 }
 
 func NewSessionService(
@@ -39,11 +42,16 @@ func NewSessionService(
 	orchestrator SessionOrchestrator,
 	ids domain.IDGenerator,
 	clock domain.Clock,
+	resourceServices ...*SessionResourceService,
 ) *SessionService {
-	return &SessionService{
+	service := &SessionService{
 		store: store, agents: agents, environments: environments,
 		orchestrator: orchestrator, ids: ids, clock: clock,
 	}
+	if len(resourceServices) > 0 {
+		service.resources = resourceServices[0]
+	}
+	return service
 }
 
 func (s *SessionService) Create(
@@ -117,7 +125,31 @@ func (s *SessionService) Create(
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-	created, _, err := s.orchestrator.CreateAPISession(ctx, session, input.InitialEvents)
+	var prepared []app.PreparedSessionResource
+	if len(input.Resources) > 0 {
+		if s.resources == nil {
+			return domain.Session{}, domain.Unsupported(
+				"File resources are unavailable for the configured deployment",
+			)
+		}
+		prepared, err = s.resources.PrepareForSession(ctx, session, input.Resources)
+		if err != nil {
+			return domain.Session{}, err
+		}
+		session.Resources = make([]domain.SessionResource, len(prepared))
+		for index := range prepared {
+			session.Resources[index] = prepared[index].Resource
+		}
+	}
+	created, _, err := s.orchestrator.CreateAPISession(
+		ctx, session, input.InitialEvents, prepared,
+	)
+	if err != nil && s.resources != nil {
+		var domainErr *domain.DomainError
+		if errors.As(err, &domainErr) {
+			s.resources.DiscardPrepared(ctx, prepared)
+		}
+	}
 	return created, err
 }
 
@@ -191,6 +223,14 @@ func (s *SessionService) Delete(ctx context.Context, id string) error {
 		// Keep the fence on an ambiguous external result. Retrying DELETE safely
 		// repeats Workflow termination and idempotent sandbox cleanup.
 		return err
+	}
+	if s.resources != nil {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		err := s.resources.CleanupSession(cleanupCtx, id)
+		cancel()
+		if err != nil {
+			return err
+		}
 	}
 	// Once termination succeeds, finish the fenced delete even if the client
 	// disconnects. If the database write fails, the marker intentionally remains

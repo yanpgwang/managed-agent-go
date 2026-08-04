@@ -32,6 +32,11 @@ func (s *Server) registerSessionRoutes() {
 	s.mux.HandleFunc("POST /v1/sessions/{id}/events", s.sendEvents)
 	s.mux.HandleFunc("GET /v1/sessions/{id}/events", s.listEvents)
 	s.mux.HandleFunc("GET /v1/sessions/{id}/events/stream", s.streamEvents)
+	s.mux.HandleFunc("POST /v1/sessions/{id}/resources", s.addSessionResource)
+	s.mux.HandleFunc("GET /v1/sessions/{id}/resources", s.listSessionResources)
+	s.mux.HandleFunc("GET /v1/sessions/{id}/resources/{resource_id}", s.getSessionResource)
+	s.mux.HandleFunc("POST /v1/sessions/{id}/resources/{resource_id}", s.updateSessionResource)
+	s.mux.HandleFunc("DELETE /v1/sessions/{id}/resources/{resource_id}", s.deleteSessionResource)
 }
 
 func sessionToJSON(s domain.Session) map[string]any {
@@ -53,13 +58,19 @@ func sessionToJSON(s domain.Session) map[string]any {
 		}
 		outcomes = append(outcomes, item)
 	}
+	resources := make([]any, 0, len(s.Resources))
+	for _, resource := range s.Resources {
+		if resource.State == domain.SessionResourceActive {
+			resources = append(resources, sessionResourceToJSON(resource))
+		}
+	}
 	out := map[string]any{
 		"id": s.ID, "type": "session", "status": string(s.Status),
 		"agent":          agentSnapshotJSON(s.AgentSnapshot),
 		"environment_id": s.EnvironmentID, "title": s.Title, "metadata": orEmptyMap(s.Metadata),
 		"created_at": s.CreatedAt.Format(timeFmt), "updated_at": s.UpdatedAt.Format(timeFmt),
 		"outcome_evaluations": outcomes,
-		"resources":           []any{},
+		"resources":           resources,
 		"stats": map[string]any{
 			"active_seconds":   activeSeconds,
 			"duration_seconds": durationSeconds,
@@ -203,8 +214,9 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if resources != nil && len(*resources) > 0 {
-		writeError(w, domain.Unsupported("session resources are not implemented"))
+	resourceInputs, err := parseSessionFileResourceInputs(resources)
+	if err != nil {
+		writeError(w, err)
 		return
 	}
 	if vaultIDs != nil && len(*vaultIDs) > 0 {
@@ -253,7 +265,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	sess, err := s.deps.Sessions.Create(r.Context(), app.CreateSessionInput{
 		AgentID: ref.ID, AgentVersion: ref.Version, Overrides: ref.Overrides,
 		EnvironmentID: in.EnvironmentID, Title: sessionTitle, Metadata: sessionMetadata,
-		InitialEvents: drafts,
+		InitialEvents: drafts, Resources: resourceInputs,
 	})
 	if err != nil {
 		writeError(w, err)

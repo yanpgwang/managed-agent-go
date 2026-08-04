@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
 )
@@ -72,12 +73,19 @@ type Admission struct {
 // withTx runs fn inside a transaction bound to a tx-scoped Queries. It commits
 // on success and rolls back on any error or panic.
 func (s *Store) withTx(ctx context.Context, fn func(q *pgstore.Queries) error) error {
+	return s.withPGXTx(ctx, func(_ pgx.Tx, q *pgstore.Queries) error { return fn(q) })
+}
+
+func (s *Store) withPGXTx(
+	ctx context.Context,
+	fn func(pgx.Tx, *pgstore.Queries) error,
+) error {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck // rollback after commit is a no-op
-	if err := fn(s.q.WithTx(tx)); err != nil {
+	if err := fn(tx, s.q.WithTx(tx)); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -91,7 +99,7 @@ func (s *Store) CreateSession(
 	session domain.Session,
 	drafts []domain.EventDraft,
 ) (Admission, error) {
-	return s.createSession(ctx, session, drafts, false)
+	return s.createSession(ctx, session, drafts, false, nil)
 }
 
 // CreateAPISession creates a public API session while holding share locks on
@@ -102,8 +110,13 @@ func (s *Store) CreateAPISession(
 	ctx context.Context,
 	session domain.Session,
 	drafts []domain.EventDraft,
+	resourceSets ...[]app.PreparedSessionResource,
 ) (Admission, error) {
-	return s.createSession(ctx, session, drafts, true)
+	var resources []app.PreparedSessionResource
+	if len(resourceSets) > 0 {
+		resources = resourceSets[0]
+	}
+	return s.createSession(ctx, session, drafts, true, resources)
 }
 
 func (s *Store) createSession(
@@ -111,7 +124,20 @@ func (s *Store) createSession(
 	session domain.Session,
 	drafts []domain.EventDraft,
 	checkDependencies bool,
+	resources []app.PreparedSessionResource,
 ) (Admission, error) {
+	if len(resources) > app.MaxSessionResources {
+		return Admission{}, domain.Validation("resources must contain at most 500 entries")
+	}
+	var resourceBytes int64
+	for _, resource := range resources {
+		if resource.Blob.SizeBytes > app.MaxSessionResourceBytes-resourceBytes {
+			return Admission{}, domain.TooLarge(
+				"Session File Resources exceed the 500 MB aggregate limit",
+			)
+		}
+		resourceBytes += resource.Blob.SizeBytes
+	}
 	// PostgreSQL timestamptz has microsecond precision. Normalize the JSON
 	// projection to the same value as the relational key so a list cursor never
 	// compares a nanosecond boundary against a truncated database timestamp.
@@ -121,12 +147,20 @@ func (s *Store) createSession(
 		archivedAt := session.ArchivedAt.UTC().Truncate(time.Microsecond)
 		session.ArchivedAt = &archivedAt
 	}
+	if len(resources) > 0 {
+		session.Resources = make([]domain.SessionResource, len(resources))
+		for index := range resources {
+			resources[index].Resource.CreatedAt = resources[index].Resource.CreatedAt.UTC().Truncate(time.Microsecond)
+			resources[index].Resource.UpdatedAt = resources[index].Resource.UpdatedAt.UTC().Truncate(time.Microsecond)
+			session.Resources[index] = resources[index].Resource
+		}
+	}
 	body, err := json.Marshal(session)
 	if err != nil {
 		return Admission{}, err
 	}
 	var admission Admission
-	err = s.withTx(ctx, func(q *pgstore.Queries) error {
+	err = s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		if checkDependencies {
 			if _, err := q.LockActiveAgentVersion(ctx, pgstore.LockActiveAgentVersionParams{
 				ID: session.AgentID, Version: int32(session.AgentVersion),
@@ -142,6 +176,9 @@ func (s *Store) createSession(
 			}
 		}
 		if err := q.InsertSession(ctx, insertSessionParams(session, body)); err != nil {
+			return err
+		}
+		if err := insertPreparedSessionResources(ctx, tx, session.ID, resources); err != nil {
 			return err
 		}
 		var innerErr error

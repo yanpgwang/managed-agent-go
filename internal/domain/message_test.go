@@ -91,6 +91,18 @@ func TestProjectSystemContext_IncludesPersistedAndCurrentCompanion(t *testing.T)
 	}
 }
 
+func TestProjectSessionResourceContext_ListsOnlyActiveReadOnlyFiles(t *testing.T) {
+	got := ProjectSessionResourceContext("base", []SessionResource{
+		{FileID: "file_ready", MountPath: "/mnt/session/uploads/report.csv", State: SessionResourceActive},
+		{FileID: "file_deleted", MountPath: "/mnt/session/uploads/old.csv", State: SessionResourceDeleting},
+	})
+	if !strings.Contains(got, "base\n\n<session_resources>") ||
+		!strings.Contains(got, `{"mount_path":"/mnt/session/uploads/report.csv","file_id":"file_ready"}`) ||
+		strings.Contains(got, "file_deleted") {
+		t.Fatalf("resource context = %q", got)
+	}
+}
+
 func TestProjectMessages_MultiTurnTextOnly(t *testing.T) {
 	events := []Event{
 		ev(EvUserMessage, "hi"),

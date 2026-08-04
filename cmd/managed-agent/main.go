@@ -37,8 +37,9 @@ const defaultAddr = "127.0.0.1:8080"
 const unsafeLocalSandboxEnv = "MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX"
 
 const (
-	sandboxProviderEnv = "MANAGED_AGENT_SANDBOX"
-	sandboxImageEnv    = "MANAGED_AGENT_SANDBOX_IMAGE"
+	sandboxProviderEnv    = "MANAGED_AGENT_SANDBOX"
+	sandboxImageEnv       = "MANAGED_AGENT_SANDBOX_IMAGE"
+	sandboxResourceDirEnv = "MANAGED_AGENT_SANDBOX_RESOURCE_DIR"
 
 	e2bAPIKeyEnv      = "E2B_API_KEY"
 	e2bAPIURLEnv      = "E2B_API_URL"
@@ -104,11 +105,13 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.DockerProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup: true,
+				PackageSetup:  true,
+				FileResources: true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				return sandbox.NewDockerProvider(sandbox.DockerConfig{
-					DefaultImage: os.Getenv(sandboxImageEnv),
+					DefaultImage:    os.Getenv(sandboxImageEnv),
+					ResourceBaseDir: os.Getenv(sandboxResourceDirEnv),
 				})
 			},
 		},
@@ -253,12 +256,19 @@ func envBool(name string) (bool, error) {
 	return parsed, nil
 }
 
-func resolveFileService(
+type resolvedFiles struct {
+	service    *app.FileService
+	repository *pg.FileRepository
+	blobs      app.FileBlobStore
+}
+
+func resolveFiles(
 	ctx context.Context,
 	store *pg.Store,
 	ids domain.IDGenerator,
 	clock domain.Clock,
-) (*app.FileService, error) {
+	reconcile bool,
+) (*resolvedFiles, error) {
 	bucket := strings.TrimSpace(os.Getenv(fileS3BucketEnv))
 	if bucket == "" {
 		return nil, nil
@@ -284,11 +294,14 @@ func resolveFileService(
 	if err != nil {
 		return nil, err
 	}
-	files := app.NewFileService(pg.NewFileRepository(store), blobs, ids, clock)
-	if err := files.Reconcile(ctx); err != nil {
-		return nil, fmt.Errorf("files: reconcile incomplete operations: %w", err)
+	repository := pg.NewFileRepository(store)
+	files := app.NewFileService(repository, blobs, ids, clock)
+	if reconcile {
+		if err := files.Reconcile(ctx); err != nil {
+			return nil, fmt.Errorf("files: reconcile incomplete operations: %w", err)
+		}
 	}
-	return files, nil
+	return &resolvedFiles{service: files, repository: repository, blobs: blobs}, nil
 }
 
 func firstNonEmpty(values ...string) string {
@@ -439,14 +452,31 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 			LimitedNetwork: providerCapabilities.LimitedNetwork,
 		},
 	)
-	files, err := resolveFileService(ctx, pgStore, ids, clock)
+	fileRuntime, err := resolveFiles(ctx, pgStore, ids, clock, true)
 	if err != nil {
 		log.Printf("serve: Files API disabled: %v", err)
-		files = nil
-	} else if files == nil {
+		fileRuntime = nil
+	} else if fileRuntime == nil {
 		log.Printf("serve: Files API disabled; %s is not configured", fileS3BucketEnv)
 	} else {
 		log.Printf("serve: Files API object store connected and reconciled")
+	}
+	var files *app.FileService
+	var sessionResources *controlplane.SessionResourceService
+	var sessionResourceLifecycle *controlplane.SessionResourceService
+	if fileRuntime != nil {
+		files = fileRuntime.service
+		sessionResourceLifecycle = controlplane.NewSessionResourceService(
+			pgStore, fileRuntime.repository, fileRuntime.blobs, ids, clock,
+			providerCapabilities.FileResources,
+		)
+		sessionResources = sessionResourceLifecycle
+		if !providerCapabilities.FileResources {
+			log.Printf(
+				"serve: Session File Resource admission disabled; sandbox provider %q has no isolated read-only mount capability; existing resources remain readable and detachable",
+				configuredSandboxProviderName(),
+			)
+		}
 	}
 
 	temporalClient, err := temporalpkg.Dial(temporalpkg.ClientConfig{
@@ -467,12 +497,14 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	)
 	sessions := controlplane.NewSessionService(
 		pgStore, agentsRepo, environmentsRepo, orchestrator, ids, clock,
+		sessionResourceLifecycle,
 	)
 	events := controlplane.NewEventService(pgStore)
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
 		Events: events, Stream: stream, Files: files,
+		SessionResources: sessionResources,
 	}, cfg).Handler()
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")
 	serveHTTP(addr, handler)

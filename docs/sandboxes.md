@@ -62,6 +62,20 @@ The Docker provider has not been audited for hostile multi-tenant workloads.
 The local provider is not a security boundary. No backend currently carries a
 production security claim.
 
+## File Resource mounts
+
+File-backed Session Resources require more than ordinary workspace writes: the
+provider must stream an independently stored object to its documented absolute
+path, publish it atomically, make it read-only inside the sandbox, and remove it
+idempotently after a crash. Provider capability admission is explicit.
+
+Docker is currently the only adapter that advertises this capability. It stages
+validated bytes in a provider-owned host directory and bind-mounts that
+directory read-only at `/mnt/session/uploads`. The local-process provider would
+have to write into the worker host's absolute `/mnt` path and therefore rejects
+the feature. Current remote adapters also reject it until their service APIs
+can prove an equivalent isolated read-only mount contract.
+
 ## Compatibility contract
 
 A backend implements the core lifecycle contract when it can:

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -9,6 +10,33 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 )
+
+func TestRetryingSessionResourceReconcilerRecoversAndCaches(t *testing.T) {
+	attempts := 0
+	reconciler := &retryingSessionResourceReconciler{
+		resolve: func(context.Context) (*resolvedFiles, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, errors.New("temporary object-store outage")
+			}
+			return &resolvedFiles{}, nil
+		},
+	}
+	if _, err := reconciler.resolveMaterializer(context.Background()); err == nil {
+		t.Fatal("first resolve unexpectedly succeeded")
+	}
+	first, err := reconciler.resolveMaterializer(context.Background())
+	if err != nil || first == nil {
+		t.Fatalf("second resolve = %v, %v", first, err)
+	}
+	second, err := reconciler.resolveMaterializer(context.Background())
+	if err != nil || second != first {
+		t.Fatalf("cached resolve = %v, %v; want %v", second, err, first)
+	}
+	if attempts != 2 {
+		t.Fatalf("resolver attempts = %d, want 2", attempts)
+	}
+}
 
 // TestResolveSandboxProvider_DefaultsToLocal asserts that, with no
 // MANAGED_AGENT_SANDBOX set, resolveSandboxProvider returns the offline

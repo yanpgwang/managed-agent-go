@@ -35,15 +35,17 @@ managed-agent orchestrate
 
 The API owns HTTP resources, SSE, event admission, and Files metadata/object
 coordination. The worker owns Temporal Workflow/Activity execution, model
-calls, sandbox tools, and the outbox relay. They share a release artifact but
-not a scaling or rollout policy.
+calls, sandbox tools, File Resource materialization, and the outbox relay. They
+share a release artifact but not a scaling or rollout policy.
 
 Files add an S3-compatible dependency beside PostgreSQL, Temporal, and NATS.
 Set `MANAGED_AGENT_FILE_S3_BUCKET` to enable the five Files routes; leaving it
 empty keeps the rest of the API available and makes Files requests return
 `422`. Failure to initialize or reconcile the configured object store also
 disables only Files so the Managed Agents core remains available. The API
-process uses these settings:
+process uses these settings. A worker that materializes Session File Resources
+must use the same bucket, endpoint, region, and credentials (it does not run
+startup intent reconciliation):
 
 | Variable | Meaning |
 | --- | --- |
@@ -57,8 +59,20 @@ process uses these settings:
 
 The first Files slice assumes one Files-enabled API process during startup
 reconciliation. It also needs temporary disk capacity up to 500 MB per
-concurrent upload. These are explicit limits until distributed intent leasing
-and direct multipart object-store uploads are implemented.
+concurrent upload or Session Resource copy. These are explicit limits until
+distributed intent leasing and direct multipart object-store operations are
+implemented.
+
+File-backed Session Resources additionally require
+`MANAGED_AGENT_SANDBOX=docker`. The worker must run where the selected Docker
+daemon can bind its provider-owned staging directory. Set
+`MANAGED_AGENT_SANDBOX_RESOURCE_DIR` to place that directory on a dedicated
+host volume; the default is `managed-agent-resources` beneath the process
+user's home directory. The API and every worker
+on the task queue must agree on the sandbox provider and object-store
+configuration. The local-process provider and current remote adapters reject
+File Resources because they cannot yet provide the same isolated, absolute,
+read-only mount contract.
 
 Before production deployment bundles are promoted, database migration will be
 removed from normal API/worker startup and exposed as an explicit one-shot

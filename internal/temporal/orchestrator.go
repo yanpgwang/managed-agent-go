@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
@@ -78,8 +79,9 @@ func (o *Orchestrator) CreateAPISession(
 	ctx context.Context,
 	session domain.Session,
 	initial []domain.EventDraft,
+	resourceSets ...[]app.PreparedSessionResource,
 ) (domain.Session, []domain.Event, error) {
-	adm, err := o.store.CreateAPISession(ctx, session, initial)
+	adm, err := o.store.CreateAPISession(ctx, session, initial, resourceSets...)
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
@@ -133,6 +135,25 @@ func NewRuntime(
 	)
 }
 
+// NewRuntimeWithResources wires File-backed Session Resource reconciliation
+// into every sandbox acquisition while preserving NewRuntime for deployments
+// that do not configure the Files object store.
+func NewRuntimeWithResources(
+	c client.Client,
+	store *pg.Store,
+	modelClient model.Client,
+	provider sandbox.Provider,
+	ids domain.IDGenerator,
+	relayCfg RelayConfig,
+	resources SandboxResourceReconciler,
+	previewPublisher ...PreviewPublisher,
+) *Runtime {
+	return newRuntimeOnTaskQueue(
+		c, store, modelClient, provider, ids, relayCfg, TaskQueue, resources,
+		previewPublisher...,
+	)
+}
+
 // NewRuntimeOnTaskQueue is the deployment/test-isolated variant of NewRuntime.
 // Production normally uses TaskQueue; integration environments can select a
 // unique queue so another worker connected to the same Temporal namespace
@@ -147,9 +168,29 @@ func NewRuntimeOnTaskQueue(
 	taskQueue string,
 	previewPublisher ...PreviewPublisher,
 ) *Runtime {
+	return newRuntimeOnTaskQueue(
+		c, store, modelClient, provider, ids, relayCfg, taskQueue, nil,
+		previewPublisher...,
+	)
+}
+
+func newRuntimeOnTaskQueue(
+	c client.Client,
+	store *pg.Store,
+	modelClient model.Client,
+	provider sandbox.Provider,
+	ids domain.IDGenerator,
+	relayCfg RelayConfig,
+	taskQueue string,
+	resources SandboxResourceReconciler,
+	previewPublisher ...PreviewPublisher,
+) *Runtime {
 	sandboxes := sandbox.NewSessionManager(provider, store)
 	src := storeSource{store: store} // satisfies both EventSource and JournalStore
 	acts := NewActivities(modelClient, src, src, sandboxes, ids, previewPublisher...)
+	if resources != nil {
+		acts.WithSandboxResourceReconciler(resources)
+	}
 	w := NewWorkerOnTaskQueue(c, acts, taskQueue)
 	signaler := NewSignalerOnTaskQueue(c, taskQueue)
 	relay := NewRelay(store, signaler, relayCfg)
@@ -158,11 +199,22 @@ func NewRuntimeOnTaskQueue(
 		signaler,
 		sandboxes,
 		LifecycleReconcilerConfig{},
+		resourceDeletionReconciler(resources),
 	)
 	return &Runtime{
 		Client: c, Worker: w, Relay: relay, Lifecycle: lifecycle,
 		Store: store, Signal: signaler, Sandbox: sandboxes,
 	}
+}
+
+func resourceDeletionReconciler(
+	resources SandboxResourceReconciler,
+) SessionResourceDeletionReconciler {
+	if resources == nil {
+		return nil
+	}
+	reconciler, _ := resources.(SessionResourceDeletionReconciler)
+	return reconciler
 }
 
 // Orchestrator returns an admission orchestrator sharing this runtime's store

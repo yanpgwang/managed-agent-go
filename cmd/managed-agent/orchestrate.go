@@ -2,16 +2,117 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/live"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
+	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
 )
+
+type unavailableSessionResourceReconciler struct {
+	store *pg.Store
+	cause error
+}
+
+type retryingSessionResourceReconciler struct {
+	store   *pg.Store
+	resolve func(context.Context) (*resolvedFiles, error)
+
+	mu           sync.Mutex
+	materializer *app.SessionResourceMaterializer
+}
+
+func (r *retryingSessionResourceReconciler) resolveMaterializer(
+	ctx context.Context,
+) (*app.SessionResourceMaterializer, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.materializer != nil {
+		return r.materializer, nil
+	}
+	runtime, err := r.resolve(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if runtime == nil {
+		return nil, sandbox.Permanent(errors.New(
+			fileS3BucketEnv + " is not configured",
+		))
+	}
+	r.materializer = app.NewSessionResourceMaterializer(
+		r.store, runtime.repository, runtime.blobs,
+	)
+	return r.materializer, nil
+}
+
+func (r *retryingSessionResourceReconciler) Reconcile(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
+	if err != nil || len(resources) == 0 {
+		return err
+	}
+	materializer, err := r.resolveMaterializer(ctx)
+	if err != nil {
+		return err
+	}
+	return materializer.Reconcile(ctx, sessionID, box)
+}
+
+func (r *retryingSessionResourceReconciler) CleanupSession(
+	ctx context.Context,
+	sessionID string,
+) error {
+	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
+	if err != nil || len(resources) == 0 {
+		return err
+	}
+	materializer, err := r.resolveMaterializer(ctx)
+	if err != nil {
+		return err
+	}
+	return materializer.CleanupSession(ctx, sessionID)
+}
+
+func (r unavailableSessionResourceReconciler) Reconcile(
+	ctx context.Context,
+	sessionID string,
+	_ sandbox.Sandbox,
+) error {
+	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
+	if err != nil || len(resources) == 0 {
+		return err
+	}
+	return sandbox.Permanent(fmt.Errorf(
+		"session File Resources are unavailable on this worker: %w",
+		r.cause,
+	))
+}
+
+func (r unavailableSessionResourceReconciler) CleanupSession(
+	ctx context.Context,
+	sessionID string,
+) error {
+	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
+	if err != nil || len(resources) == 0 {
+		return err
+	}
+	return fmt.Errorf(
+		"session File Resources are unavailable on this worker: %w",
+		r.cause,
+	)
+}
 
 // Environment variables shared by the PostgreSQL HTTP control plane and the
 // Temporal execution worker.
@@ -67,6 +168,32 @@ func runOrchestrate() {
 	if err := guardModelSandbox(realModel, localSandbox, os.Getenv(unsafeLocalSandboxEnv) == "1"); err != nil {
 		log.Fatalf("orchestrate: %v", err)
 	}
+	fileRuntime, err := resolveFiles(ctx, store, ids, realClock{}, false)
+	var resourceReconciler temporalpkg.SandboxResourceReconciler
+	fileCapability, supportsFiles := provider.(sandbox.FileResourceProvider)
+	switch {
+	case !supportsFiles || !fileCapability.SupportsFileResources():
+		cause := fmt.Errorf("sandbox provider %q has no read-only File Resource capability", provider.Name())
+		resourceReconciler = unavailableSessionResourceReconciler{store: store, cause: cause}
+		log.Printf("orchestrate: Session File Resources disabled: %v", cause)
+	case err != nil:
+		log.Printf("orchestrate: Files object store unavailable; resource turns will retry connection: %v", err)
+		resourceReconciler = &retryingSessionResourceReconciler{
+			store: store,
+			resolve: func(resolveCtx context.Context) (*resolvedFiles, error) {
+				return resolveFiles(resolveCtx, store, ids, realClock{}, false)
+			},
+		}
+	case fileRuntime == nil:
+		cause := errors.New(fileS3BucketEnv + " is not configured")
+		resourceReconciler = unavailableSessionResourceReconciler{store: store, cause: cause}
+		log.Printf("orchestrate: Session File Resources disabled: %v", cause)
+	default:
+		resourceReconciler = app.NewSessionResourceMaterializer(
+			store, fileRuntime.repository, fileRuntime.blobs,
+		)
+		log.Printf("orchestrate: Session File Resource materializer enabled")
+	}
 
 	client, err := temporalpkg.Dial(temporalpkg.ClientConfig{
 		HostPort:  os.Getenv(envTemporalHostPort),
@@ -78,13 +205,14 @@ func runOrchestrate() {
 	defer client.Close()
 	log.Printf("orchestrate: temporal connected")
 
-	runtime := temporalpkg.NewRuntime(
+	runtime := temporalpkg.NewRuntimeWithResources(
 		client,
 		store,
 		modelClient,
 		provider,
 		ids,
 		temporalpkg.RelayConfig{},
+		resourceReconciler,
 		broker,
 	)
 
