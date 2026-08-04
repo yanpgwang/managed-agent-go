@@ -1,0 +1,66 @@
+---
+title: "Mango"
+description: "A durable, self-hosted runtime for Claude Managed Agents"
+---
+
+Mango is an open-source Go runtime for running Claude Managed Agents-style
+sessions with PostgreSQL, Temporal, S3-compatible storage, and replaceable
+sandboxes.
+
+<Warning>
+  Mango is alpha software and implements a documented subset of the Claude
+  Managed Agents API. It is independent from Anthropic and is not a drop-in
+  production service. Check [compatibility](/compatibility) before building on
+  a feature. The default local sandbox is not a security boundary.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="Run your first session" icon="play" href="/quickstart">
+    Start the complete local stack without model credentials.
+  </Card>
+  <Card title="Check compatibility" icon="table-list" href="/compatibility">
+    See exactly what the official platform exposes and what Mango supports.
+  </Card>
+  <Card title="Choose a sandbox" icon="box" href="/sandboxes">
+    Compare local, Docker, and remote execution backends.
+  </Card>
+  <Card title="Understand the runtime" icon="diagram-project" href="/architecture">
+    Read the short version of how durability and recovery work.
+  </Card>
+</CardGroup>
+
+## What Mango gives you
+
+- A Managed Agents-compatible HTTP surface for Agents, Environments, Sessions,
+  and Events.
+- Durable session execution that resumes after API, worker, or provider
+  failures.
+- Sandbox-routed tools through local, Docker, E2B, CubeSandbox, OpenSandbox, or
+  Daytona backends.
+- PostgreSQL-backed event history and live SSE output.
+- A Files API, File-backed Session Resources, and versioned custom Skills when
+  S3-compatible storage is configured.
+- An offline model for deterministic local development and tests.
+
+## What it does not claim
+
+Mango does not currently provide Memory, Vaults, multi-agent orchestration,
+deployments, schedules, or webhooks. Files and custom Skills are available with
+important storage and Docker-only runtime limits. Mango also does not yet ship
+production authentication, tenant isolation, a Helm chart, or a supported
+production Compose bundle.
+
+That scope is intentional and visible. The project is trying to make the
+single-agent harness reliable before expanding the product surface.
+
+## Five minutes to a real turn
+
+```bash
+make local-up
+make local-health
+curl http://localhost:8080/readyz
+```
+
+The stack starts PostgreSQL, Temporal, NATS, MinIO, the API, and a worker using
+the deterministic offline model. Continue with the [Quickstart](/quickstart)
+to create an Agent and Session.

@@ -1,0 +1,16 @@
+{
+  "name": "mango-docs",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "mint dev",
+    "validate": "mint validate",
+    "check-links": "mint broken-links --check-anchors --check-redirects"
+  },
+  "devDependencies": {
+    "mint": "4.2.773"
+  },
+  "engines": {
+    "node": ">=20.17.0 <25"
+  }
+}

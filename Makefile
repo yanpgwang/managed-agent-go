@@ -99,12 +99,12 @@ verify: lint test test-race vet
 
 security:
 	$(GOVULNCHECK) ./...
-	npm --prefix website audit --omit=dev --audit-level=high
+	npm --prefix docs audit --omit=dev --audit-level=high
 
 docs-check:
-	npm --prefix website ci
-	npm --prefix website run typecheck
-	npm --prefix website run build
+	PUPPETEER_SKIP_DOWNLOAD=1 npm --prefix docs ci
+	npm --prefix docs run validate
+	npm --prefix docs run check-links
 
 dev-env-init:
 	@mkdir -p "$${XDG_CONFIG_HOME:-$$HOME/.config}/mango"

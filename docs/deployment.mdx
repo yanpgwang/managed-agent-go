@@ -1,0 +1,108 @@
+---
+title: "Deployment"
+description: "Run Mango as separate API and worker processes"
+---
+
+Mango currently ships a complete development stack and a multi-role container
+image. It does not yet ship a supported production Compose bundle or Helm chart.
+
+## What exists today
+
+| Asset | Status | Use |
+| --- | --- | --- |
+| Root `Dockerfile` | Available | Build the API/worker image for Linux AMD64 or ARM64 |
+| `deployments/local/compose.yaml` | Development | Run PostgreSQL, Temporal, NATS, MinIO, API, and worker from a checkout |
+| Production Docker Compose | Planned | Versioned single-host installation |
+| Helm chart | Planned | Kubernetes API and worker deployments with external stateful services |
+
+The local stack contains development credentials, fixed ports, and stateful
+dependencies. Do not treat it as a hardened or highly available deployment.
+
+## Process roles
+
+The same image runs two independently scalable processes:
+
+```text
+managed-agent serve -addr :8080
+managed-agent orchestrate
+```
+
+The API serves resources, accepts events, streams SSE, and coordinates File and
+Skill objects. The worker runs Temporal workflows, calls the model, executes
+tools, and materializes Session Resources and Skills. Both require the same
+PostgreSQL, Temporal, and object-store configuration; NATS is used for
+low-latency live delivery.
+
+## Object storage
+
+Files and custom Skills are enabled when `MANAGED_AGENT_FILE_S3_BUCKET` is set.
+Leaving it empty keeps the rest of Mango available and makes those requests
+return `422`.
+
+| Variable | Meaning |
+| --- | --- |
+| `MANAGED_AGENT_FILE_S3_BUCKET` | Bucket name; empty disables Files and custom Skills |
+| `MANAGED_AGENT_FILE_S3_REGION` | Region; defaults to `us-east-1` |
+| `MANAGED_AGENT_FILE_S3_ENDPOINT` | Optional S3-compatible endpoint such as MinIO |
+| `MANAGED_AGENT_FILE_S3_ACCESS_KEY` / `MANAGED_AGENT_FILE_S3_SECRET_KEY` | Optional static credentials; configure together |
+| `MANAGED_AGENT_FILE_S3_PATH_STYLE` | Enables path-style addressing |
+| `MANAGED_AGENT_FILE_S3_CREATE_BUCKET` | Development-only bucket creation convenience |
+
+The current Files slice assumes one Files-enabled API process during startup
+reconciliation. File Resources and runtime Skills also require
+`MANAGED_AGENT_SANDBOX=docker` and shared object-store settings on the API and
+worker.
+
+## Build and check the image
+
+```bash
+make image-smoke
+```
+
+For the development stack:
+
+```bash
+make local-config
+make local-up
+make local-health
+```
+
+## Use a real model endpoint
+
+Stop the offline worker before starting one with real credentials:
+
+```bash
+docker compose -f deployments/local/compose.yaml stop worker
+
+export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
+export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
+export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
+
+export MANAGED_AGENT_MODEL_BASE_URL="https://api.example.com"
+export MANAGED_AGENT_MODEL_API_KEY="replace-me"
+export MANAGED_AGENT_MODEL_ID="claude-model-id"
+export MANAGED_AGENT_MODEL_AUTH="x-api-key"
+
+export MANAGED_AGENT_SANDBOX="docker"
+go run ./cmd/managed-agent orchestrate
+```
+
+The endpoint must expose an Anthropic-shaped streaming `POST /v1/messages` API.
+`MANAGED_AGENT_MODEL_AUTH` can be `x-api-key` or `authorization-bearer`. Do not
+run workers with different model or sandbox settings on the same Temporal task
+queue.
+
+The opt-in live checks make real, potentially billable requests:
+
+```bash
+make test-model-live
+make test-platform-live
+```
+
+## Before production
+
+Mango still needs authentication and tenant isolation, explicit schema
+migration during rollout, worker versioning, metrics and tracing, versioned
+deployment manifests, distributed Files reconciliation, and documented
+upgrade/rollback procedures. Track the order of that work on the
+[Roadmap](/roadmap).
