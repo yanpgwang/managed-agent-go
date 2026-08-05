@@ -8,18 +8,12 @@ slug: /api
 The server implements a practical subset of the Claude Managed Agents and
 Files HTTP APIs under `/v1`.
 
-:::info[Supported surface]
+:::info
 
-This reference documents repository behavior. [Claude API
-coverage](../compatibility.md) summarizes which integration workflows are
-supported, limited, or not supported. The [core API conformance
-matrix](core-conformance.md) inventories each SDK-visible operation and its
-current test evidence. The [Files conformance matrix](files-conformance.md) and
-[Session Resources conformance matrix](session-resources-conformance.md) track
-the first post-core resource slices. The [Skills conformance
-matrix](skills-conformance.md) separately records custom Skill resources,
-reference validation, and Version pinning without implying runtime
-materialization.
+This reference documents repository behavior. See
+[Compatibility & conformance](../compatibility.md) for exactly what is
+supported, limited, or not supported — and for the per-operation conformance
+matrices.
 
 :::
 
@@ -42,10 +36,6 @@ Resource-specific request shapes are covered in:
 - [Environments](environments.md)
 - [Sessions](sessions.md)
 - [Events and streaming](events.md)
-- [Core API conformance matrix](core-conformance.md)
-- [Files API conformance matrix](files-conformance.md)
-- [Skills API conformance matrix](skills-conformance.md)
-- [Session Resources conformance matrix](session-resources-conformance.md)
 
 ## Headers
 

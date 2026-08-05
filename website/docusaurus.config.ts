@@ -57,10 +57,6 @@ const config: Config = {
     },
     navbar: {
       title: 'Mango',
-      logo: {
-        alt: 'Mango',
-        src: 'img/mango-mark.svg',
-      },
       items: [
         {
           type: 'docSidebar',

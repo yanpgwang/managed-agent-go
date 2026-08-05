@@ -1,80 +1,61 @@
 ---
-title: managed-agent-go
+title: Mango
 slug: /
+sidebar_label: Overview
 sidebar_position: 1
 ---
 
-# managed-agent-go
+# Mango
 
-`managed-agent-go` is an independent, Apache-2.0-licensed agent runtime written
-in Go. It persists server-owned sessions, delegates inference to a Messages API
-endpoint, executes tools in replaceable sandboxes, and exposes a Claude Managed
-Agents-compatible HTTP surface.
+Mango (`managed-agent-go`) is an independent, Apache-2.0-licensed agent runtime
+written in Go. It persists server-owned sessions, delegates inference to a
+Messages API endpoint, executes tools in replaceable sandboxes, and exposes an
+HTTP surface compatible with the Claude Managed Agents API.
 
 :::caution[Experimental project]
 
-This is a pre-release implementation of a documented API subset, not an
+This is a pre-release implementation of a documented API subset — not an
 Anthropic product or a drop-in replacement. Check
-[Claude API coverage](compatibility.md) before depending on a capability, and
-do not treat the default local sandbox as a security boundary.
+[Claude API coverage](compatibility.md) before depending on a capability, and do
+not treat the default local sandbox as a security boundary.
 
 :::
 
-## Start here
+## What it does
 
-- [Getting started](getting-started.md) starts the complete Docker stack and
-  completes a first Session turn.
-- [Claude API coverage](compatibility.md) is the exact supported/unsupported
-  behavior matrix.
-- [Core compatibility statement v1.0.0](compatibility/core-v1.md) is the frozen
-  claim for the first core single-agent conformance gate.
-- [Architecture overview](architecture.md) explains why PostgreSQL owns public
-  state, Temporal owns in-flight execution, and NATS carries only ephemeral
-  delivery.
-- [Sandbox backends](sandboxes.md) shows what is available today, the security
-  boundary of each backend, and the ordered path toward remote execution.
-- [Domain model](architecture/domain-model.md) describes agents, environments,
-  Sessions, events, and Workflow turns.
-- [API overview](api/overview.md) lists the implemented endpoints and transport
-  conventions.
-- [Roadmap](roadmap.md) tracks the remaining compatibility and production
-  hardening work on the durable multi-process architecture.
+- Server-owned **Agents, Environments, Sessions, and Events** over a `/v1` HTTP
+  API, with cursor pagination and SSE streaming.
+- A durable **model-and-tool loop**: multi-round inference, custom-tool and
+  confirmation waits, untargeted interrupts, and outcome evaluation.
+- Tools run in **replaceable sandboxes** — local, Docker, and remote providers —
+  with eight built-ins plus provider-native Web Search/Fetch and remote MCP
+  tools.
+- Opt-in **live previews** of assistant text, streamed while the authoritative
+  event is still being produced.
 
-## Current architecture
+## How it fits together
 
-The default deployment has separate API and worker roles:
+The default deployment separates API and worker roles around three backends:
 
-- PostgreSQL is authoritative for resources, public events, projections,
+- **PostgreSQL** is authoritative for resources, public events, projections,
   admission, and the tool journal.
-- Temporal durably runs one Session Workflow and replay-safe model/tool
+- **Temporal** durably runs each Session Workflow and replay-safe model and tool
   Activities.
-- NATS Core carries best-effort previews and persisted-event wakeups; streams
-  repair missed wakeups from PostgreSQL sequence cursors.
+- **NATS Core** carries best-effort previews and event wakeups; missed wakeups
+  are repaired from PostgreSQL sequence cursors.
 
-The local Compose stack runs the complete architecture with a deterministic
-offline model and needs no credentials.
+The local Compose stack runs this complete architecture with a deterministic
+offline model and needs no credentials. The runtime is the product; Claude API
+compatibility is an integration surface, derived from official documentation and
+tested through raw HTTP and the official Go SDK.
 
-## Current capability boundary
+## Next steps
 
-The primary path supports Agent, Environment, Session, and Event resources;
-messages and untargeted interrupts; cursor pagination and SSE; a multi-round
-model loop; durable custom-tool, confirmation, and self-hosted tool-result
-waits; outcome evaluation; eight built-ins; provider-native Web Search/Fetch;
-unauthenticated remote MCP tools; token-aware provider context; local and Docker
-sandboxes; opt-in assistant text previews; conditional File resources and
-File-backed Session Resources; and the conditional custom Skills resource API.
-
-The first core single-agent conformance gate is closed. Its exact claim and
-known differences are published in the
-[versioned statement](compatibility/core-v1.md). Files-backed rubrics, exact
-endpoint/model context profiles, hosted differential testing,
-deployment-managed MCP authentication, memory/vaults, multi-agent
-orchestration, schedules, and webhooks remain outside that claim. Custom Skill
-resources, reference validation, and immutable Agent/Session Version pinning
-are implemented; Docker-backed cloud Sessions also provide on-demand full
-instruction loading from restart-safe read-only materialization. Other sandbox
-providers remain outside the conditional Skill runtime claim.
-
-The runtime is the product; Claude API compatibility is an integration surface.
-Public behavior is derived from official documentation and tested through raw
-HTTP plus the official Go SDK, while the internal implementation is original.
+- **[Get started](getting-started.md)** — run the full stack and complete a
+  first Session turn.
+- **[Concepts](architecture.md)** — how the server owns history, and how
+  sessions, events, and the runtime fit together.
+- **[API reference](api/overview.md)** — implemented endpoints, request shapes,
+  and transport conventions.
+- **[Compatibility & conformance](compatibility.md)** — exactly what is
+  supported, limited, or not supported.

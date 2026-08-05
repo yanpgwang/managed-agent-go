@@ -18,22 +18,24 @@ This page describes the user-visible integration surface:
 - **Not supported** means the server may accept or preserve part of the shape,
   but does not provide the corresponding behavior.
 
-The [core API conformance matrix](api/core-conformance.md) records the frozen
-single-agent surface. The separate [Files conformance
-matrix](api/files-conformance.md) records evidence for the first post-core
-resource slice, and the [Session Resources conformance
-matrix](api/session-resources-conformance.md) records the File attachment slice.
-The [Skills conformance matrix](api/skills-conformance.md) records the custom
-resource, reference-validation, and immutable Version-pinning slice separately
-from sandbox execution.
+This page is the living coverage view. Per-operation evidence lives in the
+conformance matrices, and the frozen claim lives in the versioned statement:
+
+- [Core API conformance matrix](api/core-conformance.md) — the single-agent
+  surface.
+- [Files conformance matrix](api/files-conformance.md) — the first post-core
+  resource slice.
+- [Session Resources conformance matrix](api/session-resources-conformance.md) —
+  the File attachment slice.
+- [Skills conformance matrix](api/skills-conformance.md) — custom resources,
+  reference validation, and immutable Version pinning.
+- [Core compatibility statement v1.0.0](compatibility/core-v1.md) — the frozen
+  claim against the `managed-agents-2026-04-01` beta and Anthropic Go SDK
+  `v1.61.0`.
 
 The official Anthropic Go SDK is used as a black-box client for core lifecycle
-tests. That verifies useful interoperability, not universal drop-in
+tests, which verifies useful interoperability rather than universal drop-in
 compatibility.
-
-The published [core compatibility statement v1.0.0](compatibility/core-v1.md)
-freezes the first scoped claim against the `managed-agents-2026-04-01` beta and
-Anthropic Go SDK `v1.61.0`. This page remains the living coverage view.
 
 ## Coverage summary
 
