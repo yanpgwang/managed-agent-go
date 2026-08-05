@@ -114,6 +114,8 @@ func (*dockerProvider) SupportsFileResources() bool { return true }
 
 func (*dockerProvider) SupportsSkillBundles() bool { return true }
 
+func (*dockerProvider) SupportsMemoryStores() bool { return true }
+
 // runDocker invokes the docker CLI with the given args, capturing stdout/stderr
 // (capped) and the process exit code. The passed ctx bounds the whole call.
 func (p *dockerProvider) runDocker(ctx context.Context, stdin []byte, args ...string) (stdout, stderr []byte, exitCode int, err error) {
@@ -164,8 +166,13 @@ func (p *dockerProvider) Create(
 	if network == "" {
 		network = "none"
 	}
-	resourceRoot, resourceFiles, resourceSkills, err := p.ensureResourceRoot(sessionKey)
+	resourceRoot, resourceFiles, resourceSkills, resourceMemory, err := p.ensureResourceRoot(sessionKey)
 	if err != nil {
+		return Ref{}, nil, err
+	}
+	memoryMounts, err := prepareDockerMemoryMounts(resourceMemory, spec.MemoryStores)
+	if err != nil {
+		_ = os.RemoveAll(resourceRoot)
 		return Ref{}, nil, err
 	}
 
@@ -178,6 +185,14 @@ func (p *dockerProvider) Create(
 		"--mount", "type=bind,source=" + resourceFiles + ",target=" + SessionUploadsRoot + ",readonly",
 		"--mount", "type=bind,source=" + resourceSkills + ",target=" + domain.SessionSkillsRoot + ",readonly",
 		"-w", dockerRoot,
+	}
+	for _, mount := range spec.MemoryStores {
+		source := memoryMounts[mount.Identity]
+		option := "type=bind,source=" + source + ",target=" + mount.RuntimePath
+		if mount.Access == domain.MemoryAccessReadOnly {
+			option += ",readonly"
+		}
+		args = append(args, "--mount", option)
 	}
 	if spec.Memory != "" {
 		args = append(args, "-m", spec.Memory)
@@ -240,6 +255,7 @@ func (p *dockerProvider) Create(
 		resourceRoot:       resourceRoot,
 		resourceMountReady: true,
 		skillMountReady:    true,
+		memoryMounts:       memoryMounts,
 	}, nil
 }
 
@@ -335,6 +351,12 @@ func (p *dockerProvider) attachTarget(
 	if err != nil {
 		return nil, err
 	}
+	memoryMounts, err := p.inspectMemoryMounts(
+		ctx, fields[0], resourceRoot, spec.MemoryStores,
+	)
+	if err != nil {
+		return nil, err
+	}
 	return &dockerSandbox{
 		provider:           p,
 		cid:                fields[0],
@@ -342,6 +364,7 @@ func (p *dockerProvider) attachTarget(
 		resourceRoot:       resourceRoot,
 		resourceMountReady: resourceMountReady,
 		skillMountReady:    skillMountReady,
+		memoryMounts:       memoryMounts,
 	}, nil
 }
 
@@ -374,6 +397,7 @@ type dockerSandbox struct {
 	resourceRoot       string
 	resourceMountReady bool
 	skillMountReady    bool
+	memoryMounts       map[string]string
 
 	// mu guards dead. Once the container is torn down (timed-out and killed, or
 	// destroyed), the sandbox is permanently dead: further calls must fail fast

@@ -75,8 +75,8 @@ Optional `initial_events` may contain up to 50 `user.message` or
 The optional `title`, `metadata`, `initial_events`, `resources`, and `vault_ids`
 fields must use their documented non-null shapes when present; omission supplies
 the empty/default value.
-`resources` accepts up to 500 File inputs when Files storage and the Docker
-sandbox provider are configured:
+`resources` accepts File inputs and up to eight Memory Store inputs when the
+corresponding Docker sandbox capability is configured:
 
 ```json
 {
@@ -87,9 +87,11 @@ sandbox provider are configured:
 ```
 
 Each attachment creates an independent, downloadable Session-scoped File copy
-and a read-only mount beneath `/mnt/session/uploads`. GitHub repository, Memory
-Store, self-hosted Environment, local-process, and current remote-provider
-resources return `422`. Non-empty `vault_ids` remain unsupported at creation
+and a read-only mount beneath `/mnt/session/uploads`. A Memory Store input uses
+`type: "memory_store"`, `memory_store_id`, optional `instructions`, and
+`read_write` or `read_only` access; it is mounted beneath `/mnt/memory` and can
+only be attached at creation. GitHub repository, self-hosted Environment,
+local-process, and current remote-provider resources return `422`. Non-empty `vault_ids` remain unsupported at creation
 time; this is a Mango limitation because the official Create Session API
 accepts vault IDs.
 
@@ -153,7 +155,7 @@ Supported query parameters:
 | `include_archived` | `true` or `false` |
 | `created_at[gt\|gte\|lt\|lte]` | RFC 3339 timestamp bounds |
 | `deployment_id` | Accepted; current records do not match deployments |
-| `memory_store_id` | Accepted; current records do not match memory stores |
+| `memory_store_id` | Match Sessions attached to the Memory Store |
 
 The response includes both directions:
 
@@ -189,8 +191,8 @@ Delete removes the session and persisted history, sends a final
 The response embeds the resolved agent snapshot and includes `resources`,
 `vault_ids`, `outcome_evaluations`, `stats`, `usage`, and `deployment_id`.
 `stats` and `usage` are cumulative live projections, and
-`outcome_evaluations` reflects each admitted outcome. `resources` embeds the
-active File Resource objects; create-time vault rejection is a Mango limitation; update-time
+`outcome_evaluations` reflects each admitted outcome. `resources` embeds active
+File and Memory Store Resource objects; create-time vault rejection is a Mango limitation; update-time
 vault rejection matches the official API. `deployment_id` is null because
 deployment-created sessions are not implemented.
 See [Claude API coverage](../compatibility.md).

@@ -153,6 +153,44 @@ func TestSDK_SessionFileResourceLifecycle(t *testing.T) {
 	}
 }
 
+func TestSDK_SessionMemoryStoreResource(t *testing.T) {
+	client, ts, _ := sdkClientServerAndSessions(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "opus", "sys")
+	environmentID := mustEnv(t, ts.URL)
+
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: environmentID,
+		Resources: []anthropic.BetaSessionNewParamsResourceUnion{{
+			OfMemoryStore: &anthropic.BetaManagedAgentsMemoryStoreResourceParam{
+				MemoryStoreID: "memstore_project",
+				Type:          anthropic.BetaManagedAgentsMemoryStoreResourceParamTypeMemoryStore,
+				Access:        anthropic.BetaManagedAgentsMemoryStoreResourceParamAccessReadOnly,
+				Instructions:  anthropic.String("Prefer established project conventions."),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create session with Memory Store: %v", err)
+	}
+	if len(session.Resources) != 1 {
+		t.Fatalf("create-time resources = %d, want 1", len(session.Resources))
+	}
+	memory := session.Resources[0].AsMemoryStore()
+	if memory.MemoryStoreID != "memstore_project" ||
+		memory.Type != anthropic.BetaManagedAgentsMemoryStoreResourceTypeMemoryStore ||
+		memory.Access != anthropic.BetaManagedAgentsMemoryStoreResourceAccessReadOnly ||
+		memory.MountPath != "/mnt/memory/project-memory" ||
+		memory.Instructions != "Prefer established project conventions." {
+		t.Fatalf("Memory Store resource = %s", memory.RawJSON())
+	}
+	assertRawObjectHasFields(
+		t, memory.RawJSON(), "memory_store_id", "type", "access", "description",
+		"instructions", "mount_path", "name",
+	)
+}
+
 func TestSDK_TerminalSessionErrorEvent(t *testing.T) {
 	client, ts, sessions := sdkClientServerAndSessions(t)
 	ctx := context.Background()

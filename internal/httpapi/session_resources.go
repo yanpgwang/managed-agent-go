@@ -12,6 +12,21 @@ import (
 )
 
 func sessionResourceToJSON(resource domain.SessionResource) map[string]any {
+	if resource.Type() == domain.SessionResourceTypeMemoryStore {
+		var instructions any
+		if resource.MemoryInstructions != "" {
+			instructions = resource.MemoryInstructions
+		}
+		return map[string]any{
+			"memory_store_id": resource.MemoryStoreID,
+			"type":            domain.SessionResourceTypeMemoryStore,
+			"access":          resource.MemoryAccess,
+			"description":     resource.MemoryStoreDescription,
+			"instructions":    instructions,
+			"mount_path":      resource.MountPath,
+			"name":            resource.MemoryStoreName,
+		}
+	}
 	return map[string]any{
 		"id":         resource.ID,
 		"created_at": resource.CreatedAt.Format(timeFmt),
@@ -22,49 +37,76 @@ func sessionResourceToJSON(resource domain.SessionResource) map[string]any {
 	}
 }
 
-func parseSessionFileResourceInputs(
+func parseSessionResourceInputs(
 	raw *[]json.RawMessage,
-) ([]app.FileSessionResourceInput, error) {
+) ([]app.FileSessionResourceInput, []app.MemorySessionResourceInput, error) {
 	if raw == nil || len(*raw) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	if len(*raw) > 500 {
-		return nil, domain.Validation("resources must contain at most 500 entries")
+		return nil, nil, domain.Validation("resources must contain at most 500 entries")
 	}
-	inputs := make([]app.FileSessionResourceInput, 0, len(*raw))
+	files := make([]app.FileSessionResourceInput, 0, len(*raw))
+	memories := make([]app.MemorySessionResourceInput, 0, len(*raw))
 	for _, item := range *raw {
-		input, err := parseSessionFileResourceInput(item)
+		resourceType, err := parseSessionResourceType(item)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		inputs = append(inputs, input)
+		switch resourceType {
+		case domain.SessionResourceTypeFile:
+			input, err := parseSessionFileResourceInput(item)
+			if err != nil {
+				return nil, nil, err
+			}
+			files = append(files, input)
+		case domain.SessionResourceTypeMemoryStore:
+			input, err := parseSessionMemoryResourceInput(item)
+			if err != nil {
+				return nil, nil, err
+			}
+			memories = append(memories, input)
+		default:
+			return nil, nil, domain.Unsupported("unsupported Session Resource type")
+		}
 	}
-	return inputs, nil
+	if len(memories) > domain.MaxSessionMemoryStores {
+		return nil, nil, domain.Validation("resources may contain at most 8 Memory Stores")
+	}
+	return files, memories, nil
 }
 
-func parseSessionFileResourceInput(raw json.RawMessage) (app.FileSessionResourceInput, error) {
+func parseSessionResourceType(raw json.RawMessage) (string, error) {
 	var discriminator struct {
 		Type string `json:"type"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	if err := decoder.Decode(&discriminator); err != nil {
-		return app.FileSessionResourceInput{}, domain.Validation(
+		return "", domain.Validation(
 			"session resource must be a valid resource object",
 		)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return app.FileSessionResourceInput{}, domain.Validation(
+		return "", domain.Validation(
 			"session resource must contain exactly one JSON object",
 		)
 	}
 	if discriminator.Type == "" {
-		return app.FileSessionResourceInput{}, domain.Validation(
+		return "", domain.Validation(
 			"session resource type is required",
 		)
 	}
-	if discriminator.Type != "file" {
+	return discriminator.Type, nil
+}
+
+func parseSessionFileResourceInput(raw json.RawMessage) (app.FileSessionResourceInput, error) {
+	resourceType, err := parseSessionResourceType(raw)
+	if err != nil {
+		return app.FileSessionResourceInput{}, err
+	}
+	if resourceType != domain.SessionResourceTypeFile {
 		return app.FileSessionResourceInput{}, domain.Unsupported(
-			"only File-backed Session Resources are implemented",
+			"Memory Stores can be attached only while creating a Session",
 		)
 	}
 	var input struct {
@@ -72,7 +114,7 @@ func parseSessionFileResourceInput(raw json.RawMessage) (app.FileSessionResource
 		FileID    string  `json:"file_id"`
 		MountPath *string `json:"mount_path"`
 	}
-	decoder = json.NewDecoder(bytes.NewReader(raw))
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&input); err != nil {
 		return app.FileSessionResourceInput{}, domain.Validation(
@@ -89,6 +131,58 @@ func parseSessionFileResourceInput(raw json.RawMessage) (app.FileSessionResource
 	}
 	return app.FileSessionResourceInput{
 		FileID: input.FileID, MountPath: input.MountPath,
+	}, nil
+}
+
+func parseSessionMemoryResourceInput(raw json.RawMessage) (app.MemorySessionResourceInput, error) {
+	var input struct {
+		Type          string                    `json:"type"`
+		MemoryStoreID string                    `json:"memory_store_id"`
+		Access        optionalJSONField[string] `json:"access"`
+		Instructions  optionalJSONField[string] `json:"instructions"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&input); err != nil {
+		return app.MemorySessionResourceInput{}, domain.Validation(
+			"session resource must be a valid Memory Store resource object",
+		)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return app.MemorySessionResourceInput{}, domain.Validation(
+			"session resource must contain exactly one JSON object",
+		)
+	}
+	if input.Type != domain.SessionResourceTypeMemoryStore {
+		return app.MemorySessionResourceInput{}, domain.Validation(
+			"session resource type must be memory_store",
+		)
+	}
+	if input.MemoryStoreID == "" {
+		return app.MemorySessionResourceInput{}, domain.Validation("memory_store_id is required")
+	}
+	if input.Access.Null || input.Instructions.Null {
+		return app.MemorySessionResourceInput{}, domain.Validation(
+			"access and instructions cannot be null",
+		)
+	}
+	access := domain.MemoryAccessReadWrite
+	if input.Access.Present {
+		access = input.Access.Value
+	}
+	if access != domain.MemoryAccessReadWrite && access != domain.MemoryAccessReadOnly {
+		return app.MemorySessionResourceInput{}, domain.Validation(
+			"access must be read_write or read_only",
+		)
+	}
+	instructions := ""
+	if input.Instructions.Present {
+		instructions = input.Instructions.Value
+	}
+	return app.MemorySessionResourceInput{
+		MemoryStoreID: input.MemoryStoreID,
+		Access:        access,
+		Instructions:  instructions,
 	}, nil
 }
 

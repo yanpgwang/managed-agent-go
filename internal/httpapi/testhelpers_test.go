@@ -449,6 +449,24 @@ func (s *testSessionService) Create(
 			State: domain.SessionResourceActive,
 		})
 	}
+	for _, inputResource := range input.MemoryResources {
+		name := "Project Memory"
+		mountPath, err := domain.NormalizeSessionMemoryStoreMountPath(name)
+		if err != nil {
+			return domain.Session{}, err
+		}
+		session.Resources = append(session.Resources, domain.SessionResource{
+			ID: s.ids.NewID(domain.PrefixSessionResource), SessionID: session.ID,
+			ResourceType:           domain.SessionResourceTypeMemoryStore,
+			MemoryStoreID:          inputResource.MemoryStoreID,
+			MemoryAccess:           inputResource.Access,
+			MemoryInstructions:     inputResource.Instructions,
+			MemoryStoreName:        name,
+			MemoryStoreDescription: "Shared project conventions.",
+			MountPath:              mountPath, CreatedAt: now, UpdatedAt: now,
+			State: domain.SessionResourceActive,
+		})
+	}
 	s.mu.Lock()
 	s.sessions[session.ID] = session
 	s.mu.Unlock()

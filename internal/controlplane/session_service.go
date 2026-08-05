@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -33,7 +34,10 @@ type SessionService struct {
 	ids          domain.IDGenerator
 	clock        domain.Clock
 	resources    *SessionResourceService
-	skillRef     app.SkillReferenceResolver
+	memoryStores interface {
+		GetStore(context.Context, string) (domain.MemoryStore, error)
+	}
+	skillRef app.SkillReferenceResolver
 }
 
 func NewSessionService(
@@ -54,6 +58,15 @@ func NewSessionService(
 		service.resources = resourceServices[0]
 	}
 	return service
+}
+
+// EnableMemoryStoreResources installs the deployment's Memory Store reader.
+// Composition calls this only when the configured sandbox adapter can expose
+// durable /mnt/memory mounts; API admission otherwise fails explicitly.
+func (s *SessionService) EnableMemoryStoreResources(reader interface {
+	GetStore(context.Context, string) (domain.MemoryStore, error)
+}) {
+	s.memoryStores = reader
 }
 
 func (s *SessionService) Create(
@@ -113,6 +126,11 @@ func (s *SessionService) Create(
 			"custom Skills are unavailable for self-hosted Sessions",
 		)
 	}
+	if environment.ConfigType == "self_hosted" && len(input.MemoryResources) > 0 {
+		return domain.Session{}, domain.Unsupported(
+			"Memory Store resources are unavailable for self-hosted Sessions",
+		)
+	}
 	if err := domain.ValidateToolConfiguration(
 		snapshot.Tools,
 		snapshot.MCPServers,
@@ -148,17 +166,24 @@ func (s *SessionService) Create(
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}
-	var prepared []app.PreparedSessionResource
+	prepared, err := s.prepareMemoryStoreResources(ctx, session, input.MemoryResources)
+	if err != nil {
+		return domain.Session{}, err
+	}
 	if len(input.Resources) > 0 {
 		if s.resources == nil {
 			return domain.Session{}, domain.Unsupported(
 				"File resources are unavailable for the configured deployment",
 			)
 		}
-		prepared, err = s.resources.PrepareForSession(ctx, session, input.Resources)
+		fileResources, prepareErr := s.resources.PrepareForSession(ctx, session, input.Resources)
+		err = prepareErr
 		if err != nil {
 			return domain.Session{}, err
 		}
+		prepared = append(prepared, fileResources...)
+	}
+	if len(prepared) > 0 {
 		session.Resources = make([]domain.SessionResource, len(prepared))
 		for index := range prepared {
 			session.Resources[index] = prepared[index].Resource
@@ -174,6 +199,86 @@ func (s *SessionService) Create(
 		}
 	}
 	return created, err
+}
+
+func (s *SessionService) prepareMemoryStoreResources(
+	ctx context.Context,
+	session domain.Session,
+	inputs []app.MemorySessionResourceInput,
+) ([]app.PreparedSessionResource, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	if len(inputs) > domain.MaxSessionMemoryStores {
+		return nil, domain.Validation("resources may contain at most 8 Memory Stores")
+	}
+	if s.memoryStores == nil {
+		return nil, domain.Unsupported(
+			"Memory Store resources are unavailable for the configured deployment",
+		)
+	}
+	seenStores := make(map[string]struct{}, len(inputs))
+	seenMounts := make(map[string]struct{}, len(inputs))
+	prepared := make([]app.PreparedSessionResource, 0, len(inputs))
+	now := session.CreatedAt.UTC()
+	for _, input := range inputs {
+		if input.MemoryStoreID == "" {
+			return nil, domain.Validation("memory_store_id is required")
+		}
+		if _, duplicate := seenStores[input.MemoryStoreID]; duplicate {
+			return nil, domain.Validation("a Memory Store may be attached only once")
+		}
+		seenStores[input.MemoryStoreID] = struct{}{}
+		if input.Access == "" {
+			input.Access = domain.MemoryAccessReadWrite
+		}
+		if input.Access != domain.MemoryAccessReadWrite &&
+			input.Access != domain.MemoryAccessReadOnly {
+			return nil, domain.Validation("access must be read_write or read_only")
+		}
+		if !utf8.ValidString(input.Instructions) ||
+			utf8.RuneCountInString(input.Instructions) > domain.MaxSessionMemoryInstructionsChars {
+			return nil, domain.Validation(
+				"instructions must contain at most 4096 valid UTF-8 characters",
+			)
+		}
+		store, err := s.memoryStores.GetStore(ctx, input.MemoryStoreID)
+		if err != nil {
+			var domainErr *domain.DomainError
+			if errors.As(err, &domainErr) && domainErr.Kind == domain.KindNotFound {
+				return nil, domain.Validation("memory store not found")
+			}
+			return nil, err
+		}
+		if store.ArchivedAt != nil {
+			return nil, domain.Validation("memory store is archived")
+		}
+		mountPath, err := domain.NormalizeSessionMemoryStoreMountPath(store.Name)
+		if err != nil {
+			return nil, err
+		}
+		if _, collision := seenMounts[mountPath]; collision {
+			return nil, domain.Validation(
+				"attached Memory Store names must produce distinct mount paths",
+			)
+		}
+		seenMounts[mountPath] = struct{}{}
+		prepared = append(prepared, app.PreparedSessionResource{Resource: domain.SessionResource{
+			ID:                     s.ids.NewID(domain.PrefixSessionResource),
+			SessionID:              session.ID,
+			ResourceType:           domain.SessionResourceTypeMemoryStore,
+			MemoryStoreID:          store.ID,
+			MemoryAccess:           input.Access,
+			MemoryInstructions:     input.Instructions,
+			MemoryStoreName:        store.Name,
+			MemoryStoreDescription: store.Description,
+			MountPath:              mountPath,
+			CreatedAt:              now,
+			UpdatedAt:              now,
+			State:                  domain.SessionResourceActive,
+		}})
+	}
+	return prepared, nil
 }
 
 func (s *SessionService) Get(ctx context.Context, id string) (domain.Session, error) {
@@ -254,6 +359,14 @@ func (s *SessionService) Delete(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
+	}
+	memoryCleanupCtx, memoryCleanupCancel := context.WithTimeout(
+		context.WithoutCancel(ctx), 5*time.Second,
+	)
+	err := s.store.FinalizeSessionMemoryResources(memoryCleanupCtx, id)
+	memoryCleanupCancel()
+	if err != nil {
+		return err
 	}
 	// Once termination succeeds, finish the fenced delete even if the client
 	// disconnects. If the database write fails, the marker intentionally remains

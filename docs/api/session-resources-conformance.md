@@ -5,24 +5,25 @@ slug: /api/session-resources-conformance
 
 # Session Resources conformance
 
-This matrix records the File-backed Session Resources slice separately from
-the frozen [core compatibility statement](../compatibility/core-v1.md). The
-routes use `anthropic-beta: managed-agents-2026-04-01`, but this later work does
-not retroactively expand the core v1.0.0 claim.
+This matrix records the File-backed and Memory-backed Session Resources slices
+separately from the frozen
+[core compatibility statement](../compatibility/core-v1.md). The routes use
+`anthropic-beta: managed-agents-2026-04-01`, but this later work does not
+retroactively expand the core v1.0.0 claim.
 
 ## Operation evidence
 
 | Operation | Official Go SDK | Durable/service evidence |
 | --- | --- | --- |
 | `POST /v1/sessions/{session_id}/resources` | File input and File Resource response | Independent object copy, Session lock, mount collision check, and atomic metadata publication |
-| `GET /v1/sessions/{session_id}/resources` | Cursor page decoding and auto-paging shape | PostgreSQL keyset order and cursor scope binding |
+| `GET /v1/sessions/{session_id}/resources` | File and Memory Store union decoding, cursor page shape | PostgreSQL keyset order and cursor scope binding |
 | `GET /v1/sessions/{session_id}/resources/{resource_id}` | File Resource union decoding | Active rows only; cross-Session IDs do not resolve |
 | `POST /v1/sessions/{session_id}/resources/{resource_id}` | Request reaches the route | Explicit `422`: token rotation is defined only for GitHub repository resources |
 | `DELETE /v1/sessions/{session_id}/resources/{resource_id}` | Deleted response decoding | Desired-state tombstone, idempotent unmount, object cleanup, and crash retry |
 
-The same File input is accepted in `POST /v1/sessions`. Session publication,
-initial events, File-copy visibility, and resource rows share one PostgreSQL
-transaction after the object copy is prepared.
+File and Memory Store inputs are accepted in `POST /v1/sessions`. Session
+publication, initial events, File-copy visibility, and resource rows share one
+PostgreSQL transaction after any object copies are prepared.
 
 The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.61.0`.
 Service tests use real PostgreSQL. Sandbox tests use a real Docker container and
@@ -30,9 +31,11 @@ verify reattachment after a provider-client restart.
 
 ## Implemented contract
 
-- Only the `file` variant is accepted. GitHub repository and Memory Store
+- The `file` and `memory_store` variants are accepted at Session creation.
+  Memory Stores cannot be added or removed after creation. GitHub repository
   resources return an explicit unsupported error.
-- Every attachment creates a new downloadable File with `scope.type = session`.
+- Every File attachment creates a new downloadable File with
+  `scope.type = session`.
   Its object bytes are independent: deleting the source upload does not break
   the Session Resource. The scoped copy cannot be deleted through
   `DELETE /v1/files/{file_id}`; detach the owning Session Resource instead.
@@ -102,7 +105,8 @@ verify reattachment after a provider-client restart.
   request, but operators must size API temporary storage and upstream request
   timeouts accordingly.
 - File-sourced messages, File outcome rubrics, arbitrary sandbox-output export,
-  GitHub repositories, and Memory Store mounts remain outside this slice.
+  and GitHub repositories remain outside this slice. Memory Store behavior is
+  detailed in the [Memory conformance matrix](memory-conformance.md).
 - Files metadata and bytes remain single-tenant, and Files startup
   reconciliation still assumes one Files-enabled API process.
 
@@ -111,3 +115,4 @@ verify reattachment after a provider-client restart.
 - [Session Resources API](https://platform.claude.com/docs/en/api/beta/sessions/resources)
 - [Managed Agents Files](https://platform.claude.com/docs/en/managed-agents/files)
 - [Files API](https://platform.claude.com/docs/en/api/beta/files)
+- [Managed Agents Memory](https://platform.claude.com/docs/en/managed-agents/memory)

@@ -43,6 +43,9 @@ func writeError(w http.ResponseWriter, err error) {
 		case domain.KindTooLarge:
 			status, typ = http.StatusRequestEntityTooLarge, "request_too_large"
 		}
+		if de.Code != "" {
+			typ = de.Code
+		}
 	}
 	writeErrorEnvelope(w, status, typ, err.Error())
 }

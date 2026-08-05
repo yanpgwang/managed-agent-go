@@ -109,6 +109,8 @@ type countingSandboxLease struct {
 
 type permanentResourceReconciler struct{}
 
+type failingWritebackReconciler struct{}
+
 type permanentSandboxLease struct{}
 
 func (permanentSandboxLease) Acquire(
@@ -127,6 +129,22 @@ func (permanentResourceReconciler) Reconcile(
 	sandbox.Sandbox,
 ) error {
 	return sandbox.Permanent(errors.New("resource provider mismatch"))
+}
+
+func (failingWritebackReconciler) Reconcile(
+	context.Context,
+	string,
+	sandbox.Sandbox,
+) error {
+	return nil
+}
+
+func (failingWritebackReconciler) Writeback(
+	context.Context,
+	string,
+	sandbox.Sandbox,
+) error {
+	return errors.New("database temporarily unavailable")
 }
 
 func (l *countingSandboxLease) Acquire(
@@ -364,6 +382,45 @@ func TestExecuteTool_SandboxPermanentErrorTerminatesTurn(t *testing.T) {
 	}
 	if result.FatalError == "" {
 		t.Fatalf("ExecuteTool result = %+v, want fatal error", result)
+	}
+}
+
+func TestExecuteTool_WritebackFailurePreservesToolOutput(t *testing.T) {
+	ctx := context.Background()
+	_, box, err := sandbox.NewLocalProvider().Create(ctx, t.Name(), sandbox.Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	journal := &memoryMCPJournal{}
+	activities := NewActivities(
+		nil,
+		newFakeSource(nil),
+		journal,
+		&fixedSandboxLease{box: box},
+		&testIDGen{},
+	).WithSandboxResourceReconciler(failingWritebackReconciler{})
+
+	result, err := activities.ExecuteTool(ctx, ExecuteToolInput{
+		SessionID: "sesn_writeback", TriggerEventID: "sevt_trigger",
+		AttemptID: "ratm_writeback", Ordinal: 0,
+		ToolUseEventID: "sevt_tool", ToolStepID: "tstep_writeback",
+		ToolName: "bash", Input: map[string]any{"command": "printf tool-output"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Result.IsError || len(result.Result.Content) < 2 {
+		t.Fatalf("writeback result = %+v", result.Result)
+	}
+	if got := result.Result.Content[0].(map[string]any)["text"]; got != "tool-output" {
+		t.Fatalf("tool output = %#v", got)
+	}
+	if got := result.Result.Content[len(result.Result.Content)-1].(map[string]any)["text"]; got != "Memory Store writeback failed: database temporarily unavailable" {
+		t.Fatalf("writeback error = %#v", got)
+	}
+	if !journal.result.IsError || len(journal.result.Content) != len(result.Result.Content) {
+		t.Fatalf("journaled result = %+v", journal.result)
 	}
 }
 

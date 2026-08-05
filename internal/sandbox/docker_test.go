@@ -115,9 +115,76 @@ func TestDocker_FileRoundTripAndConfinement(t *testing.T) {
 	}
 }
 
+func TestDocker_MemoryStoreMountRoundTripAndReadOnlyBoundary(t *testing.T) {
+	readWrite := MemoryStoreMount{
+		Identity: "sesrsc_memory_rw", StoreID: "memstore_rw",
+		RuntimePath: "/mnt/memory/project", Access: domain.MemoryAccessReadWrite,
+	}
+	readOnly := MemoryStoreMount{
+		Identity: "sesrsc_memory_ro", StoreID: "memstore_ro",
+		RuntimePath: "/mnt/memory/reference", Access: domain.MemoryAccessReadOnly,
+	}
+	box := newDockerSB(t, Spec{MemoryStores: []MemoryStoreMount{readWrite, readOnly}})
+	memoryBox, ok := box.(MemoryStoreSandbox)
+	if !ok {
+		t.Fatalf("Docker sandbox does not expose MemoryStoreSandbox: %T", box)
+	}
+	file := func(id, path, content string) MemoryStoreFile {
+		sum := sha256.Sum256([]byte(content))
+		return MemoryStoreFile{
+			MemoryID: id, Path: path, Content: []byte(content),
+			ContentSHA256: hex.EncodeToString(sum[:]),
+		}
+	}
+	if err := memoryBox.ReplaceMemoryStore(
+		context.Background(), readWrite,
+		[]MemoryStoreFile{file("mem_a", "/notes/a.md", "initial")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := memoryBox.ReplaceMemoryStore(
+		context.Background(), readOnly,
+		[]MemoryStoreFile{file("mem_ref", "/policy.md", "fixed")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	result, err := box.Exec(context.Background(), Command{
+		Path: "sh", Args: []string{"-c", `printf updated > /mnt/memory/project/notes/a.md && printf new > /mnt/memory/project/new.md`},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("write Memory Store: result=%+v err=%v", result, err)
+	}
+	snapshot, err := memoryBox.ReadMemoryStore(context.Background(), readWrite)
+	if err != nil || !snapshot.Initialized || len(snapshot.Baseline) != 1 ||
+		len(snapshot.Current) != 2 {
+		t.Fatalf("Memory snapshot = %+v, %v", snapshot, err)
+	}
+	contents := map[string]string{}
+	for _, current := range snapshot.Current {
+		contents[current.Path] = string(current.Content)
+	}
+	if contents["/notes/a.md"] != "updated" || contents["/new.md"] != "new" {
+		t.Fatalf("Memory contents = %#v", contents)
+	}
+	result, err = box.Exec(context.Background(), Command{
+		Path: "sh", Args: []string{"-c", `printf changed > /mnt/memory/reference/policy.md`},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode == 0 {
+		t.Fatalf("read-only Memory Store accepted a write: %+v", result)
+	}
+	readOnlySnapshot, err := memoryBox.ReadMemoryStore(context.Background(), readOnly)
+	if err != nil || len(readOnlySnapshot.Current) != 1 ||
+		string(readOnlySnapshot.Current[0].Content) != "fixed" {
+		t.Fatalf("read-only Memory snapshot = %+v, %v", readOnlySnapshot, err)
+	}
+}
+
 func TestDocker_NetworkNoneByDefault(t *testing.T) {
 	sb := newDockerSB(t, Spec{})
-	// no network: DNS/连接应失败
+	// With no network, DNS lookup and connection attempts must fail.
 	res, _ := sb.Exec(context.Background(), Command{Path: "sh", Args: []string{"-c",
 		"wget -T2 -q -O- http://example.com >/dev/null 2>&1 && echo REACHED || echo BLOCKED"}})
 	if strings.TrimSpace(string(res.Stdout)) != "BLOCKED" {
@@ -629,7 +696,7 @@ func TestDocker_FileResourceDirectoryModesIgnoreUmask(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := providerInterface.(*dockerProvider)
-	root, _, _, err := provider.ensureResourceRoot(t.Name())
+	root, _, _, _, err := provider.ensureResourceRoot(t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}

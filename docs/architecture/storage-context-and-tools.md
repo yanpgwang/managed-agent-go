@@ -521,8 +521,9 @@ tool boundaries needed for native web and unauthenticated MCP:
    implemented. Optional managed search/fetch providers remain follow-up work.
 6. **Context engineering:** conservative token budgets, rich-content-aware
    projection, and extractive compaction are implemented. Durable snapshot
-   records, provider-exact counters, retention controls, and independent
-   cross-Session Memory remain follow-up work.
+   records, provider-exact counters, and retention controls remain follow-up
+   work. Independent cross-Session Memory now uses PostgreSQL-backed Stores and
+   Docker Session mounts.
 
 The first two steps were treated as prerequisites rather than cleanup after
 native web, so new Sessions do not depend on reconstructing provider context

@@ -28,6 +28,7 @@ type ProviderCapabilities struct {
 	LimitedNetwork bool
 	FileResources  bool
 	SkillBundles   bool
+	MemoryStores   bool
 }
 
 // ProviderRegistration is one deployment-selectable sandbox adapter.
@@ -170,6 +171,17 @@ func (r *ProviderRegistry) Open(name string) (Provider, error) {
 			name,
 			declaredSkills,
 			actualSkills,
+		)
+	}
+	declaredMemory := r.capabilities[name].MemoryStores
+	memoryCapability, implementsMemoryCapability := provider.(MemoryStoreProvider)
+	actualMemory := implementsMemoryCapability && memoryCapability.SupportsMemoryStores()
+	if declaredMemory != actualMemory {
+		return nil, fmt.Errorf(
+			"sandbox: provider %q Memory Store capability is registered as %t but reports %t",
+			name,
+			declaredMemory,
+			actualMemory,
 		)
 	}
 	return provider, nil

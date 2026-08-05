@@ -22,6 +22,7 @@ type Config struct {
 const betaValue = "managed-agents-2026-04-01"
 const filesBetaValue = "files-api-2025-04-14"
 const skillsBetaValue = "skills-2025-10-02"
+const memoryBetaValue = "agent-memory-2026-07-22"
 const anthropicVersion = "2023-06-01"
 
 // maxBodyBytes is the documented request-size limit for Sessions, Agents, and
@@ -38,6 +39,13 @@ func betaMiddleware(cfg Config, next http.Handler) http.Handler {
 			requiredBeta = filesBetaValue
 		} else if isSkillPath(r.URL.Path) {
 			requiredBeta = skillsBetaValue
+		} else if isMemoryPath(r.URL.Path) {
+			requiredBeta = memoryBetaValue
+			if headerHasToken(betaHeaders, betaValue) {
+				writeErrorEnvelope(w, http.StatusBadRequest, "invalid_request_error",
+					"agent-memory and managed-agents beta headers cannot be combined")
+				return
+			}
 		}
 		if cfg.RequireBeta && !headerHasToken(betaHeaders, requiredBeta) {
 			writeErrorEnvelope(w, http.StatusBadRequest, "invalid_request_error",
@@ -138,6 +146,10 @@ func isSkillPath(path string) bool {
 func isSkillUpload(r *http.Request) bool {
 	return r.Method == http.MethodPost && isSkillPath(r.URL.Path) &&
 		(r.URL.Path == "/v1/skills" || strings.HasSuffix(r.URL.Path, "/versions"))
+}
+
+func isMemoryPath(path string) bool {
+	return path == "/v1/memory_stores" || strings.HasPrefix(path, "/v1/memory_stores/")
 }
 
 func isMultipartUpload(r *http.Request) bool {

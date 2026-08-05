@@ -27,6 +27,7 @@ matrices.
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
 | Files | `POST/GET /v1/files`, metadata, content download, delete |
 | Skills | Create/list/get/delete custom Skills and immutable Versions; download Version zip archives |
+| Memory | Create/list/get/update/archive/delete Stores; create/list/get/update/delete Memories; get/list/redact immutable Versions |
 | Session Resources | Add, list, get, update contract, and delete under `/v1/sessions/{id}/resources` |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
 
@@ -56,6 +57,10 @@ a JSON content type.
 Skills routes require `anthropic-beta: skills-2025-10-02`. Creating a Skill or
 Skill Version uses `multipart/form-data` and is limited to a bundle smaller
 than 30 MB.
+
+Memory routes require `anthropic-beta: agent-memory-2026-07-22`. Do not combine
+that header with `managed-agents-2026-04-01` on Memory routes. Session creation
+continues to use the Managed Agents beta when attaching a Memory Store.
 
 `authorization` may replace `x-api-key`. Strict mode currently validates header
 presence and version/beta values; it is not a production authentication system.
@@ -88,6 +93,9 @@ Errors use a Claude-compatible envelope:
 | `413` | `request_too_large` |
 | `422` | `invalid_request_error` |
 | `500` | `api_error` |
+
+A failed Memory SHA-256 precondition is the more specific
+`409 memory_precondition_failed_error`.
 
 These mappings are Mango's public contract for the supported API subset. See
 the [compatibility matrix](../compatibility.md) for parity limits.
@@ -125,7 +133,8 @@ Files use their upstream ID-based pagination instead: `after_id` and
 
 The running server exposes `/openapi.yaml`, sourced from
 `internal/httpapi/openapi.yaml`. All 21 core operations, five Files operations,
-five Session Resources operations, and nine custom Skills operations define
+five Session Resources operations, nine custom Skills operations, and fourteen
+Memory operations define
 stable operation IDs, path and query parameters, request and response schemas,
 list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core

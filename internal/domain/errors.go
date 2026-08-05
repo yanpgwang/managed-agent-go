@@ -12,6 +12,7 @@ const (
 
 type DomainError struct {
 	Kind    ErrKind
+	Code    string
 	Message string
 }
 
@@ -24,3 +25,9 @@ func Conflict(msg string) *DomainError    { return &DomainError{Kind: KindConfli
 func NotFound(msg string) *DomainError    { return &DomainError{Kind: KindNotFound, Message: msg} }
 func Unsupported(msg string) *DomainError { return &DomainError{Kind: KindUnsupported, Message: msg} }
 func TooLarge(msg string) *DomainError    { return &DomainError{Kind: KindTooLarge, Message: msg} }
+
+func MemoryPrecondition(msg string) *DomainError {
+	return &DomainError{
+		Kind: KindConflict, Code: "memory_precondition_failed_error", Message: msg,
+	}
+}

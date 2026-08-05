@@ -71,6 +71,23 @@ type SkillService interface {
 	Download(context.Context, string, string) (app.SkillVersionDownload, error)
 }
 
+type MemoryService interface {
+	CreateStore(context.Context, app.MemoryStoreCreateInput) (domain.MemoryStore, error)
+	GetStore(context.Context, string) (domain.MemoryStore, error)
+	UpdateStore(context.Context, string, app.MemoryStoreUpdateInput) (domain.MemoryStore, error)
+	ListStores(context.Context, app.MemoryStoreListQuery) (app.MemoryStoreListPage, error)
+	ArchiveStore(context.Context, string) (domain.MemoryStore, error)
+	DeleteStore(context.Context, string) error
+	CreateMemory(context.Context, string, app.MemoryCreateInput) (domain.Memory, error)
+	GetMemory(context.Context, string, string) (domain.Memory, error)
+	ListMemories(context.Context, string, app.MemoryListQuery) (app.MemoryListPage, error)
+	UpdateMemory(context.Context, string, string, app.MemoryUpdateInput) (domain.Memory, error)
+	DeleteMemory(context.Context, string, string, *string, domain.MemoryActor) (domain.Memory, error)
+	GetMemoryVersion(context.Context, string, string) (domain.MemoryVersion, error)
+	ListMemoryVersions(context.Context, string, app.MemoryVersionListQuery) (app.MemoryVersionListPage, error)
+	RedactMemoryVersion(context.Context, string, string, domain.MemoryActor) (domain.MemoryVersion, error)
+}
+
 type SessionResourceService interface {
 	Add(context.Context, string, app.FileSessionResourceInput) (domain.SessionResource, error)
 	Get(context.Context, string, string) (domain.SessionResource, error)
@@ -87,6 +104,7 @@ type Deps struct {
 	Stream           EventSubscriber
 	Files            FileService
 	Skills           SkillService
+	Memory           MemoryService
 	SessionResources SessionResourceService
 }
 
@@ -139,6 +157,21 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/skills/{id}/versions/{version}", s.getSkillVersion)
 	s.mux.HandleFunc("DELETE /v1/skills/{id}/versions/{version}", s.deleteSkillVersion)
 	s.mux.HandleFunc("GET /v1/skills/{id}/versions/{version}/content", s.downloadSkillVersion)
+
+	s.mux.HandleFunc("POST /v1/memory_stores", s.createMemoryStore)
+	s.mux.HandleFunc("GET /v1/memory_stores", s.listMemoryStores)
+	s.mux.HandleFunc("GET /v1/memory_stores/{store_id}", s.getMemoryStore)
+	s.mux.HandleFunc("POST /v1/memory_stores/{store_id}", s.updateMemoryStore)
+	s.mux.HandleFunc("DELETE /v1/memory_stores/{store_id}", s.deleteMemoryStore)
+	s.mux.HandleFunc("POST /v1/memory_stores/{store_id}/archive", s.archiveMemoryStore)
+	s.mux.HandleFunc("POST /v1/memory_stores/{store_id}/memories", s.createMemory)
+	s.mux.HandleFunc("GET /v1/memory_stores/{store_id}/memories", s.listMemories)
+	s.mux.HandleFunc("GET /v1/memory_stores/{store_id}/memories/{memory_id}", s.getMemory)
+	s.mux.HandleFunc("POST /v1/memory_stores/{store_id}/memories/{memory_id}", s.updateMemory)
+	s.mux.HandleFunc("DELETE /v1/memory_stores/{store_id}/memories/{memory_id}", s.deleteMemory)
+	s.mux.HandleFunc("GET /v1/memory_stores/{store_id}/memory_versions", s.listMemoryVersions)
+	s.mux.HandleFunc("GET /v1/memory_stores/{store_id}/memory_versions/{version_id}", s.getMemoryVersion)
+	s.mux.HandleFunc("POST /v1/memory_stores/{store_id}/memory_versions/{version_id}/redact", s.redactMemoryVersion)
 
 	s.registerSessionRoutes()
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

@@ -109,13 +109,19 @@ func (m *SessionSkillMaterializer) Reconcile(
 type SessionRuntimeMaterializer struct {
 	files  *SessionResourceMaterializer
 	skills *SessionSkillMaterializer
+	memory *SessionMemoryMaterializer
 }
 
 func NewSessionRuntimeMaterializer(
 	files *SessionResourceMaterializer,
 	skills *SessionSkillMaterializer,
+	memory ...*SessionMemoryMaterializer,
 ) *SessionRuntimeMaterializer {
-	return &SessionRuntimeMaterializer{files: files, skills: skills}
+	materializer := &SessionRuntimeMaterializer{files: files, skills: skills}
+	if len(memory) > 0 {
+		materializer.memory = memory[0]
+	}
+	return materializer
 }
 
 func (m *SessionRuntimeMaterializer) SupportsSkillRuntime() bool {
@@ -133,17 +139,59 @@ func (m *SessionRuntimeMaterializer) Reconcile(
 		}
 	}
 	if m.skills != nil {
-		return m.skills.Reconcile(ctx, sessionID, box)
+		if err := m.skills.Reconcile(ctx, sessionID, box); err != nil {
+			return err
+		}
+	}
+	if m.memory != nil {
+		return m.memory.Reconcile(ctx, sessionID, box)
 	}
 	return nil
+}
+
+func (m *SessionRuntimeMaterializer) Writeback(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	if m == nil || m.memory == nil {
+		return nil
+	}
+	return m.memory.Writeback(ctx, sessionID, box)
+}
+
+func (m *SessionRuntimeMaterializer) WritebackForRelease(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	if m == nil || m.memory == nil {
+		return nil
+	}
+	return m.memory.WritebackForRelease(ctx, sessionID, box)
+}
+
+func (m *SessionRuntimeMaterializer) MemoryStoreMountsForRelease(
+	ctx context.Context,
+	sessionID string,
+) ([]sandbox.MemoryStoreMount, error) {
+	if m == nil || m.memory == nil {
+		return nil, nil
+	}
+	return m.memory.MemoryStoreMountsForRelease(ctx, sessionID)
 }
 
 func (m *SessionRuntimeMaterializer) CleanupSession(
 	ctx context.Context,
 	sessionID string,
 ) error {
-	if m.files == nil {
-		return nil
+	if m.files != nil {
+		if err := m.files.CleanupSession(ctx, sessionID); err != nil {
+			return err
+		}
 	}
-	return m.files.CleanupSession(ctx, sessionID)
+	if m.memory != nil {
+		return m.memory.CleanupSession(ctx, sessionID)
+	}
+	return nil
 }

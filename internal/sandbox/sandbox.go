@@ -72,6 +72,9 @@ type Spec struct {
 	// Packages are installed once while provisioning, before the durable
 	// sandbox binding becomes visible to tool execution.
 	Packages PackageSet
+	// MemoryStores are immutable Session attachment descriptors. Providers with
+	// Memory Store capability expose one durable mount for each descriptor.
+	MemoryStores []MemoryStoreMount
 }
 
 // PackageSet is the normalized Managed Agents Environment package plan.
@@ -200,6 +203,53 @@ type FileResourceSandbox interface {
 	HasReadOnlyFile(context.Context, ReadOnlyFileMount) (bool, error)
 	ImportReadOnlyFile(context.Context, ReadOnlyFileMount, io.Reader) error
 	RemoveReadOnlyFile(context.Context, string, string) error
+}
+
+// MemoryStoreProvider declares support for durable writable Memory Store
+// mounts beneath /mnt/memory. Adapters opt in because an ordinary workspace
+// directory does not provide cross-Session persistence or read-only access.
+type MemoryStoreProvider interface {
+	SupportsMemoryStores() bool
+}
+
+// MemoryStoreMount is the provider-independent mount contract captured in a
+// Session. Identity is the Session Resource ID, not the mutable Store name.
+type MemoryStoreMount struct {
+	Identity    string
+	StoreID     string
+	RuntimePath string
+	Access      string
+}
+
+// MemoryStoreFile is one canonical Memory head supplied by the control plane.
+// Path is absolute within the Store (for example /preferences/editor.md), not
+// the full sandbox mount path.
+type MemoryStoreFile struct {
+	MemoryID      string
+	Path          string
+	Content       []byte
+	ContentSHA256 string
+}
+
+type MemoryStoreContent struct {
+	Path    string
+	Content []byte
+}
+
+// MemoryStoreSnapshot pairs the last control-plane baseline with the files an
+// agent currently left in the mount. Initialized=false means no baseline has
+// ever been published into this sandbox generation.
+type MemoryStoreSnapshot struct {
+	Initialized bool
+	Baseline    []MemoryStoreFile
+	Current     []MemoryStoreContent
+}
+
+// MemoryStoreSandbox lets the app layer converge PostgreSQL with provider-owned
+// mounts without depending on Docker paths or remote-sandbox APIs.
+type MemoryStoreSandbox interface {
+	ReadMemoryStore(context.Context, MemoryStoreMount) (MemoryStoreSnapshot, error)
+	ReplaceMemoryStore(context.Context, MemoryStoreMount, []MemoryStoreFile) error
 }
 
 // ReadOnlySkillMount describes one immutable canonical Skill archive expected

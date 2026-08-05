@@ -26,8 +26,8 @@
 
 Mango implements the documented Managed Agents API as a self-hosted runtime:
 durable sessions, event streaming, tool orchestration, File and custom Skill
-resources, and pluggable sandbox execution. Its production-oriented
-architecture is built in Go on PostgreSQL and Temporal.
+resources, persistent Memory Stores, and pluggable sandbox execution. Its
+production-oriented architecture is built in Go on PostgreSQL and Temporal.
 
 ## Why Mango
 
@@ -87,15 +87,17 @@ make local-down
 | Tools | Sandbox built-ins, provider-native Web Search/Fetch, and unauthenticated remote MCP tools |
 | Files | Five-operation Files API with configured object storage; File-backed Session Resources with durable read-only Docker mounts |
 | Skills | Nine custom resource operations, immutable Version pins, and Claude Code-style on-demand instruction loading in Docker Sessions |
+| Memory | Fourteen Store, Memory, and immutable Version operations; durable read/write or read-only Docker mounts at `/mnt/memory` |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
 freezes the first scoped single-agent claim. The living conformance matrices
 for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-conformance),
-[Files](https://yanpgwang.github.io/managed-agent-go/api/files-conformance), and
+[Files](https://yanpgwang.github.io/managed-agent-go/api/files-conformance),
 [Session Resources](https://yanpgwang.github.io/managed-agent-go/api/session-resources-conformance),
-and [Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance)
-record operation-level evidence and known limitations. Memory, vaults,
+[Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance), and
+[Memory](https://yanpgwang.github.io/managed-agent-go/api/memory-conformance)
+record operation-level evidence and known limitations. Vaults,
 deployments, multi-agent orchestration, schedules, and webhooks remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
@@ -114,7 +116,8 @@ flowchart LR
   NATS -.-> API
 ```
 
-PostgreSQL owns public state, event history, and File/Skill lifecycle intents.
+PostgreSQL owns public state, event history, Memory contents and Versions, and
+File/Skill lifecycle intents.
 An S3-compatible store owns File bytes and immutable Skill archives. Temporal
 owns in-flight execution. NATS
 carries only ephemeral wakeups and previews; persisted events are always

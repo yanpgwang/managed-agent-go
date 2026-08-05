@@ -232,6 +232,9 @@ func (s *SessionResourceService) DiscardPrepared(
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	for _, item := range prepared {
+		if item.Resource.Type() != domain.SessionResourceTypeFile {
+			continue
+		}
 		if err := s.blobs.Delete(cleanupCtx, item.File.BlobKey); err == nil {
 			_ = s.files.RemoveIncomplete(cleanupCtx, item.File.ID)
 		}
@@ -286,6 +289,7 @@ func (s *SessionResourceService) prepareFileCopy(
 	return app.PreparedSessionResource{
 		Resource: domain.SessionResource{
 			ID: s.ids.NewID(domain.PrefixSessionResource), SessionID: sessionID,
+			ResourceType: domain.SessionResourceTypeFile,
 			SourceFileID: source.ID, FileID: clone.ID, MountPath: mountPath,
 			CreatedAt: now, UpdatedAt: now, State: domain.SessionResourceActive,
 		},

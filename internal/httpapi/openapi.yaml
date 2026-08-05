@@ -4,8 +4,9 @@ info:
   version: 0.1.0
   description: >-
     Clean-room implementation of the supported Claude Managed Agents API core,
-    a conditional Files API, and File-backed Session Resources. This project is
-    Apache-2.0 licensed and is not an Anthropic product.
+    conditional Files and Memory APIs, and File- and Memory-backed Session
+    Resources. This project is Apache-2.0 licensed and is not an Anthropic
+    product.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -26,11 +27,13 @@ tags:
   - name: Session Events
     description: Durable Session input and output events.
   - name: Session Resources
-    description: Read-only File copies attached to durable Sessions.
+    description: File copies and Memory Stores attached to durable Sessions.
   - name: Files
     description: Durable file metadata and S3-compatible byte storage.
   - name: Skills
     description: Custom filesystem Skills with immutable archived Versions.
+  - name: Memory
+    description: Persistent path-addressed Memory Stores with immutable audit Versions.
 paths:
   /v1/agents:
     post:
@@ -711,6 +714,281 @@ paths:
         '422':
           $ref: '#/components/responses/UnsupportedRequest'
 
+  /v1/memory_stores:
+    parameters:
+      - $ref: '#/components/parameters/MemoryBeta'
+    post:
+      operationId: createMemoryStore
+      tags: [Memory]
+      summary: Create a Memory Store
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryStoreCreateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryStoreResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listMemoryStores
+      tags: [Memory]
+      summary: List Memory Stores
+      parameters:
+        - $ref: '#/components/parameters/MemoryStoreListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/IncludeArchived'
+        - $ref: '#/components/parameters/CreatedAtGte'
+        - $ref: '#/components/parameters/CreatedAtLte'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryStoreListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/memory_stores/{store_id}:
+    parameters:
+      - $ref: '#/components/parameters/MemoryBeta'
+      - $ref: '#/components/parameters/MemoryStoreID'
+    get:
+      operationId: getMemoryStore
+      tags: [Memory]
+      summary: Get a Memory Store
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryStoreResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    post:
+      operationId: updateMemoryStore
+      tags: [Memory]
+      summary: Update a Memory Store
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryStoreUpdateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryStoreResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteMemoryStore
+      tags: [Memory]
+      summary: Delete a Memory Store
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryStoreDeletedResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/memory_stores/{store_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/MemoryBeta'
+      - $ref: '#/components/parameters/MemoryStoreID'
+    post:
+      operationId: archiveMemoryStore
+      tags: [Memory]
+      summary: Archive a Memory Store
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryStoreResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/memory_stores/{store_id}/memories:
+    parameters:
+      - $ref: '#/components/parameters/MemoryBeta'
+      - $ref: '#/components/parameters/MemoryStoreID'
+    post:
+      operationId: createMemory
+      tags: [Memory]
+      summary: Create a Memory
+      parameters:
+        - $ref: '#/components/parameters/MemoryView'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryCreateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/RequestTooLarge'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listMemories
+      tags: [Memory]
+      summary: List Memories and optional depth-one path prefixes
+      parameters:
+        - $ref: '#/components/parameters/MemoryListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/MemoryView'
+        - $ref: '#/components/parameters/MemoryPathPrefix'
+        - $ref: '#/components/parameters/MemoryDepth'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/memory_stores/{store_id}/memories/{memory_id}:
+    parameters:
+      - $ref: '#/components/parameters/MemoryBeta'
+      - $ref: '#/components/parameters/MemoryStoreID'
+      - $ref: '#/components/parameters/MemoryID'
+    get:
+      operationId: getMemory
+      tags: [Memory]
+      summary: Get a Memory
+      parameters:
+        - $ref: '#/components/parameters/MemoryView'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    post:
+      operationId: updateMemory
+      tags: [Memory]
+      summary: Update a Memory with an optional SHA-256 precondition
+      parameters:
+        - $ref: '#/components/parameters/MemoryView'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MemoryUpdateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/RequestTooLarge'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteMemory
+      tags: [Memory]
+      summary: Delete a Memory with an optional SHA-256 precondition
+      parameters:
+        - $ref: '#/components/parameters/ExpectedContentSHA256'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryDeletedResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/memory_stores/{store_id}/memory_versions:
+    parameters:
+      - $ref: '#/components/parameters/MemoryBeta'
+      - $ref: '#/components/parameters/MemoryStoreID'
+    get:
+      operationId: listMemoryVersions
+      tags: [Memory]
+      summary: List immutable Memory Versions
+      parameters:
+        - $ref: '#/components/parameters/MemoryVersionListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/MemoryView'
+        - $ref: '#/components/parameters/MemoryAPIKeyIDFilter'
+        - $ref: '#/components/parameters/MemorySessionIDFilter'
+        - $ref: '#/components/parameters/MemoryIDFilter'
+        - $ref: '#/components/parameters/MemoryOperationFilter'
+        - $ref: '#/components/parameters/CreatedAtGte'
+        - $ref: '#/components/parameters/CreatedAtLte'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryVersionListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/memory_stores/{store_id}/memory_versions/{version_id}:
+    parameters:
+      - $ref: '#/components/parameters/MemoryBeta'
+      - $ref: '#/components/parameters/MemoryStoreID'
+      - $ref: '#/components/parameters/MemoryVersionID'
+    get:
+      operationId: getMemoryVersion
+      tags: [Memory]
+      summary: Get an immutable Memory Version
+      parameters:
+        - $ref: '#/components/parameters/MemoryView'
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryVersionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/memory_stores/{store_id}/memory_versions/{version_id}/redact:
+    parameters:
+      - $ref: '#/components/parameters/MemoryBeta'
+      - $ref: '#/components/parameters/MemoryStoreID'
+      - $ref: '#/components/parameters/MemoryVersionID'
+    post:
+      operationId: redactMemoryVersion
+      tags: [Memory]
+      summary: Permanently redact the content of an historical Memory Version
+      responses:
+        '200':
+          $ref: '#/components/responses/MemoryVersionResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+
   /healthz:
     get:
       operationId: health
@@ -783,6 +1061,35 @@ components:
       schema:
         type: string
         pattern: '^[0-9]+$'
+    MemoryBeta:
+      name: anthropic-beta
+      in: header
+      required: true
+      description: Memory routes require this beta and reject the Managed Agents beta on the same request.
+      schema:
+        type: string
+        const: agent-memory-2026-07-22
+    MemoryStoreID:
+      name: store_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^memstore_'
+    MemoryID:
+      name: memory_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^mem_'
+    MemoryVersionID:
+      name: version_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^memver_'
     AgentListLimit:
       name: limit
       in: query
@@ -839,6 +1146,80 @@ components:
         minimum: 1
         maximum: 1000
         default: 20
+    MemoryStoreListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    MemoryListLimit:
+      name: limit
+      in: query
+      description: Full views allow at most 20 items; basic views allow at most 100.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    MemoryVersionListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    MemoryView:
+      name: view
+      in: query
+      description: Full includes content; basic returns content as null.
+      schema:
+        type: string
+        enum: [basic, full]
+    MemoryPathPrefix:
+      name: path_prefix
+      in: query
+      schema:
+        type: string
+        maxLength: 1024
+    MemoryDepth:
+      name: depth
+      in: query
+      description: Zero lists matching Memories recursively; one projects immediate path prefixes.
+      schema:
+        type: integer
+        enum: [0, 1]
+        default: 0
+    ExpectedContentSHA256:
+      name: expected_content_sha256
+      in: query
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+    MemoryAPIKeyIDFilter:
+      name: api_key_id
+      in: query
+      schema:
+        type: string
+    MemorySessionIDFilter:
+      name: session_id
+      in: query
+      schema:
+        type: string
+    MemoryIDFilter:
+      name: memory_id
+      in: query
+      schema:
+        type: string
+        pattern: '^mem_'
+    MemoryOperationFilter:
+      name: operation
+      in: query
+      schema:
+        type: string
+        enum: [created, modified, deleted]
     SkillSource:
       name: source
       in: query
@@ -944,9 +1325,10 @@ components:
     MemoryStoreIDFilter:
       name: memory_store_id
       in: query
-      description: Accepted for compatibility; no current Session matches a memory store.
+      description: Return Sessions attached to this Memory Store.
       schema:
         type: string
+        pattern: '^memstore_'
     SessionResourceID:
       name: resource_id
       in: path
@@ -1052,14 +1434,14 @@ components:
           schema:
             $ref: '#/components/schemas/SessionList'
     SessionResourceResponse:
-      description: File-backed Session Resource
+      description: File- or Memory-backed Session Resource
       headers:
         request-id:
           $ref: '#/components/headers/RequestID'
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/FileSessionResource'
+            $ref: '#/components/schemas/SessionResource'
     SessionResourceListResponse:
       description: Session Resource page
       headers:
@@ -1222,6 +1604,78 @@ components:
           schema:
             type: string
             format: binary
+    MemoryStoreResponse:
+      description: Memory Store resource
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryStore'
+    MemoryStoreListResponse:
+      description: Memory Store page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryStoreList'
+    MemoryStoreDeletedResponse:
+      description: Memory Store deletion confirmation
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryStoreDeleted'
+    MemoryResponse:
+      description: Current Memory head
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Memory'
+    MemoryListResponse:
+      description: Memory and path-prefix page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryList'
+    MemoryDeletedResponse:
+      description: Memory deletion confirmation
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryDeleted'
+    MemoryVersionResponse:
+      description: Immutable Memory Version
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryVersion'
+    MemoryVersionListResponse:
+      description: Immutable Memory Version page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MemoryVersionList'
     InvalidRequest:
       description: Invalid request
       headers:
@@ -1304,12 +1758,336 @@ components:
                 - authentication_error
                 - not_found_error
                 - conflict_error
+                - memory_precondition_failed_error
                 - request_too_large
                 - api_error
             message:
               type: string
         request_id:
           type: string
+
+    MemoryMetadata:
+      type: object
+      additionalProperties:
+        type: string
+    MemoryMetadataPatch:
+      type: object
+      additionalProperties:
+        type: [string, 'null']
+    MemoryStoreCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1024
+        metadata:
+          $ref: '#/components/schemas/MemoryMetadata'
+    MemoryStoreUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        description:
+          type: string
+          maxLength: 1024
+        metadata:
+          $ref: '#/components/schemas/MemoryMetadataPatch'
+    MemoryStore:
+      type: object
+      additionalProperties: false
+      required: [id, type, name, description, metadata, created_at, updated_at, archived_at]
+      properties:
+        id:
+          type: string
+          pattern: '^memstore_'
+        type:
+          type: string
+          const: memory_store
+        name:
+          type: string
+        description:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/MemoryMetadata'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        archived_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+    MemoryStoreList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemoryStore'
+        has_more:
+          type: boolean
+        next_page:
+          $ref: '#/components/schemas/Cursor'
+    MemoryStoreDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          pattern: '^memstore_'
+        type:
+          type: string
+          const: memory_store_deleted
+    MemoryCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [path, content]
+      properties:
+        path:
+          $ref: '#/components/schemas/MemoryPath'
+        content:
+          type: string
+          description: UTF-8 content limited to 102400 encoded bytes.
+    MemoryPrecondition:
+      type: object
+      additionalProperties: false
+      required: [type, content_sha256]
+      properties:
+        type:
+          type: string
+          const: content_sha256
+        content_sha256:
+          $ref: '#/components/schemas/MemoryContentSHA256'
+    MemoryUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        path:
+          $ref: '#/components/schemas/MemoryPath'
+        content:
+          type: string
+          description: UTF-8 content limited to 102400 encoded bytes.
+        precondition:
+          $ref: '#/components/schemas/MemoryPrecondition'
+    MemoryPath:
+      type: string
+      minLength: 1
+      maxLength: 1024
+      description: Normalized relative POSIX path; each segment excludes dot and dot-dot.
+    MemoryContentSHA256:
+      type: string
+      pattern: '^[0-9a-f]{64}$'
+    Memory:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - type
+        - memory_store_id
+        - memory_version_id
+        - path
+        - content
+        - content_size_bytes
+        - content_sha256
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          pattern: '^mem_'
+        type:
+          type: string
+          const: memory
+        memory_store_id:
+          type: string
+          pattern: '^memstore_'
+        memory_version_id:
+          type: string
+          pattern: '^memver_'
+        path:
+          $ref: '#/components/schemas/MemoryPath'
+        content:
+          type: [string, 'null']
+          description: Null in a basic view.
+        content_size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+          maximum: 102400
+        content_sha256:
+          $ref: '#/components/schemas/MemoryContentSHA256'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+    MemoryPrefix:
+      type: object
+      additionalProperties: false
+      required: [type, path]
+      properties:
+        type:
+          type: string
+          const: memory_prefix
+        path:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          pattern: '/$'
+    MemoryListItem:
+      oneOf:
+        - $ref: '#/components/schemas/Memory'
+        - $ref: '#/components/schemas/MemoryPrefix'
+      discriminator:
+        propertyName: type
+    MemoryList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemoryListItem'
+        has_more:
+          type: boolean
+        next_page:
+          $ref: '#/components/schemas/Cursor'
+    MemoryDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          pattern: '^mem_'
+        type:
+          type: string
+          const: memory_deleted
+    MemoryAPIActor:
+      type: object
+      additionalProperties: false
+      required: [type, api_key_id]
+      properties:
+        type:
+          type: string
+          const: api_actor
+        api_key_id:
+          type: string
+    MemorySessionActor:
+      type: object
+      additionalProperties: false
+      required: [type, session_id]
+      properties:
+        type:
+          type: string
+          const: session_actor
+        session_id:
+          type: string
+          pattern: '^sesn_'
+    MemoryUserActor:
+      type: object
+      additionalProperties: false
+      required: [type, user_id]
+      properties:
+        type:
+          type: string
+          const: user_actor
+        user_id:
+          type: string
+    MemoryActor:
+      oneOf:
+        - $ref: '#/components/schemas/MemoryAPIActor'
+        - $ref: '#/components/schemas/MemorySessionActor'
+        - $ref: '#/components/schemas/MemoryUserActor'
+      discriminator:
+        propertyName: type
+    MemoryVersion:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - type
+        - memory_store_id
+        - memory_id
+        - operation
+        - path
+        - content
+        - content_size_bytes
+        - content_sha256
+        - created_at
+        - created_by
+        - redacted_at
+        - redacted_by
+      properties:
+        id:
+          type: string
+          pattern: '^memver_'
+        type:
+          type: string
+          const: memory_version
+        memory_store_id:
+          type: string
+          pattern: '^memstore_'
+        memory_id:
+          type: string
+          pattern: '^mem_'
+        operation:
+          type: string
+          enum: [created, modified, deleted]
+        path:
+          oneOf:
+            - $ref: '#/components/schemas/MemoryPath'
+            - type: 'null'
+        content:
+          type: [string, 'null']
+          description: Null for basic views, deleted Versions, and redacted Versions.
+        content_size_bytes:
+          type: [integer, 'null']
+          format: int64
+          minimum: 0
+          maximum: 102400
+        content_sha256:
+          oneOf:
+            - $ref: '#/components/schemas/MemoryContentSHA256'
+            - type: 'null'
+        created_at:
+          type: string
+          format: date-time
+        created_by:
+          $ref: '#/components/schemas/MemoryActor'
+        redacted_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+        redacted_by:
+          oneOf:
+            - $ref: '#/components/schemas/MemoryActor'
+            - type: 'null'
+    MemoryVersionList:
+      type: object
+      additionalProperties: false
+      required: [data, has_more, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemoryVersion'
+        has_more:
+          type: boolean
+        next_page:
+          $ref: '#/components/schemas/Cursor'
 
     FileUploadRequest:
       type: object
@@ -2446,8 +3224,9 @@ components:
         resources:
           type: array
           maxItems: 500
+          description: At most eight entries may be Memory Stores; Memory Stores attach only at creation.
           items:
-            $ref: '#/components/schemas/FileSessionResourceInput'
+            $ref: '#/components/schemas/SessionResourceInput'
         vault_ids:
           type: array
           maxItems: 0
@@ -2504,6 +3283,30 @@ components:
           type: string
           minLength: 1
           description: Absolute path normalized beneath /mnt/session/uploads.
+    MemoryStoreSessionResourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, memory_store_id]
+      properties:
+        type:
+          type: string
+          const: memory_store
+        memory_store_id:
+          type: string
+          pattern: '^memstore_'
+        access:
+          type: string
+          enum: [read_write, read_only]
+          default: read_write
+        instructions:
+          type: string
+          maxLength: 4096
+    SessionResourceInput:
+      oneOf:
+        - $ref: '#/components/schemas/FileSessionResourceInput'
+        - $ref: '#/components/schemas/MemoryStoreSessionResourceInput'
+      discriminator:
+        propertyName: type
     FileSessionResource:
       type: object
       additionalProperties: false
@@ -2527,6 +3330,35 @@ components:
         updated_at:
           type: string
           format: date-time
+    MemoryStoreSessionResource:
+      type: object
+      additionalProperties: false
+      required: [memory_store_id, type, access, description, instructions, mount_path, name]
+      properties:
+        memory_store_id:
+          type: string
+          pattern: '^memstore_'
+        type:
+          type: string
+          const: memory_store
+        access:
+          type: string
+          enum: [read_write, read_only]
+        description:
+          type: string
+        instructions:
+          type: [string, 'null']
+        mount_path:
+          type: string
+          pattern: '^/mnt/memory/'
+        name:
+          type: string
+    SessionResource:
+      oneOf:
+        - $ref: '#/components/schemas/FileSessionResource'
+        - $ref: '#/components/schemas/MemoryStoreSessionResource'
+      discriminator:
+        propertyName: type
     SessionResourceUpdateRequest:
       type: object
       additionalProperties: false
@@ -2555,7 +3387,7 @@ components:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/FileSessionResource'
+            $ref: '#/components/schemas/SessionResource'
         has_more:
           type: boolean
         next_page:
@@ -2661,7 +3493,7 @@ components:
           type: array
           maxItems: 500
           items:
-            $ref: '#/components/schemas/FileSessionResource'
+            $ref: '#/components/schemas/SessionResource'
         stats:
           $ref: '#/components/schemas/SessionStats'
         usage:

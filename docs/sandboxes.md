@@ -94,6 +94,25 @@ pinned Skills and must be recreated; Docker cannot add a bind mount to a live
 container. Local, self-hosted, and current remote adapters do not advertise the
 capability.
 
+## Memory Store mounts
+
+Memory Stores use a distinct provider capability because they are durable,
+cross-Session, writable resources rather than immutable attachments. Docker is
+currently the only adapter that advertises it. Each attached Store is exposed
+at `/mnt/memory/<store-slug>` as ordinary UTF-8 files. A `read_only` attachment
+is a read-only bind mount even to container root; a `read_write` attachment is
+writable during the tool step.
+
+Before a tool runs, the worker writes any surviving local changes from an
+earlier interrupted Activity, merges the current PostgreSQL heads, and records
+their IDs and SHA-256 values in provider-owned state outside the mount. After
+the tool, every changed, created, and deleted file is committed in one
+PostgreSQL transaction as immutable `session_actor` Versions. A concurrent
+change to the same baseline returns a precondition error instead of silently
+overwriting it. Session deletion performs a final writeback before destroying
+the sandbox so a crash between tool execution and ordinary writeback does not
+discard Memory changes.
+
 ## Compatibility contract
 
 A backend implements the core lifecycle contract when it can:

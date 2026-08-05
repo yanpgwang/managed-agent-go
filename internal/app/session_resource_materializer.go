@@ -50,6 +50,9 @@ func (m *SessionResourceMaterializer) Reconcile(
 	for _, resource := range resources {
 		switch resource.State {
 		case domain.SessionResourceActive:
+			if resource.Type() != domain.SessionResourceTypeFile {
+				continue
+			}
 			if !supported {
 				return sandbox.Permanent(fmt.Errorf(
 					"sandbox: provider cannot materialize File Resource %s",
@@ -113,6 +116,14 @@ func (m *SessionResourceMaterializer) Reconcile(
 				return errors.New("session resource changed during materialization; retry")
 			}
 		case domain.SessionResourceDeleting:
+			if resource.Type() == domain.SessionResourceTypeMemoryStore {
+				if err := m.resources.FinalizeSessionResourceDeletion(
+					ctx, sessionID, resource.ID,
+				); err != nil {
+					return err
+				}
+				continue
+			}
 			if supported {
 				if err := mounter.RemoveReadOnlyFile(
 					ctx, resource.MountPath, resource.ID,
@@ -171,6 +182,14 @@ func CleanupSessionResourceFiles(
 				"session resource %s is not prepared for Session deletion",
 				resource.ID,
 			)
+		}
+		if resource.Type() == domain.SessionResourceTypeMemoryStore {
+			if err := resourcesRepository.FinalizeSessionResourceDeletion(
+				ctx, sessionID, resource.ID,
+			); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := blobs.Delete(ctx, "files/"+resource.FileID); err != nil {
 			return err

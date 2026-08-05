@@ -297,6 +297,9 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 		if strings.HasPrefix(path, "/v1/skills") {
 			continue
 		}
+		if strings.HasPrefix(path, "/v1/memory_stores") {
+			continue
+		}
 		if strings.Contains(path, "/resources") {
 			continue
 		}
@@ -346,6 +349,132 @@ func TestOpenAPISessionResourcesContract(t *testing.T) {
 	resources := openAPIMap(t, properties["resources"], "Session resources")
 	if fmt.Sprint(resources["maxItems"]) != "500" {
 		t.Fatalf("Session resources maxItems = %v, want 500", resources["maxItems"])
+	}
+	assertOpenAPIRef(t, openAPIMap(t, resources["items"], "Session resource items"),
+		"#/components/schemas/SessionResource")
+	create := openAPIMap(t, schemas["SessionCreateRequest"], "SessionCreateRequest schema")
+	createResources := openAPIMap(t,
+		openAPIMap(t, create["properties"], "SessionCreateRequest properties")["resources"],
+		"SessionCreateRequest resources",
+	)
+	assertOpenAPIRef(t, openAPIMap(t, createResources["items"], "Session resource input items"),
+		"#/components/schemas/SessionResourceInput")
+	for name, want := range map[string][]string{
+		"SessionResourceInput": {
+			"#/components/schemas/FileSessionResourceInput",
+			"#/components/schemas/MemoryStoreSessionResourceInput",
+		},
+		"SessionResource": {
+			"#/components/schemas/FileSessionResource",
+			"#/components/schemas/MemoryStoreSessionResource",
+		},
+	} {
+		union := openAPIMap(t, schemas[name], name)
+		variants, ok := union["oneOf"].([]any)
+		if !ok || len(variants) != len(want) {
+			t.Fatalf("%s variants = %#v, want %v", name, union["oneOf"], want)
+		}
+		for index, ref := range want {
+			assertOpenAPIRef(t, variants[index], ref)
+		}
+	}
+	validateOpenAPIRefs(t, doc, doc)
+}
+
+func TestOpenAPIMemoryContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	operations := map[string][]string{
+		"/v1/memory_stores":                                                {"get", "post"},
+		"/v1/memory_stores/{store_id}":                                     {"delete", "get", "post"},
+		"/v1/memory_stores/{store_id}/archive":                             {"post"},
+		"/v1/memory_stores/{store_id}/memories":                            {"get", "post"},
+		"/v1/memory_stores/{store_id}/memories/{memory_id}":                {"delete", "get", "post"},
+		"/v1/memory_stores/{store_id}/memory_versions":                     {"get"},
+		"/v1/memory_stores/{store_id}/memory_versions/{version_id}":        {"get"},
+		"/v1/memory_stores/{store_id}/memory_versions/{version_id}/redact": {"post"},
+	}
+	requestBodies := map[string]string{
+		"post /v1/memory_stores":                                 "#/components/schemas/MemoryStoreCreateRequest",
+		"post /v1/memory_stores/{store_id}":                      "#/components/schemas/MemoryStoreUpdateRequest",
+		"post /v1/memory_stores/{store_id}/memories":             "#/components/schemas/MemoryCreateRequest",
+		"post /v1/memory_stores/{store_id}/memories/{memory_id}": "#/components/schemas/MemoryUpdateRequest",
+	}
+	count := 0
+	seenIDs := map[string]bool{}
+	for path, methods := range operations {
+		pathItem := openAPIMap(t, paths[path], "path "+path)
+		pathParameters, ok := pathItem["parameters"].([]any)
+		if !ok || len(pathParameters) == 0 {
+			t.Fatalf("%s has no path-level beta parameter", path)
+		}
+		firstParameter := resolveOpenAPIRef(t, doc, pathParameters[0])
+		if firstParameter["name"] != "anthropic-beta" {
+			t.Fatalf("%s first parameter = %v, want anthropic-beta", path, firstParameter["name"])
+		}
+		for _, method := range methods {
+			operation := openAPIMap(t, pathItem[method], method+" "+path)
+			id, _ := operation["operationId"].(string)
+			if id == "" || seenIDs[id] {
+				t.Fatalf("%s %s has missing or duplicate operationId %q", method, path, id)
+			}
+			seenIDs[id] = true
+			responses := openAPIMap(t, operation["responses"], method+" "+path+" responses")
+			assertOpenAPIRef(t, responses["200"], memorySuccessResponseRef(path, method))
+
+			key := method + " " + path
+			wantBody, shouldHaveBody := requestBodies[key]
+			body, hasBody := operation["requestBody"]
+			if hasBody != shouldHaveBody {
+				t.Fatalf("%s requestBody presence = %t, want %t", key, hasBody, shouldHaveBody)
+			}
+			if hasBody {
+				request := openAPIMap(t, body, key+" requestBody")
+				content := openAPIMap(t, request["content"], key+" content")
+				jsonMedia := openAPIMap(t, content["application/json"], key+" application/json")
+				assertOpenAPIRef(t, jsonMedia["schema"], wantBody)
+			}
+			count++
+		}
+	}
+	if count != 14 {
+		t.Fatalf("Memory operation count = %d, want 14", count)
+	}
+	list := openAPIMap(t,
+		openAPIMap(t, paths["/v1/memory_stores/{store_id}/memories"], "Memories path")["get"],
+		"list Memories",
+	)
+	assertOpenAPIParameterNames(t, doc, list["parameters"],
+		[]string{"depth", "limit", "page", "path_prefix", "view"})
+	versions := openAPIMap(t,
+		openAPIMap(t, paths["/v1/memory_stores/{store_id}/memory_versions"], "Memory Versions path")["get"],
+		"list Memory Versions",
+	)
+	assertOpenAPIParameterNames(t, doc, versions["parameters"], []string{
+		"api_key_id", "created_at[gte]", "created_at[lte]", "limit", "memory_id",
+		"operation", "page", "session_id", "view",
+	})
+	validateOpenAPIRefs(t, doc, doc)
+}
+
+func memorySuccessResponseRef(path, method string) string {
+	switch {
+	case path == "/v1/memory_stores" && method == "get":
+		return "#/components/responses/MemoryStoreListResponse"
+	case path == "/v1/memory_stores/{store_id}" && method == "delete":
+		return "#/components/responses/MemoryStoreDeletedResponse"
+	case strings.HasSuffix(path, "/memories") && method == "get":
+		return "#/components/responses/MemoryListResponse"
+	case strings.HasSuffix(path, "/memories/{memory_id}") && method == "delete":
+		return "#/components/responses/MemoryDeletedResponse"
+	case strings.HasSuffix(path, "/memory_versions"):
+		return "#/components/responses/MemoryVersionListResponse"
+	case strings.Contains(path, "/memory_versions/"):
+		return "#/components/responses/MemoryVersionResponse"
+	case strings.Contains(path, "/memories"):
+		return "#/components/responses/MemoryResponse"
+	default:
+		return "#/components/responses/MemoryStoreResponse"
 	}
 }
 
