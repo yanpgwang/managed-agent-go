@@ -127,8 +127,16 @@ func sessionListClauses(query app.ListPage) ([]string, []any) {
 		}
 		add(`status = ANY($%d::text[])`, statuses)
 	}
-	if query.DeploymentID != nil || query.MemoryStoreID != nil {
+	if query.DeploymentID != nil {
 		clauses = append(clauses, `FALSE`)
+	}
+	if query.MemoryStoreID != nil {
+		add(`EXISTS (
+SELECT 1 FROM session_resources AS memory_resource
+WHERE memory_resource.session_id = sessions.id
+  AND memory_resource.resource_type = 'memory_store'
+  AND memory_resource.memory_store_id = $%d
+)`, *query.MemoryStoreID)
 	}
 	return clauses, args
 }

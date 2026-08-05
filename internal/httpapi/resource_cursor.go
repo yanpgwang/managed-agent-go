@@ -36,6 +36,8 @@ const (
 	sessionResourceListCursorKind = "session_resource_list"
 	skillListCursorKind           = "skill_list"
 	skillVersionListCursorKind    = "skill_version_list"
+	memoryStoreListCursorKind     = "memory_store_list"
+	memoryVersionListCursorKind   = "memory_version_list"
 	resourceCursorPrefix          = "page_"
 )
 

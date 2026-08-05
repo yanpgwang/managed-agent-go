@@ -217,7 +217,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	resourceInputs, err := parseSessionFileResourceInputs(resources)
+	resourceInputs, memoryResourceInputs, err := parseSessionResourceInputs(resources)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -269,6 +269,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		AgentID: ref.ID, AgentVersion: ref.Version, Overrides: ref.Overrides,
 		EnvironmentID: in.EnvironmentID, Title: sessionTitle, Metadata: sessionMetadata,
 		InitialEvents: drafts, Resources: resourceInputs,
+		MemoryResources: memoryResourceInputs,
 	})
 	if err != nil {
 		writeError(w, err)

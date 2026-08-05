@@ -20,8 +20,51 @@ func insertPreparedSessionResources(
 ) error {
 	for _, item := range prepared {
 		resource := item.Resource
+		if resource.Type() == domain.SessionResourceTypeMemoryStore {
+			if resource.SessionID != sessionID || resource.MemoryStoreID == "" ||
+				resource.FileID != "" || resource.SourceFileID != "" ||
+				resource.State != domain.SessionResourceActive ||
+				(resource.MemoryAccess != domain.MemoryAccessReadWrite &&
+					resource.MemoryAccess != domain.MemoryAccessReadOnly) {
+				return errors.New("pg: invalid prepared Memory Store Resource ownership")
+			}
+			var active int
+			if err := tx.QueryRow(ctx, `
+SELECT 1 FROM memory_stores
+WHERE id = $1 AND archived_at IS NULL
+FOR SHARE`, resource.MemoryStoreID).Scan(&active); errors.Is(err, pgx.ErrNoRows) {
+				return domain.Validation("memory store is missing or archived")
+			} else if err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `
+INSERT INTO session_resources (
+    id, session_id, resource_type, memory_store_id, memory_access,
+    memory_instructions, memory_store_name, memory_store_description,
+    mount_path, state, created_at, updated_at
+) VALUES ($1, $2, 'memory_store', $3, $4, $5, $6, $7, $8, 'active', $9, $10)`,
+				resource.ID,
+				resource.SessionID,
+				resource.MemoryStoreID,
+				resource.MemoryAccess,
+				resource.MemoryInstructions,
+				resource.MemoryStoreName,
+				resource.MemoryStoreDescription,
+				resource.MountPath,
+				resource.CreatedAt.UTC(),
+				resource.UpdatedAt.UTC(),
+			)
+			if isUniqueViolation(err) {
+				return domain.Conflict("a Session Resource already uses this Memory Store or mount_path")
+			}
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		file := item.File
-		if resource.SessionID != sessionID || resource.FileID != file.ID ||
+		if resource.Type() != domain.SessionResourceTypeFile ||
+			resource.SessionID != sessionID || resource.FileID != file.ID ||
 			resource.State != domain.SessionResourceActive ||
 			file.Scope == nil || file.Scope.ID != sessionID || file.Scope.Type != "session" {
 			return errors.New("pg: invalid prepared Session Resource ownership")
@@ -77,6 +120,11 @@ func (s *Store) AddSessionResource(
 	maxBytes int64,
 ) (domain.SessionResource, error) {
 	resource := prepared.Resource
+	if resource.Type() != domain.SessionResourceTypeFile {
+		return domain.SessionResource{}, domain.Unsupported(
+			"Memory Stores can be attached only while creating a Session",
+		)
+	}
 	resource.CreatedAt = resource.CreatedAt.UTC().Truncate(time.Microsecond)
 	resource.UpdatedAt = resource.UpdatedAt.UTC().Truncate(time.Microsecond)
 	prepared.Resource = resource
@@ -179,7 +227,9 @@ func (s *Store) GetSessionResource(
 	resourceID string,
 ) (domain.SessionResource, error) {
 	row := s.pool.QueryRow(ctx, `
-SELECT id, session_id, source_file_id, file_id, mount_path, state,
+SELECT id, session_id, resource_type, source_file_id, file_id,
+       memory_store_id, memory_access, memory_instructions,
+       memory_store_name, memory_store_description, mount_path, state,
        created_at, updated_at
 FROM session_resources
 WHERE session_id = $1 AND id = $2 AND state = 'active'`, sessionID, resourceID)
@@ -200,7 +250,9 @@ func (s *Store) ListSessionResources(
 	}
 	args := []any{sessionID}
 	statement := `
-SELECT id, session_id, source_file_id, file_id, mount_path, state,
+SELECT id, session_id, resource_type, source_file_id, file_id,
+       memory_store_id, memory_access, memory_instructions,
+       memory_store_name, memory_store_description, mount_path, state,
        created_at, updated_at
 FROM session_resources
 WHERE session_id = $1 AND state = 'active'`
@@ -258,7 +310,9 @@ func (s *Store) BeginSessionResourceDeletion(
 			return err
 		}
 		resourceRow := tx.QueryRow(ctx, `
-SELECT id, session_id, source_file_id, file_id, mount_path, state,
+SELECT id, session_id, resource_type, source_file_id, file_id,
+       memory_store_id, memory_access, memory_instructions,
+       memory_store_name, memory_store_description, mount_path, state,
        created_at, updated_at
 FROM session_resources
 WHERE session_id = $1 AND id = $2 AND state = 'active'
@@ -269,6 +323,11 @@ FOR UPDATE`, sessionID, resourceID)
 		}
 		if err != nil {
 			return err
+		}
+		if deleted.Type() == domain.SessionResourceTypeMemoryStore {
+			return domain.Unsupported(
+				"Memory Stores cannot be detached from a running Session",
+			)
 		}
 		now := s.clock.Now().UTC()
 		if _, err := tx.Exec(ctx, `
@@ -306,7 +365,9 @@ func (s *Store) SessionResourcesForReconcile(
 	sessionID string,
 ) ([]domain.SessionResource, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, session_id, source_file_id, file_id, mount_path, state,
+SELECT id, session_id, resource_type, source_file_id, file_id,
+       memory_store_id, memory_access, memory_instructions,
+       memory_store_name, memory_store_description, mount_path, state,
        created_at, updated_at
 FROM session_resources
 WHERE session_id = $1
@@ -337,18 +398,59 @@ WHERE session_id = $1 AND id = $2 AND state = 'deleting'`, sessionID, resourceID
 	return err
 }
 
+func (s *Store) FinalizeSessionMemoryResources(
+	ctx context.Context,
+	sessionID string,
+) error {
+	_, err := s.pool.Exec(ctx, `
+DELETE FROM session_resources
+WHERE session_id = $1 AND resource_type = 'memory_store' AND state = 'deleting'`,
+		sessionID,
+	)
+	return err
+}
+
 func scanSessionResource(row interface{ Scan(...any) error }) (domain.SessionResource, error) {
 	var resource domain.SessionResource
+	var sourceFileID, fileID, memoryStoreID, memoryAccess, memoryInstructions *string
+	var memoryStoreName, memoryStoreDescription *string
 	err := row.Scan(
 		&resource.ID,
 		&resource.SessionID,
-		&resource.SourceFileID,
-		&resource.FileID,
+		&resource.ResourceType,
+		&sourceFileID,
+		&fileID,
+		&memoryStoreID,
+		&memoryAccess,
+		&memoryInstructions,
+		&memoryStoreName,
+		&memoryStoreDescription,
 		&resource.MountPath,
 		&resource.State,
 		&resource.CreatedAt,
 		&resource.UpdatedAt,
 	)
+	if sourceFileID != nil {
+		resource.SourceFileID = *sourceFileID
+	}
+	if fileID != nil {
+		resource.FileID = *fileID
+	}
+	if memoryStoreID != nil {
+		resource.MemoryStoreID = *memoryStoreID
+	}
+	if memoryAccess != nil {
+		resource.MemoryAccess = *memoryAccess
+	}
+	if memoryInstructions != nil {
+		resource.MemoryInstructions = *memoryInstructions
+	}
+	if memoryStoreName != nil {
+		resource.MemoryStoreName = *memoryStoreName
+	}
+	if memoryStoreDescription != nil {
+		resource.MemoryStoreDescription = *memoryStoreDescription
+	}
 	resource.CreatedAt = resource.CreatedAt.UTC()
 	resource.UpdatedAt = resource.UpdatedAt.UTC()
 	return resource, err

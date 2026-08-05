@@ -19,8 +19,9 @@ import (
 )
 
 type unavailableSessionResourceReconciler struct {
-	store *pg.Store
-	cause error
+	store  *pg.Store
+	cause  error
+	memory *app.SessionMemoryMaterializer
 }
 
 type retryingSessionResourceReconciler struct {
@@ -29,6 +30,7 @@ type retryingSessionResourceReconciler struct {
 
 	mu           sync.Mutex
 	materializer *app.SessionRuntimeMaterializer
+	memory       *app.SessionMemoryMaterializer
 }
 
 func (r *retryingSessionResourceReconciler) resolveMaterializer(
@@ -53,6 +55,7 @@ func (r *retryingSessionResourceReconciler) resolveMaterializer(
 			r.store, runtime.repository, runtime.blobs,
 		),
 		app.NewSessionSkillMaterializer(r.store, runtime.blobs),
+		r.memory,
 	)
 	return r.materializer, nil
 }
@@ -70,11 +73,56 @@ func (r *retryingSessionResourceReconciler) Reconcile(
 	if err != nil || len(resources) == 0 && len(skills) == 0 {
 		return err
 	}
+	needsObjectStore := len(skills) > 0
+	for _, resource := range resources {
+		if resource.Type() == domain.SessionResourceTypeFile {
+			needsObjectStore = true
+			break
+		}
+	}
+	if !needsObjectStore {
+		if r.memory == nil {
+			return nil
+		}
+		return r.memory.Reconcile(ctx, sessionID, box)
+	}
 	materializer, err := r.resolveMaterializer(ctx)
 	if err != nil {
 		return err
 	}
 	return materializer.Reconcile(ctx, sessionID, box)
+}
+
+func (r *retryingSessionResourceReconciler) Writeback(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	if r.memory == nil {
+		return nil
+	}
+	return r.memory.Writeback(ctx, sessionID, box)
+}
+
+func (r *retryingSessionResourceReconciler) WritebackForRelease(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	if r.memory == nil {
+		return nil
+	}
+	return r.memory.WritebackForRelease(ctx, sessionID, box)
+}
+
+func (r *retryingSessionResourceReconciler) MemoryStoreMountsForRelease(
+	ctx context.Context,
+	sessionID string,
+) ([]sandbox.MemoryStoreMount, error) {
+	if r.memory == nil {
+		return nil, nil
+	}
+	return r.memory.MemoryStoreMountsForRelease(ctx, sessionID)
 }
 
 func (r *retryingSessionResourceReconciler) CleanupSession(
@@ -84,6 +132,19 @@ func (r *retryingSessionResourceReconciler) CleanupSession(
 	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
 	if err != nil || len(resources) == 0 {
 		return err
+	}
+	needsObjectStore := false
+	for _, resource := range resources {
+		if resource.Type() == domain.SessionResourceTypeFile {
+			needsObjectStore = true
+			break
+		}
+	}
+	if !needsObjectStore {
+		if r.memory == nil {
+			return nil
+		}
+		return r.memory.CleanupSession(ctx, sessionID)
 	}
 	materializer, err := r.resolveMaterializer(ctx)
 	if err != nil {
@@ -95,7 +156,7 @@ func (r *retryingSessionResourceReconciler) CleanupSession(
 func (r unavailableSessionResourceReconciler) Reconcile(
 	ctx context.Context,
 	sessionID string,
-	_ sandbox.Sandbox,
+	box sandbox.Sandbox,
 ) error {
 	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
 	if err != nil {
@@ -105,10 +166,57 @@ func (r unavailableSessionResourceReconciler) Reconcile(
 	if err != nil || len(resources) == 0 && len(skills) == 0 {
 		return err
 	}
+	if r.memory != nil {
+		if err := r.memory.Reconcile(ctx, sessionID, box); err != nil {
+			return err
+		}
+	}
+	needsObjectStore := len(skills) > 0
+	for _, resource := range resources {
+		if resource.Type() == domain.SessionResourceTypeFile {
+			needsObjectStore = true
+			break
+		}
+	}
+	if !needsObjectStore {
+		return nil
+	}
 	return sandbox.Permanent(fmt.Errorf(
 		"session File Resources or custom Skills are unavailable on this worker: %w",
 		r.cause,
 	))
+}
+
+func (r unavailableSessionResourceReconciler) Writeback(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	if r.memory == nil {
+		return nil
+	}
+	return r.memory.Writeback(ctx, sessionID, box)
+}
+
+func (r unavailableSessionResourceReconciler) WritebackForRelease(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	if r.memory == nil {
+		return nil
+	}
+	return r.memory.WritebackForRelease(ctx, sessionID, box)
+}
+
+func (r unavailableSessionResourceReconciler) MemoryStoreMountsForRelease(
+	ctx context.Context,
+	sessionID string,
+) ([]sandbox.MemoryStoreMount, error) {
+	if r.memory == nil {
+		return nil, nil
+	}
+	return r.memory.MemoryStoreMountsForRelease(ctx, sessionID)
 }
 
 func (r unavailableSessionResourceReconciler) CleanupSession(
@@ -119,10 +227,20 @@ func (r unavailableSessionResourceReconciler) CleanupSession(
 	if err != nil || len(resources) == 0 {
 		return err
 	}
-	return fmt.Errorf(
-		"session File Resources are unavailable on this worker: %w",
-		r.cause,
-	)
+	if r.memory != nil {
+		if err := r.memory.CleanupSession(ctx, sessionID); err != nil {
+			return err
+		}
+	}
+	for _, resource := range resources {
+		if resource.Type() == domain.SessionResourceTypeFile {
+			return fmt.Errorf(
+				"session File Resources are unavailable on this worker: %w",
+				r.cause,
+			)
+		}
+	}
+	return nil
 }
 
 // Environment variables shared by the PostgreSQL HTTP control plane and the
@@ -158,6 +276,8 @@ func runOrchestrate() {
 
 	ids := domain.NewRandomIDGen()
 	store := pg.NewStore(pool, ids, realClock{})
+	memory := app.NewMemoryService(pg.NewMemoryRepository(store), ids, realClock{})
+	memoryMaterializer := app.NewSessionMemoryMaterializer(store, memory)
 	broker, err := live.Connect(os.Getenv(envNATSURL))
 	if err != nil {
 		log.Fatalf("orchestrate: nats: %v", err)
@@ -185,14 +305,17 @@ func runOrchestrate() {
 	case err != nil:
 		log.Printf("orchestrate: object store unavailable; File/Skill turns will retry connection: %v", err)
 		resourceReconciler = &retryingSessionResourceReconciler{
-			store: store,
+			store:  store,
+			memory: memoryMaterializer,
 			resolve: func(resolveCtx context.Context) (*resolvedFiles, error) {
 				return resolveFiles(resolveCtx, store, ids, realClock{}, false)
 			},
 		}
 	case fileRuntime == nil:
 		cause := errors.New(fileS3BucketEnv + " is not configured")
-		resourceReconciler = unavailableSessionResourceReconciler{store: store, cause: cause}
+		resourceReconciler = unavailableSessionResourceReconciler{
+			store: store, cause: cause, memory: memoryMaterializer,
+		}
 		log.Printf("orchestrate: Session File Resources and custom Skill runtime disabled: %v", cause)
 	default:
 		resourceReconciler = app.NewSessionRuntimeMaterializer(
@@ -200,6 +323,7 @@ func runOrchestrate() {
 				store, fileRuntime.repository, fileRuntime.blobs,
 			),
 			app.NewSessionSkillMaterializer(store, fileRuntime.blobs),
+			memoryMaterializer,
 		)
 		log.Printf("orchestrate: Session File Resource and custom Skill materializers enabled")
 	}

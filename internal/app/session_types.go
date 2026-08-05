@@ -14,19 +14,26 @@ const (
 // CreateSessionInput is the storage-independent command accepted by the
 // control-plane session service.
 type CreateSessionInput struct {
-	AgentID       string
-	AgentVersion  *int
-	Overrides     *domain.AgentOverrides
-	EnvironmentID string
-	Title         string
-	Metadata      map[string]any
-	InitialEvents []domain.EventDraft
-	Resources     []FileSessionResourceInput
+	AgentID         string
+	AgentVersion    *int
+	Overrides       *domain.AgentOverrides
+	EnvironmentID   string
+	Title           string
+	Metadata        map[string]any
+	InitialEvents   []domain.EventDraft
+	Resources       []FileSessionResourceInput
+	MemoryResources []MemorySessionResourceInput
 }
 
 type FileSessionResourceInput struct {
 	FileID    string
 	MountPath *string
+}
+
+type MemorySessionResourceInput struct {
+	MemoryStoreID string
+	Access        string
+	Instructions  string
 }
 
 type PreparedSessionResource struct {

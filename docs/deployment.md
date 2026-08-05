@@ -74,6 +74,14 @@ configuration. The local-process provider and current remote adapters reject
 File Resources because they cannot yet provide the same isolated, absolute,
 read-only mount contract.
 
+Memory API contents and immutable Versions live entirely in PostgreSQL and do
+not require S3-compatible storage. Memory-backed Session Resources do require
+`MANAGED_AGENT_SANDBOX=docker`: the API snapshots each attachment, and the
+worker bind-mounts it beneath `/mnt/memory`, then synchronizes tool changes back
+to PostgreSQL. API and worker processes must select the same provider. Local,
+self-hosted, and current remote adapters reject Memory Store attachment while
+the standalone Memory API remains available.
+
 Before production deployment bundles are promoted, database migration will be
 removed from normal API/worker startup and exposed as an explicit one-shot
 role. This avoids every replica racing to manage schema during a rollout.

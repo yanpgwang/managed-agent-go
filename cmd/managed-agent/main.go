@@ -108,6 +108,7 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 				PackageSetup:  true,
 				FileResources: true,
 				SkillBundles:  true,
+				MemoryStores:  true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				return sandbox.NewDockerProvider(sandbox.DockerConfig{
@@ -427,6 +428,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	ids := domain.NewRandomIDGen()
 	clock := realClock{}
 	pgStore := pg.NewStore(pool, ids, clock)
+	memory := app.NewMemoryService(pg.NewMemoryRepository(pgStore), ids, clock)
 	broker, err := live.Connect(os.Getenv(envNATSURL))
 	if err != nil {
 		log.Fatalf("serve: nats: %v", err)
@@ -520,11 +522,19 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		skillResolver,
 		sessionResourceLifecycle,
 	)
+	if providerCapabilities.MemoryStores {
+		sessions.EnableMemoryStoreResources(memory)
+	} else {
+		log.Printf(
+			"serve: Session Memory Store admission disabled; sandbox provider %q has no durable Memory Store mount capability",
+			configuredSandboxProviderName(),
+		)
+	}
 	events := controlplane.NewEventService(pgStore)
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
-		Events: events, Stream: stream, Files: files, Skills: skills,
+		Events: events, Stream: stream, Files: files, Skills: skills, Memory: memory,
 		SessionResources: sessionResources,
 	}, cfg).Handler()
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")

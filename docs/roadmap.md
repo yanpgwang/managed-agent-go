@@ -66,14 +66,19 @@ adapters must prove the same capability contract before advertising Skill
 runtime support. A hosted differential harness for post-compaction Skill
 behavior remains follow-up conformance work.
 
+The Memory slice now implements all fourteen Store, Memory, and immutable
+Version operations. PostgreSQL is the canonical cross-Session store. Docker
+Sessions can attach up to eight Stores at creation, expose their contents as
+ordinary files beneath `/mnt/memory`, enforce read-only attachments, and write
+multi-file changes back atomically with Session actor attribution. See the
+[Memory conformance matrix](api/memory-conformance.md).
+
 After that boundary, post-core work is ordered as reusable single-agent
 capability layers:
 
-1. Memory Stores, Memories, and Memory Versions, including Memory-backed
-   Session Resources and cross-Session retrieval;
-2. Vaults and Credentials, with isolation and redaction guarantees before any
+1. Vaults and Credentials, with isolation and redaction guarantees before any
    secret reaches a worker or sandbox;
-3. Deployments and Deployment Runs, built on the stable execution and
+2. Deployments and Deployment Runs, built on the stable execution and
    credential layers.
 
 Skills and Memory are not deferred to multi-agent work. They provide reusable

@@ -43,6 +43,7 @@ const sidebars: SidebarsConfig = {
         'api/core-conformance',
         'api/files-conformance',
         'api/skills-conformance',
+        'api/memory-conformance',
         'api/session-resources-conformance',
         'provenance',
       ],

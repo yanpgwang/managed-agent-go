@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 
@@ -252,6 +253,96 @@ func TestPostgresSessionFileResourcesAreIndependentAndRecoverable(t *testing.T) 
 	}
 	if blobs.has("files/" + first.FileID) {
 		t.Fatal("Session deletion left its scoped File object")
+	}
+}
+
+func TestPostgresSessionMemoryStoreResourceSnapshotsAndOwnsNoStore(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	memory := app.NewMemoryService(
+		pg.NewMemoryRepository(fixture.store), fixture.ids, fixture.clock,
+	)
+	sessions := NewSessionService(
+		fixture.store,
+		fixture.agentRepo,
+		fixture.environmentRepo,
+		temporalpkg.NewOrchestrator(fixture.store, nil),
+		fixture.ids,
+		fixture.clock,
+		nil,
+	)
+	sessions.EnableMemoryStoreResources(memory)
+	handler := httpapi.NewServer(httpapi.Deps{
+		Agents: app.NewAgentService(fixture.agentRepo, fixture.ids, fixture.clock),
+		Envs: app.NewEnvironmentService(
+			fixture.environmentRepo, fixture.ids, fixture.clock,
+			app.EnvironmentCapabilities{},
+		),
+		Sessions: sessions,
+		Events:   NewEventService(fixture.store),
+		Stream:   app.NewHub(64),
+		Memory:   memory,
+	}, httpapi.Config{}).Handler()
+	memoryStore, err := memory.CreateStore(ctx, app.MemoryStoreCreateInput{
+		Name: "Project Knowledge", Description: "Shared project conventions.",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentID := createResource(t, handler, "/v1/agents",
+		`{"name":"coder","model":"claude-test"}`)
+	environmentID := createResource(t, handler, "/v1/environments",
+		`{"name":"cloud","config":{"type":"cloud"}}`)
+	response := request(t, handler, http.MethodPost, "/v1/sessions",
+		`{"agent":"`+agentID+`","environment_id":"`+environmentID+`",`+
+			`"resources":[{"type":"memory_store","memory_store_id":"`+memoryStore.ID+`",`+
+			`"access":"read_only","instructions":"Prefer established decisions."}]}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create Session with Memory Store -> %d: %s", response.Code, response.Body.String())
+	}
+	var created struct {
+		ID        string `json:"id"`
+		Resources []struct {
+			Type          string `json:"type"`
+			MemoryStoreID string `json:"memory_store_id"`
+			Access        string `json:"access"`
+			Name          string `json:"name"`
+			Description   string `json:"description"`
+			Instructions  string `json:"instructions"`
+			MountPath     string `json:"mount_path"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Resources) != 1 ||
+		created.Resources[0].Type != domain.SessionResourceTypeMemoryStore ||
+		created.Resources[0].MemoryStoreID != memoryStore.ID ||
+		created.Resources[0].Access != domain.MemoryAccessReadOnly ||
+		created.Resources[0].Name != memoryStore.Name ||
+		created.Resources[0].Description != memoryStore.Description ||
+		created.Resources[0].Instructions != "Prefer established decisions." ||
+		created.Resources[0].MountPath != "/mnt/memory/project-knowledge" {
+		t.Fatalf("Memory Store resource = %+v", created.Resources)
+	}
+	renamed := "Renamed Store"
+	if _, err := memory.UpdateStore(ctx, memoryStore.ID, app.MemoryStoreUpdateInput{Name: &renamed}); err != nil {
+		t.Fatal(err)
+	}
+	response = request(t, handler, http.MethodGet, "/v1/sessions/"+created.ID, "")
+	if response.Code != http.StatusOK || strings.Contains(response.Body.String(), renamed) ||
+		!strings.Contains(response.Body.String(), "Project Knowledge") {
+		t.Fatalf("Session resource snapshot drifted -> %d: %s", response.Code, response.Body.String())
+	}
+	if err := memory.DeleteStore(ctx, memoryStore.ID); err == nil {
+		t.Fatal("deleted Memory Store while Session remained attached")
+	}
+	response = request(t, handler, http.MethodDelete, "/v1/sessions/"+created.ID, "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("delete Session -> %d: %s", response.Code, response.Body.String())
+	}
+	if err := memory.DeleteStore(ctx, memoryStore.ID); err != nil {
+		t.Fatalf("delete Store after Session cleanup: %v", err)
 	}
 }
 

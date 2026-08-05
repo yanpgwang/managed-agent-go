@@ -18,6 +18,9 @@ const (
 	PrefixFile            = "file_"
 	PrefixSessionResource = "sesrsc_"
 	PrefixSkill           = "skill_"
+	PrefixMemoryStore     = "memstore_"
+	PrefixMemory          = "mem_"
+	PrefixMemoryVersion   = "memver_"
 )
 
 type Clock interface{ Now() time.Time }

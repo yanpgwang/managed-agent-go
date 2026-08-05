@@ -96,6 +96,14 @@ verification where applicable.
   the custom/Anthropic reference union, omitted/`latest` Version resolution,
   and the 500-Skill Session limit. Verified 2026-08-04 against the current
   documentation and official Go SDK v1.61.0.
+- [Managed Agents Memory](https://platform.claude.com/docs/en/managed-agents/memory)
+  and [Memory Stores API](https://platform.claude.com/docs/en/api/beta/memory-stores) —
+  the fourteen Store, Memory, and immutable Version operations,
+  `agent-memory-2026-07-22` beta header, basic/full views, depth-one path
+  projection, SHA-256 preconditions, actor attribution, archive and redaction
+  semantics, create-time Session attachment, eight-Store limit, access modes,
+  instructions, and `/mnt/memory/<store-slug>` filesystem behavior. Verified
+  2026-08-05 against the current documentation and official Go SDK v1.61.0.
 - [Claude Code Skill content lifecycle](https://code.claude.com/docs/en/slash-commands#skill-content-lifecycle)
   — on-demand main-instruction loading, supporting-file access, persistence
   after invocation, and the documented 5,000-token per-Skill / 25,000-token
@@ -161,7 +169,10 @@ currently implemented.
 Beta header for Managed Agents core routes covered here:
 `anthropic-beta: managed-agents-2026-04-01`. Files routes use the independent
 `anthropic-beta: files-api-2025-04-14` header. Skills routes use
-`anthropic-beta: skills-2025-10-02`.
+`anthropic-beta: skills-2025-10-02`. Memory routes use
+`anthropic-beta: agent-memory-2026-07-22` and reject combining it with the
+Managed Agents beta; Memory Store attachment remains part of Session creation
+under the Managed Agents beta.
 
 ## Streaming sources
 
@@ -198,6 +209,10 @@ forwarding upstream frames.
 - The custom Skills resource API, reference validation, and immutable Version
   pinning have a separate conditional conformance matrix. Docker-backed cloud
   runtime materialization is included in that conditional claim, not in the
+  frozen core claim.
+- The Memory resource API and Memory-backed Session Resources have a separate
+  conditional conformance matrix. PostgreSQL-backed resources and Docker
+  runtime persistence are included in that conditional claim, not in the
   frozen core claim.
 - Other unsupported product surfaces are excluded from compatibility claims
   until their wire behavior is implemented and tested.

@@ -215,6 +215,15 @@ type SandboxResourceReconciler interface {
 	Reconcile(context.Context, string, sandbox.Sandbox) error
 }
 
+type SandboxResourceWriteback interface {
+	Writeback(context.Context, string, sandbox.Sandbox) error
+}
+
+type SandboxResourceReleaseReconciler interface {
+	MemoryStoreMountsForRelease(context.Context, string) ([]sandbox.MemoryStoreMount, error)
+	WritebackForRelease(context.Context, string, sandbox.Sandbox) error
+}
+
 type SkillRuntimeReconciler interface {
 	SupportsSkillRuntime() bool
 }
@@ -1706,6 +1715,18 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 			IsError: executed.IsError,
 		}
 	}
+	if writer, ok := a.resources.(SandboxResourceWriteback); ok {
+		writebackCtx, cancel := durableCtx(ctx)
+		writebackErr := writer.Writeback(writebackCtx, in.SessionID, box)
+		cancel()
+		if writebackErr != nil {
+			out.Result.Content = append(out.Result.Content, map[string]any{
+				"type": "text",
+				"text": "Memory Store writeback failed: " + writebackErr.Error(),
+			})
+			out.Result.IsError = true
+		}
+	}
 	if err := completeToolResultDurably(ctx, a.journal, step.ID, out.Result); err != nil {
 		return ExecuteToolResult{}, err
 	}
@@ -1717,6 +1738,18 @@ func sandboxSpecForSession(session domain.Session) (sandbox.Spec, error) {
 	spec := sandbox.Spec{
 		Timeout: sandboxTurnTimeout,
 		Network: defaultCloudSandboxNetwork,
+	}
+	for _, resource := range session.Resources {
+		if resource.State != domain.SessionResourceActive ||
+			resource.Type() != domain.SessionResourceTypeMemoryStore {
+			continue
+		}
+		spec.MemoryStores = append(spec.MemoryStores, sandbox.MemoryStoreMount{
+			Identity:    resource.ID,
+			StoreID:     resource.MemoryStoreID,
+			RuntimePath: resource.MountPath,
+			Access:      resource.MemoryAccess,
+		})
 	}
 	if rawPackages, present := session.EnvironmentConfig["packages"]; present {
 		packages, ok := rawPackages.(map[string]any)
@@ -1931,6 +1964,32 @@ func (a *Activities) ReleaseSandbox(ctx context.Context, in ReleaseSandboxInput)
 	}
 	stopHeartbeat := heartbeatActivity(ctx)
 	defer stopHeartbeat()
+	if release, ok := a.resources.(SandboxResourceReleaseReconciler); ok && a.source != nil {
+		mounts, mountsErr := release.MemoryStoreMountsForRelease(ctx, in.SessionID)
+		if mountsErr != nil {
+			return mountsErr
+		}
+		if len(mounts) > 0 {
+			session, sessionErr := a.source.GetSession(ctx, in.SessionID)
+			if sessionErr != nil {
+				return sessionErr
+			}
+			spec, specErr := sandboxSpecForSession(session)
+			if specErr != nil {
+				return specErr
+			}
+			spec.MemoryStores = mounts
+			box, acquireErr := a.sandboxes.Acquire(ctx, in.SessionID, spec)
+			if acquireErr != nil {
+				return acquireErr
+			}
+			if writebackErr := release.WritebackForRelease(
+				ctx, in.SessionID, box,
+			); writebackErr != nil {
+				return writebackErr
+			}
+		}
+	}
 	err := a.sandboxes.Release(ctx, in.SessionID)
 	if sandbox.IsPermanent(err) {
 		return temporalsdk.NewNonRetryableApplicationError(

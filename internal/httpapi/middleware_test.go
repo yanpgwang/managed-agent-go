@@ -90,6 +90,44 @@ func TestBetaMiddleware_Strict(t *testing.T) {
 	}
 }
 
+func TestBetaMiddleware_MemoryUsesIndependentBeta(t *testing.T) {
+	h := betaMiddleware(Config{RequireBeta: true}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	for _, test := range []struct {
+		name   string
+		header []string
+		want   int
+	}{
+		{name: "memory beta", header: []string{memoryBetaValue}, want: http.StatusOK},
+		{name: "managed beta only", header: []string{betaValue}, want: http.StatusBadRequest},
+		{name: "combined betas", header: []string{memoryBetaValue, betaValue}, want: http.StatusBadRequest},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/v1/memory_stores", nil)
+			for _, value := range test.header {
+				req.Header.Add("anthropic-beta", value)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != test.want {
+				t.Fatalf("status = %d, want %d: %s", rec.Code, test.want, rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestWriteError_PreservesMemoryPreconditionCode(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeError(rec, domain.MemoryPrecondition("stale Memory"))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", rec.Code)
+	}
+	if got := decodeErrorEnvelope(t, rec.Body.Bytes())["type"]; got != "memory_precondition_failed_error" {
+		t.Fatalf("error type = %q", got)
+	}
+}
+
 func TestAuthMiddleware_Strict(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

@@ -103,6 +103,31 @@ func TestProjectSessionResourceContext_ListsOnlyActiveReadOnlyFiles(t *testing.T
 	}
 }
 
+func TestProjectSessionResourceContext_ListsMemoryStoresWithoutContents(t *testing.T) {
+	got := ProjectSessionResourceContext("base", []SessionResource{{
+		ResourceType:           SessionResourceTypeMemoryStore,
+		MemoryStoreID:          "memstore_project",
+		MemoryStoreName:        "Project Knowledge",
+		MemoryStoreDescription: "shared guidance",
+		MemoryAccess:           MemoryAccessReadWrite,
+		MemoryInstructions:     "Keep decisions current.",
+		MountPath:              "/mnt/memory/project-knowledge",
+		State:                  SessionResourceActive,
+	}})
+	for _, want := range []string{
+		"Memory Stores available as ordinary sandbox files",
+		`"memory_store_id":"memstore_project"`,
+		`"description":"shared guidance"`,
+		`"mount_path":"/mnt/memory/project-knowledge"`,
+		`"access":"read_write"`,
+		`"instructions":"Keep decisions current."`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Memory resource context %q does not contain %q", got, want)
+		}
+	}
+}
+
 func TestProjectSessionSkillContext_ListsOnDemandDiscoveryMetadata(t *testing.T) {
 	skills := []SkillVersion{{
 		SkillID: "skill_reports", Version: "100", Name: "report-tools",
