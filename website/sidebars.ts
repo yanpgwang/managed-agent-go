@@ -4,11 +4,9 @@ const sidebars: SidebarsConfig = {
   docs: [
     'intro',
     'getting-started',
-    'sandboxes',
-    'deployment',
     {
       type: 'category',
-      label: 'Architecture',
+      label: 'Concepts',
       items: [
         'architecture',
         'architecture/domain-model',
@@ -19,12 +17,17 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'API',
+      label: 'Guides',
+      items: [
+        'deployment',
+        'sandboxes',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'API reference',
       items: [
         'api/overview',
-        'api/core-conformance',
-        'api/files-conformance',
-        'api/skills-conformance',
         'api/agents',
         'api/environments',
         'api/sessions',
@@ -33,14 +36,18 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Project',
+      label: 'Compatibility & conformance',
       items: [
         'compatibility',
         'compatibility/core-v1',
-        'roadmap',
+        'api/core-conformance',
+        'api/files-conformance',
+        'api/skills-conformance',
+        'api/session-resources-conformance',
         'provenance',
       ],
     },
+    'roadmap',
   ],
 };
 
