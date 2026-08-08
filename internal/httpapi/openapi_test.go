@@ -303,6 +303,10 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 		if strings.HasPrefix(path, "/v1/vaults") {
 			continue
 		}
+		if strings.HasPrefix(path, "/v1/deployments") ||
+			strings.HasPrefix(path, "/v1/deployment_runs") {
+			continue
+		}
 		if strings.Contains(path, "/resources") {
 			continue
 		}
@@ -319,6 +323,36 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 	if count != 21 {
 		t.Fatalf("core operation count = %d, want 21", count)
 	}
+}
+
+func TestOpenAPIDeploymentContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	operations := map[string][]string{
+		"/v1/deployments":                         {"get", "post"},
+		"/v1/deployments/{deployment_id}":         {"get", "post"},
+		"/v1/deployments/{deployment_id}/archive": {"post"},
+		"/v1/deployments/{deployment_id}/pause":   {"post"},
+		"/v1/deployments/{deployment_id}/unpause": {"post"},
+		"/v1/deployments/{deployment_id}/run":     {"post"},
+		"/v1/deployment_runs":                     {"get"},
+		"/v1/deployment_runs/{deployment_run_id}": {"get"},
+	}
+	count := 0
+	for path, methods := range operations {
+		pathItem := openAPIMap(t, paths[path], "path "+path)
+		for _, method := range methods {
+			operation := openAPIMap(t, pathItem[method], method+" "+path)
+			if operation["operationId"] == nil {
+				t.Fatalf("%s %s has no operationId", method, path)
+			}
+			count++
+		}
+	}
+	if count != 10 {
+		t.Fatalf("Deployment operation count = %d, want 10", count)
+	}
+	validateOpenAPIRefs(t, doc, doc)
 }
 
 func TestOpenAPIVaultContract(t *testing.T) {

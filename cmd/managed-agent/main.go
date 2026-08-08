@@ -547,12 +547,26 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 			configuredSandboxProviderName(),
 		)
 	}
+	var deploymentFiles app.DeploymentFileReader
+	if files != nil && providerCapabilities.FileResources {
+		deploymentFiles = files
+	}
+	var deploymentMemory app.DeploymentMemoryReader
+	if providerCapabilities.MemoryStores {
+		deploymentMemory = memory
+	}
+	deployments := app.NewDeploymentService(app.DeploymentServiceConfig{
+		Repository: pg.NewDeploymentRepository(pgStore),
+		Agents:     agentsRepo, Environments: environmentsRepo, Sessions: sessions,
+		Files: deploymentFiles, Memory: deploymentMemory, Vaults: vaults,
+		IDGenerator: ids, Clock: clock,
+	})
 	events := controlplane.NewEventService(pgStore)
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
 		Events: events, Stream: stream, Files: files, Skills: skills, Memory: memory,
-		Vaults:           vaults,
+		Vaults: vaults, Deployments: deployments,
 		SessionResources: sessionResources,
 	}, cfg).Handler()
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")

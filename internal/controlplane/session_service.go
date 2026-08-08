@@ -24,6 +24,16 @@ type SessionOrchestrator interface {
 	TerminateSession(context.Context, string) error
 }
 
+type deploymentSessionOrchestrator interface {
+	CreateDeploymentSession(
+		context.Context,
+		domain.Session,
+		[]domain.EventDraft,
+		domain.DeploymentRun,
+		...[]app.PreparedSessionResource,
+	) (domain.Session, []domain.Event, error)
+}
+
 // SessionService owns public Session validation and delegates the atomic
 // session/event admission boundary to PostgreSQL plus the Temporal outbox.
 type SessionService struct {
@@ -124,9 +134,11 @@ func (s *SessionService) Create(
 		return domain.Session{}, domain.Validation("initial_events exceeds 50")
 	}
 	for _, event := range input.InitialEvents {
-		if !domain.IsInitialEventType(event.Type) {
+		allowed := domain.IsInitialEventType(event.Type) ||
+			(input.DeploymentID != nil && event.Type == domain.EvSystemMessage)
+		if !allowed {
 			return domain.Session{}, domain.Validation(
-				"initial_events may contain only user.message or user.define_outcome",
+				"initial_events contains an unsupported event type",
 			)
 		}
 	}
@@ -179,6 +191,7 @@ func (s *SessionService) Create(
 		AgentID:           agent.ID,
 		AgentVersion:      agent.Version,
 		EnvironmentID:     environment.ID,
+		DeploymentID:      input.DeploymentID,
 		EnvironmentType:   environment.ConfigType,
 		EnvironmentConfig: environment.SessionConfig(),
 		Status:            domain.StatusIdle,
@@ -212,9 +225,24 @@ func (s *SessionService) Create(
 			session.Resources[index] = prepared[index].Resource
 		}
 	}
-	created, _, err := s.orchestrator.CreateAPISession(
-		ctx, session, input.InitialEvents, prepared,
-	)
+	var created domain.Session
+	if input.DeploymentRun != nil {
+		deploymentOrchestrator, ok := s.orchestrator.(deploymentSessionOrchestrator)
+		if !ok {
+			return domain.Session{}, domain.Unsupported(
+				"Deployment Session admission is unavailable for the configured runtime",
+			)
+		}
+		run := *input.DeploymentRun
+		run.SessionID = &session.ID
+		created, _, err = deploymentOrchestrator.CreateDeploymentSession(
+			ctx, session, input.InitialEvents, run, prepared,
+		)
+	} else {
+		created, _, err = s.orchestrator.CreateAPISession(
+			ctx, session, input.InitialEvents, prepared,
+		)
+	}
 	if err != nil && s.resources != nil {
 		var domainErr *domain.DomainError
 		if errors.As(err, &domainErr) {

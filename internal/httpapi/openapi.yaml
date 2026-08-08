@@ -4,9 +4,9 @@ info:
   version: 0.1.0
   description: >-
     Clean-room implementation of the supported Claude Managed Agents API core,
-    conditional Files and Memory APIs, and File- and Memory-backed Session
-    Resources. This project is Apache-2.0 licensed and is not an Anthropic
-    product.
+    Deployments, conditional Files and Memory APIs, Vaults, and File- and
+    Memory-backed Session Resources. This project is Apache-2.0 licensed and is
+    not an Anthropic product.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -36,6 +36,8 @@ tags:
     description: Persistent path-addressed Memory Stores with immutable audit Versions.
   - name: Vaults
     description: Encrypted credential storage for Managed Agent Sessions.
+  - name: Deployments
+    description: Autonomous Session templates and their execution records.
 paths:
   /v1/agents:
     post:
@@ -1212,6 +1214,130 @@ paths:
         '422':
           $ref: '#/components/responses/UnsupportedRequest'
 
+  /v1/deployments:
+    post:
+      operationId: createDeployment
+      tags: [Deployments]
+      summary: Create a Deployment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeploymentCreateRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '422': {$ref: '#/components/responses/UnsupportedRequest'}
+    get:
+      operationId: listDeployments
+      tags: [Deployments]
+      summary: List Deployments
+      parameters:
+        - $ref: '#/components/parameters/DeploymentListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/AgentIDFilter'
+        - $ref: '#/components/parameters/CreatedAtGte'
+        - $ref: '#/components/parameters/CreatedAtLte'
+        - $ref: '#/components/parameters/IncludeArchived'
+        - $ref: '#/components/parameters/DeploymentStatusFilter'
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentListResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+  /v1/deployments/{deployment_id}:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+    get:
+      operationId: getDeployment
+      tags: [Deployments]
+      summary: Get a Deployment
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: updateDeployment
+      tags: [Deployments]
+      summary: Update a Deployment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/DeploymentUpdateRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/UnsupportedRequest'}
+  /v1/deployments/{deployment_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+    post:
+      operationId: archiveDeployment
+      tags: [Deployments]
+      summary: Archive a Deployment
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/deployments/{deployment_id}/pause:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+    post:
+      operationId: pauseDeployment
+      tags: [Deployments]
+      summary: Pause scheduled triggers
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/deployments/{deployment_id}/unpause:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+    post:
+      operationId: unpauseDeployment
+      tags: [Deployments]
+      summary: Resume scheduled triggers without backfilling missed occurrences
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/deployments/{deployment_id}/run:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentID'
+    post:
+      operationId: runDeployment
+      tags: [Deployments]
+      summary: Run a Deployment immediately
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentRunResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /v1/deployment_runs:
+    get:
+      operationId: listDeploymentRuns
+      tags: [Deployments]
+      summary: List Deployment Runs
+      parameters:
+        - $ref: '#/components/parameters/DeploymentRunListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/CreatedAtGt'
+        - $ref: '#/components/parameters/CreatedAtGte'
+        - $ref: '#/components/parameters/CreatedAtLt'
+        - $ref: '#/components/parameters/CreatedAtLte'
+        - $ref: '#/components/parameters/DeploymentIDFilter'
+        - $ref: '#/components/parameters/DeploymentRunHasError'
+        - $ref: '#/components/parameters/DeploymentRunTriggerType'
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentRunListResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+  /v1/deployment_runs/{deployment_run_id}:
+    parameters:
+      - $ref: '#/components/parameters/DeploymentRunID'
+    get:
+      operationId: getDeploymentRun
+      tags: [Deployments]
+      summary: Get a Deployment Run
+      responses:
+        '200': {$ref: '#/components/responses/DeploymentRunResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+
   /healthz:
     get:
       operationId: health
@@ -1263,6 +1389,52 @@ components:
       schema:
         type: string
         pattern: '^vcrd_'
+    DeploymentID:
+      name: deployment_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^depl_'
+    DeploymentRunID:
+      name: deployment_run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^drun_'
+    DeploymentListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    DeploymentRunListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 20
+    DeploymentStatusFilter:
+      name: status
+      in: query
+      schema:
+        type: string
+        enum: [active, paused]
+    DeploymentRunHasError:
+      name: has_error
+      in: query
+      schema: {type: boolean}
+    DeploymentRunTriggerType:
+      name: trigger_type
+      in: query
+      schema:
+        type: string
+        enum: [schedule, manual]
     VaultListLimit:
       name: limit
       in: query
@@ -1571,9 +1743,10 @@ components:
     DeploymentIDFilter:
       name: deployment_id
       in: query
-      description: Accepted for compatibility; no current Session matches a deployment.
+      description: Filter Sessions or Deployment Runs by their Deployment.
       schema:
         type: string
+        pattern: '^depl_'
     MemoryStoreIDFilter:
       name: memory_store_id
       in: query
@@ -1622,6 +1795,34 @@ components:
         format: date-time
 
   responses:
+    DeploymentResponse:
+      description: Deployment resource
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Deployment'}
+    DeploymentListResponse:
+      description: Deployment page
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/DeploymentList'}
+    DeploymentRunResponse:
+      description: Deployment Run resource
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/DeploymentRun'}
+    DeploymentRunListResponse:
+      description: Deployment Run page
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/DeploymentRunList'}
     AgentResponse:
       description: Agent resource
       headers:
@@ -2053,6 +2254,243 @@ components:
         type: string
 
   schemas:
+    DeploymentAgentInput:
+      oneOf:
+        - type: string
+          minLength: 1
+        - $ref: '#/components/schemas/AgentReference'
+    DeploymentInitialEvent:
+      oneOf:
+        - $ref: '#/components/schemas/UserMessageEventInput'
+        - $ref: '#/components/schemas/UserDefineOutcomeEventInput'
+        - $ref: '#/components/schemas/SystemMessageEventInput'
+      discriminator:
+        propertyName: type
+    DeploymentScheduleInput:
+      type: object
+      additionalProperties: false
+      required: [type, expression, timezone]
+      properties:
+        type: {type: string, const: cron}
+        expression:
+          type: string
+          description: Five-field POSIX cron expression.
+        timezone:
+          type: string
+          description: IANA timezone identifier.
+    DeploymentSchedule:
+      allOf:
+        - $ref: '#/components/schemas/DeploymentScheduleInput'
+        - type: object
+          required: [last_run_at, upcoming_runs_at]
+          properties:
+            last_run_at: {$ref: '#/components/schemas/NullableTimestamp'}
+            upcoming_runs_at:
+              type: array
+              maxItems: 5
+              items: {type: string, format: date-time}
+    DeploymentResourceInput:
+      oneOf:
+        - $ref: '#/components/schemas/FileSessionResourceInput'
+        - $ref: '#/components/schemas/MemoryStoreSessionResourceInput'
+      discriminator:
+        propertyName: type
+      description: GitHub repository resources remain capability-gated in this implementation.
+    DeploymentMetadata:
+      type: object
+      maxProperties: 16
+      propertyNames:
+        maxLength: 64
+      additionalProperties:
+        type: string
+        maxLength: 512
+    DeploymentCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [agent, environment_id, initial_events, name]
+      properties:
+        agent: {$ref: '#/components/schemas/DeploymentAgentInput'}
+        environment_id: {type: string, minLength: 1}
+        initial_events:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {$ref: '#/components/schemas/DeploymentInitialEvent'}
+        name: {type: string, minLength: 1}
+        description: {type: [string, 'null']}
+        metadata: {$ref: '#/components/schemas/DeploymentMetadata'}
+        resources:
+          type: array
+          maxItems: 500
+          items: {$ref: '#/components/schemas/DeploymentResourceInput'}
+        schedule:
+          oneOf:
+            - $ref: '#/components/schemas/DeploymentScheduleInput'
+            - type: 'null'
+        vault_ids:
+          type: array
+          maxItems: 50
+          uniqueItems: true
+          items: {type: string, pattern: '^vlt_'}
+    DeploymentUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        agent:
+          $ref: '#/components/schemas/DeploymentAgentInput'
+        environment_id: {type: string, minLength: 1}
+        initial_events:
+          type: array
+          minItems: 1
+          maxItems: 50
+          items: {$ref: '#/components/schemas/DeploymentInitialEvent'}
+        name: {type: string, minLength: 1}
+        description: {type: [string, 'null']}
+        metadata:
+          oneOf:
+            - type: object
+              maxProperties: 16
+              additionalProperties: {type: [string, 'null'], maxLength: 512}
+            - type: 'null'
+        resources:
+          oneOf:
+            - type: array
+              maxItems: 500
+              items: {$ref: '#/components/schemas/DeploymentResourceInput'}
+            - type: 'null'
+        schedule:
+          oneOf:
+            - $ref: '#/components/schemas/DeploymentScheduleInput'
+            - type: 'null'
+        vault_ids:
+          oneOf:
+            - type: array
+              maxItems: 50
+              uniqueItems: true
+              items: {type: string, pattern: '^vlt_'}
+            - type: 'null'
+    DeploymentPausedReason:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, enum: [manual, error]}
+        error:
+          type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type: {type: string}
+    DeploymentResource:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type, file_id, mount_path]
+          properties:
+            type: {type: string, const: file}
+            file_id: {type: string}
+            mount_path: {type: [string, 'null']}
+        - type: object
+          additionalProperties: false
+          required: [type, memory_store_id, access, instructions]
+          properties:
+            type: {type: string, const: memory_store}
+            memory_store_id: {type: string, pattern: '^memstore_'}
+            access: {type: [string, 'null'], enum: [read_write, read_only, null]}
+            instructions: {type: [string, 'null']}
+      discriminator:
+        propertyName: type
+    Deployment:
+      type: object
+      additionalProperties: false
+      required: [id, type, agent, archived_at, created_at, description, environment_id, initial_events, metadata, name, paused_reason, resources, schedule, status, updated_at, vault_ids]
+      properties:
+        id: {type: string, pattern: '^depl_'}
+        type: {type: string, const: deployment}
+        agent: {$ref: '#/components/schemas/AgentReference'}
+        archived_at: {$ref: '#/components/schemas/NullableTimestamp'}
+        created_at: {type: string, format: date-time}
+        description: {type: string}
+        environment_id: {type: string}
+        initial_events:
+          type: array
+          items: {$ref: '#/components/schemas/DeploymentInitialEvent'}
+        metadata: {$ref: '#/components/schemas/DeploymentMetadata'}
+        name: {type: string}
+        paused_reason:
+          oneOf:
+            - $ref: '#/components/schemas/DeploymentPausedReason'
+            - type: 'null'
+        resources:
+          type: array
+          items: {$ref: '#/components/schemas/DeploymentResource'}
+        schedule:
+          oneOf:
+            - $ref: '#/components/schemas/DeploymentSchedule'
+            - type: 'null'
+        status: {type: string, enum: [active, paused]}
+        updated_at: {type: string, format: date-time}
+        vault_ids:
+          type: array
+          items: {type: string, pattern: '^vlt_'}
+    DeploymentList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/Deployment'}
+        next_page: {$ref: '#/components/schemas/Cursor'}
+    DeploymentRunError:
+      type: object
+      additionalProperties: false
+      required: [type, message]
+      properties:
+        type:
+          type: string
+          enum: [environment_archived_error, agent_archived_error, environment_not_found_error, vault_not_found_error, vault_archived_error, file_not_found_error, memory_store_archived_error, skill_not_found_error, session_resource_not_found_error, workspace_archived_error, organization_disabled_error, session_rate_limited_error, session_creation_rejected_error, unknown_error, self_hosted_resources_unsupported_error, mcp_egress_blocked_error]
+        message: {type: string}
+    DeploymentRunTriggerContext:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type: {type: string, const: manual}
+        - type: object
+          additionalProperties: false
+          required: [type, scheduled_at]
+          properties:
+            type: {type: string, const: schedule}
+            scheduled_at: {type: string, format: date-time}
+      discriminator:
+        propertyName: type
+    DeploymentRun:
+      type: object
+      additionalProperties: false
+      required: [id, type, agent, created_at, deployment_id, error, session_id, trigger_context]
+      properties:
+        id: {type: string, pattern: '^drun_'}
+        type: {type: string, const: deployment_run}
+        agent: {$ref: '#/components/schemas/AgentReference'}
+        created_at: {type: string, format: date-time}
+        deployment_id: {type: string, pattern: '^depl_'}
+        error:
+          oneOf:
+            - $ref: '#/components/schemas/DeploymentRunError'
+            - type: 'null'
+        session_id: {type: [string, 'null'], pattern: '^sesn_'}
+        trigger_context: {$ref: '#/components/schemas/DeploymentRunTriggerContext'}
+    DeploymentRunList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/DeploymentRun'}
+        next_page: {$ref: '#/components/schemas/Cursor'}
     ErrorResponse:
       type: object
       additionalProperties: false

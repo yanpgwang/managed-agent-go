@@ -81,8 +81,12 @@ func sessionToJSON(s domain.Session) map[string]any {
 			"input_tokens":            s.Usage.InputTokens,
 			"output_tokens":           s.Usage.OutputTokens,
 		},
-		"vault_ids":     append([]string{}, s.VaultIDs...),
-		"deployment_id": nil,
+		"vault_ids": append([]string{}, s.VaultIDs...),
+	}
+	if s.DeploymentID != nil {
+		out["deployment_id"] = *s.DeploymentID
+	} else {
+		out["deployment_id"] = nil
 	}
 	if s.ArchivedAt != nil {
 		out["archived_at"] = s.ArchivedAt.Format(timeFmt)

@@ -235,11 +235,11 @@ const insertSession = `-- name: InsertSession :exec
 
 INSERT INTO sessions (
     id, status, body, created_at, updated_at,
-    agent_id, agent_version, environment_id, archived_at
+    agent_id, agent_version, environment_id, deployment_id, archived_at
 )
 VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, $9
+    $6, $7, $8, $9, $10
 )
 `
 
@@ -252,6 +252,7 @@ type InsertSessionParams struct {
 	AgentID       *string
 	AgentVersion  *int32
 	EnvironmentID *string
+	DeploymentID  *string
 	ArchivedAt    pgtype.Timestamptz
 }
 
@@ -269,6 +270,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.AgentID,
 		arg.AgentVersion,
 		arg.EnvironmentID,
+		arg.DeploymentID,
 		arg.ArchivedAt,
 	)
 	return err

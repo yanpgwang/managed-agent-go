@@ -81,8 +81,12 @@ encrypted rotation. Cross-origin authenticated redirects are rejected.
 Environment-variable SecretEgress follows after a sandbox provider can enforce
 substitution without revealing the secret.
 
-Deployments and Deployment Runs follow the stable execution and credential
-layers.
+The Deployments slice now implements all ten Deployment and Deployment Run
+operations. Deployments pin immutable Agent Versions, create Sessions manually
+or from optional cron schedules, and retain success or failure Run records.
+Scheduled claims are PostgreSQL-leased across workers; successful Session and
+Run creation is atomic. See the [Deployments conformance
+matrix](api/deployments-conformance.md).
 
 Skills and Memory are not deferred to multi-agent work. They provide reusable
 capabilities and continuity to one Agent today, and later become foundations
@@ -123,7 +127,7 @@ Production deployments additionally need:
 
 Authentication/tenancy, provider routing, quotas, audit, metrics, backups, and
 deployment management are intentionally not prerequisites for M1 API alignment.
-The post-core Skills, Memory, Vaults, Schedules, and Webhooks surfaces do not
+The post-core Skills, Memory, Vaults, Deployments, and Webhooks surfaces do not
 expand the frozen M1 claim. Current behavior is tracked in the
 [compatibility matrix](compatibility.md); architectural guarantees are
 documented in the [architecture overview](architecture.md).

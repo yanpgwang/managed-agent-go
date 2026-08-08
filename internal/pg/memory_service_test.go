@@ -215,7 +215,7 @@ func TestMemoryRuntime_DockerPostgresRoundTrip(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now, State: domain.SessionResourceActive,
 	}
 	if _, err := store.createSession(ctx, session, nil, false,
-		[]app.PreparedSessionResource{{Resource: resource}}); err != nil {
+		[]app.PreparedSessionResource{{Resource: resource}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{
@@ -326,6 +326,7 @@ func TestMemoryStoreSessionResource_PostgresSnapshotLifecycle(t *testing.T) {
 		nil,
 		false,
 		[]app.PreparedSessionResource{{Resource: resource}},
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("create Session with Memory Store: %v", err)

@@ -38,6 +38,11 @@ WHERE environment.id = $1
       FROM sessions
       WHERE sessions.environment_id = environment.id
   )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM deployments
+      WHERE deployments.environment_id = environment.id
+  )
 `
 
 func (q *Queries) DeleteEnvironmentIfUnreferenced(ctx context.Context, id string) (int64, error) {

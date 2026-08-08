@@ -132,6 +132,7 @@ func TestCreateSessionWithResources_RollsBackProjectionAndFilePublication(t *tes
 		[]domain.EventDraft{{Type: domain.EvUserMessage, Payload: map[string]any{"content": "hello"}}},
 		false,
 		[]app.PreparedSessionResource{first, second},
+		nil,
 	); !isConflict(err) {
 		t.Fatalf("create with duplicate resource mount = %v, want conflict", err)
 	}

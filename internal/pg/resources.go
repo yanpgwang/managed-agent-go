@@ -420,7 +420,7 @@ func (r *EnvironmentRepository) DeleteIfUnreferenced(ctx context.Context, id str
 		if !exists {
 			return domain.NotFound("environment not found")
 		}
-		return domain.Conflict("environment is referenced by a session")
+		return domain.Conflict("environment is referenced by a session or deployment")
 	})
 }
 
