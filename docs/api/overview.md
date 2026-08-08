@@ -29,6 +29,7 @@ matrices.
 | Skills | Create/list/get/delete custom Skills and immutable Versions; download Version zip archives |
 | Memory | Create/list/get/update/archive/delete Stores; create/list/get/update/delete Memories; get/list/redact immutable Versions |
 | Vaults | Create/list/get/update/archive/delete Vaults; create/list/get/update/archive/delete encrypted Credentials; validate MCP OAuth Credentials |
+| Deployments | Create/list/get/update/archive/pause/unpause/run under `/v1/deployments`; get/list immutable records under `/v1/deployment_runs` |
 | Session Resources | Add, list, get, update contract, and delete under `/v1/sessions/{id}/resources` |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
 
@@ -38,6 +39,7 @@ Resource-specific request shapes are covered in:
 - [Environments](environments.md)
 - [Sessions](sessions.md)
 - [Events and streaming](events.md)
+- [Deployments and Deployment Runs](deployments.md)
 
 ## Headers
 
@@ -130,16 +132,18 @@ Files use their upstream ID-based pagination instead: `after_id` and
 `before_id` select a direction, while the response contains `has_more`,
 `first_id`, and `last_id`. The two direction parameters cannot be combined.
 
-Vault and Credential lists use forward-only opaque `page` cursors and return
-`data` with nullable `next_page`. Credential cursors are bound to their parent
-Vault ID and archive filter.
+Vault, Credential, Deployment, and Deployment Run lists use forward-only opaque
+`page` cursors and return `data` with nullable `next_page`. Cursors are bound to
+their normalized filters; Credential cursors are additionally bound to their
+parent Vault ID and archive filter.
 
 ## OpenAPI
 
 The running server exposes `/openapi.yaml`, sourced from
-`internal/httpapi/openapi.yaml`. All 21 core operations, five Files operations,
-five Session Resources operations, nine custom Skills operations, fourteen
-Memory operations, and thirteen Vault/Credential operations define
+`internal/httpapi/openapi.yaml`. All 21 core operations, ten Deployment and
+Deployment Run operations, five Files operations, five Session Resources
+operations, nine custom Skills operations, fourteen Memory operations, and
+thirteen Vault/Credential operations define
 stable operation IDs, path and query parameters, request and response schemas,
 list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core

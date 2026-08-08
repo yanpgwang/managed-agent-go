@@ -100,7 +100,7 @@ func (s *Store) CreateSession(
 	session domain.Session,
 	drafts []domain.EventDraft,
 ) (Admission, error) {
-	return s.createSession(ctx, session, drafts, false, nil)
+	return s.createSession(ctx, session, drafts, false, nil, nil)
 }
 
 // CreateAPISession creates a public API session while holding share locks on
@@ -117,7 +117,24 @@ func (s *Store) CreateAPISession(
 	if len(resourceSets) > 0 {
 		resources = resourceSets[0]
 	}
-	return s.createSession(ctx, session, drafts, true, resources)
+	return s.createSession(ctx, session, drafts, true, resources, nil)
+}
+
+// CreateDeploymentSession is the deployment admission boundary. The run row is
+// inserted in the same transaction as the Session, its resources, initial
+// events, and orchestration wakeup.
+func (s *Store) CreateDeploymentSession(
+	ctx context.Context,
+	session domain.Session,
+	drafts []domain.EventDraft,
+	run domain.DeploymentRun,
+	resourceSets ...[]app.PreparedSessionResource,
+) (Admission, error) {
+	var resources []app.PreparedSessionResource
+	if len(resourceSets) > 0 {
+		resources = resourceSets[0]
+	}
+	return s.createSession(ctx, session, drafts, true, resources, &run)
 }
 
 func (s *Store) createSession(
@@ -126,6 +143,7 @@ func (s *Store) createSession(
 	drafts []domain.EventDraft,
 	checkDependencies bool,
 	resources []app.PreparedSessionResource,
+	deploymentRun *domain.DeploymentRun,
 ) (Admission, error) {
 	if len(resources) > app.MaxSessionResources {
 		return Admission{}, domain.Validation("resources must contain at most 500 entries")
@@ -193,13 +211,43 @@ func (s *Store) createSession(
 		}
 		var innerErr error
 		admission, innerErr = s.admitLocked(ctx, q, session, drafts)
-		return innerErr
+		if innerErr != nil {
+			return innerErr
+		}
+		if deploymentRun != nil {
+			return insertDeploymentRun(ctx, tx, *deploymentRun)
+		}
+		return nil
 	})
 	if err != nil {
 		return Admission{}, err
 	}
 	s.notifySession(ctx, session.ID)
 	return admission, nil
+}
+
+func insertDeploymentRun(ctx context.Context, tx pgx.Tx, run domain.DeploymentRun) error {
+	run.CreatedAt = run.CreatedAt.UTC().Truncate(time.Microsecond)
+	if run.ScheduledAt != nil {
+		scheduled := run.ScheduledAt.UTC().Truncate(time.Microsecond)
+		run.ScheduledAt = &scheduled
+	}
+	body, err := json.Marshal(run)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+INSERT INTO deployment_runs (
+    id, deployment_id, session_id, error_type, trigger_type,
+    scheduled_at, body, created_at
+) VALUES ($1, $2, $3, NULL, $4, $5, $6, $7)`,
+		run.ID, run.DeploymentID, run.SessionID, run.TriggerType,
+		run.ScheduledAt, body, run.CreatedAt,
+	)
+	if isUniqueViolation(err) {
+		return domain.Conflict("deployment schedule occurrence already ran")
+	}
+	return err
 }
 
 func lockActiveSessionVaults(ctx context.Context, tx pgx.Tx, vaultIDs []string) error {
@@ -307,6 +355,7 @@ func insertSessionParams(session domain.Session, body []byte) pgstore.InsertSess
 		AgentID:       stringPtr(session.AgentID),
 		AgentVersion:  int32Ptr(session.AgentVersion),
 		EnvironmentID: stringPtr(session.EnvironmentID),
+		DeploymentID:  session.DeploymentID,
 		ArchivedAt:    tsPtr(session.ArchivedAt),
 	}
 }

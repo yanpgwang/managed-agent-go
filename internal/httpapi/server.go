@@ -104,6 +104,19 @@ type VaultService interface {
 	ValidateMCPOAuthCredential(context.Context, string, string) (app.CredentialValidation, error)
 }
 
+type DeploymentService interface {
+	Create(context.Context, app.DeploymentCreateInput) (domain.Deployment, error)
+	Get(context.Context, string) (domain.Deployment, error)
+	Update(context.Context, string, domain.DeploymentPatch) (domain.Deployment, error)
+	List(context.Context, app.DeploymentListQuery) (app.DeploymentListPage, error)
+	Archive(context.Context, string) (domain.Deployment, error)
+	Pause(context.Context, string) (domain.Deployment, error)
+	Unpause(context.Context, string) (domain.Deployment, error)
+	Run(context.Context, string) (domain.DeploymentRun, error)
+	GetRun(context.Context, string) (domain.DeploymentRun, error)
+	ListRuns(context.Context, app.DeploymentRunListQuery) (app.DeploymentRunListPage, error)
+}
+
 type SessionResourceService interface {
 	Add(context.Context, string, app.FileSessionResourceInput) (domain.SessionResource, error)
 	Get(context.Context, string, string) (domain.SessionResource, error)
@@ -122,6 +135,7 @@ type Deps struct {
 	Skills           SkillService
 	Memory           MemoryService
 	Vaults           VaultService
+	Deployments      DeploymentService
 	SessionResources SessionResourceService
 }
 
@@ -203,6 +217,17 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/credentials/{credential_id}/archive", s.archiveCredential)
 	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/credentials/{credential_id}/mcp_oauth_validate", s.validateMCPOAuthCredential)
 	s.mux.HandleFunc("DELETE /v1/vaults/{vault_id}/credentials/{credential_id}", s.deleteCredential)
+
+	s.mux.HandleFunc("POST /v1/deployments", s.createDeployment)
+	s.mux.HandleFunc("GET /v1/deployments", s.listDeployments)
+	s.mux.HandleFunc("GET /v1/deployments/{deployment_id}", s.getDeployment)
+	s.mux.HandleFunc("POST /v1/deployments/{deployment_id}", s.updateDeployment)
+	s.mux.HandleFunc("POST /v1/deployments/{deployment_id}/archive", s.archiveDeployment)
+	s.mux.HandleFunc("POST /v1/deployments/{deployment_id}/pause", s.pauseDeployment)
+	s.mux.HandleFunc("POST /v1/deployments/{deployment_id}/unpause", s.unpauseDeployment)
+	s.mux.HandleFunc("POST /v1/deployments/{deployment_id}/run", s.runDeployment)
+	s.mux.HandleFunc("GET /v1/deployment_runs", s.listDeploymentRuns)
+	s.mux.HandleFunc("GET /v1/deployment_runs/{deployment_run_id}", s.getDeploymentRun)
 
 	s.registerSessionRoutes()
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

@@ -23,6 +23,8 @@ const (
 	PrefixMemoryVersion   = "memver_"
 	PrefixVault           = "vlt_"
 	PrefixVaultCredential = "vcrd_"
+	PrefixDeployment      = "depl_"
+	PrefixDeploymentRun   = "drun_"
 )
 
 type Clock interface{ Now() time.Time }

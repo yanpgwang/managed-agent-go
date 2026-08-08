@@ -157,7 +157,7 @@ Supported query parameters:
 | `statuses[]` | Repeatable public status filter |
 | `include_archived` | `true` or `false` |
 | `created_at[gt\|gte\|lt\|lte]` | RFC 3339 timestamp bounds |
-| `deployment_id` | Accepted; current records do not match deployments |
+| `deployment_id` | Match Sessions created by the Deployment |
 | `memory_store_id` | Match Sessions attached to the Memory Store |
 
 The response includes both directions:
@@ -195,7 +195,8 @@ The response embeds the resolved agent snapshot and includes `resources`,
 `vault_ids`, `outcome_evaluations`, `stats`, `usage`, and `deployment_id`.
 `stats` and `usage` are cumulative live projections, and
 `outcome_evaluations` reflects each admitted outcome. `resources` embeds active
-File and Memory Store Resource objects; create-time vault rejection is a Mango limitation; update-time
-vault rejection matches the official API. `deployment_id` is null because
-deployment-created sessions are not implemented.
+File and Memory Store Resource objects. Ordered `vault_ids` are resolved at
+creation; update-time vault replacement is rejected, matching the official API.
+`deployment_id` is null for direct Session creation and contains the parent
+Deployment ID for Deployment-created Sessions.
 See [Claude API coverage](../compatibility.md).

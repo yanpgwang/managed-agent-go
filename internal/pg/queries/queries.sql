@@ -6,11 +6,11 @@
 -- name: InsertSession :exec
 INSERT INTO sessions (
     id, status, body, created_at, updated_at,
-    agent_id, agent_version, environment_id, archived_at
+    agent_id, agent_version, environment_id, deployment_id, archived_at
 )
 VALUES (
     @id, @status, @body, @created_at, @updated_at,
-    @agent_id, @agent_version, @environment_id, @archived_at
+    @agent_id, @agent_version, @environment_id, @deployment_id, @archived_at
 );
 
 -- name: GetSession :one

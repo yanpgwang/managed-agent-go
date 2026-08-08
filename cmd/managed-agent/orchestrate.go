@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/controlplane"
 	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/live"
@@ -312,6 +313,14 @@ func runOrchestrate() {
 	if err := guardModelSandbox(realModel, localSandbox, os.Getenv(unsafeLocalSandboxEnv) == "1"); err != nil {
 		log.Fatalf("orchestrate: %v", err)
 	}
+	providerRegistry, err := sandboxProviderRegistry()
+	if err != nil {
+		log.Fatalf("orchestrate: sandbox registry: %v", err)
+	}
+	providerCapabilities, err := providerRegistry.Capabilities(configuredSandboxProviderName())
+	if err != nil {
+		log.Fatalf("orchestrate: sandbox capabilities: %v", err)
+	}
 	fileRuntime, err := resolveFiles(ctx, store, ids, realClock{}, false)
 	var resourceReconciler temporalpkg.SandboxResourceReconciler
 	switch {
@@ -363,6 +372,48 @@ func runOrchestrate() {
 		PreviewPublisher: broker,
 	})
 
+	agentsRepo := pg.NewAgentRepository(store)
+	environmentsRepo := pg.NewEnvironmentRepository(store)
+	var skillResolver app.SkillReferenceResolver
+	var sessionResources *controlplane.SessionResourceService
+	if fileRuntime != nil {
+		skills := app.NewSkillService(
+			pg.NewSkillRepository(store), fileRuntime.blobs, ids, realClock{},
+		)
+		if providerCapabilities.SkillBundles {
+			skillResolver = skills
+		}
+		sessionResources = controlplane.NewSessionResourceService(
+			store, fileRuntime.repository, fileRuntime.blobs, ids, realClock{},
+			providerCapabilities.FileResources,
+		)
+	}
+	deploymentSessions := controlplane.NewSessionService(
+		store, agentsRepo, environmentsRepo, runtime.Orchestrator(), ids,
+		realClock{}, skillResolver, sessionResources,
+	)
+	if vaults != nil {
+		deploymentSessions.EnableVaults()
+	}
+	if providerCapabilities.MemoryStores {
+		deploymentSessions.EnableMemoryStoreResources(memory)
+	}
+	var deploymentFiles app.DeploymentFileReader
+	if fileRuntime != nil && providerCapabilities.FileResources {
+		deploymentFiles = fileRuntime.service
+	}
+	var deploymentMemory app.DeploymentMemoryReader
+	if providerCapabilities.MemoryStores {
+		deploymentMemory = memory
+	}
+	deployments := app.NewDeploymentService(app.DeploymentServiceConfig{
+		Repository: pg.NewDeploymentRepository(store),
+		Agents:     agentsRepo, Environments: environmentsRepo, Sessions: deploymentSessions,
+		Files: deploymentFiles, Memory: deploymentMemory, Vaults: vaults,
+		IDGenerator: ids, Clock: realClock{},
+	})
+	deploymentReconciler := app.NewDeploymentReconciler(deployments)
+
 	if err := runtime.Worker.Start(); err != nil {
 		log.Fatalf("orchestrate: worker start: %v", err)
 	}
@@ -375,6 +426,9 @@ func runOrchestrate() {
 	lifecycleErr := make(chan error, 1)
 	go func() { lifecycleErr <- runtime.Lifecycle.Run(ctx) }()
 	log.Printf("orchestrate: sandbox and deletion lifecycle reconciler running")
+	deploymentErr := make(chan error, 1)
+	go func() { deploymentErr <- deploymentReconciler.Run(ctx) }()
+	log.Printf("orchestrate: scheduled Deployment reconciler running")
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
@@ -388,6 +442,10 @@ func runOrchestrate() {
 	case err := <-lifecycleErr:
 		if err != nil && ctx.Err() == nil {
 			log.Printf("orchestrate: lifecycle reconciler stopped: %v", err)
+		}
+	case err := <-deploymentErr:
+		if err != nil && ctx.Err() == nil {
+			log.Printf("orchestrate: scheduled Deployment reconciler stopped: %v", err)
 		}
 	}
 	cancel()

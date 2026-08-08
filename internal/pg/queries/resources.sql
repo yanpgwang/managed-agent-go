@@ -85,6 +85,11 @@ WHERE environment.id = @id
       SELECT 1
       FROM sessions
       WHERE sessions.environment_id = environment.id
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM deployments
+      WHERE deployments.environment_id = environment.id
   );
 
 -- name: EnvironmentExists :one

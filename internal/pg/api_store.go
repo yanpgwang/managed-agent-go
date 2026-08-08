@@ -128,7 +128,7 @@ func sessionListClauses(query app.ListPage) ([]string, []any) {
 		add(`status = ANY($%d::text[])`, statuses)
 	}
 	if query.DeploymentID != nil {
-		clauses = append(clauses, `FALSE`)
+		add(`deployment_id = $%d`, *query.DeploymentID)
 	}
 	if query.MemoryStoreID != nil {
 		add(`EXISTS (

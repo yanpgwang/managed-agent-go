@@ -28,6 +28,9 @@ type Session struct {
 	AgentID       string
 	AgentVersion  int
 	EnvironmentID string
+	// DeploymentID identifies sessions created by an autonomous Deployment.
+	// It is immutable and nil for sessions created directly through /sessions.
+	DeploymentID *string
 	// EnvironmentType is captured with the session so tool routing remains
 	// stable even if the environment resource is later archived. Empty on older
 	// sessions means cloud.

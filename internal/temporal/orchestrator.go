@@ -98,6 +98,32 @@ func (o *Orchestrator) CreateAPISession(
 	return adm.Session, adm.Events, nil
 }
 
+// CreateDeploymentSession commits the Session and its immutable Deployment Run
+// success record together. A retry can therefore never expose a successful
+// Session without the audit row that names it.
+func (o *Orchestrator) CreateDeploymentSession(
+	ctx context.Context,
+	session domain.Session,
+	initial []domain.EventDraft,
+	run domain.DeploymentRun,
+	resourceSets ...[]app.PreparedSessionResource,
+) (domain.Session, []domain.Event, error) {
+	adm, err := o.store.CreateDeploymentSession(ctx, session, initial, run, resourceSets...)
+	if err != nil {
+		return domain.Session{}, nil, err
+	}
+	if adm.Enqueued && o.signaler != nil {
+		if sigErr := o.signaler.Wake(ctx, session.ID, adm.MaxSeq); sigErr != nil {
+			log.Printf(
+				"orchestrator: deployment fast-path signal failed session_id=%s (relay will deliver): %v",
+				session.ID,
+				sigErr,
+			)
+		}
+	}
+	return adm.Session, adm.Events, nil
+}
+
 // Runtime bundles the worker and relay so cmd can run the execution plane with a
 // single call.
 type Runtime struct {

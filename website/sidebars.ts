@@ -32,6 +32,7 @@ const sidebars: SidebarsConfig = {
         'api/environments',
         'api/sessions',
         'api/events',
+        'api/deployments',
       ],
     },
     {
@@ -45,6 +46,7 @@ const sidebars: SidebarsConfig = {
         'api/skills-conformance',
         'api/memory-conformance',
         'api/vaults-conformance',
+        'api/deployments-conformance',
         'api/session-resources-conformance',
         'provenance',
       ],

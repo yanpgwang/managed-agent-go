@@ -40,6 +40,8 @@ const (
 	memoryVersionListCursorKind   = "memory_version_list"
 	vaultListCursorKind           = "vault_list"
 	credentialListCursorKind      = "vault_credential_list"
+	deploymentListCursorKind      = "deployment_list"
+	deploymentRunListCursorKind   = "deployment_run_list"
 	resourceCursorPrefix          = "page_"
 )
 
@@ -110,6 +112,32 @@ func (filter agentCursorFilter) fingerprint() string {
 
 type environmentCursorFilter struct {
 	IncludeArchived bool `json:"include_archived"`
+}
+
+type deploymentCursorFilter struct {
+	AgentID         string `json:"agent_id,omitempty"`
+	CreatedAtGte    string `json:"created_at_gte,omitempty"`
+	CreatedAtLte    string `json:"created_at_lte,omitempty"`
+	IncludeArchived bool   `json:"include_archived"`
+	Status          string `json:"status,omitempty"`
+}
+
+type deploymentRunCursorFilter struct {
+	CreatedAtGt  string  `json:"created_at_gt,omitempty"`
+	CreatedAtGte string  `json:"created_at_gte,omitempty"`
+	CreatedAtLt  string  `json:"created_at_lt,omitempty"`
+	CreatedAtLte string  `json:"created_at_lte,omitempty"`
+	DeploymentID *string `json:"deployment_id,omitempty"`
+	HasError     *bool   `json:"has_error,omitempty"`
+	TriggerType  string  `json:"trigger_type,omitempty"`
+}
+
+func (filter deploymentCursorFilter) fingerprint() string {
+	return resourceFilterFingerprint(filter)
+}
+
+func (filter deploymentRunCursorFilter) fingerprint() string {
+	return resourceFilterFingerprint(filter)
 }
 
 type sessionResourceCursorFilter struct {
