@@ -73,13 +73,13 @@ ordinary files beneath `/mnt/memory`, enforce read-only attachments, and write
 multi-file changes back atomically with Session actor attribution. See the
 [Memory conformance matrix](api/memory-conformance.md).
 
-The Vault control-plane slice now implements all six Vault lifecycle operations
-and six Credential lifecycle operations. Static bearer and MCP OAuth payloads
-are write-only, encrypted with an operator-mounted rotating keyring, and purged
-on archive. The remaining Vault work is deliberately runtime-facing: Session
-`vault_ids`, deterministic MCP credential resolution and injection, OAuth
-validation/refresh recovery, then environment-variable SecretEgress after a
-sandbox provider can enforce substitution without revealing the secret.
+The Vault slice now implements all six Vault lifecycle operations, all six
+Credential lifecycle operations, ordered Session `vault_ids`, and deterministic
+runtime MCP bearer resolution. Static bearer and current OAuth access tokens are
+injected per request and re-resolved after rotation; cross-origin authenticated
+redirects are rejected. OAuth validation/refresh recovery remains, followed by
+environment-variable SecretEgress after a sandbox provider can enforce
+substitution without revealing the secret.
 
 Deployments and Deployment Runs follow the stable execution and credential
 layers.
@@ -92,9 +92,10 @@ or materialization model.
 ## Runtime integrations
 
 The first integration slice now includes provider-native Web Search/Fetch and
-unauthenticated remote MCP tool discovery and execution. Remaining work is:
+remote MCP tool discovery and execution with optional Vault authentication.
+Remaining work is:
 
-- deployment-managed MCP authentication and private-network connectivity;
+- OAuth refresh recovery and private-network MCP connectivity;
 - explicit per-endpoint server-tool capability profiles;
 - optional managed Web Search/Fetch executors that can honor `always_ask`;
 - preview expansion beyond the core message and thinking types;

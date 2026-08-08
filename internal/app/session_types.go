@@ -23,6 +23,7 @@ type CreateSessionInput struct {
 	InitialEvents   []domain.EventDraft
 	Resources       []FileSessionResourceInput
 	MemoryResources []MemorySessionResourceInput
+	VaultIDs        []string
 }
 
 type FileSessionResourceInput struct {

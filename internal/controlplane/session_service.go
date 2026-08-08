@@ -37,7 +37,14 @@ type SessionService struct {
 	memoryStores interface {
 		GetStore(context.Context, string) (domain.MemoryStore, error)
 	}
-	skillRef app.SkillReferenceResolver
+	skillRef      app.SkillReferenceResolver
+	vaultsEnabled bool
+}
+
+// EnableVaults permits Session Vault attachments for deployments whose API and
+// worker share a configured credential keyring.
+func (s *SessionService) EnableVaults() {
+	s.vaultsEnabled = true
 }
 
 func NewSessionService(
@@ -73,6 +80,21 @@ func (s *SessionService) Create(
 	ctx context.Context,
 	input app.CreateSessionInput,
 ) (domain.Session, error) {
+	if len(input.VaultIDs) > 0 && !s.vaultsEnabled {
+		return domain.Session{}, domain.Unsupported(
+			"Session Vaults are unavailable for the configured deployment",
+		)
+	}
+	seenVaults := make(map[string]struct{}, len(input.VaultIDs))
+	for _, vaultID := range input.VaultIDs {
+		if vaultID == "" {
+			return domain.Session{}, domain.Validation("vault_ids must not contain empty IDs")
+		}
+		if _, duplicate := seenVaults[vaultID]; duplicate {
+			return domain.Session{}, domain.Validation("vault_ids must not contain duplicates")
+		}
+		seenVaults[vaultID] = struct{}{}
+	}
 	if err := app.ValidateMetadata(input.Metadata); err != nil {
 		return domain.Session{}, err
 	}
@@ -163,6 +185,7 @@ func (s *SessionService) Create(
 		Title:             input.Title,
 		Metadata:          metadata,
 		AgentSnapshot:     snapshot,
+		VaultIDs:          append([]string(nil), input.VaultIDs...),
 		CreatedAt:         now,
 		UpdatedAt:         now,
 	}

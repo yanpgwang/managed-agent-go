@@ -434,6 +434,7 @@ func (s *testSessionService) Create(
 		EnvironmentConfig: environment.SessionConfig(),
 		Status:            domain.StatusIdle,
 		Title:             input.Title, Metadata: metadata, CreatedAt: now, UpdatedAt: now,
+		VaultIDs: append([]string(nil), input.VaultIDs...),
 	}
 	for _, inputResource := range input.Resources {
 		mountPath, err := domain.NormalizeSessionFileMountPath(

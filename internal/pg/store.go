@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -174,11 +175,17 @@ func (s *Store) createSession(
 			} else if err != nil {
 				return err
 			}
+			if err := lockActiveSessionVaults(ctx, tx, session.VaultIDs); err != nil {
+				return err
+			}
 		}
 		if err := q.InsertSession(ctx, insertSessionParams(session, body)); err != nil {
 			return err
 		}
 		if err := insertSessionSkillVersions(ctx, tx, session); err != nil {
+			return err
+		}
+		if err := insertSessionVaults(ctx, tx, session); err != nil {
 			return err
 		}
 		if err := insertPreparedSessionResources(ctx, tx, session.ID, resources); err != nil {
@@ -193,6 +200,48 @@ func (s *Store) createSession(
 	}
 	s.notifySession(ctx, session.ID)
 	return admission, nil
+}
+
+func lockActiveSessionVaults(ctx context.Context, tx pgx.Tx, vaultIDs []string) error {
+	if len(vaultIDs) == 0 {
+		return nil
+	}
+	ordered := append([]string(nil), vaultIDs...)
+	sort.Strings(ordered)
+	rows, err := tx.Query(ctx, `
+SELECT id FROM vaults
+WHERE id = ANY($1) AND archived_at IS NULL
+ORDER BY id
+FOR SHARE`, ordered)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	count := 0
+	for rows.Next() {
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if count != len(vaultIDs) {
+		return domain.Validation("vault_ids references a missing or archived Vault")
+	}
+	return nil
+}
+
+func insertSessionVaults(ctx context.Context, tx pgx.Tx, session domain.Session) error {
+	for position, vaultID := range session.VaultIDs {
+		if _, err := tx.Exec(ctx, `
+INSERT INTO session_vaults (session_id, position, vault_id)
+VALUES ($1, $2, $3)`, session.ID, position, vaultID); err != nil {
+			if isUniqueViolation(err) {
+				return domain.Validation("vault_ids must not contain duplicates")
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 func insertSessionSkillVersions(ctx context.Context, tx pgx.Tx, session domain.Session) error {

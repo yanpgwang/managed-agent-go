@@ -432,15 +432,13 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	clock := realClock{}
 	pgStore := pg.NewStore(pool, ids, clock)
 	memory := app.NewMemoryService(pg.NewMemoryRepository(pgStore), ids, clock)
-	var vaults *app.VaultService
-	if keyringPath := strings.TrimSpace(os.Getenv(vaultKeyringFileEnv)); keyringPath == "" {
+	vaults, err := resolveVaultService(pgStore, ids, clock)
+	if err != nil {
+		log.Fatalf("serve: Vault API keyring: %v", err)
+	}
+	if vaults == nil {
 		log.Printf("serve: Vault API disabled; %s is not configured", vaultKeyringFileEnv)
 	} else {
-		keyring, err := secretcrypto.LoadAESGCMKeyringFile(keyringPath)
-		if err != nil {
-			log.Fatalf("serve: Vault API keyring: %v", err)
-		}
-		vaults = app.NewVaultService(pg.NewVaultRepository(pgStore), keyring, ids, clock)
 		log.Printf("serve: Vault API encrypted credential store enabled")
 	}
 	broker, err := live.Connect(os.Getenv(envNATSURL))
@@ -536,6 +534,9 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		skillResolver,
 		sessionResourceLifecycle,
 	)
+	if vaults != nil {
+		sessions.EnableVaults()
+	}
 	if providerCapabilities.MemoryStores {
 		sessions.EnableMemoryStoreResources(memory)
 	} else {
@@ -554,6 +555,22 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	}, cfg).Handler()
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")
 	serveHTTP(addr, handler)
+}
+
+func resolveVaultService(
+	store *pg.Store,
+	ids domain.IDGenerator,
+	clock domain.Clock,
+) (*app.VaultService, error) {
+	keyringPath := strings.TrimSpace(os.Getenv(vaultKeyringFileEnv))
+	if keyringPath == "" {
+		return nil, nil
+	}
+	keyring, err := secretcrypto.LoadAESGCMKeyringFile(keyringPath)
+	if err != nil {
+		return nil, err
+	}
+	return app.NewVaultService(pg.NewVaultRepository(store), keyring, ids, clock), nil
 }
 
 func serveHTTP(addr string, handler http.Handler) {

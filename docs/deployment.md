@@ -98,10 +98,11 @@ startup rather than falling back to plaintext storage. The file has this shape:
 
 New Credentials and secret/auth updates use the active key. Older keys may remain in
 the file for reads during rotation; removing one makes Credentials encrypted by
-that key unavailable. The control-plane API is the only current process that
-loads the keyring; a worker will need it only when the runtime credential
-resolver lands. It must never be mounted into a Session sandbox, copied into
-Agent context, or stored in PostgreSQL. The bundled local keyring is
+that key unavailable. Both the API and worker processes must load the same
+keyring: the API encrypts and admits Session Vault references, while workers
+decrypt matching credentials immediately before MCP requests. It must never be
+mounted into a Session sandbox, copied into Agent context, or stored in
+PostgreSQL. The bundled local keyring is
 deterministic development material and must not be reused outside the local
 Compose stack.
 

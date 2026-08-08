@@ -3515,7 +3515,7 @@ components:
             $ref: '#/components/schemas/SessionResourceInput'
         vault_ids:
           type: array
-          maxItems: 0
+          description: Ordered Vault references used to resolve runtime credentials. The first Vault with a matching credential wins.
           items:
             type: string
     SessionAgentUpdate:
@@ -3786,7 +3786,6 @@ components:
           $ref: '#/components/schemas/SessionUsage'
         vault_ids:
           type: array
-          maxItems: 0
           items:
             type: string
         deployment_id:

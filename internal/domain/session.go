@@ -47,6 +47,9 @@ type Session struct {
 	Usage         TokenUsage
 	Outcomes      []OutcomeEvaluation
 	Resources     []SessionResource
+	// VaultIDs is the immutable, ordered Vault selection captured when the
+	// Session is created. Runtime credential resolution preserves this order.
+	VaultIDs []string
 	// ActiveSeconds is the completed running time. RunningSince contributes a
 	// live suffix while the Session is running. TerminatedAt freezes duration.
 	ActiveSeconds float64

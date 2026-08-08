@@ -91,9 +91,12 @@ and a read-only mount beneath `/mnt/session/uploads`. A Memory Store input uses
 `type: "memory_store"`, `memory_store_id`, optional `instructions`, and
 `read_write` or `read_only` access; it is mounted beneath `/mnt/memory` and can
 only be attached at creation. GitHub repository, self-hosted Environment,
-local-process, and current remote-provider resources return `422`. Non-empty `vault_ids` remain unsupported at creation
-time; this is a Mango limitation because the official Create Session API
-accepts vault IDs.
+local-process, and current remote-provider resources return `422`.
+`vault_ids` is an ordered list of active Vault references. The order is frozen
+with the Session: for an MCP endpoint, the first Vault containing a matching
+credential wins. Admission requires the Vault keyring to be configured and
+rejects missing, archived, empty, or duplicate references. Updating
+`vault_ids` after creation remains unsupported, matching the upstream contract.
 
 ## Get and update
 

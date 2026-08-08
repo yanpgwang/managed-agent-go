@@ -220,6 +220,30 @@ func (r *VaultRepository) CreateCredential(ctx context.Context, item domain.Vaul
 		if count >= maxCredentials {
 			return domain.Validation("vault already contains 20 credentials")
 		}
+		rows, err := tx.Query(ctx, `
+SELECT credential_key FROM vault_credentials
+WHERE vault_id = $1 AND archived_at IS NULL`, item.VaultID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var existingKey string
+			if err := rows.Scan(&existingKey); err != nil {
+				rows.Close()
+				return err
+			}
+			existingCanonical, existingErr := app.CanonicalMCPServerURL(existingKey)
+			newCanonical, newErr := app.CanonicalMCPServerURL(item.CredentialKey)
+			if existingErr == nil && newErr == nil && existingCanonical == newCanonical {
+				rows.Close()
+				return domain.Conflict("an active credential for this MCP server already exists in the vault")
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
 		envelope := item.SecretEnvelope
 		created, err = scanVaultCredential(tx.QueryRow(ctx, `
 INSERT INTO vault_credentials (
@@ -240,6 +264,29 @@ RETURNING id, vault_id, display_name, metadata, auth_type, credential_key, publi
 		return domain.VaultCredential{}, domain.Conflict("an active credential for this MCP server already exists in the vault")
 	}
 	return created, err
+}
+
+func (r *VaultRepository) ResolveSessionCredentials(
+	ctx context.Context,
+	sessionID string,
+) ([]domain.VaultCredential, error) {
+	rows, err := r.store.pool.Query(ctx, credentialSelect+`
+JOIN session_vaults sv ON sv.vault_id = vault_credentials.vault_id
+WHERE sv.session_id = $1 AND vault_credentials.archived_at IS NULL
+ORDER BY sv.position ASC, vault_credentials.id ASC`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []domain.VaultCredential
+	for rows.Next() {
+		item, err := scanVaultCredential(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (r *VaultRepository) GetCredential(ctx context.Context, vaultID, credentialID string) (domain.VaultCredential, error) {
@@ -370,9 +417,14 @@ func (r *VaultRepository) DeleteCredential(ctx context.Context, vaultID, credent
 }
 
 const credentialSelect = `
-SELECT id, vault_id, display_name, metadata, auth_type, credential_key, public_auth,
-       secret_version, secret_algorithm, secret_key_id, secret_nonce, secret_ciphertext,
-       version, created_at, updated_at, archived_at
+SELECT vault_credentials.id, vault_credentials.vault_id,
+       vault_credentials.display_name, vault_credentials.metadata,
+       vault_credentials.auth_type, vault_credentials.credential_key,
+       vault_credentials.public_auth, vault_credentials.secret_version,
+       vault_credentials.secret_algorithm, vault_credentials.secret_key_id,
+       vault_credentials.secret_nonce, vault_credentials.secret_ciphertext,
+       vault_credentials.version, vault_credentials.created_at,
+       vault_credentials.updated_at, vault_credentials.archived_at
 FROM vault_credentials `
 
 type vaultScanner interface{ Scan(...any) error }
