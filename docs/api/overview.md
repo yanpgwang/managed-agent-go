@@ -28,6 +28,7 @@ matrices.
 | Files | `POST/GET /v1/files`, metadata, content download, delete |
 | Skills | Create/list/get/delete custom Skills and immutable Versions; download Version zip archives |
 | Memory | Create/list/get/update/archive/delete Stores; create/list/get/update/delete Memories; get/list/redact immutable Versions |
+| Vaults | Create/list/get/update/archive/delete Vaults; create/list/get/update/archive/delete encrypted Credentials |
 | Session Resources | Add, list, get, update contract, and delete under `/v1/sessions/{id}/resources` |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
 
@@ -129,12 +130,16 @@ Files use their upstream ID-based pagination instead: `after_id` and
 `before_id` select a direction, while the response contains `has_more`,
 `first_id`, and `last_id`. The two direction parameters cannot be combined.
 
+Vault and Credential lists use forward-only opaque `page` cursors and return
+`data` with nullable `next_page`. Credential cursors are bound to their parent
+Vault ID and archive filter.
+
 ## OpenAPI
 
 The running server exposes `/openapi.yaml`, sourced from
 `internal/httpapi/openapi.yaml`. All 21 core operations, five Files operations,
-five Session Resources operations, nine custom Skills operations, and fourteen
-Memory operations define
+five Session Resources operations, nine custom Skills operations, fourteen
+Memory operations, and twelve Vault/Credential operations define
 stable operation IDs, path and query parameters, request and response schemas,
 list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core

@@ -21,6 +21,8 @@ const (
 	PrefixMemoryStore     = "memstore_"
 	PrefixMemory          = "mem_"
 	PrefixMemoryVersion   = "memver_"
+	PrefixVault           = "vlt_"
+	PrefixVaultCredential = "vcrd_"
 )
 
 type Clock interface{ Now() time.Time }

@@ -44,6 +44,7 @@ const sidebars: SidebarsConfig = {
         'api/files-conformance',
         'api/skills-conformance',
         'api/memory-conformance',
+        'api/vaults-conformance',
         'api/session-resources-conformance',
         'provenance',
       ],

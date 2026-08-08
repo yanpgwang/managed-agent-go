@@ -135,6 +135,9 @@ services:
       MANAGED_AGENT_FILE_S3_SECRET_KEY: minioadmin
       MANAGED_AGENT_FILE_S3_PATH_STYLE: "true"
       MANAGED_AGENT_FILE_S3_CREATE_BUCKET: "true"
+      MANAGED_AGENT_VAULT_KEYRING_FILE: /run/secrets/mango-vault-keyring.json
+    volumes:
+      - ./vault-keyring.json:/run/secrets/mango-vault-keyring.json:ro
     ports:
       - "8080:8080"
     healthcheck:

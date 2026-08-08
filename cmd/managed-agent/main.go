@@ -23,6 +23,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
 )
 
@@ -76,6 +77,8 @@ const (
 	fileS3PathStyleEnv    = "MANAGED_AGENT_FILE_S3_PATH_STYLE"
 	fileS3CreateBucketEnv = "MANAGED_AGENT_FILE_S3_CREATE_BUCKET"
 	fileUploadTempDirEnv  = "MANAGED_AGENT_FILE_UPLOAD_TEMP_DIR"
+
+	vaultKeyringFileEnv = "MANAGED_AGENT_VAULT_KEYRING_FILE"
 )
 
 // resolveModelClient returns the worker model client and reports whether it is
@@ -429,6 +432,17 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	clock := realClock{}
 	pgStore := pg.NewStore(pool, ids, clock)
 	memory := app.NewMemoryService(pg.NewMemoryRepository(pgStore), ids, clock)
+	var vaults *app.VaultService
+	if keyringPath := strings.TrimSpace(os.Getenv(vaultKeyringFileEnv)); keyringPath == "" {
+		log.Printf("serve: Vault API disabled; %s is not configured", vaultKeyringFileEnv)
+	} else {
+		keyring, err := secretcrypto.LoadAESGCMKeyringFile(keyringPath)
+		if err != nil {
+			log.Fatalf("serve: Vault API keyring: %v", err)
+		}
+		vaults = app.NewVaultService(pg.NewVaultRepository(pgStore), keyring, ids, clock)
+		log.Printf("serve: Vault API encrypted credential store enabled")
+	}
 	broker, err := live.Connect(os.Getenv(envNATSURL))
 	if err != nil {
 		log.Fatalf("serve: nats: %v", err)
@@ -535,6 +549,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
 		Events: events, Stream: stream, Files: files, Skills: skills, Memory: memory,
+		Vaults:           vaults,
 		SessionResources: sessionResources,
 	}, cfg).Handler()
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")

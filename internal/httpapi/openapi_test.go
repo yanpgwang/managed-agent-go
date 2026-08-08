@@ -300,6 +300,9 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 		if strings.HasPrefix(path, "/v1/memory_stores") {
 			continue
 		}
+		if strings.HasPrefix(path, "/v1/vaults") {
+			continue
+		}
 		if strings.Contains(path, "/resources") {
 			continue
 		}
@@ -316,6 +319,73 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 	if count != 21 {
 		t.Fatalf("core operation count = %d, want 21", count)
 	}
+}
+
+func TestOpenAPIVaultContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	operations := map[string][]string{
+		"/v1/vaults":                                                {"get", "post"},
+		"/v1/vaults/{vault_id}":                                     {"delete", "get", "post"},
+		"/v1/vaults/{vault_id}/archive":                             {"post"},
+		"/v1/vaults/{vault_id}/credentials":                         {"get", "post"},
+		"/v1/vaults/{vault_id}/credentials/{credential_id}":         {"delete", "get", "post"},
+		"/v1/vaults/{vault_id}/credentials/{credential_id}/archive": {"post"},
+	}
+	requestBodies := map[string]string{
+		"post /v1/vaults":                                        "#/components/schemas/VaultCreateRequest",
+		"post /v1/vaults/{vault_id}":                             "#/components/schemas/VaultUpdateRequest",
+		"post /v1/vaults/{vault_id}/credentials":                 "#/components/schemas/VaultCredentialCreateRequest",
+		"post /v1/vaults/{vault_id}/credentials/{credential_id}": "#/components/schemas/VaultCredentialUpdateRequest",
+	}
+	seenIDs := map[string]bool{}
+	count := 0
+	for path, methods := range operations {
+		pathItem := openAPIMap(t, paths[path], "path "+path)
+		pathParameters := pathItem["parameters"].([]any)
+		first := resolveOpenAPIRef(t, doc, pathParameters[0])
+		if first["name"] != "anthropic-beta" {
+			t.Fatalf("%s first parameter = %v", path, first["name"])
+		}
+		for _, method := range methods {
+			operation := openAPIMap(t, pathItem[method], method+" "+path)
+			id, _ := operation["operationId"].(string)
+			if id == "" || seenIDs[id] {
+				t.Fatalf("%s %s has missing or duplicate operationId %q", method, path, id)
+			}
+			seenIDs[id] = true
+			key := method + " " + path
+			wantBody, shouldHaveBody := requestBodies[key]
+			body, hasBody := operation["requestBody"]
+			if hasBody != shouldHaveBody {
+				t.Fatalf("%s requestBody presence = %t, want %t", key, hasBody, shouldHaveBody)
+			}
+			if hasBody {
+				request := openAPIMap(t, body, key+" requestBody")
+				content := openAPIMap(t, request["content"], key+" content")
+				media := openAPIMap(t, content["application/json"], key+" JSON")
+				assertOpenAPIRef(t, media["schema"], wantBody)
+			}
+			count++
+		}
+	}
+	if count != 12 {
+		t.Fatalf("Vault operation count = %d, want 12", count)
+	}
+	components := openAPIMap(t, doc["components"], "components")
+	schemas := openAPIMap(t, components["schemas"], "schemas")
+	for _, name := range []string{"VaultList", "VaultCredentialList"} {
+		schema := openAPIMap(t, schemas[name], name)
+		properties := openAPIMap(t, schema["properties"], name+" properties")
+		if _, ok := properties["has_more"]; ok {
+			t.Fatalf("%s includes non-contract has_more", name)
+		}
+		required := schema["required"].([]any)
+		if len(required) != 2 || required[0] != "data" || required[1] != "next_page" {
+			t.Fatalf("%s required = %#v, want [data next_page]", name, required)
+		}
+	}
+	validateOpenAPIRefs(t, doc, doc)
 }
 
 func TestOpenAPISessionResourcesContract(t *testing.T) {

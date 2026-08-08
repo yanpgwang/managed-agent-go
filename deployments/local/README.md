@@ -58,6 +58,9 @@ export MANAGED_AGENT_FILE_S3_ACCESS_KEY="minioadmin"
 export MANAGED_AGENT_FILE_S3_SECRET_KEY="minioadmin"
 export MANAGED_AGENT_FILE_S3_PATH_STYLE="true"
 export MANAGED_AGENT_FILE_S3_CREATE_BUCKET="true"
+
+# Vault API keyring (the Compose stack mounts its development-only keyring).
+export MANAGED_AGENT_VAULT_KEYRING_FILE="$PWD/deployments/local/vault-keyring.json"
 ```
 
 The `default` Temporal namespace is created automatically by `auto-setup`.
@@ -103,7 +106,7 @@ This stack is for local development and integration tests only. It already
 keeps API and worker process roles separate, but it is not a production
 deployment manifest: authentication, TLS, secrets, rolling worker versioning,
 managed persistence, observability, resource limits, and production object
-storage remain deployment work. The bundled MinIO and its development
-credentials are not a production recommendation. Files startup reconciliation
+storage remain deployment work. The bundled MinIO credentials and deterministic
+Vault keyring are not a production recommendation. Files startup reconciliation
 also currently requires one Files-enabled API process. See
 [the deployment model](../../docs/deployment.md).
