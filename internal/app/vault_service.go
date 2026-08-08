@@ -31,8 +31,8 @@ type VaultCreateInput struct {
 }
 
 type VaultUpdateInput struct {
-	DisplayName *string
-	Metadata    map[string]*string
+	DisplayName NullablePatch[string]
+	Metadata    NullablePatch[map[string]*string]
 }
 
 type VaultListQuery struct {
@@ -169,13 +169,15 @@ func (s *VaultService) GetVault(ctx context.Context, id string) (domain.Vault, e
 }
 
 func (s *VaultService) UpdateVault(ctx context.Context, id string, input VaultUpdateInput) (domain.Vault, error) {
-	if input.DisplayName != nil {
-		if err := validateVaultDisplayName(*input.DisplayName); err != nil {
+	if input.DisplayName.Present && input.DisplayName.Value != nil {
+		if err := validateVaultDisplayName(*input.DisplayName.Value); err != nil {
 			return domain.Vault{}, err
 		}
 	}
-	if err := validateVaultMetadataPatch(input.Metadata); err != nil {
-		return domain.Vault{}, err
+	if input.Metadata.Present && input.Metadata.Value != nil {
+		if err := validateVaultMetadataPatch(*input.Metadata.Value); err != nil {
+			return domain.Vault{}, err
+		}
 	}
 	return s.repo.UpdateVault(ctx, id, input, s.clock)
 }

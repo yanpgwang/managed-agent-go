@@ -68,14 +68,20 @@ FROM vaults WHERE id = $1 FOR UPDATE`, id))
 		}
 		displayName := current.DisplayName
 		metadata := clonePGStringMap(current.Metadata)
-		if patch.DisplayName != nil {
-			displayName = *patch.DisplayName
+		if patch.DisplayName.Present && patch.DisplayName.Value != nil {
+			displayName = *patch.DisplayName.Value
 		}
-		for key, value := range patch.Metadata {
-			if value == nil {
-				delete(metadata, key)
+		if patch.Metadata.Present {
+			if patch.Metadata.Value == nil {
+				metadata = map[string]string{}
 			} else {
-				metadata[key] = *value
+				for key, value := range *patch.Metadata.Value {
+					if value == nil {
+						delete(metadata, key)
+					} else {
+						metadata[key] = *value
+					}
+				}
 			}
 		}
 		if len(metadata) > 16 {

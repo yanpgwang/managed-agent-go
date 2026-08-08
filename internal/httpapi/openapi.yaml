@@ -4531,11 +4531,15 @@ components:
       additionalProperties: false
       properties:
         display_name:
-          type: string
+          description: Null leaves the existing display name unchanged.
+          type: [string, 'null']
           minLength: 1
           maxLength: 255
         metadata:
-          $ref: '#/components/schemas/VaultMetadataPatch'
+          description: Null clears all metadata; object values patch individual keys.
+          oneOf:
+            - $ref: '#/components/schemas/VaultMetadataPatch'
+            - type: 'null'
     Vault:
       type: object
       additionalProperties: false

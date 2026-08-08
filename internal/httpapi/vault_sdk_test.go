@@ -57,6 +57,12 @@ func TestSDK_VaultAndStaticBearerCredentialLifecycle(t *testing.T) {
 	if err != nil || updatedVault.DisplayName != "Production MCP tools" {
 		t.Fatalf("update vault = %#v, %v", updatedVault, err)
 	}
+	updatedVault, err = client.Beta.Vaults.Update(ctx, vault.ID, anthropic.BetaVaultUpdateParams{
+		DisplayName: param.Null[string](), Metadata: param.NullMap[map[string]string](),
+	})
+	if err != nil || updatedVault.DisplayName != "Production MCP tools" || len(updatedVault.Metadata) != 0 {
+		t.Fatalf("nullable vault update = %#v, %v", updatedVault, err)
+	}
 	if _, err := client.Beta.Vaults.New(ctx, anthropic.BetaVaultNewParams{DisplayName: "Development tools"}); err != nil {
 		t.Fatalf("create second vault: %v", err)
 	}
@@ -260,14 +266,20 @@ func (r *httpVaultRepository) UpdateVault(_ context.Context, id string, patch ap
 	if !ok {
 		return domain.Vault{}, domain.NotFound("vault not found")
 	}
-	if patch.DisplayName != nil {
-		item.DisplayName = *patch.DisplayName
+	if patch.DisplayName.Present && patch.DisplayName.Value != nil {
+		item.DisplayName = *patch.DisplayName.Value
 	}
-	for key, value := range patch.Metadata {
-		if value == nil {
-			delete(item.Metadata, key)
+	if patch.Metadata.Present {
+		if patch.Metadata.Value == nil {
+			item.Metadata = map[string]string{}
 		} else {
-			item.Metadata[key] = *value
+			for key, value := range *patch.Metadata.Value {
+				if value == nil {
+					delete(item.Metadata, key)
+				} else {
+					item.Metadata[key] = *value
+				}
+			}
 		}
 	}
 	item.UpdatedAt = clock.Now().UTC()

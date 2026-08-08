@@ -135,20 +135,8 @@ func (s *Server) updateVault(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if body.DisplayName.Null || body.Metadata.Null {
-		writeError(w, domain.Validation("display_name and metadata cannot be null"))
-		return
-	}
-	var displayName *string
-	if body.DisplayName.Present {
-		displayName = &body.DisplayName.Value
-	}
-	var metadata map[string]*string
-	if body.Metadata.Present {
-		metadata = body.Metadata.Value
-	}
 	item, err := s.deps.Vaults.UpdateVault(r.Context(), r.PathValue("vault_id"), app.VaultUpdateInput{
-		DisplayName: displayName, Metadata: metadata,
+		DisplayName: nullablePatchFromJSON(body.DisplayName), Metadata: nullablePatchFromJSON(body.Metadata),
 	})
 	if err != nil {
 		writeError(w, err)

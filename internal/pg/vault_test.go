@@ -33,11 +33,18 @@ func TestVaultRepositoryLifecycleAndCursorPagination(t *testing.T) {
 		t.Fatalf("get vault = %#v, %v", got, err)
 	}
 	updatedName := "Second updated"
+	owner := "platform"
 	updatedVault, err := repo.UpdateVault(ctx, secondVault.ID, app.VaultUpdateInput{
-		DisplayName: &updatedName, Metadata: map[string]*string{"stage": nil},
+		DisplayName: app.PatchValue(updatedName), Metadata: app.PatchValue(map[string]*string{"stage": nil, "owner": &owner}),
 	}, domain.FixedClock{T: time.Unix(3000, 0).UTC()})
-	if err != nil || updatedVault.DisplayName != updatedName || len(updatedVault.Metadata) != 0 {
+	if err != nil || updatedVault.DisplayName != updatedName || updatedVault.Metadata["owner"] != owner {
 		t.Fatalf("update vault = %#v, %v", updatedVault, err)
+	}
+	updatedVault, err = repo.UpdateVault(ctx, secondVault.ID, app.VaultUpdateInput{
+		DisplayName: app.PatchNull[string](), Metadata: app.PatchNull[map[string]*string](),
+	}, domain.FixedClock{T: time.Unix(4000, 0).UTC()})
+	if err != nil || updatedVault.DisplayName != updatedName || len(updatedVault.Metadata) != 0 {
+		t.Fatalf("nullable update vault = %#v, %v", updatedVault, err)
 	}
 	firstVaultPage, err := repo.ListVaults(ctx, app.VaultListQuery{Limit: 1})
 	if err != nil || !firstVaultPage.HasNext || len(firstVaultPage.Vaults) != 1 || firstVaultPage.Vaults[0].ID != secondVault.ID {
