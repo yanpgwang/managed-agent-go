@@ -98,15 +98,15 @@ func runVerticalSliceEndToEnd(
 
 	ids := domain.NewRandomIDGen()
 
-	runtime := temporalpkg.NewRuntimeOnTaskQueue(
-		c,
-		store,
-		modelClient,
-		sandbox.NewLocalProvider(),
-		ids,
-		temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
-		"managed-agent-test-"+ids.NewID(""),
-	)
+	runtime := temporalpkg.NewRuntime(temporalpkg.RuntimeConfig{
+		TemporalClient:  c,
+		Store:           store,
+		ModelClient:     modelClient,
+		SandboxProvider: sandbox.NewLocalProvider(),
+		IDGenerator:     ids,
+		RelayConfig:     temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
+		TaskQueue:       "managed-agent-test-" + ids.NewID(""),
+	})
 
 	// Start the worker.
 	if err := runtime.Worker.Start(); err != nil {
@@ -215,15 +215,15 @@ func TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd(t *testing.T) {
 	defer c.Close()
 
 	ids := domain.NewRandomIDGen()
-	runtime := temporalpkg.NewRuntimeOnTaskQueue(
-		c,
-		store,
-		model.NewFake(),
-		sandbox.NewLocalProvider(),
-		ids,
-		temporalpkg.RelayConfig{},
-		"managed-agent-lifecycle-test-"+ids.NewID(""),
-	)
+	runtime := temporalpkg.NewRuntime(temporalpkg.RuntimeConfig{
+		TemporalClient:  c,
+		Store:           store,
+		ModelClient:     model.NewFake(),
+		SandboxProvider: sandbox.NewLocalProvider(),
+		IDGenerator:     ids,
+		RelayConfig:     temporalpkg.RelayConfig{},
+		TaskQueue:       "managed-agent-lifecycle-test-" + ids.NewID(""),
+	})
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)
 	}
@@ -298,15 +298,15 @@ func TestVerticalSlice_InterruptCancelsModelActivity(t *testing.T) {
 
 	ids := domain.NewRandomIDGen()
 	blockingModel := newInterruptBlockingModel()
-	runtime := temporalpkg.NewRuntimeOnTaskQueue(
-		c,
-		store,
-		blockingModel,
-		sandbox.NewLocalProvider(),
-		ids,
-		temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
-		"managed-agent-test-"+ids.NewID(""),
-	)
+	runtime := temporalpkg.NewRuntime(temporalpkg.RuntimeConfig{
+		TemporalClient:  c,
+		Store:           store,
+		ModelClient:     blockingModel,
+		SandboxProvider: sandbox.NewLocalProvider(),
+		IDGenerator:     ids,
+		RelayConfig:     temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
+		TaskQueue:       "managed-agent-test-" + ids.NewID(""),
+	})
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)
 	}
@@ -683,20 +683,16 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 		skills, resources = tc.setup(t, ctx, store, ids)
 	}
 	taskQueue := "managed-agent-test-" + ids.NewID("")
-	var runtime *temporalpkg.Runtime
-	if resources != nil {
-		runtime = temporalpkg.NewRuntimeWithResourcesOnTaskQueue(
-			c, store, tc.modelClient, tc.provider, ids,
-			temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
-			taskQueue, resources,
-		)
-	} else {
-		runtime = temporalpkg.NewRuntimeOnTaskQueue(
-			c, store, tc.modelClient, tc.provider, ids,
-			temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
-			taskQueue,
-		)
-	}
+	runtime := temporalpkg.NewRuntime(temporalpkg.RuntimeConfig{
+		TemporalClient:  c,
+		Store:           store,
+		ModelClient:     tc.modelClient,
+		SandboxProvider: tc.provider,
+		IDGenerator:     ids,
+		RelayConfig:     temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
+		TaskQueue:       taskQueue,
+		Resources:       resources,
+	})
 
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)

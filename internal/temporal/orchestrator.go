@@ -110,147 +110,66 @@ type Runtime struct {
 	Sandbox   *sandbox.SessionManager
 }
 
-// NewRuntime wires the full Temporal execution plane against a PostgreSQL store,
-// a model client, and a sandbox provider. The store is used both as the event
-// source and as the durable tool-execution journal; the provider is wrapped in a
-// session-scoped SessionManager so a tool's filesystem state persists across
-// turns. The returned Runtime's Worker and Relay must be started by the caller.
-func NewRuntime(
-	c client.Client,
-	store *pg.Store,
-	modelClient model.Client,
-	provider sandbox.Provider,
-	ids domain.IDGenerator,
-	relayCfg RelayConfig,
-	previewPublisher ...PreviewPublisher,
-) *Runtime {
-	return NewRuntimeOnTaskQueue(
-		c,
-		store,
-		modelClient,
-		provider,
-		ids,
-		relayCfg,
-		TaskQueue,
-		previewPublisher...,
-	)
+// RuntimeConfig declares the execution-plane dependencies and optional
+// capabilities assembled by NewRuntime. TaskQueue defaults to TaskQueue when
+// empty; the remaining optional interfaces may be nil when their capability is
+// disabled.
+type RuntimeConfig struct {
+	TemporalClient   client.Client
+	Store            *pg.Store
+	ModelClient      model.Client
+	SandboxProvider  sandbox.Provider
+	IDGenerator      domain.IDGenerator
+	RelayConfig      RelayConfig
+	TaskQueue        string
+	Resources        SandboxResourceReconciler
+	MCPAuth          mcpclient.AuthSource
+	PreviewPublisher PreviewPublisher
 }
 
-// NewRuntimeWithResources wires File-backed Session Resource reconciliation
-// into every sandbox acquisition while preserving NewRuntime for deployments
-// that do not configure the Files object store.
-func NewRuntimeWithResources(
-	c client.Client,
-	store *pg.Store,
-	modelClient model.Client,
-	provider sandbox.Provider,
-	ids domain.IDGenerator,
-	relayCfg RelayConfig,
-	resources SandboxResourceReconciler,
-	previewPublisher ...PreviewPublisher,
-) *Runtime {
-	return newRuntimeOnTaskQueue(
-		c, store, modelClient, provider, ids, relayCfg, TaskQueue, resources, nil,
-		previewPublisher...,
+// NewRuntime wires the full Temporal execution plane. The store is both the
+// event source and durable tool-execution journal; the sandbox provider is
+// wrapped in a session-scoped manager so filesystem state persists across
+// turns. The returned Worker, Relay, and Lifecycle must be started by the
+// caller.
+func NewRuntime(config RuntimeConfig) *Runtime {
+	taskQueue := config.TaskQueue
+	if taskQueue == "" {
+		taskQueue = TaskQueue
+	}
+	sandboxes := sandbox.NewSessionManager(config.SandboxProvider, config.Store)
+	src := storeSource{store: config.Store} // satisfies both EventSource and JournalStore
+	acts := NewActivities(
+		config.ModelClient,
+		src,
+		src,
+		sandboxes,
+		config.IDGenerator,
+		config.PreviewPublisher,
 	)
-}
-
-// NewRuntimeWithResourcesAndMCPAuth additionally enables request-time Vault
-// credential resolution for MCP discovery and tool calls.
-func NewRuntimeWithResourcesAndMCPAuth(
-	c client.Client,
-	store *pg.Store,
-	modelClient model.Client,
-	provider sandbox.Provider,
-	ids domain.IDGenerator,
-	relayCfg RelayConfig,
-	resources SandboxResourceReconciler,
-	auth mcpclient.AuthSource,
-	previewPublisher ...PreviewPublisher,
-) *Runtime {
-	return newRuntimeOnTaskQueue(
-		c, store, modelClient, provider, ids, relayCfg, TaskQueue, resources, auth,
-		previewPublisher...,
-	)
-}
-
-// NewRuntimeWithResourcesOnTaskQueue is the deployment/test-isolated variant
-// that retains runtime File/Skill reconciliation on a caller-selected queue.
-func NewRuntimeWithResourcesOnTaskQueue(
-	c client.Client,
-	store *pg.Store,
-	modelClient model.Client,
-	provider sandbox.Provider,
-	ids domain.IDGenerator,
-	relayCfg RelayConfig,
-	taskQueue string,
-	resources SandboxResourceReconciler,
-	previewPublisher ...PreviewPublisher,
-) *Runtime {
-	return newRuntimeOnTaskQueue(
-		c, store, modelClient, provider, ids, relayCfg, taskQueue, resources, nil,
-		previewPublisher...,
-	)
-}
-
-// NewRuntimeOnTaskQueue is the deployment/test-isolated variant of NewRuntime.
-// Production normally uses TaskQueue; integration environments can select a
-// unique queue so another worker connected to the same Temporal namespace
-// cannot execute Activities against the wrong PostgreSQL schema.
-func NewRuntimeOnTaskQueue(
-	c client.Client,
-	store *pg.Store,
-	modelClient model.Client,
-	provider sandbox.Provider,
-	ids domain.IDGenerator,
-	relayCfg RelayConfig,
-	taskQueue string,
-	previewPublisher ...PreviewPublisher,
-) *Runtime {
-	return newRuntimeOnTaskQueue(
-		c, store, modelClient, provider, ids, relayCfg, taskQueue, nil, nil,
-		previewPublisher...,
-	)
-}
-
-func newRuntimeOnTaskQueue(
-	c client.Client,
-	store *pg.Store,
-	modelClient model.Client,
-	provider sandbox.Provider,
-	ids domain.IDGenerator,
-	relayCfg RelayConfig,
-	taskQueue string,
-	resources SandboxResourceReconciler,
-	auth mcpclient.AuthSource,
-	previewPublisher ...PreviewPublisher,
-) *Runtime {
-	sandboxes := sandbox.NewSessionManager(provider, store)
-	src := storeSource{store: store} // satisfies both EventSource and JournalStore
-	acts := NewActivities(modelClient, src, src, sandboxes, ids, previewPublisher...)
-	acts.WithMCPAuthSource(auth)
-	skillCapability, hasSkillCapability := provider.(sandbox.SkillBundleProvider)
-	skillResources, hasSkillResources := resources.(SkillRuntimeReconciler)
+	acts.WithMCPAuthSource(config.MCPAuth)
+	skillCapability, hasSkillCapability := config.SandboxProvider.(sandbox.SkillBundleProvider)
+	skillResources, hasSkillResources := config.Resources.(SkillRuntimeReconciler)
 	acts.WithSkillRuntimeSupported(
 		hasSkillCapability && skillCapability.SupportsSkillBundles() &&
 			hasSkillResources && skillResources.SupportsSkillRuntime(),
 	)
-	if resources != nil {
-		acts.WithSandboxResourceReconciler(resources)
+	if config.Resources != nil {
+		acts.WithSandboxResourceReconciler(config.Resources)
 	}
-	w := NewWorkerOnTaskQueue(c, acts, taskQueue)
-	signaler := NewSignalerOnTaskQueue(c, taskQueue)
-	relay := NewRelay(store, signaler, relayCfg)
+	w := NewWorkerOnTaskQueue(config.TemporalClient, acts, taskQueue)
+	signaler := NewSignalerOnTaskQueue(config.TemporalClient, taskQueue)
+	relay := NewRelay(config.Store, signaler, config.RelayConfig)
 	lifecycle := NewLifecycleReconciler(
-		store,
+		config.Store,
 		signaler,
 		sandboxes,
 		LifecycleReconcilerConfig{},
-		resourceDeletionReconciler(resources),
+		resourceDeletionReconciler(config.Resources),
 	)
 	return &Runtime{
-		Client: c, Worker: w, Relay: relay, Lifecycle: lifecycle,
-		Store: store, Signal: signaler, Sandbox: sandboxes,
+		Client: config.TemporalClient, Worker: w, Relay: relay, Lifecycle: lifecycle,
+		Store: config.Store, Signal: signaler, Sandbox: sandboxes,
 	}
 }
 

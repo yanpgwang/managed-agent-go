@@ -351,17 +351,17 @@ func runOrchestrate() {
 	defer client.Close()
 	log.Printf("orchestrate: temporal connected")
 
-	runtime := temporalpkg.NewRuntimeWithResourcesAndMCPAuth(
-		client,
-		store,
-		modelClient,
-		provider,
-		ids,
-		temporalpkg.RelayConfig{},
-		resourceReconciler,
-		mcpAuth,
-		broker,
-	)
+	runtime := temporalpkg.NewRuntime(temporalpkg.RuntimeConfig{
+		TemporalClient:   client,
+		Store:            store,
+		ModelClient:      modelClient,
+		SandboxProvider:  provider,
+		IDGenerator:      ids,
+		RelayConfig:      temporalpkg.RelayConfig{},
+		Resources:        resourceReconciler,
+		MCPAuth:          mcpAuth,
+		PreviewPublisher: broker,
+	})
 
 	if err := runtime.Worker.Start(); err != nil {
 		log.Fatalf("orchestrate: worker start: %v", err)
