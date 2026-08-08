@@ -505,11 +505,12 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		}
 	}
 	var skillResolver app.SkillReferenceResolver
-	if skills != nil && providerCapabilities.SkillBundles {
+	if skills != nil {
 		skillResolver = skills
-	} else if skills != nil {
+	}
+	if skills != nil && !providerCapabilities.SkillBundles {
 		log.Printf(
-			"serve: custom Skill references disabled; sandbox provider %q has no isolated read-only Skill capability",
+			"serve: custom Skills remain available to self-hosted Environments; cloud Session Skill admission disabled because sandbox provider %q has no isolated read-only Skill capability",
 			configuredSandboxProviderName(),
 		)
 	}
@@ -536,6 +537,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		skillResolver,
 		sessionResourceLifecycle,
 	)
+	sessions.ConfigureCloudSkillBundles(providerCapabilities.SkillBundles)
 	if vaults != nil {
 		sessions.EnableVaults()
 	}
@@ -561,12 +563,15 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		Files: deploymentFiles, Memory: deploymentMemory, Vaults: vaults,
 		IDGenerator: ids, Clock: clock,
 	})
+	environmentWork := app.NewEnvironmentWorkService(
+		pg.NewEnvironmentWorkRepository(pgStore), environmentsRepo,
+	)
 	events := controlplane.NewEventService(pgStore)
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
 		Events: events, Stream: stream, Files: files, Skills: skills, Memory: memory,
-		Vaults: vaults, Deployments: deployments,
+		Vaults: vaults, Deployments: deployments, EnvironmentWork: environmentWork,
 		SessionResources: sessionResources,
 	}, cfg).Handler()
 	log.Printf("serve: PostgreSQL control plane, Temporal client, and NATS live channel connected")

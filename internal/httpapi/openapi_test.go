@@ -307,6 +307,9 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 			strings.HasPrefix(path, "/v1/deployment_runs") {
 			continue
 		}
+		if strings.HasPrefix(path, "/v1/environments/") && strings.Contains(path, "/work") {
+			continue
+		}
 		if strings.Contains(path, "/resources") {
 			continue
 		}
@@ -323,6 +326,46 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 	if count != 21 {
 		t.Fatalf("core operation count = %d, want 21", count)
 	}
+}
+
+func TestOpenAPIEnvironmentWorkContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	operations := map[string][]string{
+		"/v1/environments/{environment_id}/work":                     {"get"},
+		"/v1/environments/{environment_id}/work/poll":                {"get"},
+		"/v1/environments/{environment_id}/work/stats":               {"get"},
+		"/v1/environments/{environment_id}/work/{work_id}":           {"get", "post"},
+		"/v1/environments/{environment_id}/work/{work_id}/ack":       {"post"},
+		"/v1/environments/{environment_id}/work/{work_id}/heartbeat": {"post"},
+		"/v1/environments/{environment_id}/work/{work_id}/stop":      {"post"},
+	}
+	seen := map[string]bool{}
+	count := 0
+	for path, methods := range operations {
+		pathItem := openAPIMap(t, paths[path], "path "+path)
+		for _, method := range methods {
+			operation := openAPIMap(t, pathItem[method], method+" "+path)
+			id, _ := operation["operationId"].(string)
+			if id == "" || seen[id] {
+				t.Fatalf("%s %s has missing or duplicate operationId %q", method, path, id)
+			}
+			seen[id] = true
+			count++
+		}
+	}
+	if count != 8 {
+		t.Fatalf("Environment Work operation count = %d, want 8", count)
+	}
+	stop := openAPIMap(t,
+		openAPIMap(t, paths["/v1/environments/{environment_id}/work/{work_id}/stop"], "Stop path")["post"],
+		"Stop operation",
+	)
+	responses := openAPIMap(t, stop["responses"], "Stop responses")
+	if _, ok := responses["204"]; !ok {
+		t.Fatal("Environment Work Stop does not document its 204 response")
+	}
+	validateOpenAPIRefs(t, doc, doc)
 }
 
 func TestOpenAPIDeploymentContract(t *testing.T) {

@@ -380,9 +380,7 @@ func runOrchestrate() {
 		skills := app.NewSkillService(
 			pg.NewSkillRepository(store), fileRuntime.blobs, ids, realClock{},
 		)
-		if providerCapabilities.SkillBundles {
-			skillResolver = skills
-		}
+		skillResolver = skills
 		sessionResources = controlplane.NewSessionResourceService(
 			store, fileRuntime.repository, fileRuntime.blobs, ids, realClock{},
 			providerCapabilities.FileResources,
@@ -392,6 +390,7 @@ func runOrchestrate() {
 		store, agentsRepo, environmentsRepo, runtime.Orchestrator(), ids,
 		realClock{}, skillResolver, sessionResources,
 	)
+	deploymentSessions.ConfigureCloudSkillBundles(providerCapabilities.SkillBundles)
 	if vaults != nil {
 		deploymentSessions.EnableVaults()
 	}

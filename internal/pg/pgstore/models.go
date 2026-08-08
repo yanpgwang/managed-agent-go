@@ -18,6 +18,39 @@ type Agent struct {
 	ArchivedAt pgtype.Timestamptz
 }
 
+type AgentSkillVersion struct {
+	AgentID      string
+	AgentVersion int32
+	Position     int32
+	SkillID      string
+	SkillVersion string
+}
+
+type Deployment struct {
+	ID                string
+	AgentID           string
+	AgentVersion      int32
+	EnvironmentID     string
+	Status            string
+	Body              []byte
+	NextRunAt         pgtype.Timestamptz
+	ScheduleClaimedAt pgtype.Timestamptz
+	CreatedAt         pgtype.Timestamptz
+	UpdatedAt         pgtype.Timestamptz
+	ArchivedAt        pgtype.Timestamptz
+}
+
+type DeploymentRun struct {
+	ID           string
+	DeploymentID string
+	SessionID    *string
+	ErrorType    *string
+	TriggerType  string
+	ScheduledAt  pgtype.Timestamptz
+	Body         []byte
+	CreatedAt    pgtype.Timestamptz
+}
+
 type Environment struct {
 	ID         string
 	Name       string
@@ -26,6 +59,30 @@ type Environment struct {
 	CreatedAt  pgtype.Timestamptz
 	UpdatedAt  pgtype.Timestamptz
 	ArchivedAt pgtype.Timestamptz
+}
+
+type EnvironmentWork struct {
+	ID                string
+	EnvironmentID     string
+	SessionID         string
+	ActivationSeq     int64
+	State             string
+	Metadata          []byte
+	CreatedAt         pgtype.Timestamptz
+	AcknowledgedAt    pgtype.Timestamptz
+	StartedAt         pgtype.Timestamptz
+	LatestHeartbeatAt pgtype.Timestamptz
+	TtlSeconds        int64
+	StopRequestedAt   pgtype.Timestamptz
+	StoppedAt         pgtype.Timestamptz
+	PolledAt          pgtype.Timestamptz
+	PollWorkerID      *string
+}
+
+type EnvironmentWorkPoller struct {
+	EnvironmentID string
+	WorkerID      string
+	PolledAt      pgtype.Timestamptz
 }
 
 type Event struct {
@@ -39,12 +96,66 @@ type Event struct {
 	ProcessedAt pgtype.Timestamptz
 }
 
+type File struct {
+	ID             string
+	CreatedAt      pgtype.Timestamptz
+	UpdatedAt      pgtype.Timestamptz
+	Filename       string
+	MimeType       string
+	SizeBytes      int64
+	Downloadable   bool
+	ScopeID        *string
+	ScopeType      *string
+	BlobKey        string
+	ChecksumSha256 string
+	State          string
+}
+
 type McpDiscoverySnapshot struct {
 	SessionID  string
 	ServerName string
 	ServerUrl  string
 	Tools      []byte
 	CreatedAt  pgtype.Timestamptz
+}
+
+type Memory struct {
+	ID               string
+	MemoryStoreID    string
+	MemoryVersionID  string
+	Path             string
+	Content          string
+	ContentSizeBytes int64
+	ContentSha256    string
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+}
+
+type MemoryStore struct {
+	ID          string
+	Name        string
+	Description string
+	Metadata    []byte
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ArchivedAt  pgtype.Timestamptz
+}
+
+type MemoryVersion struct {
+	ID               string
+	MemoryStoreID    string
+	MemoryID         string
+	Operation        string
+	Path             *string
+	Content          *string
+	ContentSizeBytes *int64
+	ContentSha256    *string
+	CreatedAt        pgtype.Timestamptz
+	CreatedByType    string
+	CreatedByID      string
+	RedactedAt       pgtype.Timestamptz
+	RedactedByType   *string
+	RedactedByID     *string
 }
 
 type OrchestrationOutbox struct {
@@ -97,6 +208,24 @@ type Session struct {
 	EnvironmentID *string
 	ArchivedAt    pgtype.Timestamptz
 	DeletingAt    pgtype.Timestamptz
+	DeploymentID  *string
+}
+
+type SessionResource struct {
+	ID                     string
+	SessionID              string
+	ResourceType           string
+	SourceFileID           *string
+	FileID                 *string
+	MountPath              string
+	State                  string
+	CreatedAt              pgtype.Timestamptz
+	UpdatedAt              pgtype.Timestamptz
+	MemoryStoreID          *string
+	MemoryAccess           *string
+	MemoryInstructions     *string
+	MemoryStoreName        *string
+	MemoryStoreDescription *string
 }
 
 type SessionSandbox struct {
@@ -106,6 +235,45 @@ type SessionSandbox struct {
 	SpecHash   string
 	CreatedAt  pgtype.Timestamptz
 	UpdatedAt  pgtype.Timestamptz
+}
+
+type SessionSkillVersion struct {
+	SessionID    string
+	Position     int32
+	SkillID      string
+	SkillVersion string
+}
+
+type SessionVault struct {
+	SessionID string
+	Position  int32
+	VaultID   string
+}
+
+type Skill struct {
+	ID                   string
+	CreatedAt            pgtype.Timestamptz
+	UpdatedAt            pgtype.Timestamptz
+	DisplayTitle         string
+	LatestVersion        *string
+	Source               string
+	DisplayTitleExplicit bool
+	Ready                bool
+}
+
+type SkillVersion struct {
+	SkillID               string
+	Version               string
+	CreatedAt             pgtype.Timestamptz
+	Description           string
+	Directory             string
+	Name                  string
+	BlobKey               string
+	SizeBytes             int64
+	ChecksumSha256        string
+	State                 string
+	Initial               bool
+	UncompressedSizeBytes int64
 }
 
 type ToolStep struct {
@@ -133,4 +301,32 @@ type TurnAttempt struct {
 	CreatedAt      pgtype.Timestamptz
 	UpdatedAt      pgtype.Timestamptz
 	FinishedAt     pgtype.Timestamptz
+}
+
+type Vault struct {
+	ID          string
+	DisplayName string
+	Metadata    []byte
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ArchivedAt  pgtype.Timestamptz
+}
+
+type VaultCredential struct {
+	ID               string
+	VaultID          string
+	DisplayName      *string
+	Metadata         []byte
+	AuthType         string
+	CredentialKey    string
+	PublicAuth       []byte
+	SecretVersion    *int32
+	SecretAlgorithm  *string
+	SecretKeyID      *string
+	SecretNonce      []byte
+	SecretCiphertext []byte
+	Version          int64
+	CreatedAt        pgtype.Timestamptz
+	UpdatedAt        pgtype.Timestamptz
+	ArchivedAt       pgtype.Timestamptz
 }

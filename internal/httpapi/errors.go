@@ -42,6 +42,8 @@ func writeError(w http.ResponseWriter, err error) {
 			status, typ = http.StatusUnprocessableEntity, "invalid_request_error"
 		case domain.KindTooLarge:
 			status, typ = http.StatusRequestEntityTooLarge, "request_too_large"
+		case domain.KindPrecondition:
+			status, typ = http.StatusPreconditionFailed, "precondition_failed_error"
 		}
 		if de.Code != "" {
 			typ = de.Code

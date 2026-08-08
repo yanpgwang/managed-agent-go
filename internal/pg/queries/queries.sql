@@ -145,6 +145,16 @@ ON CONFLICT (session_id) DO UPDATE
 SET max_event_seq = GREATEST(orchestration_outbox.max_event_seq, EXCLUDED.max_event_seq),
     enqueued_at   = EXCLUDED.enqueued_at;
 
+-- EnqueueEnvironmentWork writes the self-hosted worker activation in the same
+-- transaction as event admission and the Temporal wakeup. The partial unique
+-- index coalesces admissions while a worker already owns the Session.
+-- name: EnqueueEnvironmentWork :exec
+INSERT INTO environment_work (
+    id, environment_id, session_id, activation_seq, state, metadata, created_at
+)
+VALUES (@id, @environment_id, @session_id, @activation_seq, 'queued', '{}'::jsonb, @created_at)
+ON CONFLICT (session_id) WHERE state IN ('queued', 'starting', 'active') DO NOTHING;
+
 -- name: GetOutbox :one
 SELECT session_id, max_event_seq, enqueued_at, attempts, last_attempt_at, last_error
 FROM orchestration_outbox

@@ -547,6 +547,17 @@ func (s *Store) admitLocked(
 	}); err != nil {
 		return Admission{}, err
 	}
+	if workRunnable && session.EnvironmentType == "self_hosted" {
+		if err := q.EnqueueEnvironmentWork(ctx, pgstore.EnqueueEnvironmentWorkParams{
+			ID:            s.ids.NewID(domain.PrefixEnvironmentWork),
+			EnvironmentID: session.EnvironmentID,
+			SessionID:     session.ID,
+			ActivationSeq: maxSeq,
+			CreatedAt:     tsUTC(s.clock.Now().UTC()),
+		}); err != nil {
+			return Admission{}, err
+		}
+	}
 	admission.Enqueued = true
 	return admission, nil
 }

@@ -23,6 +23,7 @@ matrices.
 | --- | --- |
 | Agents | `POST/GET /v1/agents`, `GET/POST /v1/agents/{id}`, versions, archive |
 | Environments | `POST/GET /v1/environments`, get, update, archive, delete |
+| Environment Work | Get/update/list/Ack/Heartbeat/Poll/Stats/Stop under `/v1/environments/{id}/work`; consumed by self-hosted workers |
 | Sessions | `POST/GET /v1/sessions`, get, update, archive, delete |
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
 | Files | `POST/GET /v1/files`, metadata, content download, delete |
@@ -37,6 +38,7 @@ Resource-specific request shapes are covered in:
 
 - [Agents](agents.md)
 - [Environments](environments.md)
+- [Environment Work](environment-work.md)
 - [Sessions](sessions.md)
 - [Events and streaming](events.md)
 - [Deployments and Deployment Runs](deployments.md)
@@ -93,6 +95,7 @@ Errors use a Claude-compatible envelope:
 | `401` | `authentication_error` |
 | `404` | `not_found_error` |
 | `409` | `conflict_error` |
+| `412` | `precondition_failed_error` |
 | `413` | `request_too_large` |
 | `422` | `invalid_request_error` |
 | `500` | `api_error` |
@@ -132,7 +135,7 @@ Files use their upstream ID-based pagination instead: `after_id` and
 `before_id` select a direction, while the response contains `has_more`,
 `first_id`, and `last_id`. The two direction parameters cannot be combined.
 
-Vault, Credential, Deployment, and Deployment Run lists use forward-only opaque
+Vault, Credential, Deployment, Deployment Run, and Environment Work lists use forward-only opaque
 `page` cursors and return `data` with nullable `next_page`. Cursors are bound to
 their normalized filters; Credential cursors are additionally bound to their
 parent Vault ID and archive filter.
@@ -142,8 +145,8 @@ parent Vault ID and archive filter.
 The running server exposes `/openapi.yaml`, sourced from
 `internal/httpapi/openapi.yaml`. All 21 core operations, ten Deployment and
 Deployment Run operations, five Files operations, five Session Resources
-operations, nine custom Skills operations, fourteen Memory operations, and
-thirteen Vault/Credential operations define
+operations, nine custom Skills operations, fourteen Memory operations,
+thirteen Vault/Credential operations, and eight Environment Work operations define
 stable operation IDs, path and query parameters, request and response schemas,
 list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core

@@ -42,6 +42,7 @@ const (
 	credentialListCursorKind      = "vault_credential_list"
 	deploymentListCursorKind      = "deployment_list"
 	deploymentRunListCursorKind   = "deployment_run_list"
+	environmentWorkListCursorKind = "environment_work_list"
 	resourceCursorPrefix          = "page_"
 )
 
@@ -132,11 +133,19 @@ type deploymentRunCursorFilter struct {
 	TriggerType  string  `json:"trigger_type,omitempty"`
 }
 
+type environmentWorkCursorFilter struct {
+	EnvironmentID string `json:"environment_id"`
+}
+
 func (filter deploymentCursorFilter) fingerprint() string {
 	return resourceFilterFingerprint(filter)
 }
 
 func (filter deploymentRunCursorFilter) fingerprint() string {
+	return resourceFilterFingerprint(filter)
+}
+
+func (filter environmentWorkCursorFilter) fingerprint() string {
 	return resourceFilterFingerprint(filter)
 }
 

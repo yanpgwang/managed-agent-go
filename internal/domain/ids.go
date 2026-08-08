@@ -25,6 +25,7 @@ const (
 	PrefixVaultCredential = "vcrd_"
 	PrefixDeployment      = "depl_"
 	PrefixDeploymentRun   = "drun_"
+	PrefixEnvironmentWork = "work_"
 )
 
 type Clock interface{ Now() time.Time }
