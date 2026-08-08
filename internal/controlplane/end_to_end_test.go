@@ -47,16 +47,16 @@ func TestHTTPPostgresTemporalNATSEndToEnd(t *testing.T) {
 	}
 	defer temporalClient.Close()
 	modelClient := model.NewFake()
-	runtime := temporalpkg.NewRuntimeOnTaskQueue(
-		temporalClient,
-		fixture.store,
-		modelClient,
-		sandbox.NewLocalProvider(),
-		fixture.ids,
-		temporalpkg.RelayConfig{PollInterval: 20 * time.Millisecond},
-		"managed-agent-test-"+domain.NewRandomIDGen().NewID(""),
-		broker,
-	)
+	runtime := temporalpkg.NewRuntime(temporalpkg.RuntimeConfig{
+		TemporalClient:   temporalClient,
+		Store:            fixture.store,
+		ModelClient:      modelClient,
+		SandboxProvider:  sandbox.NewLocalProvider(),
+		IDGenerator:      fixture.ids,
+		RelayConfig:      temporalpkg.RelayConfig{PollInterval: 20 * time.Millisecond},
+		TaskQueue:        "managed-agent-test-" + domain.NewRandomIDGen().NewID(""),
+		PreviewPublisher: broker,
+	})
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatal(err)
 	}
