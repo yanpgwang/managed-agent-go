@@ -38,6 +38,8 @@ const (
 	skillVersionListCursorKind    = "skill_version_list"
 	memoryStoreListCursorKind     = "memory_store_list"
 	memoryVersionListCursorKind   = "memory_version_list"
+	vaultListCursorKind           = "vault_list"
+	credentialListCursorKind      = "vault_credential_list"
 	resourceCursorPrefix          = "page_"
 )
 

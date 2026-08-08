@@ -88,6 +88,21 @@ type MemoryService interface {
 	RedactMemoryVersion(context.Context, string, string, domain.MemoryActor) (domain.MemoryVersion, error)
 }
 
+type VaultService interface {
+	CreateVault(context.Context, app.VaultCreateInput) (domain.Vault, error)
+	GetVault(context.Context, string) (domain.Vault, error)
+	UpdateVault(context.Context, string, app.VaultUpdateInput) (domain.Vault, error)
+	ListVaults(context.Context, app.VaultListQuery) (app.VaultListPage, error)
+	ArchiveVault(context.Context, string) (domain.Vault, error)
+	DeleteVault(context.Context, string) error
+	CreateCredential(context.Context, string, app.CredentialCreateInput) (domain.VaultCredential, error)
+	GetCredential(context.Context, string, string) (domain.VaultCredential, error)
+	UpdateCredential(context.Context, string, string, app.CredentialUpdateInput) (domain.VaultCredential, error)
+	ListCredentials(context.Context, string, app.CredentialListQuery) (app.CredentialListPage, error)
+	ArchiveCredential(context.Context, string, string) (domain.VaultCredential, error)
+	DeleteCredential(context.Context, string, string) error
+}
+
 type SessionResourceService interface {
 	Add(context.Context, string, app.FileSessionResourceInput) (domain.SessionResource, error)
 	Get(context.Context, string, string) (domain.SessionResource, error)
@@ -105,6 +120,7 @@ type Deps struct {
 	Files            FileService
 	Skills           SkillService
 	Memory           MemoryService
+	Vaults           VaultService
 	SessionResources SessionResourceService
 }
 
@@ -172,6 +188,19 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/memory_stores/{store_id}/memory_versions", s.listMemoryVersions)
 	s.mux.HandleFunc("GET /v1/memory_stores/{store_id}/memory_versions/{version_id}", s.getMemoryVersion)
 	s.mux.HandleFunc("POST /v1/memory_stores/{store_id}/memory_versions/{version_id}/redact", s.redactMemoryVersion)
+
+	s.mux.HandleFunc("POST /v1/vaults", s.createVault)
+	s.mux.HandleFunc("GET /v1/vaults", s.listVaults)
+	s.mux.HandleFunc("GET /v1/vaults/{vault_id}", s.getVault)
+	s.mux.HandleFunc("POST /v1/vaults/{vault_id}", s.updateVault)
+	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/archive", s.archiveVault)
+	s.mux.HandleFunc("DELETE /v1/vaults/{vault_id}", s.deleteVault)
+	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/credentials", s.createCredential)
+	s.mux.HandleFunc("GET /v1/vaults/{vault_id}/credentials", s.listCredentials)
+	s.mux.HandleFunc("GET /v1/vaults/{vault_id}/credentials/{credential_id}", s.getCredential)
+	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/credentials/{credential_id}", s.updateCredential)
+	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/credentials/{credential_id}/archive", s.archiveCredential)
+	s.mux.HandleFunc("DELETE /v1/vaults/{vault_id}/credentials/{credential_id}", s.deleteCredential)
 
 	s.registerSessionRoutes()
 	s.mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {

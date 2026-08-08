@@ -34,6 +34,8 @@ tags:
     description: Custom filesystem Skills with immutable archived Versions.
   - name: Memory
     description: Persistent path-addressed Memory Stores with immutable audit Versions.
+  - name: Vaults
+    description: Encrypted credential storage for Managed Agent Sessions.
 paths:
   /v1/agents:
     post:
@@ -989,6 +991,207 @@ paths:
         '422':
           $ref: '#/components/responses/UnsupportedRequest'
 
+  /v1/vaults:
+    parameters:
+      - $ref: '#/components/parameters/ManagedAgentsBeta'
+    post:
+      operationId: createVault
+      tags: [Vaults]
+      summary: Create a Vault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultCreateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listVaults
+      tags: [Vaults]
+      summary: List Vaults
+      parameters:
+        - $ref: '#/components/parameters/VaultListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/vaults/{vault_id}:
+    parameters:
+      - $ref: '#/components/parameters/ManagedAgentsBeta'
+      - $ref: '#/components/parameters/VaultID'
+    get:
+      operationId: getVault
+      tags: [Vaults]
+      summary: Get a Vault
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    post:
+      operationId: updateVault
+      tags: [Vaults]
+      summary: Update a Vault
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultUpdateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteVault
+      tags: [Vaults]
+      summary: Delete a Vault and all of its Credentials
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultDeletedResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/vaults/{vault_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/ManagedAgentsBeta'
+      - $ref: '#/components/parameters/VaultID'
+    post:
+      operationId: archiveVault
+      tags: [Vaults]
+      summary: Archive a Vault, archive its Credentials, and purge their encrypted payloads
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/vaults/{vault_id}/credentials:
+    parameters:
+      - $ref: '#/components/parameters/ManagedAgentsBeta'
+      - $ref: '#/components/parameters/VaultID'
+    post:
+      operationId: createVaultCredential
+      tags: [Vaults]
+      summary: Create an encrypted Credential
+      description: Environment-variable credentials return 422 until a SecretEgress-capable sandbox provider is configured.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultCredentialCreateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultCredentialResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    get:
+      operationId: listVaultCredentials
+      tags: [Vaults]
+      summary: List Credentials in a Vault
+      parameters:
+        - $ref: '#/components/parameters/VaultListLimit'
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/IncludeArchived'
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultCredentialListResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/vaults/{vault_id}/credentials/{credential_id}:
+    parameters:
+      - $ref: '#/components/parameters/ManagedAgentsBeta'
+      - $ref: '#/components/parameters/VaultID'
+      - $ref: '#/components/parameters/VaultCredentialID'
+    get:
+      operationId: getVaultCredential
+      tags: [Vaults]
+      summary: Get a Credential without sensitive fields
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultCredentialResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    post:
+      operationId: updateVaultCredential
+      tags: [Vaults]
+      summary: Update a Credential
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VaultCredentialUpdateRequest'
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultCredentialResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+    delete:
+      operationId: deleteVaultCredential
+      tags: [Vaults]
+      summary: Delete a Credential
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultCredentialDeletedResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+  /v1/vaults/{vault_id}/credentials/{credential_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/ManagedAgentsBeta'
+      - $ref: '#/components/parameters/VaultID'
+      - $ref: '#/components/parameters/VaultCredentialID'
+    post:
+      operationId: archiveVaultCredential
+      tags: [Vaults]
+      summary: Archive a Credential and purge its encrypted payload
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultCredentialResponse'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
+
   /healthz:
     get:
       operationId: health
@@ -1019,6 +1222,35 @@ components:
       scheme: bearer
 
   parameters:
+    ManagedAgentsBeta:
+      name: anthropic-beta
+      in: header
+      required: true
+      schema:
+        type: string
+        const: managed-agents-2026-04-01
+    VaultID:
+      name: vault_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^vlt_'
+    VaultCredentialID:
+      name: credential_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^vcrd_'
+    VaultListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
     AgentID:
       name: agent_id
       in: path
@@ -1676,6 +1908,60 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/MemoryVersionList'
+    VaultResponse:
+      description: Vault resource
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Vault'
+    VaultListResponse:
+      description: Vault page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VaultList'
+    VaultDeletedResponse:
+      description: Vault deletion confirmation
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VaultDeleted'
+    VaultCredentialResponse:
+      description: Credential resource with all sensitive fields omitted
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VaultCredential'
+    VaultCredentialListResponse:
+      description: Vault Credential page
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VaultCredentialList'
+    VaultCredentialDeletedResponse:
+      description: Vault Credential deletion confirmation
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VaultCredentialDeleted'
     InvalidRequest:
       description: Invalid request
       headers:
@@ -4211,3 +4497,396 @@ components:
         - $ref: '#/components/schemas/EventDelta'
       discriminator:
         propertyName: type
+
+    VaultMetadata:
+      type: object
+      maxProperties: 16
+      propertyNames:
+        minLength: 1
+        maxLength: 64
+      additionalProperties:
+        type: string
+        maxLength: 512
+    VaultMetadataPatch:
+      type: object
+      propertyNames:
+        minLength: 1
+        maxLength: 64
+      additionalProperties:
+        type: [string, 'null']
+        maxLength: 512
+    VaultCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        metadata:
+          $ref: '#/components/schemas/VaultMetadata'
+    VaultUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+        metadata:
+          $ref: '#/components/schemas/VaultMetadataPatch'
+    Vault:
+      type: object
+      additionalProperties: false
+      required: [id, type, display_name, metadata, created_at, updated_at, archived_at]
+      properties:
+        id:
+          type: string
+          pattern: '^vlt_'
+        type:
+          type: string
+          const: vault
+        display_name:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/VaultMetadata'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        archived_at:
+          $ref: '#/components/schemas/NullableTimestamp'
+    VaultList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vault'
+        next_page:
+          $ref: '#/components/schemas/Cursor'
+    VaultDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id:
+          type: string
+          pattern: '^vlt_'
+        type:
+          type: string
+          const: vault_deleted
+
+    OAuthTokenEndpointAuthNoneCreate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: none
+    OAuthTokenEndpointAuthSecretCreate:
+      type: object
+      additionalProperties: false
+      required: [type, client_secret]
+      properties:
+        type:
+          type: string
+          enum: [client_secret_basic, client_secret_post]
+        client_secret:
+          type: string
+          minLength: 1
+          writeOnly: true
+    OAuthTokenEndpointAuthCreate:
+      oneOf:
+        - $ref: '#/components/schemas/OAuthTokenEndpointAuthNoneCreate'
+        - $ref: '#/components/schemas/OAuthTokenEndpointAuthSecretCreate'
+      discriminator:
+        propertyName: type
+    OAuthRefreshCreate:
+      type: object
+      additionalProperties: false
+      required: [client_id, refresh_token, token_endpoint, token_endpoint_auth]
+      properties:
+        client_id:
+          type: string
+          minLength: 1
+        refresh_token:
+          type: string
+          minLength: 1
+          writeOnly: true
+        token_endpoint:
+          type: string
+          format: uri
+          pattern: '^https://'
+          maxLength: 2048
+        token_endpoint_auth:
+          $ref: '#/components/schemas/OAuthTokenEndpointAuthCreate'
+        resource:
+          type: [string, 'null']
+        scope:
+          type: [string, 'null']
+    StaticBearerCredentialCreate:
+      type: object
+      additionalProperties: false
+      required: [type, token, mcp_server_url]
+      properties:
+        type:
+          type: string
+          const: static_bearer
+        token:
+          type: string
+          minLength: 1
+          writeOnly: true
+        mcp_server_url:
+          type: string
+          format: uri
+          pattern: '^https://'
+          maxLength: 2048
+    MCPOAuthCredentialCreate:
+      type: object
+      additionalProperties: false
+      required: [type, access_token, mcp_server_url]
+      properties:
+        type:
+          type: string
+          const: mcp_oauth
+        access_token:
+          type: string
+          minLength: 1
+          writeOnly: true
+        mcp_server_url:
+          type: string
+          format: uri
+          pattern: '^https://'
+          maxLength: 2048
+        expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        refresh:
+          oneOf:
+            - $ref: '#/components/schemas/OAuthRefreshCreate'
+            - type: 'null'
+    EnvironmentCredentialNetworking:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [type]
+          properties:
+            type: {type: string, const: unrestricted}
+        - type: object
+          additionalProperties: false
+          required: [type, allowed_hosts]
+          properties:
+            type: {type: string, const: limited}
+            allowed_hosts:
+              type: array
+              maxItems: 16
+              items: {type: string}
+      discriminator:
+        propertyName: type
+    EnvironmentVariableCredentialCreate:
+      type: object
+      description: Represented for API compatibility but rejected with 422 until SecretEgress is implemented.
+      additionalProperties: false
+      required: [type, secret_name, secret_value, networking]
+      properties:
+        type: {type: string, const: environment_variable}
+        secret_name: {type: string, minLength: 1}
+        secret_value: {type: string, minLength: 1, writeOnly: true}
+        networking: {$ref: '#/components/schemas/EnvironmentCredentialNetworking'}
+        injection_location:
+          type: object
+          additionalProperties: false
+          properties:
+            body: {type: boolean}
+            header: {type: boolean}
+    VaultCredentialCreateAuth:
+      oneOf:
+        - $ref: '#/components/schemas/StaticBearerCredentialCreate'
+        - $ref: '#/components/schemas/MCPOAuthCredentialCreate'
+        - $ref: '#/components/schemas/EnvironmentVariableCredentialCreate'
+      discriminator:
+        propertyName: type
+    VaultCredentialCreateRequest:
+      type: object
+      additionalProperties: false
+      required: [auth]
+      properties:
+        display_name:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 255
+        metadata:
+          $ref: '#/components/schemas/VaultMetadata'
+        auth:
+          $ref: '#/components/schemas/VaultCredentialCreateAuth'
+
+    OAuthTokenEndpointAuthUpdate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [client_secret_basic, client_secret_post]
+        client_secret:
+          type: [string, 'null']
+          minLength: 1
+          writeOnly: true
+    OAuthRefreshUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        refresh_token:
+          type: [string, 'null']
+          minLength: 1
+          writeOnly: true
+        scope:
+          type: [string, 'null']
+        token_endpoint_auth:
+          $ref: '#/components/schemas/OAuthTokenEndpointAuthUpdate'
+    StaticBearerCredentialUpdate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: static_bearer}
+        token: {type: [string, 'null'], minLength: 1, writeOnly: true}
+    MCPOAuthCredentialUpdate:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: mcp_oauth}
+        access_token: {type: [string, 'null'], minLength: 1, writeOnly: true}
+        expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        refresh:
+          oneOf:
+            - $ref: '#/components/schemas/OAuthRefreshUpdate'
+            - type: 'null'
+    EnvironmentVariableCredentialUpdate:
+      type: object
+      description: Represented for API compatibility but rejected with 422 until SecretEgress is implemented.
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: environment_variable}
+        secret_value: {type: string, minLength: 1, writeOnly: true}
+        networking: {$ref: '#/components/schemas/EnvironmentCredentialNetworking'}
+        injection_location:
+          type: object
+          additionalProperties: false
+          properties:
+            body: {type: boolean}
+            header: {type: boolean}
+    VaultCredentialUpdateAuth:
+      oneOf:
+        - $ref: '#/components/schemas/StaticBearerCredentialUpdate'
+        - $ref: '#/components/schemas/MCPOAuthCredentialUpdate'
+        - $ref: '#/components/schemas/EnvironmentVariableCredentialUpdate'
+      discriminator:
+        propertyName: type
+    VaultCredentialUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        display_name:
+          type: [string, 'null']
+          minLength: 1
+          maxLength: 255
+        metadata:
+          oneOf:
+            - $ref: '#/components/schemas/VaultMetadataPatch'
+            - type: 'null'
+        auth:
+          $ref: '#/components/schemas/VaultCredentialUpdateAuth'
+
+    StaticBearerCredentialAuth:
+      type: object
+      additionalProperties: false
+      required: [type, mcp_server_url]
+      properties:
+        type: {type: string, const: static_bearer}
+        mcp_server_url: {type: string, format: uri}
+    OAuthTokenEndpointAuthResponse:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [none, client_secret_basic, client_secret_post]
+    OAuthRefreshResponse:
+      type: object
+      additionalProperties: false
+      required: [client_id, token_endpoint, token_endpoint_auth, resource, scope]
+      properties:
+        client_id: {type: string}
+        token_endpoint: {type: string, format: uri}
+        token_endpoint_auth: {$ref: '#/components/schemas/OAuthTokenEndpointAuthResponse'}
+        resource: {type: [string, 'null']}
+        scope: {type: [string, 'null']}
+    MCPOAuthCredentialAuth:
+      type: object
+      additionalProperties: false
+      required: [type, mcp_server_url, expires_at, refresh]
+      properties:
+        type: {type: string, const: mcp_oauth}
+        mcp_server_url: {type: string, format: uri}
+        expires_at:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: 'null'
+        refresh:
+          oneOf:
+            - $ref: '#/components/schemas/OAuthRefreshResponse'
+            - type: 'null'
+    VaultCredentialAuth:
+      oneOf:
+        - $ref: '#/components/schemas/StaticBearerCredentialAuth'
+        - $ref: '#/components/schemas/MCPOAuthCredentialAuth'
+      discriminator:
+        propertyName: type
+    VaultCredential:
+      type: object
+      additionalProperties: false
+      required: [id, type, vault_id, display_name, metadata, auth, created_at, updated_at, archived_at]
+      properties:
+        id: {type: string, pattern: '^vcrd_'}
+        type: {type: string, const: vault_credential}
+        vault_id: {type: string, pattern: '^vlt_'}
+        display_name: {type: [string, 'null']}
+        metadata: {$ref: '#/components/schemas/VaultMetadata'}
+        auth: {$ref: '#/components/schemas/VaultCredentialAuth'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        archived_at: {$ref: '#/components/schemas/NullableTimestamp'}
+    VaultCredentialList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/VaultCredential'}
+        next_page: {$ref: '#/components/schemas/Cursor'}
+    VaultCredentialDeleted:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id: {type: string, pattern: '^vcrd_'}
+        type: {type: string, const: vault_credential_deleted}

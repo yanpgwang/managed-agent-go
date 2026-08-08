@@ -26,8 +26,9 @@
 
 Mango implements the documented Managed Agents API as a self-hosted runtime:
 durable sessions, event streaming, tool orchestration, File and custom Skill
-resources, persistent Memory Stores, and pluggable sandbox execution. Its
-production-oriented architecture is built in Go on PostgreSQL and Temporal.
+resources, persistent Memory Stores, an encrypted Vault control plane, and
+pluggable sandbox execution. Its production-oriented architecture is built in
+Go on PostgreSQL and Temporal.
 
 ## Why Mango
 
@@ -88,6 +89,7 @@ make local-down
 | Files | Five-operation Files API with configured object storage; File-backed Session Resources with durable read-only Docker mounts |
 | Skills | Nine custom resource operations, immutable Version pins, and Claude Code-style on-demand instruction loading in Docker Sessions |
 | Memory | Fourteen Store, Memory, and immutable Version operations; durable read/write or read-only Docker mounts at `/mnt/memory` |
+| Vaults | Twelve Vault and encrypted Credential lifecycle operations; static bearer and MCP OAuth secrets are write-only, while Session/MCP runtime injection remains in progress |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
@@ -95,9 +97,10 @@ freezes the first scoped single-agent claim. The living conformance matrices
 for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-conformance),
 [Files](https://yanpgwang.github.io/managed-agent-go/api/files-conformance),
 [Session Resources](https://yanpgwang.github.io/managed-agent-go/api/session-resources-conformance),
-[Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance), and
-[Memory](https://yanpgwang.github.io/managed-agent-go/api/memory-conformance)
-record operation-level evidence and known limitations. Vaults,
+[Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance),
+[Memory](https://yanpgwang.github.io/managed-agent-go/api/memory-conformance), and
+[Vaults](https://yanpgwang.github.io/managed-agent-go/api/vaults-conformance)
+record operation-level evidence and known limitations. Vault runtime injection,
 deployments, multi-agent orchestration, schedules, and webhooks remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 

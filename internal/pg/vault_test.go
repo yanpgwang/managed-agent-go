@@ -1,0 +1,209 @@
+package pg
+
+import (
+	"context"
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
+)
+
+func TestVaultRepositoryLifecycleAndCursorPagination(t *testing.T) {
+	store := testStore(t)
+	repo := NewVaultRepository(store)
+	ctx := context.Background()
+	firstTime := time.Unix(1000, 0).UTC()
+	secondTime := time.Unix(2000, 0).UTC()
+
+	firstVault, err := repo.CreateVault(ctx, domain.Vault{
+		ID: "vlt_first", DisplayName: "First", Metadata: map[string]string{}, CreatedAt: firstTime, UpdatedAt: firstTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondVault, err := repo.CreateVault(ctx, domain.Vault{
+		ID: "vlt_second", DisplayName: "Second", Metadata: map[string]string{"stage": "test"}, CreatedAt: secondTime, UpdatedAt: secondTime,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetVault(ctx, secondVault.ID); err != nil || got.DisplayName != "Second" {
+		t.Fatalf("get vault = %#v, %v", got, err)
+	}
+	updatedName := "Second updated"
+	updatedVault, err := repo.UpdateVault(ctx, secondVault.ID, app.VaultUpdateInput{
+		DisplayName: &updatedName, Metadata: map[string]*string{"stage": nil},
+	}, domain.FixedClock{T: time.Unix(3000, 0).UTC()})
+	if err != nil || updatedVault.DisplayName != updatedName || len(updatedVault.Metadata) != 0 {
+		t.Fatalf("update vault = %#v, %v", updatedVault, err)
+	}
+	firstVaultPage, err := repo.ListVaults(ctx, app.VaultListQuery{Limit: 1})
+	if err != nil || !firstVaultPage.HasNext || len(firstVaultPage.Vaults) != 1 || firstVaultPage.Vaults[0].ID != secondVault.ID {
+		t.Fatalf("first vault page = %#v, %v", firstVaultPage, err)
+	}
+	secondVaultPage, err := repo.ListVaults(ctx, app.VaultListQuery{
+		Limit: 1, After: &app.ResourcePageBoundary{CreatedAt: firstVaultPage.Vaults[0].CreatedAt, ID: firstVaultPage.Vaults[0].ID},
+	})
+	if err != nil || secondVaultPage.HasNext || len(secondVaultPage.Vaults) != 1 || secondVaultPage.Vaults[0].ID != firstVault.ID {
+		t.Fatalf("second vault page = %#v, %v", secondVaultPage, err)
+	}
+
+	firstCredential := testStoredCredential(secondVault.ID, "vcrd_first")
+	firstCredential.Auth.MCPServerURL, firstCredential.CredentialKey = "https://first.example/", "https://first.example/"
+	firstCredential.CreatedAt, firstCredential.UpdatedAt = firstTime, firstTime
+	if _, err := repo.CreateCredential(ctx, firstCredential, 20); err != nil {
+		t.Fatal(err)
+	}
+	secondCredential := testStoredCredential(secondVault.ID, "vcrd_second")
+	secondCredential.Auth.MCPServerURL, secondCredential.CredentialKey = "https://second.example/", "https://second.example/"
+	secondCredential.CreatedAt, secondCredential.UpdatedAt = secondTime, secondTime
+	createdCredential, err := repo.CreateCredential(ctx, secondCredential, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := repo.GetCredential(ctx, secondVault.ID, createdCredential.ID); err != nil || got.ID != createdCredential.ID {
+		t.Fatalf("get credential = %#v, %v", got, err)
+	}
+	displayName := "Updated credential"
+	updatedCredential, err := repo.UpdateCredential(ctx, secondVault.ID, createdCredential.ID, func(current domain.VaultCredential) (domain.VaultCredential, bool, error) {
+		current.DisplayName = &displayName
+		current.Metadata = map[string]string{"rotated": "true"}
+		current.Version++
+		current.UpdatedAt = time.Unix(3000, 0).UTC()
+		return current, true, nil
+	})
+	if err != nil || updatedCredential.DisplayName == nil || *updatedCredential.DisplayName != displayName || updatedCredential.Version != 2 {
+		t.Fatalf("update credential = %#v, %v", updatedCredential, err)
+	}
+	firstCredentialPage, err := repo.ListCredentials(ctx, secondVault.ID, app.CredentialListQuery{Limit: 1})
+	if err != nil || !firstCredentialPage.HasNext || len(firstCredentialPage.Credentials) != 1 || firstCredentialPage.Credentials[0].ID != createdCredential.ID {
+		t.Fatalf("first credential page = %#v, %v", firstCredentialPage, err)
+	}
+	secondCredentialPage, err := repo.ListCredentials(ctx, secondVault.ID, app.CredentialListQuery{
+		Limit: 1, After: &app.ResourcePageBoundary{CreatedAt: firstCredentialPage.Credentials[0].CreatedAt, ID: firstCredentialPage.Credentials[0].ID},
+	})
+	if err != nil || secondCredentialPage.HasNext || len(secondCredentialPage.Credentials) != 1 || secondCredentialPage.Credentials[0].ID != firstCredential.ID {
+		t.Fatalf("second credential page = %#v, %v", secondCredentialPage, err)
+	}
+	if err := repo.DeleteCredential(ctx, secondVault.ID, createdCredential.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.GetCredential(ctx, secondVault.ID, createdCredential.ID); err == nil {
+		t.Fatal("deleted credential is still readable")
+	}
+	if err := repo.DeleteVault(ctx, secondVault.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repo.GetVault(ctx, secondVault.ID); err == nil {
+		t.Fatal("deleted vault is still readable")
+	}
+}
+
+func TestVaultArchivePurgesCredentialCiphertextAndFreesActiveKey(t *testing.T) {
+	store := testStore(t)
+	repo := NewVaultRepository(store)
+	ctx := context.Background()
+	clock := domain.FixedClock{T: time.Unix(2000, 0).UTC()}
+
+	vault, err := repo.CreateVault(ctx, domain.Vault{
+		ID: "vlt_test", DisplayName: "Test", Metadata: map[string]string{},
+		CreatedAt: time.Unix(1000, 0).UTC(), UpdatedAt: time.Unix(1000, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := repo.CreateCredential(ctx, testStoredCredential(vault.ID, "vcrd_first"), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, err := repo.ArchiveCredential(ctx, vault.ID, first.ID, clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archived.ArchivedAt == nil || archived.SecretEnvelope != nil {
+		t.Fatalf("archived credential retained secret state: %#v", archived)
+	}
+	assertCredentialSecretColumnsNull(t, store, first.ID)
+
+	second, err := repo.CreateCredential(ctx, testStoredCredential(vault.ID, "vcrd_second"), 20)
+	if err != nil {
+		t.Fatalf("credential key was not freed by archive: %v", err)
+	}
+	archivedVault, err := repo.ArchiveVault(ctx, vault.ID, domain.FixedClock{T: time.Unix(3000, 0).UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if archivedVault.ArchivedAt == nil {
+		t.Fatal("vault was not archived")
+	}
+	assertCredentialSecretColumnsNull(t, store, second.ID)
+	secondAfter, err := repo.GetCredential(ctx, vault.ID, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secondAfter.ArchivedAt == nil || secondAfter.SecretEnvelope != nil {
+		t.Fatalf("vault archive did not cascade credential archive: %#v", secondAfter)
+	}
+}
+
+func TestVaultCredentialLimitIncludesArchivedCredentials(t *testing.T) {
+	store := testStore(t)
+	repo := NewVaultRepository(store)
+	ctx := context.Background()
+	vault, err := repo.CreateVault(ctx, domain.Vault{
+		ID: "vlt_limit", DisplayName: "Limit", Metadata: map[string]string{},
+		CreatedAt: time.Unix(1000, 0).UTC(), UpdatedAt: time.Unix(1000, 0).UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 20; index++ {
+		item := testStoredCredential(vault.ID, fmt.Sprintf("vcrd_%02d", index))
+		item.Auth.MCPServerURL = fmt.Sprintf("https://mcp-%02d.example/", index)
+		item.CredentialKey = item.Auth.MCPServerURL
+		if _, err := repo.CreateCredential(ctx, item, 20); err != nil {
+			t.Fatalf("create credential %d: %v", index, err)
+		}
+	}
+	if _, err := repo.ArchiveCredential(ctx, vault.ID, "vcrd_00", domain.FixedClock{T: time.Unix(2000, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	extra := testStoredCredential(vault.ID, "vcrd_20")
+	extra.Auth.MCPServerURL = "https://extra.example/"
+	extra.CredentialKey = extra.Auth.MCPServerURL
+	if _, err := repo.CreateCredential(ctx, extra, 20); err == nil {
+		t.Fatal("archiving a credential incorrectly freed the 20-credential quota")
+	}
+}
+
+func testStoredCredential(vaultID, id string) domain.VaultCredential {
+	now := time.Unix(1000, 0).UTC()
+	return domain.VaultCredential{
+		ID: id, VaultID: vaultID, Metadata: map[string]string{},
+		Auth: domain.CredentialAuth{
+			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://mcp.example/",
+		},
+		CredentialKey: "https://mcp.example/",
+		SecretEnvelope: &domain.SecretEnvelope{
+			Version: 1, Algorithm: "AES-256-GCM", KeyID: "test",
+			Nonce: []byte("123456789012"), Ciphertext: []byte("encrypted"),
+		},
+		Version: 1, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func assertCredentialSecretColumnsNull(t *testing.T, store *Store, credentialID string) {
+	t.Helper()
+	var nonNull int
+	err := store.pool.QueryRow(context.Background(), `
+SELECT num_nonnulls(secret_version, secret_algorithm, secret_key_id, secret_nonce, secret_ciphertext)
+FROM vault_credentials WHERE id = $1`, credentialID).Scan(&nonNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nonNull != 0 {
+		t.Fatalf("credential %s retains %d secret columns", credentialID, nonNull)
+	}
+}

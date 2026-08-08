@@ -73,13 +73,16 @@ ordinary files beneath `/mnt/memory`, enforce read-only attachments, and write
 multi-file changes back atomically with Session actor attribution. See the
 [Memory conformance matrix](api/memory-conformance.md).
 
-After that boundary, post-core work is ordered as reusable single-agent
-capability layers:
+The Vault control-plane slice now implements all six Vault lifecycle operations
+and six Credential lifecycle operations. Static bearer and MCP OAuth payloads
+are write-only, encrypted with an operator-mounted rotating keyring, and purged
+on archive. The remaining Vault work is deliberately runtime-facing: Session
+`vault_ids`, deterministic MCP credential resolution and injection, OAuth
+validation/refresh recovery, then environment-variable SecretEgress after a
+sandbox provider can enforce substitution without revealing the secret.
 
-1. Vaults and Credentials, with isolation and redaction guarantees before any
-   secret reaches a worker or sandbox;
-2. Deployments and Deployment Runs, built on the stable execution and
-   credential layers.
+Deployments and Deployment Runs follow the stable execution and credential
+layers.
 
 Skills and Memory are not deferred to multi-agent work. They provide reusable
 capabilities and continuity to one Agent today, and later become foundations

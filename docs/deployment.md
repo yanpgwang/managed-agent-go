@@ -82,6 +82,29 @@ to PostgreSQL. API and worker processes must select the same provider. Local,
 self-hosted, and current remote adapters reject Memory Store attachment while
 the standalone Memory API remains available.
 
+The Vault API is disabled unless `MANAGED_AGENT_VAULT_KEYRING_FILE` points to
+an operator-mounted JSON keyring. A configured but invalid keyring fails API
+startup rather than falling back to plaintext storage. The file has this shape:
+
+```json
+{
+  "active_key_id": "2026-08",
+  "keys": {
+    "2026-08": "<standard-base64 32-byte AES key>",
+    "2026-07": "<retained decrypt-only key>"
+  }
+}
+```
+
+New Credentials and secret/auth updates use the active key. Older keys may remain in
+the file for reads during rotation; removing one makes Credentials encrypted by
+that key unavailable. The control-plane API is the only current process that
+loads the keyring; a worker will need it only when the runtime credential
+resolver lands. It must never be mounted into a Session sandbox, copied into
+Agent context, or stored in PostgreSQL. The bundled local keyring is
+deterministic development material and must not be reused outside the local
+Compose stack.
+
 Before production deployment bundles are promoted, database migration will be
 removed from normal API/worker startup and exposed as an explicit one-shot
 role. This avoids every replica racing to manage schema during a rollout.
