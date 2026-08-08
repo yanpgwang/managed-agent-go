@@ -98,6 +98,12 @@ or event state machine is introduced. See the [Environment Work guide](api/envir
 and [conformance matrix](api/environment-work-conformance.md). Environment-key
 issuance and tenant-scoped authorization remain platform hardening work.
 
+The Session Threads slice now implements all five public read/archive/event
+operations. Each Session gets one durable primary-thread identity in the same
+creation transaction. Its event history and live stream are views of the
+existing Session ledger and NATS channel, so the HTTP surface does not create a
+second source of truth. The child-thread runtime remains an M2 capability.
+
 Skills and Memory are not deferred to multi-agent work. They provide reusable
 capabilities and continuity to one Agent today, and later become foundations
 that multi-agent orchestration can consume without inventing a second storage
@@ -117,11 +123,12 @@ Remaining work is:
 
 ## M2: multi-agent
 
-After the single-agent capability layers above are stable, implement the
-official roster, Session thread, delegation/message, cross-posted confirmation,
-context-compaction, and targeted interrupt events. The single-agent event
-ledger, pending-action barrier, private provider transcript, Skills, Memory,
-and Temporal turn loop are intended to be reused rather than replaced.
+After the single-agent capability layers above are stable, implement official
+roster resolution, child-thread creation, delegation/message execution,
+cross-posted confirmation, context-compaction, and targeted interrupt events.
+The primary Thread HTTP surface, single-agent event ledger, pending-action
+barrier, private provider transcript, Skills, Memory, and Temporal turn loop
+are intended to be reused rather than replaced.
 
 ## Deferred platform hardening
 

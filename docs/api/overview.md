@@ -26,6 +26,7 @@ matrices.
 | Environment Work | Get/update/list/Ack/Heartbeat/Poll/Stats/Stop under `/v1/environments/{id}/work`; consumed by self-hosted workers |
 | Sessions | `POST/GET /v1/sessions`, get, update, archive, delete |
 | Events | `POST/GET /v1/sessions/{id}/events`, SSE stream |
+| Session Threads | List/get/archive Threads; list and stream one Thread's events |
 | Files | `POST/GET /v1/files`, metadata, content download, delete |
 | Skills | Create/list/get/delete custom Skills and immutable Versions; download Version zip archives |
 | Memory | Create/list/get/update/archive/delete Stores; create/list/get/update/delete Memories; get/list/redact immutable Versions |
@@ -41,6 +42,7 @@ Resource-specific request shapes are covered in:
 - [Environment Work](environment-work.md)
 - [Sessions](sessions.md)
 - [Events and streaming](events.md)
+- [Session Threads](session-threads.md)
 - [Deployments and Deployment Runs](deployments.md)
 
 ## Headers
@@ -108,8 +110,8 @@ the [compatibility matrix](../compatibility.md) for parity limits.
 
 ## Pagination
 
-Top-level Agent, Environment, and Session lists, Agent version histories, and
-Event lists use opaque `page` tokens. Skill and Skill Version lists use the same
+Top-level Agent, Environment, Session, and Session Thread lists, Agent version
+histories, and Event lists use opaque `page` tokens. Skill and Skill Version lists use the same
 forward-only token convention. A cursor is bound to its resource and normalized
 filters; Agent and Skill version cursors are additionally bound to their parent
 resource ID, and Session cursors are bound to sort order. Reusing a cursor
@@ -146,11 +148,13 @@ The running server exposes `/openapi.yaml`, sourced from
 `internal/httpapi/openapi.yaml`. All 21 core operations, ten Deployment and
 Deployment Run operations, five Files operations, five Session Resources
 operations, nine custom Skills operations, fourteen Memory operations,
-thirteen Vault/Credential operations, and eight Environment Work operations define
+thirteen Vault/Credential operations, eight Environment Work operations, and
+five Session Thread/Thread Event operations define
 stable operation IDs, path and query parameters, request and response schemas,
 list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core
 variants, and the ephemeral SSE `event_start` and `event_delta` preview frames.
 
-Repository tests keep all local references resolvable and lock both the core
-operation inventory and the event unions.
+Together these are the 90 HTTP operations exposed by the pinned official Go
+SDK. Repository tests keep all local references resolvable and lock both the
+core operation inventory and the event unions.

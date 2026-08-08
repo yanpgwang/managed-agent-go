@@ -106,6 +106,7 @@ func postgresHandlerWithFixture(t *testing.T) (http.Handler, postgresFixture) {
 			app.EnvironmentCapabilities{PackageSetup: true, LimitedNetwork: true},
 		),
 		Sessions: sessions,
+		Threads:  NewSessionThreadService(store),
 		Events:   NewEventService(store),
 		Stream:   app.NewHub(64),
 	}, httpapi.Config{})
@@ -167,6 +168,57 @@ func TestPostgresHTTPResourceSessionAndEventPath(t *testing.T) {
 			targeted.Code,
 			targeted.Body.String(),
 		)
+	}
+}
+
+func TestPostgresHTTPSessionPrimaryThreadLifecycle(t *testing.T) {
+	handler := postgresHandler(t)
+	agentID := createResource(t, handler, "/v1/agents",
+		`{"name":"coordinator","model":"claude-test"}`)
+	environmentID := createResource(t, handler, "/v1/environments",
+		`{"name":"cloud","config":{"type":"cloud"}}`)
+	sessionID := createResource(t, handler, "/v1/sessions",
+		`{"agent":"`+agentID+`","environment_id":"`+environmentID+`"}`)
+
+	response := request(t, handler, http.MethodGet,
+		"/v1/sessions/"+sessionID+"/threads?limit=1", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list threads -> %d: %s", response.Code, response.Body.String())
+	}
+	var page struct {
+		Data []struct {
+			ID             string  `json:"id"`
+			SessionID      string  `json:"session_id"`
+			ParentThreadID *string `json:"parent_thread_id"`
+			Status         string  `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode threads: %v", err)
+	}
+	if len(page.Data) != 1 || page.Data[0].ID == "" ||
+		page.Data[0].SessionID != sessionID || page.Data[0].ParentThreadID != nil ||
+		page.Data[0].Status != string(domain.StatusIdle) {
+		t.Fatalf("primary thread page = %+v", page.Data)
+	}
+	threadID := page.Data[0].ID
+
+	response = request(t, handler, http.MethodGet,
+		"/v1/sessions/"+sessionID+"/threads/"+threadID+"/events", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("list thread events -> %d: %s", response.Code, response.Body.String())
+	}
+	response = request(t, handler, http.MethodPost,
+		"/v1/sessions/"+sessionID+"/threads/"+threadID+"/archive", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("archive thread -> %d: %s", response.Code, response.Body.String())
+	}
+	var archived map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &archived); err != nil {
+		t.Fatalf("decode archived thread: %v", err)
+	}
+	if archived["status"] != string(domain.StatusTerminated) || archived["archived_at"] == nil {
+		t.Fatalf("archived thread = %#v", archived)
 	}
 }
 

@@ -567,10 +567,11 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		pg.NewEnvironmentWorkRepository(pgStore), environmentsRepo,
 	)
 	events := controlplane.NewEventService(pgStore)
+	threads := controlplane.NewSessionThreadService(pgStore)
 	stream := live.NewStream(pgStore, broker, ids, clock, 0)
 	handler := httpapi.NewServer(httpapi.Deps{
 		Agents: agents, Envs: environments, Sessions: sessions,
-		Events: events, Stream: stream, Files: files, Skills: skills, Memory: memory,
+		Threads: threads, Events: events, Stream: stream, Files: files, Skills: skills, Memory: memory,
 		Vaults: vaults, Deployments: deployments, EnvironmentWork: environmentWork,
 		SessionResources: sessionResources,
 	}, cfg).Handler()

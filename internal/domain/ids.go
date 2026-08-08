@@ -12,6 +12,7 @@ const (
 	PrefixAgent           = "agent_"
 	PrefixEnv             = "env_"
 	PrefixSession         = "sesn_"
+	PrefixSessionThread   = "sthr_"
 	PrefixEvent           = "sevt_"
 	PrefixRun             = "run_"
 	PrefixOutcome         = "outc_"

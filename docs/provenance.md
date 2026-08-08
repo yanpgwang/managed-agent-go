@@ -73,7 +73,11 @@ verification where applicable.
 - [List Events API Reference](https://platform.claude.com/docs/en/api/beta/sessions/events/list)
   — filters, pagination envelope, and per-event shapes.
 - [Multiagent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration)
-  — multiagent input shape and resolved-roster behavior.
+  and [Session Threads API](https://platform.claude.com/docs/en/api/beta/sessions/threads)
+  — the primary-thread identity, thread ordering, per-thread event views, five
+  HTTP operations, and the boundary between the Session stream and child
+  activity. Verified 2026-08-09 against the current documentation and
+  Anthropic Go SDK `v1.61.0` types and methods.
 - [Files API](https://platform.claude.com/docs/en/api/beta/files) and
   [Files guide](https://platform.claude.com/docs/en/build-with-claude/files) —
   the five operations, `files-api-2025-04-14` beta header, multipart upload,
@@ -221,8 +225,10 @@ forwarding upstream frames.
 - The default local sandbox is a guardrail, not a security boundary; the
   optional Docker provider supplies container isolation.
 - Opaque multiagent configuration persists with tested replace/null-clear
-  behavior. Resolved rosters, reference validation, and multiagent
-  execution/orchestration are not implemented.
+  behavior. Every Session has a durable primary-thread identity and all five
+  Thread read/archive/event operations are implemented. Resolved rosters,
+  child threads, reference validation, and multiagent execution/orchestration
+  are not implemented.
 - The Files API and File-backed Session Resources have separate conditional
   conformance matrices. They are not part of the frozen Managed Agents core
   claim.

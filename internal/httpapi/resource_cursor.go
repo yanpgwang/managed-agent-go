@@ -43,6 +43,7 @@ const (
 	deploymentListCursorKind      = "deployment_list"
 	deploymentRunListCursorKind   = "deployment_run_list"
 	environmentWorkListCursorKind = "environment_work_list"
+	sessionThreadListCursorKind   = "session_thread_list"
 	resourceCursorPrefix          = "page_"
 )
 
