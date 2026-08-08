@@ -99,7 +99,7 @@ verify: lint test test-race vet
 
 security:
 	$(GOVULNCHECK) ./...
-	npm --prefix website audit --omit=dev --audit-level=high
+	node scripts/check-npm-audit.mjs
 
 docs-check:
 	npm --prefix website ci
