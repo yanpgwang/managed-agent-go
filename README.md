@@ -93,6 +93,7 @@ make local-down
 | Vaults | Thirteen encrypted Vault and Credential operations plus ordered Session attachment, live OAuth validation, and automatic token refresh; environment-variable egress remains in progress |
 | Deployments | Ten Deployment and Deployment Run operations, pinned Agent versions, manual runs, and PostgreSQL-leased cron scheduling |
 | Environment Work | Eight worker-protocol operations, transactional self-hosted Session activation, lease heartbeats, reclaim, and official Go `WorkPoller` interoperability |
+| Session Threads | Five official operations over a durable primary thread and its shared Session event stream; child-thread orchestration remains roadmap work |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
@@ -104,7 +105,8 @@ for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-confo
 [Memory](https://yanpgwang.github.io/managed-agent-go/api/memory-conformance),
 [Vaults](https://yanpgwang.github.io/managed-agent-go/api/vaults-conformance),
 [Deployments](https://yanpgwang.github.io/managed-agent-go/api/deployments-conformance), and
-[Environment Work](https://yanpgwang.github.io/managed-agent-go/api/environment-work-conformance)
+[Environment Work](https://yanpgwang.github.io/managed-agent-go/api/environment-work-conformance), and
+[Session Threads](https://yanpgwang.github.io/managed-agent-go/api/session-threads-conformance)
 record operation-level evidence and known limitations. Multi-agent
 orchestration, environment-variable secret egress, and webhooks remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).

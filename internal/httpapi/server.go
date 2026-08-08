@@ -62,6 +62,12 @@ type EventSubscriber interface {
 	SubscribeContext(context.Context, string, map[string]bool) (<-chan app.Frame, func(), error)
 }
 
+type SessionThreadService interface {
+	Get(context.Context, string, string) (domain.SessionThread, error)
+	List(context.Context, string, app.SessionThreadListQuery) ([]domain.SessionThread, error)
+	Archive(context.Context, string, string) (domain.SessionThread, error)
+}
+
 type FileService interface {
 	Upload(context.Context, app.FileUploadInput) (domain.File, error)
 	Get(context.Context, string) (domain.File, error)
@@ -140,6 +146,7 @@ type Deps struct {
 	Agents           AgentService
 	Envs             EnvironmentService
 	Sessions         SessionService
+	Threads          SessionThreadService
 	Events           EventService
 	Stream           EventSubscriber
 	Files            FileService

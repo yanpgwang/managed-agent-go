@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -183,7 +182,7 @@ func (s *Server) listEvents(w http.ResponseWriter, r *http.Request) {
 			writeError(w, domain.Validation("page cursor order mismatch"))
 			return
 		}
-		if c.SessionID != sessionID || c.Filter != filterFingerprint {
+		if c.SessionID != sessionID || c.ThreadID != "" || c.Filter != filterFingerprint {
 			writeError(w, domain.Validation("page cursor scope mismatch"))
 			return
 		}
@@ -625,28 +624,10 @@ func parseTimeParam(s string) (*time.Time, bool) {
 
 func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("id")
-
-	// Parse and validate the event_deltas[] opt-in before subscribing. Go's
-	// net/url parses a "event_deltas[]=x" query into the key "event_deltas[]";
-	// accept the unbracketed "event_deltas" spelling too for robustness. Each
-	// value must name a previewable event type and the total is capped.
-	q := r.URL.Query()
-	optInValues := append([]string(nil), q["event_deltas[]"]...)
-	optInValues = append(optInValues, q["event_deltas"]...)
-	if len(optInValues) > maxDeltaOptIn {
-		writeError(w, domain.Validation(fmt.Sprintf("event_deltas[] accepts at most %d values", maxDeltaOptIn)))
+	deltaOptIn, err := parseEventDeltaOptIn(r)
+	if err != nil {
+		writeError(w, err)
 		return
-	}
-	var deltaOptIn map[string]bool
-	for _, v := range optInValues {
-		if !deltaOptInTypes[v] {
-			writeError(w, domain.Validation("event_deltas[] value not accepted: "+v))
-			return
-		}
-		if deltaOptIn == nil {
-			deltaOptIn = map[string]bool{}
-		}
-		deltaOptIn[v] = true
 	}
 
 	// Subscribe before the existence check. Once Get succeeds, a concurrent
@@ -662,49 +643,5 @@ func (s *Server) streamEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		writeError(w, domain.Validation("streaming unsupported"))
-		return
-	}
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.WriteHeader(200)
-	flusher.Flush()
-
-	ctx := r.Context()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case f, open := <-ch:
-			if !open {
-				return // slow-consumer drop: client should reconnect
-			}
-			// Exactly one of Event/Preview is set per frame. A persisted event is
-			// rendered as today (event: <type>, data: <event JSON>). A preview frame
-			// (delivered only because this stream opted in) is rendered with the
-			// preview kind as the SSE event line and its wire JSON as data; it is
-			// never persisted and never appears in List Events.
-			switch {
-			case f.Event != nil:
-				ev := *f.Event
-				payload, _ := json.Marshal(eventToJSON(ev))
-				_, _ = fmt.Fprintf(w, "event: %s\n", ev.Type)
-				_, _ = w.Write([]byte("data: "))
-				_, _ = w.Write(payload)
-				_, _ = w.Write([]byte("\n\n"))
-				flusher.Flush()
-			case f.Preview != nil:
-				payload, _ := json.Marshal(f.Preview.WireJSON())
-				_, _ = fmt.Fprintf(w, "event: %s\n", f.Preview.Kind)
-				_, _ = w.Write([]byte("data: "))
-				_, _ = w.Write(payload)
-				_, _ = w.Write([]byte("\n\n"))
-				flusher.Flush()
-			}
-		}
-	}
+	writeEventStream(w, r, ch)
 }

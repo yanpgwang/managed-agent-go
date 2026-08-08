@@ -28,6 +28,8 @@ tags:
     description: Durable single-agent Sessions.
   - name: Session Events
     description: Durable Session input and output events.
+  - name: Session Threads
+    description: Durable primary execution identities and thread-scoped event views.
   - name: Session Resources
     description: File copies and Memory Stores attached to durable Sessions.
   - name: Files
@@ -604,6 +606,83 @@ paths:
           $ref: '#/components/responses/InvalidRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /v1/sessions/{session_id}/threads:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+    get:
+      operationId: listSessionThreads
+      tags: [Session Threads]
+      summary: List Session Threads, primary first
+      parameters:
+        - $ref: '#/components/parameters/SessionThreadListLimit'
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200': {$ref: '#/components/responses/SessionThreadListResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/sessions/{session_id}/threads/{thread_id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+      - $ref: '#/components/parameters/SessionThreadID'
+    get:
+      operationId: getSessionThread
+      tags: [Session Threads]
+      summary: Get a Session Thread
+      responses:
+        '200': {$ref: '#/components/responses/SessionThreadResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/sessions/{session_id}/threads/{thread_id}/archive:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+      - $ref: '#/components/parameters/SessionThreadID'
+    post:
+      operationId: archiveSessionThread
+      tags: [Session Threads]
+      summary: Archive a non-running Session Thread
+      responses:
+        '200': {$ref: '#/components/responses/SessionThreadResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /v1/sessions/{session_id}/threads/{thread_id}/events:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+      - $ref: '#/components/parameters/SessionThreadID'
+    get:
+      operationId: listSessionThreadEvents
+      tags: [Session Threads]
+      summary: List persisted events for one Session Thread
+      parameters:
+        - $ref: '#/components/parameters/EventListLimit'
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200': {$ref: '#/components/responses/SessionEventListResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/sessions/{session_id}/threads/{thread_id}/stream:
+    parameters:
+      - $ref: '#/components/parameters/SessionID'
+      - $ref: '#/components/parameters/SessionThreadID'
+    get:
+      operationId: streamSessionThreadEvents
+      tags: [Session Threads]
+      summary: Stream live events for one Session Thread over SSE
+      parameters:
+        - $ref: '#/components/parameters/EventDeltas'
+      responses:
+        '200':
+          description: Thread-scoped SSE event stream
+          headers:
+            request-id: {$ref: '#/components/headers/RequestID'}
+          content:
+            text/event-stream:
+              schema: {$ref: '#/components/schemas/EventStreamFrame'}
+              x-sse-event-schemas:
+                persisted: {$ref: '#/components/schemas/SessionEvent'}
+                event_start: {$ref: '#/components/schemas/EventStart'}
+                event_delta: {$ref: '#/components/schemas/EventDelta'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
 
   /v1/files:
     post:
@@ -1621,6 +1700,13 @@ components:
       schema:
         type: string
         minLength: 1
+    SessionThreadID:
+      name: thread_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^sthr_'
     FileID:
       name: file_id
       in: path
@@ -1703,6 +1789,14 @@ components:
         minimum: 1
         maximum: 1000
         default: 100
+    SessionThreadListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 1000
     FileListLimit:
       name: limit
       in: query
@@ -2082,6 +2176,20 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/SessionList'
+    SessionThreadResponse:
+      description: Session Thread resource
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/SessionThread'}
+    SessionThreadListResponse:
+      description: Session Thread page
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/SessionThreadList'}
     SessionResourceResponse:
       description: File- or Memory-backed Session Resource
       headers:
@@ -3698,6 +3806,27 @@ components:
             $ref: '#/components/schemas/SkillReferenceResponse'
         multiagent:
           $ref: '#/components/schemas/Multiagent'
+    SessionThreadAgent:
+      type: object
+      additionalProperties: false
+      required: [id, type, version, name, model, system, description, tools, mcp_servers, skills]
+      properties:
+        id: {type: string}
+        type: {type: string, const: agent}
+        version: {type: integer, minimum: 1}
+        name: {type: string}
+        model: {$ref: '#/components/schemas/Model'}
+        system: {type: string}
+        description: {type: string}
+        tools:
+          type: array
+          items: {$ref: '#/components/schemas/AgentTool'}
+        mcp_servers:
+          type: array
+          items: {$ref: '#/components/schemas/MCPServer'}
+        skills:
+          type: array
+          items: {$ref: '#/components/schemas/SkillReferenceResponse'}
     AgentList:
       type: object
       additionalProperties: false
@@ -4573,6 +4702,39 @@ components:
           $ref: '#/components/schemas/Cursor'
         prev_page:
           $ref: '#/components/schemas/Cursor'
+    SessionThreadStats:
+      type: object
+      additionalProperties: false
+      required: [active_seconds, duration_seconds, startup_seconds]
+      properties:
+        active_seconds: {type: number, minimum: 0}
+        duration_seconds: {type: number, minimum: 0}
+        startup_seconds: {type: number, minimum: 0}
+    SessionThread:
+      type: object
+      additionalProperties: false
+      required: [id, type, session_id, parent_thread_id, agent, status, stats, usage, created_at, updated_at, archived_at]
+      properties:
+        id: {type: string, pattern: '^sthr_'}
+        type: {type: string, const: session_thread}
+        session_id: {type: string, pattern: '^sesn_'}
+        parent_thread_id: {type: [string, 'null'], pattern: '^sthr_'}
+        agent: {$ref: '#/components/schemas/SessionThreadAgent'}
+        status: {$ref: '#/components/schemas/SessionStatus'}
+        stats: {$ref: '#/components/schemas/SessionThreadStats'}
+        usage: {$ref: '#/components/schemas/SessionUsage'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        archived_at: {$ref: '#/components/schemas/NullableTimestamp'}
+    SessionThreadList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/SessionThread'}
+        next_page: {$ref: '#/components/schemas/Cursor'}
     SessionDeleted:
       type: object
       additionalProperties: false

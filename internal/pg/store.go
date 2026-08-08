@@ -200,6 +200,9 @@ func (s *Store) createSession(
 		if err := q.InsertSession(ctx, insertSessionParams(session, body)); err != nil {
 			return err
 		}
+		if err := s.insertPrimarySessionThread(ctx, tx, session); err != nil {
+			return err
+		}
 		if err := insertSessionSkillVersions(ctx, tx, session); err != nil {
 			return err
 		}
@@ -224,6 +227,22 @@ func (s *Store) createSession(
 	}
 	s.notifySession(ctx, session.ID)
 	return admission, nil
+}
+
+func (s *Store) insertPrimarySessionThread(
+	ctx context.Context,
+	tx pgx.Tx,
+	session domain.Session,
+) error {
+	_, err := tx.Exec(ctx, `
+INSERT INTO session_threads (
+	id, session_id, parent_thread_id, kind, created_at
+) VALUES ($1, $2, NULL, 'primary', $3)`,
+		s.ids.NewID(domain.PrefixSessionThread),
+		session.ID,
+		session.CreatedAt,
+	)
+	return err
 }
 
 func insertDeploymentRun(ctx context.Context, tx pgx.Tx, run domain.DeploymentRun) error {

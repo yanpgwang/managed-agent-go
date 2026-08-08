@@ -137,6 +137,74 @@ func TestOpenAPISessionEventContract(t *testing.T) {
 	validateOpenAPIRefs(t, doc, doc)
 }
 
+func TestOpenAPISessionThreadContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	operations := map[string]string{
+		"/v1/sessions/{session_id}/threads":                     "get",
+		"/v1/sessions/{session_id}/threads/{thread_id}":         "get",
+		"/v1/sessions/{session_id}/threads/{thread_id}/archive": "post",
+		"/v1/sessions/{session_id}/threads/{thread_id}/events":  "get",
+		"/v1/sessions/{session_id}/threads/{thread_id}/stream":  "get",
+	}
+	for path, method := range operations {
+		item := openAPIMap(t, paths[path], "thread path "+path)
+		operation := openAPIMap(t, item[method], method+" "+path)
+		if operation["operationId"] == "" {
+			t.Fatalf("%s %s has no operationId", method, path)
+		}
+	}
+	threadPath := openAPIMap(t,
+		paths["/v1/sessions/{session_id}/threads/{thread_id}"], "thread get path")
+	threadGet := openAPIMap(t, threadPath["get"], "get thread")
+	threadResponses := openAPIMap(t, threadGet["responses"], "get thread responses")
+	assertOpenAPIRef(t, threadResponses["200"], "#/components/responses/SessionThreadResponse")
+
+	listPath := openAPIMap(t, paths["/v1/sessions/{session_id}/threads"], "thread list path")
+	list := openAPIMap(t, listPath["get"], "list threads")
+	assertOpenAPIParameterNames(t, doc, list["parameters"], []string{"limit", "page"})
+
+	eventsPath := openAPIMap(t,
+		paths["/v1/sessions/{session_id}/threads/{thread_id}/events"], "thread events path")
+	events := openAPIMap(t, eventsPath["get"], "list thread events")
+	assertOpenAPIParameterNames(t, doc, events["parameters"], []string{"limit", "page"})
+
+	streamPath := openAPIMap(t,
+		paths["/v1/sessions/{session_id}/threads/{thread_id}/stream"], "thread stream path")
+	stream := openAPIMap(t, streamPath["get"], "stream thread events")
+	assertOpenAPIParameterNames(t, doc, stream["parameters"], []string{"event_deltas[]"})
+	validateOpenAPIRefs(t, doc, doc)
+}
+
+func TestOpenAPIFullManagedAgentsOperationInventory(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	paths := openAPIMap(t, doc["paths"], "paths")
+	count := 0
+	seen := map[string]bool{}
+	for path, rawPathItem := range paths {
+		if !strings.HasPrefix(path, "/v1/") {
+			continue
+		}
+		pathItem := openAPIMap(t, rawPathItem, "path "+path)
+		for _, method := range []string{"delete", "get", "post"} {
+			rawOperation, ok := pathItem[method]
+			if !ok {
+				continue
+			}
+			operation := openAPIMap(t, rawOperation, method+" "+path)
+			id, _ := operation["operationId"].(string)
+			if id == "" || seen[id] {
+				t.Fatalf("%s %s has missing or duplicate operationId %q", method, path, id)
+			}
+			seen[id] = true
+			count++
+		}
+	}
+	if count != 90 {
+		t.Fatalf("Managed Agents operation count = %d, want 90", count)
+	}
+}
+
 func assertOpenAPIRef(t *testing.T, value any, want string) {
 	t.Helper()
 	ref, _ := openAPIMap(t, value, "reference")["$ref"].(string)
@@ -311,6 +379,9 @@ func TestOpenAPICoreOperationInventory(t *testing.T) {
 			continue
 		}
 		if strings.Contains(path, "/resources") {
+			continue
+		}
+		if strings.Contains(path, "/threads") {
 			continue
 		}
 		pathItem := openAPIMap(t, rawPathItem, "path "+path)

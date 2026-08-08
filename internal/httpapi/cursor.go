@@ -15,6 +15,7 @@ type eventCursor struct {
 	Kind        string `json:"kind"`
 	Order       string `json:"order"`
 	SessionID   string `json:"session_id"`
+	ThreadID    string `json:"thread_id,omitempty"`
 	Filter      string `json:"filter"`
 	ProcessedAt string `json:"processed_at,omitempty"`
 	Unprocessed bool   `json:"unprocessed,omitempty"`
