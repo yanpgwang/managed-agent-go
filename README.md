@@ -89,7 +89,7 @@ make local-down
 | Files | Five-operation Files API with configured object storage; File-backed Session Resources with durable read-only Docker mounts |
 | Skills | Nine custom resource operations, immutable Version pins, and Claude Code-style on-demand instruction loading in Docker Sessions |
 | Memory | Fourteen Store, Memory, and immutable Version operations; durable read/write or read-only Docker mounts at `/mnt/memory` |
-| Vaults | Twelve encrypted lifecycle operations plus ordered Session attachment and runtime MCP bearer injection; OAuth refresh and environment-variable egress remain in progress |
+| Vaults | Thirteen encrypted Vault and Credential operations plus ordered Session attachment, live OAuth validation, and automatic token refresh; environment-variable egress remains in progress |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
@@ -100,8 +100,8 @@ for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-confo
 [Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance),
 [Memory](https://yanpgwang.github.io/managed-agent-go/api/memory-conformance), and
 [Vaults](https://yanpgwang.github.io/managed-agent-go/api/vaults-conformance)
-record operation-level evidence and known limitations. OAuth refresh and
-validation, deployments, multi-agent orchestration, schedules, and webhooks remain
+record operation-level evidence and known limitations. Deployments, multi-agent
+orchestration, schedules, environment-variable secret egress, and webhooks remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
 ## Architecture

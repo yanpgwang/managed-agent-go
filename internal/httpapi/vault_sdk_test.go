@@ -15,6 +15,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
 )
@@ -27,10 +28,10 @@ func TestSDK_VaultAndStaticBearerCredentialLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := app.NewVaultService(
-		repo, keyring, domain.NewSeqIDGen(),
-		domain.FixedClock{T: time.Unix(1000, 0).UTC()},
-	)
+	service := app.NewVaultService(app.VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: time.Unix(1000, 0).UTC()}, MCPValidator: sdkVaultValidator{},
+	})
 	server := httptest.NewServer(NewServer(Deps{Vaults: service}, Config{
 		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
 	}).Handler())
@@ -157,6 +158,17 @@ func TestSDK_VaultAndStaticBearerCredentialLifecycle(t *testing.T) {
 	if publicOAuth.Refresh.ClientID != "client-id" || publicOAuth.Refresh.TokenEndpoint != "https://auth.example/token" {
 		t.Fatalf("OAuth public auth = %s", publicOAuth.RawJSON())
 	}
+	validation, err := client.Beta.Vaults.Credentials.MCPOAuthValidate(
+		ctx,
+		oauth.ID,
+		anthropic.BetaVaultCredentialMCPOAuthValidateParams{VaultID: vault.ID},
+	)
+	if err != nil || validation.Status != anthropic.BetaManagedAgentsCredentialValidationStatusValid ||
+		validation.CredentialID != oauth.ID || validation.VaultID != vault.ID ||
+		!validation.HasRefreshToken || !strings.Contains(validation.RawJSON(), `"mcp_probe":null`) ||
+		!strings.Contains(validation.RawJSON(), `"refresh":null`) {
+		t.Fatalf("OAuth validation = %#v, %v", validation, err)
+	}
 	updatedOAuth, err := client.Beta.Vaults.Credentials.Update(ctx, oauth.ID, anthropic.BetaVaultCredentialUpdateParams{
 		VaultID: vault.ID,
 		Auth: anthropic.BetaVaultCredentialUpdateParamsAuthUnion{
@@ -232,6 +244,16 @@ func TestSDK_VaultAndStaticBearerCredentialLifecycle(t *testing.T) {
 	if err != nil || deletedVault.Type != anthropic.BetaManagedAgentsDeletedVaultTypeVaultDeleted {
 		t.Fatalf("delete vault = %#v, %v", deletedVault, err)
 	}
+}
+
+type sdkVaultValidator struct{}
+
+func (sdkVaultValidator) ValidateBearer(
+	context.Context,
+	string,
+	string,
+) (credentialruntime.MCPProbeResult, error) {
+	return credentialruntime.MCPProbeResult{Verdict: credentialruntime.VerdictValid}, nil
 }
 
 type httpVaultRepository struct {

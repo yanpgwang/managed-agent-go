@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -18,7 +17,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
 
+	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/httpegress"
 )
 
 type Tool struct {
@@ -43,20 +44,8 @@ type Client interface {
 	) (Result, error)
 }
 
-// BearerCredential is a request-scoped runtime projection. Implementations
-// must never persist or log Token.
-type BearerCredential struct {
-	Token        string
-	VaultID      string
-	CredentialID string
-}
-
-// AuthSource resolves the current credential for a Session and MCP URL. It is
-// called for every outgoing MCP request so rotation and archival take effect
-// without restarting the Session.
-type AuthSource interface {
-	ResolveMCPBearer(context.Context, string, string) (BearerCredential, bool, error)
-}
+type BearerCredential = credentialruntime.BearerCredential
+type AuthSource = credentialruntime.AuthSource
 
 // AuthenticatedClient is the optional authenticated extension used by the
 // Temporal runtime. Keeping it separate preserves small test/client adapters.
@@ -101,16 +90,7 @@ type Remote struct {
 
 func NewRemote(httpClient *http.Client) *Remote {
 	if httpClient == nil {
-		transport := http.DefaultTransport.(*http.Transport).Clone()
-		// Tenant-configured MCP endpoints must not inherit a process-wide proxy
-		// that can bypass target-IP validation. A future managed egress proxy is
-		// an explicit connector capability, not an ambient environment setting.
-		transport.Proxy = nil
-		transport.DialContext = dialPublicMCP
-		httpClient = &http.Client{
-			Timeout:   60 * time.Second,
-			Transport: transport,
-		}
+		httpClient = httpegress.NewPublicClient(60 * time.Second)
 	}
 	return &Remote{http: httpClient}
 }
@@ -120,55 +100,7 @@ func dialPublicMCP(
 	network string,
 	address string,
 ) (net.Conn, error) {
-	host, port, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, fmt.Errorf("mcp egress: parse address: %w", err)
-	}
-	var addresses []net.IP
-	if literal := net.ParseIP(host); literal != nil {
-		addresses = []net.IP{literal}
-	} else {
-		resolved, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
-		if err != nil {
-			return nil, fmt.Errorf("mcp egress: resolve %s: %w", host, err)
-		}
-		addresses = resolved
-	}
-
-	dialer := &net.Dialer{Timeout: 15 * time.Second}
-	var lastErr error
-	allowed := false
-	for _, candidate := range addresses {
-		parsed, ok := netipAddr(candidate)
-		if !ok || !domain.MCPAddressAllowed(parsed) {
-			continue
-		}
-		allowed = true
-		connection, err := dialer.DialContext(
-			ctx,
-			network,
-			net.JoinHostPort(parsed.String(), port),
-		)
-		if err == nil {
-			return connection, nil
-		}
-		lastErr = err
-	}
-	if !allowed {
-		return nil, fmt.Errorf(
-			"mcp egress: %s resolves only to non-public addresses",
-			host,
-		)
-	}
-	return nil, fmt.Errorf("mcp egress: dial %s: %w", host, lastErr)
-}
-
-func netipAddr(value net.IP) (address netip.Addr, ok bool) {
-	address, ok = netip.AddrFromSlice(value)
-	if ok {
-		address = address.Unmap()
-	}
-	return address, ok
+	return httpegress.DialPublic(ctx, network, address)
 }
 
 func (r *Remote) Discover(
@@ -304,6 +236,16 @@ func (r *Remote) connect(
 	authSource AuthSource,
 ) (*mcp.ClientSession, error) {
 	httpClient := cloneHTTPClientWithRedirectGuard(r.http)
+	return r.connectWithHTTPClient(ctx, sessionID, server, authSource, httpClient)
+}
+
+func (r *Remote) connectWithHTTPClient(
+	ctx context.Context,
+	sessionID string,
+	server domain.MCPServer,
+	authSource AuthSource,
+	httpClient *http.Client,
+) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(&mcp.Implementation{
 		Name:    "managed-agent-go",
 		Version: "dev",

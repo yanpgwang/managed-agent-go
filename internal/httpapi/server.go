@@ -101,6 +101,7 @@ type VaultService interface {
 	ListCredentials(context.Context, string, app.CredentialListQuery) (app.CredentialListPage, error)
 	ArchiveCredential(context.Context, string, string) (domain.VaultCredential, error)
 	DeleteCredential(context.Context, string, string) error
+	ValidateMCPOAuthCredential(context.Context, string, string) (app.CredentialValidation, error)
 }
 
 type SessionResourceService interface {
@@ -200,6 +201,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("GET /v1/vaults/{vault_id}/credentials/{credential_id}", s.getCredential)
 	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/credentials/{credential_id}", s.updateCredential)
 	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/credentials/{credential_id}/archive", s.archiveCredential)
+	s.mux.HandleFunc("POST /v1/vaults/{vault_id}/credentials/{credential_id}/mcp_oauth_validate", s.validateMCPOAuthCredential)
 	s.mux.HandleFunc("DELETE /v1/vaults/{vault_id}/credentials/{credential_id}", s.deleteCredential)
 
 	s.registerSessionRoutes()

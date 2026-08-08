@@ -11,9 +11,9 @@ import (
 	"syscall"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/live"
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
@@ -281,7 +281,7 @@ func runOrchestrate() {
 	if err != nil {
 		log.Fatalf("orchestrate: Vault runtime keyring: %v", err)
 	}
-	var mcpAuth mcpclient.AuthSource
+	var mcpAuth credentialruntime.AuthSource
 	if vaults == nil {
 		mcpAuth = app.NewUnavailableVaultAuthSource(pg.NewVaultRepository(store))
 		log.Printf("orchestrate: Vault-backed MCP authentication disabled; %s is not configured", vaultKeyringFileEnv)

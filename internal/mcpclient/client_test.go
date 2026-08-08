@@ -1,6 +1,7 @@
 package mcpclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -78,6 +80,108 @@ func TestRemoteClassifiesUnauthorizedAsAuthenticationFailure(t *testing.T) {
 	)
 	if !IsAuthenticationError(err) {
 		t.Fatalf("unauthorized error = %v", err)
+	}
+}
+
+func TestValidateBearerProbesInitializeAndToolsList(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "validation", Version: "1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "ping"}, func(
+		context.Context,
+		*mcp.CallToolRequest,
+		struct{},
+	) (*mcp.CallToolResult, any, error) {
+		return &mcp.CallToolResult{}, nil, nil
+	})
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer validation-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		handler.ServeHTTP(w, request)
+	}))
+	t.Cleanup(httpServer.Close)
+	result, err := NewRemote(httpServer.Client()).ValidateBearer(
+		t.Context(), httpServer.URL, "validation-token",
+	)
+	if err != nil || result.Verdict != credentialruntime.VerdictValid || result.Failure != nil {
+		t.Fatalf("validation result = %#v, %v", result, err)
+	}
+}
+
+func TestValidateBearerCapturesAndScrubsRejectedInitialize(t *testing.T) {
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_token","access_token":"validation-token"}`))
+	}))
+	t.Cleanup(httpServer.Close)
+	result, err := NewRemote(httpServer.Client()).ValidateBearer(
+		t.Context(), httpServer.URL, "validation-token",
+	)
+	if err != nil || result.Verdict != credentialruntime.VerdictInvalid ||
+		result.Failure == nil || result.Failure.Method != "initialize" ||
+		result.Failure.HTTPResponse == nil ||
+		result.Failure.HTTPResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("validation result = %#v, %v", result, err)
+	}
+	if strings.Contains(result.Failure.HTTPResponse.Body, "validation-token") {
+		t.Fatalf("probe response leaked bearer: %s", result.Failure.HTTPResponse.Body)
+	}
+}
+
+func TestValidateBearerDropsTruncatedDiagnosticBody(t *testing.T) {
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte("validation-token" + strings.Repeat("x", maxProbeResponseBody)))
+	}))
+	t.Cleanup(httpServer.Close)
+	result, err := NewRemote(httpServer.Client()).ValidateBearer(
+		t.Context(), httpServer.URL, "validation-token",
+	)
+	if err != nil || result.Failure == nil || result.Failure.HTTPResponse == nil ||
+		!result.Failure.HTTPResponse.BodyTruncated || result.Failure.HTTPResponse.Body != "" {
+		t.Fatalf("validation result = %#v, %v", result, err)
+	}
+}
+
+func TestValidateBearerIdentifiesToolsListFailure(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "validation", Version: "1"}, nil)
+	handler := mcp.NewStreamableHTTPHandler(
+		func(*http.Request) *mcp.Server { return server },
+		&mcp.StreamableHTTPOptions{Stateless: true},
+	)
+	httpServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		raw, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Body = io.NopCloser(bytes.NewReader(raw))
+		var envelope struct {
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(raw, &envelope)
+		if envelope.Method == "tools/list" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"forbidden"}`))
+			return
+		}
+		handler.ServeHTTP(w, request)
+	}))
+	t.Cleanup(httpServer.Close)
+	result, err := NewRemote(httpServer.Client()).ValidateBearer(
+		t.Context(), httpServer.URL, "validation-token",
+	)
+	if err != nil || result.Verdict != credentialruntime.VerdictInvalid ||
+		result.Failure == nil || result.Failure.Method != "tools/list" ||
+		result.Failure.HTTPResponse == nil ||
+		result.Failure.HTTPResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("validation result = %#v, %v", result, err)
 	}
 }
 

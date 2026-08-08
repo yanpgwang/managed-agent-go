@@ -5,8 +5,8 @@ import (
 	"log"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
@@ -123,7 +123,7 @@ type RuntimeConfig struct {
 	RelayConfig      RelayConfig
 	TaskQueue        string
 	Resources        SandboxResourceReconciler
-	MCPAuth          mcpclient.AuthSource
+	MCPAuth          credentialruntime.AuthSource
 	PreviewPublisher PreviewPublisher
 }
 

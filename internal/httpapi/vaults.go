@@ -332,6 +332,31 @@ func (s *Server) deleteCredential(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "type": "vault_credential_deleted"})
 }
 
+func (s *Server) validateMCPOAuthCredential(w http.ResponseWriter, r *http.Request) {
+	if !s.vaultsConfigured(w) {
+		return
+	}
+	result, err := s.deps.Vaults.ValidateMCPOAuthCredential(
+		r.Context(),
+		r.PathValue("vault_id"),
+		r.PathValue("credential_id"),
+	)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"type":              "vault_credential_validation",
+		"credential_id":     result.CredentialID,
+		"vault_id":          result.VaultID,
+		"validated_at":      result.ValidatedAt.Format(timeFmt),
+		"has_refresh_token": result.HasRefreshToken,
+		"status":            result.Status,
+		"mcp_probe":         result.MCPProbe,
+		"refresh":           result.Refresh,
+	})
+}
+
 func parseCredentialAuthCreate(raw json.RawMessage) (app.CredentialAuthCreateInput, error) {
 	var discriminator authTypeRequest
 	if err := json.Unmarshal(raw, &discriminator); err != nil || discriminator.Type == "" {

@@ -1191,6 +1191,26 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/UnsupportedRequest'
+  /v1/vaults/{vault_id}/credentials/{credential_id}/mcp_oauth_validate:
+    parameters:
+      - $ref: '#/components/parameters/ManagedAgentsBeta'
+      - $ref: '#/components/parameters/VaultID'
+      - $ref: '#/components/parameters/VaultCredentialID'
+    post:
+      operationId: validateVaultCredentialMCPOAuth
+      tags: [Vaults]
+      summary: Live-probe and, when needed, refresh an MCP OAuth Credential
+      responses:
+        '200':
+          $ref: '#/components/responses/VaultCredentialValidationResponse'
+        '400':
+          $ref: '#/components/responses/InvalidRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnsupportedRequest'
 
   /healthz:
     get:
@@ -1962,6 +1982,15 @@ components:
         application/json:
           schema:
             $ref: '#/components/schemas/VaultCredentialDeleted'
+    VaultCredentialValidationResponse:
+      description: Live MCP OAuth validation result
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/VaultCredentialValidation'
     InvalidRequest:
       description: Invalid request
       headers:
@@ -4893,3 +4922,55 @@ components:
       properties:
         id: {type: string, pattern: '^vcrd_'}
         type: {type: string, const: vault_credential_deleted}
+    VaultCredentialValidationHTTPResponse:
+      type: object
+      additionalProperties: false
+      required: [body, body_truncated, content_type, status_code]
+      properties:
+        body: {type: string}
+        body_truncated: {type: boolean}
+        content_type: {type: string}
+        status_code: {type: integer}
+    VaultCredentialMCPProbe:
+      type: object
+      additionalProperties: false
+      required: [method, http_response]
+      properties:
+        method: {type: string}
+        http_response:
+          oneOf:
+            - $ref: '#/components/schemas/VaultCredentialValidationHTTPResponse'
+            - type: 'null'
+    VaultCredentialRefreshValidation:
+      type: object
+      additionalProperties: false
+      required: [status, http_response]
+      properties:
+        status:
+          type: string
+          enum: [succeeded, failed, connect_error, no_refresh_token]
+        http_response:
+          oneOf:
+            - $ref: '#/components/schemas/VaultCredentialValidationHTTPResponse'
+            - type: 'null'
+    VaultCredentialValidation:
+      type: object
+      additionalProperties: false
+      required: [type, credential_id, vault_id, validated_at, has_refresh_token, status, mcp_probe, refresh]
+      properties:
+        type: {type: string, const: vault_credential_validation}
+        credential_id: {type: string, pattern: '^vcrd_'}
+        vault_id: {type: string, pattern: '^vlt_'}
+        validated_at: {type: string, format: date-time}
+        has_refresh_token: {type: boolean}
+        status:
+          type: string
+          enum: [valid, invalid, unknown]
+        mcp_probe:
+          oneOf:
+            - $ref: '#/components/schemas/VaultCredentialMCPProbe'
+            - type: 'null'
+        refresh:
+          oneOf:
+            - $ref: '#/components/schemas/VaultCredentialRefreshValidation'
+            - type: 'null'
