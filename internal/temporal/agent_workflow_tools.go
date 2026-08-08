@@ -731,6 +731,7 @@ func resumeWorkflowTurn(
 							"the side effect will not be retried",
 					), nil
 				}
+				turn.output = append(turn.output, executed.Events...)
 				content = executed.Result.Content
 				isError = executed.Result.IsError
 				if activityOutcome.Interrupted {
@@ -1046,6 +1047,7 @@ func executeToolBatch(
 					"the side effect will not be retried",
 			), nil
 		}
+		execution.resultDrafts = append(execution.resultDrafts, executed.Events...)
 		execution.resultDrafts = append(execution.resultDrafts, toolResultDraft(
 			planned.useEventType,
 			planned.publicEventID,

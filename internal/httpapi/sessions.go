@@ -19,9 +19,6 @@ import (
 const vaultIDsUpdateRejectedMessage = "vault_ids is reserved for future use on session update and is " +
 	"rejected by the Managed Agents API; omit it"
 
-const vaultIDsCreateUnsupportedMessage = "session vault_ids are not implemented; " +
-	"the Managed Agents API accepts vault_ids when creating a session"
-
 func (s *Server) registerSessionRoutes() {
 	s.mux.HandleFunc("POST /v1/sessions", s.createSession)
 	s.mux.HandleFunc("GET /v1/sessions", s.listSessions)
@@ -84,7 +81,7 @@ func sessionToJSON(s domain.Session) map[string]any {
 			"input_tokens":            s.Usage.InputTokens,
 			"output_tokens":           s.Usage.OutputTokens,
 		},
-		"vault_ids":     []string{},
+		"vault_ids":     append([]string{}, s.VaultIDs...),
 		"deployment_id": nil,
 	}
 	if s.ArchivedAt != nil {
@@ -222,11 +219,6 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if vaultIDs != nil && len(*vaultIDs) > 0 {
-		writeError(w, domain.Unsupported(vaultIDsCreateUnsupportedMessage))
-		return
-	}
-
 	ref, err := parseAgentRef(in.Agent)
 	if err != nil {
 		writeError(w, err)
@@ -265,11 +257,16 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	if metadata != nil {
 		sessionMetadata = *metadata
 	}
+	var sessionVaultIDs []string
+	if vaultIDs != nil {
+		sessionVaultIDs = *vaultIDs
+	}
 	sess, err := s.deps.Sessions.Create(r.Context(), app.CreateSessionInput{
 		AgentID: ref.ID, AgentVersion: ref.Version, Overrides: ref.Overrides,
 		EnvironmentID: in.EnvironmentID, Title: sessionTitle, Metadata: sessionMetadata,
 		InitialEvents: drafts, Resources: resourceInputs,
 		MemoryResources: memoryResourceInputs,
+		VaultIDs:        sessionVaultIDs,
 	})
 	if err != nil {
 		writeError(w, err)

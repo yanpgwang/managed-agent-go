@@ -85,11 +85,11 @@ make local-down
 | --- | --- |
 | Core resources | Agent, Environment, and Session lifecycle, versioning, filtering, and pagination |
 | Events and runtime | Messages, interrupts, custom-tool results, confirmations, outcomes, retries, SSE, and durable park/resume |
-| Tools | Sandbox built-ins, provider-native Web Search/Fetch, and unauthenticated remote MCP tools |
+| Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools with optional Vault-backed bearer authentication |
 | Files | Five-operation Files API with configured object storage; File-backed Session Resources with durable read-only Docker mounts |
 | Skills | Nine custom resource operations, immutable Version pins, and Claude Code-style on-demand instruction loading in Docker Sessions |
 | Memory | Fourteen Store, Memory, and immutable Version operations; durable read/write or read-only Docker mounts at `/mnt/memory` |
-| Vaults | Twelve Vault and encrypted Credential lifecycle operations; static bearer and MCP OAuth secrets are write-only, while Session/MCP runtime injection remains in progress |
+| Vaults | Twelve encrypted lifecycle operations plus ordered Session attachment and runtime MCP bearer injection; OAuth refresh and environment-variable egress remain in progress |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
@@ -100,8 +100,8 @@ for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-confo
 [Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance),
 [Memory](https://yanpgwang.github.io/managed-agent-go/api/memory-conformance), and
 [Vaults](https://yanpgwang.github.io/managed-agent-go/api/vaults-conformance)
-record operation-level evidence and known limitations. Vault runtime injection,
-deployments, multi-agent orchestration, schedules, and webhooks remain
+record operation-level evidence and known limitations. OAuth refresh and
+validation, deployments, multi-agent orchestration, schedules, and webhooks remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
 ## Architecture

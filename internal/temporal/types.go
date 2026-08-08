@@ -271,6 +271,7 @@ type ExecuteToolInput struct {
 // terminate the turn honestly without scheduling the side effect again.
 type ExecuteToolResult struct {
 	Result     domain.ToolStepResult `json:"result"`
+	Events     []domain.EventDraft   `json:"events,omitempty"`
 	Ambiguous  bool                  `json:"ambiguous"`
 	FatalError string                `json:"fatal_error,omitempty"`
 }

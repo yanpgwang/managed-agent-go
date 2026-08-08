@@ -6,6 +6,7 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
@@ -149,7 +150,26 @@ func NewRuntimeWithResources(
 	previewPublisher ...PreviewPublisher,
 ) *Runtime {
 	return newRuntimeOnTaskQueue(
-		c, store, modelClient, provider, ids, relayCfg, TaskQueue, resources,
+		c, store, modelClient, provider, ids, relayCfg, TaskQueue, resources, nil,
+		previewPublisher...,
+	)
+}
+
+// NewRuntimeWithResourcesAndMCPAuth additionally enables request-time Vault
+// credential resolution for MCP discovery and tool calls.
+func NewRuntimeWithResourcesAndMCPAuth(
+	c client.Client,
+	store *pg.Store,
+	modelClient model.Client,
+	provider sandbox.Provider,
+	ids domain.IDGenerator,
+	relayCfg RelayConfig,
+	resources SandboxResourceReconciler,
+	auth mcpclient.AuthSource,
+	previewPublisher ...PreviewPublisher,
+) *Runtime {
+	return newRuntimeOnTaskQueue(
+		c, store, modelClient, provider, ids, relayCfg, TaskQueue, resources, auth,
 		previewPublisher...,
 	)
 }
@@ -168,7 +188,7 @@ func NewRuntimeWithResourcesOnTaskQueue(
 	previewPublisher ...PreviewPublisher,
 ) *Runtime {
 	return newRuntimeOnTaskQueue(
-		c, store, modelClient, provider, ids, relayCfg, taskQueue, resources,
+		c, store, modelClient, provider, ids, relayCfg, taskQueue, resources, nil,
 		previewPublisher...,
 	)
 }
@@ -188,7 +208,7 @@ func NewRuntimeOnTaskQueue(
 	previewPublisher ...PreviewPublisher,
 ) *Runtime {
 	return newRuntimeOnTaskQueue(
-		c, store, modelClient, provider, ids, relayCfg, taskQueue, nil,
+		c, store, modelClient, provider, ids, relayCfg, taskQueue, nil, nil,
 		previewPublisher...,
 	)
 }
@@ -202,11 +222,13 @@ func newRuntimeOnTaskQueue(
 	relayCfg RelayConfig,
 	taskQueue string,
 	resources SandboxResourceReconciler,
+	auth mcpclient.AuthSource,
 	previewPublisher ...PreviewPublisher,
 ) *Runtime {
 	sandboxes := sandbox.NewSessionManager(provider, store)
 	src := storeSource{store: store} // satisfies both EventSource and JournalStore
 	acts := NewActivities(modelClient, src, src, sandboxes, ids, previewPublisher...)
+	acts.WithMCPAuthSource(auth)
 	skillCapability, hasSkillCapability := provider.(sandbox.SkillBundleProvider)
 	skillResources, hasSkillResources := resources.(SkillRuntimeReconciler)
 	acts.WithSkillRuntimeSupported(

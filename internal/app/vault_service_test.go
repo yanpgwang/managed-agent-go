@@ -61,7 +61,7 @@ func TestVaultServiceSealsCredentialAndReturnsOnlyPublicFields(t *testing.T) {
 	if string(secret.Token) != "plain-secret-token" {
 		t.Fatalf("decrypted token = %q", secret.Token)
 	}
-	if stored.Auth.MCPServerURL != "https://MCP.Example:443" || stored.CredentialKey != "https://mcp.example/" {
+	if stored.Auth.MCPServerURL != "https://MCP.Example:443" || stored.CredentialKey != "https://mcp.example" {
 		t.Fatalf("public URL = %q, credential key = %q", stored.Auth.MCPServerURL, stored.CredentialKey)
 	}
 }
@@ -215,9 +215,18 @@ func TestVaultServiceAppliesNullableCredentialUpdates(t *testing.T) {
 }
 
 func TestCanonicalMCPServerURL(t *testing.T) {
-	canonical, err := CanonicalMCPServerURL("https://EXAMPLE.com:443/mcp?tenant=1")
-	if err != nil || canonical != "https://example.com/mcp?tenant=1" {
-		t.Fatalf("canonical = %q, err = %v", canonical, err)
+	for raw, want := range map[string]string{
+		"https://EXAMPLE.com:443/mcp?tenant=1": "https://example.com/mcp?tenant=1",
+		"https://example.com":                  "https://example.com",
+		"https://example.com/":                 "https://example.com",
+		"https://example.com/mcp///":           "https://example.com/mcp",
+		"https://example.com:8443/mcp/":        "https://example.com:8443/mcp",
+		"https://[2001:db8::1]:443/mcp/":       "https://[2001:db8::1]/mcp",
+	} {
+		canonical, err := CanonicalMCPServerURL(raw)
+		if err != nil || canonical != want {
+			t.Fatalf("CanonicalMCPServerURL(%q) = %q, %v; want %q", raw, canonical, err, want)
+		}
 	}
 	for _, raw := range []string{
 		"http://example.com/mcp", "https://user:pass@example.com/mcp", "https://example.com/mcp#fragment",
@@ -229,9 +238,72 @@ func TestCanonicalMCPServerURL(t *testing.T) {
 	}
 }
 
+func TestVaultRuntimeRejectsExpiredOAuthWithoutRefresh(t *testing.T) {
+	keyring, err := secretcrypto.NewAESGCMKeyring("test", map[string][]byte{
+		"test": bytes.Repeat([]byte{12}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &vaultRepositoryFake{}
+	service := NewVaultService(
+		repo, keyring, domain.NewSeqIDGen(),
+		domain.FixedClock{T: time.Unix(1000, 0).UTC()},
+	)
+	expired := time.Unix(999, 0).UTC()
+	if _, err := service.CreateCredential(context.Background(), "vlt_1", CredentialCreateInput{
+		Auth: CredentialAuthCreateInput{
+			Type: domain.CredentialAuthMCPOAuth, MCPServerURL: "https://mcp.example/mcp",
+			AccessToken: "expired-token", ExpiresAt: &expired,
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, matched, err := service.ResolveMCPBearer(
+		context.Background(), "sesn_1", "https://mcp.example/mcp/",
+	)
+	if err == nil || matched || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("expired OAuth resolution matched=%v, err=%v", matched, err)
+	}
+}
+
+func TestUnavailableVaultAuthFailsOnlyForMatchingCredential(t *testing.T) {
+	repo := &vaultRepositoryFake{credentials: []domain.VaultCredential{{
+		ID: "vcrd_1", VaultID: "vlt_1",
+		Auth: domain.CredentialAuth{
+			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://secure.example/mcp/",
+		},
+	}}}
+	source := NewUnavailableVaultAuthSource(repo)
+	if _, matched, err := source.ResolveMCPBearer(
+		context.Background(), "sesn_1", "https://unrelated.example/mcp",
+	); err != nil || matched {
+		t.Fatalf("unrelated endpoint matched=%v, err=%v", matched, err)
+	}
+	if _, matched, err := source.ResolveMCPBearer(
+		context.Background(), "sesn_1", "https://secure.example/mcp",
+	); err == nil || matched || !strings.Contains(err.Error(), "keyring") {
+		t.Fatalf("matching endpoint matched=%v, err=%v", matched, err)
+	}
+}
+
 type vaultRepositoryFake struct {
 	credential            domain.VaultCredential
+	credentials           []domain.VaultCredential
 	createCredentialCalls int
+}
+
+func (r *vaultRepositoryFake) ResolveSessionCredentials(
+	context.Context,
+	string,
+) ([]domain.VaultCredential, error) {
+	if len(r.credentials) > 0 {
+		return append([]domain.VaultCredential(nil), r.credentials...), nil
+	}
+	if r.credential.ID == "" {
+		return nil, nil
+	}
+	return []domain.VaultCredential{r.credential}, nil
 }
 
 func (r *vaultRepositoryFake) CreateVault(_ context.Context, item domain.Vault) (domain.Vault, error) {

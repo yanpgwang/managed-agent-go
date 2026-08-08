@@ -44,6 +44,9 @@ func (f *fakeMCPClient) Call(
 	f.server = server
 	f.name = name
 	f.input = input
+	if f.err != nil {
+		return mcpclient.Result{}, f.err
+	}
 	return f.result, nil
 }
 
@@ -169,6 +172,41 @@ func TestPrepareTurn_MCPDiscoveryFailureIsRecoverable(t *testing.T) {
 	errorPayload := prepared.PreludeEvents[0].Payload["error"].(map[string]any)
 	require.Equal(t, "mcp_connection_failed_error", errorPayload["type"])
 	require.Equal(t, "github", errorPayload["mcp_server_name"])
+	require.Equal(t, "exhausted", errorPayload["retry_status"].(map[string]any)["type"])
+}
+
+func TestPrepareTurn_MCPAuthenticationFailureUsesDedicatedEvent(t *testing.T) {
+	source := &mcpPrepareSource{
+		fakeSource: newFakeSource([]domain.Event{{
+			ID: "sevt_user", Sequence: 1, Type: domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{map[string]any{
+				"type": "text", "text": "use secure MCP",
+			}}},
+		}}),
+		session: domain.Session{
+			ID: "sess_auth", Status: domain.StatusRunning,
+			AgentSnapshot: domain.Agent{
+				Model: domain.Model{ID: "model"},
+				MCPServers: []any{map[string]any{
+					"type": "url", "name": "secure", "url": "https://mcp.example.com",
+				}},
+				Tools: []any{map[string]any{
+					"type": "mcp_toolset", "mcp_server_name": "secure",
+				}},
+			},
+		},
+	}
+	activities := NewActivities(nil, source, nil, nil, &testIDGen{}).
+		WithMCPClient(&fakeMCPClient{err: &mcpclient.AuthError{
+			ServerName: "secure", Reason: "401 Unauthorized",
+		}})
+	prepared, err := activities.PrepareTurn(context.Background(), PrepareTurnInput{
+		SessionID: "sess_auth", TriggerEventID: "sevt_user",
+	})
+	require.NoError(t, err)
+	require.Len(t, prepared.PreludeEvents, 1)
+	errorPayload := prepared.PreludeEvents[0].Payload["error"].(map[string]any)
+	require.Equal(t, "mcp_authentication_failed_error", errorPayload["type"])
 	require.Equal(t, "exhausted", errorPayload["retry_status"].(map[string]any)["type"])
 }
 
@@ -489,4 +527,48 @@ func TestExecuteTool_MCPJournalsRawAndProjectsModelContent(t *testing.T) {
 		result.Result.Content[0].(map[string]any)["text"],
 		"private",
 	)
+}
+
+func TestExecuteTool_MCPAuthenticationFailureIsDurableAndNonAmbiguous(t *testing.T) {
+	_, box, err := sandbox.NewLocalProvider().Create(
+		context.Background(), t.Name(), sandbox.Spec{},
+	)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	journal := &memoryMCPJournal{}
+	activities := NewActivities(
+		nil,
+		&mcpPrepareSource{session: domain.Session{ID: "sess_auth"}},
+		journal,
+		&fixedSandboxLease{box: box},
+		&testIDGen{},
+	).WithMCPClient(&fakeMCPClient{err: &mcpclient.AuthError{
+		ServerName: "secure", Reason: "401 Unauthorized",
+	}})
+	result, err := activities.ExecuteTool(context.Background(), ExecuteToolInput{
+		SessionID: "sess_auth", TriggerEventID: "sevt_trigger", AttemptID: "ratm_auth",
+		ToolUseEventID: "sevt_tool", ToolStepID: "tstep_auth", Ordinal: 0,
+		ToolName: "mcp__secure__ping", ToolKind: TurnToolMCP,
+		MCPServer:   domain.MCPServer{Name: "secure", URL: "https://mcp.example.com"},
+		MCPToolName: "ping", Input: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.False(t, result.Ambiguous)
+	require.True(t, result.Result.IsError)
+	require.Equal(t, result.Result.Content, journal.result.Content)
+	require.Equal(t, result.Result.IsError, journal.result.IsError)
+	require.Len(t, journal.result.Events, 1)
+	require.Len(t, result.Events, 1)
+	errorPayload := result.Events[0].Payload["error"].(map[string]any)
+	require.Equal(t, "mcp_authentication_failed_error", errorPayload["type"])
+	recovered, err := activities.ExecuteTool(context.Background(), ExecuteToolInput{
+		SessionID: "sess_auth", TriggerEventID: "sevt_trigger", AttemptID: "ratm_auth",
+		ToolUseEventID: "sevt_tool", ToolStepID: "tstep_auth", Ordinal: 0,
+		ToolName: "mcp__secure__ping", ToolKind: TurnToolMCP,
+		MCPServer:   domain.MCPServer{Name: "secure", URL: "https://mcp.example.com"},
+		MCPToolName: "ping", Input: map[string]any{},
+	})
+	require.NoError(t, err)
+	require.Len(t, recovered.Events, 1)
+	require.True(t, recovered.Result.IsError)
 }

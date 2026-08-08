@@ -851,6 +851,24 @@ func TestSDK_SessionUpdateRejectsVaultIDs(t *testing.T) {
 	assertAPIStatus(t, err, 422)
 }
 
+func TestSDK_SessionCreateAcceptsOrderedVaultIDs(t *testing.T) {
+	client, ts := sdkClientAndServer(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "opus", "sys")
+	environment := mustEnv(t, ts.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: environment,
+		VaultIDs:      []string{"vlt_first", "vlt_second"},
+	})
+	if err != nil {
+		t.Fatalf("create Session with Vaults: %v", err)
+	}
+	if len(session.VaultIDs) != 2 || session.VaultIDs[0] != "vlt_first" || session.VaultIDs[1] != "vlt_second" {
+		t.Fatalf("Session Vault order = %#v", session.VaultIDs)
+	}
+}
+
 func TestSDK_EventSendAndList(t *testing.T) {
 	client, ts := sdkClientAndServer(t)
 	ctx := context.Background()

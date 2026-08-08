@@ -62,6 +62,10 @@ type ToolStepResult struct {
 	// matching Claude Code's context lifecycle without exposing it as a public
 	// configurable tool.
 	InjectedContent []ContentBlock `json:"injected_content,omitempty"`
+	// Events are server-side companion events that must commit with a durable
+	// tool result and survive a lost Activity acknowledgement. They are removed
+	// from the model-facing result projection.
+	Events []EventDraft `json:"events,omitempty"`
 	// Raw retains a bounded executor-native result for diagnostics/UI without
 	// placing it in model context. Large raw results are stored in the Session
 	// sandbox and referenced by RawPath instead.

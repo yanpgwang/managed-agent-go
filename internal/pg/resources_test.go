@@ -20,6 +20,7 @@ func TestPostgresResourcesAndSessionDependencies(t *testing.T) {
 	environmentRepo := NewEnvironmentRepository(store)
 	agents := app.NewAgentService(agentRepo, ids, clock)
 	environments := app.NewEnvironmentService(environmentRepo, ids, clock)
+	vaultRepo := NewVaultRepository(store)
 
 	agent, err := agents.Create(ctx, domain.Agent{
 		Name: "coder", Model: domain.Model{ID: "claude-test"},
@@ -69,6 +70,13 @@ func TestPostgresResourcesAndSessionDependencies(t *testing.T) {
 		t.Fatalf("updated environment = %#v", updatedEnvironment)
 	}
 	now := clock.Now().UTC()
+	vault, err := vaultRepo.CreateVault(ctx, domain.Vault{
+		ID: "vlt_session", DisplayName: "Session user", Metadata: map[string]string{},
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("create vault: %v", err)
+	}
 	session := domain.Session{
 		ID:            "sesn_api",
 		AgentID:       agent.ID,
@@ -79,9 +87,34 @@ func TestPostgresResourcesAndSessionDependencies(t *testing.T) {
 		Metadata:      map[string]any{},
 		CreatedAt:     now,
 		UpdatedAt:     now,
+		VaultIDs:      []string{vault.ID},
 	}
 	if _, err := store.CreateAPISession(ctx, session, nil); err != nil {
 		t.Fatalf("create checked session: %v", err)
+	}
+	reloaded, err := store.GetSession(ctx, session.ID)
+	if err != nil || len(reloaded.VaultIDs) != 1 || reloaded.VaultIDs[0] != vault.ID {
+		t.Fatalf("persisted session Vaults = %#v, %v", reloaded.VaultIDs, err)
+	}
+	var storedVaultID string
+	if err := store.pool.QueryRow(ctx, `
+SELECT vault_id FROM session_vaults WHERE session_id = $1 AND position = 0`,
+		session.ID,
+	).Scan(&storedVaultID); err != nil || storedVaultID != vault.ID {
+		t.Fatalf("session_vaults snapshot = %q, %v", storedVaultID, err)
+	}
+	if err := vaultRepo.DeleteVault(ctx, vault.ID); err != nil {
+		t.Fatalf("delete referenced Vault: %v", err)
+	}
+	if err := store.pool.QueryRow(ctx, `
+SELECT vault_id FROM session_vaults WHERE session_id = $1`, session.ID,
+	).Scan(&storedVaultID); err != nil || storedVaultID != vault.ID {
+		t.Fatalf("deleted Vault erased Session audit reference: %q, %v", storedVaultID, err)
+	}
+	missingVaultSession := session
+	missingVaultSession.ID = "sesn_missing_vault"
+	if _, err := store.CreateAPISession(ctx, missingVaultSession, nil); err == nil {
+		t.Fatal("session creation with a deleted Vault succeeded")
 	}
 	if err := environments.Delete(ctx, environment.ID); err == nil {
 		t.Fatal("delete referenced environment succeeded; want conflict")

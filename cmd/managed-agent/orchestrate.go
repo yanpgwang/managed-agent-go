@@ -13,6 +13,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/live"
+	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
@@ -276,6 +277,18 @@ func runOrchestrate() {
 
 	ids := domain.NewRandomIDGen()
 	store := pg.NewStore(pool, ids, realClock{})
+	vaults, err := resolveVaultService(store, ids, realClock{})
+	if err != nil {
+		log.Fatalf("orchestrate: Vault runtime keyring: %v", err)
+	}
+	var mcpAuth mcpclient.AuthSource
+	if vaults == nil {
+		mcpAuth = app.NewUnavailableVaultAuthSource(pg.NewVaultRepository(store))
+		log.Printf("orchestrate: Vault-backed MCP authentication disabled; %s is not configured", vaultKeyringFileEnv)
+	} else {
+		mcpAuth = vaults
+		log.Printf("orchestrate: Vault-backed MCP authentication enabled")
+	}
 	memory := app.NewMemoryService(pg.NewMemoryRepository(store), ids, realClock{})
 	memoryMaterializer := app.NewSessionMemoryMaterializer(store, memory)
 	broker, err := live.Connect(os.Getenv(envNATSURL))
@@ -338,7 +351,7 @@ func runOrchestrate() {
 	defer client.Close()
 	log.Printf("orchestrate: temporal connected")
 
-	runtime := temporalpkg.NewRuntimeWithResources(
+	runtime := temporalpkg.NewRuntimeWithResourcesAndMCPAuth(
 		client,
 		store,
 		modelClient,
@@ -346,6 +359,7 @@ func runOrchestrate() {
 		ids,
 		temporalpkg.RelayConfig{},
 		resourceReconciler,
+		mcpAuth,
 		broker,
 	)
 

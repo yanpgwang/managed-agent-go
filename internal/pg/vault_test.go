@@ -1,14 +1,105 @@
 package pg
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
 )
+
+func TestVaultRuntimeResolutionUsesSessionOrderAndCurrentCredentialState(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	repo := NewVaultRepository(store)
+	now := time.Unix(1000, 0).UTC()
+	for _, id := range []string{"vlt_first", "vlt_second"} {
+		if _, err := repo.CreateVault(ctx, domain.Vault{
+			ID: id, DisplayName: id, Metadata: map[string]string{},
+			CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keyring, err := secretcrypto.NewAESGCMKeyring("test", map[string][]byte{
+		"test": bytes.Repeat([]byte{31}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := app.NewVaultService(repo, keyring, domain.NewSeqIDGen(), domain.FixedClock{T: now})
+	first, err := service.CreateCredential(ctx, "vlt_first", app.CredentialCreateInput{
+		Auth: app.CredentialAuthCreateInput{
+			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://MCP.example/mcp/", Token: "first-token",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CreateCredential(ctx, "vlt_second", app.CredentialCreateInput{
+		Auth: app.CredentialAuthCreateInput{
+			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://mcp.example/mcp", Token: "second-token",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	session := newSession("sesn_vault_runtime")
+	session.VaultIDs = []string{"vlt_first", "vlt_second"}
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatal(err)
+	}
+	resolved, matched, err := service.ResolveMCPBearer(ctx, session.ID, "https://mcp.example:443/mcp///")
+	if err != nil || !matched || resolved.Token != "first-token" || resolved.VaultID != "vlt_first" {
+		t.Fatalf("first resolution = %#v, matched=%v, err=%v", resolved, matched, err)
+	}
+	if _, err := service.ArchiveCredential(ctx, "vlt_first", first.ID); err != nil {
+		t.Fatal(err)
+	}
+	resolved, matched, err = service.ResolveMCPBearer(ctx, session.ID, "https://mcp.example/mcp")
+	if err != nil || !matched || resolved.Token != "second-token" || resolved.VaultID != "vlt_second" {
+		t.Fatalf("rotated resolution = %#v, matched=%v, err=%v", resolved, matched, err)
+	}
+}
+
+func TestVaultRepositoryRejectsLegacyCanonicalURLCollision(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	repo := NewVaultRepository(store)
+	now := time.Unix(1000, 0).UTC()
+	if _, err := repo.CreateVault(ctx, domain.Vault{
+		ID: "vlt_collision", DisplayName: "Collision", Metadata: map[string]string{},
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	legacy := testStoredCredential("vlt_collision", "vcrd_legacy")
+	legacy.Auth.MCPServerURL = "https://mcp.example/mcp/"
+	legacy.CredentialKey = legacy.Auth.MCPServerURL
+	if _, err := repo.CreateCredential(ctx, legacy, 20); err != nil {
+		t.Fatal(err)
+	}
+	keyring, err := secretcrypto.NewAESGCMKeyring("test", map[string][]byte{
+		"test": bytes.Repeat([]byte{32}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := app.NewVaultService(repo, keyring, domain.NewSeqIDGen(), domain.FixedClock{T: now})
+	_, err = service.CreateCredential(ctx, "vlt_collision", app.CredentialCreateInput{
+		Auth: app.CredentialAuthCreateInput{
+			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://mcp.example/mcp", Token: "new",
+		},
+	})
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindConflict {
+		t.Fatalf("canonical collision error = %v", err)
+	}
+}
 
 func TestVaultRepositoryLifecycleAndCursorPagination(t *testing.T) {
 	store := testStore(t)

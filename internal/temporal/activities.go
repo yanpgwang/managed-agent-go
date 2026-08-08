@@ -290,6 +290,7 @@ type Activities struct {
 	ids                   domain.IDGenerator
 	previews              PreviewPublisher
 	mcp                   mcpclient.Client
+	mcpAuth               mcpclient.AuthSource
 	contextTokenBudget    int
 	skillRuntimeSupported bool
 }
@@ -324,6 +325,11 @@ func (a *Activities) WithContextTokenBudget(tokens int) *Activities {
 // Go SDK-backed client by default; tests can inject a deterministic fake.
 func (a *Activities) WithMCPClient(client mcpclient.Client) *Activities {
 	a.mcp = client
+	return a
+}
+
+func (a *Activities) WithMCPAuthSource(source mcpclient.AuthSource) *Activities {
+	a.mcpAuth = source
 	return a
 }
 
@@ -878,11 +884,15 @@ func (a *Activities) addMCPTools(
 				return nil, err
 			}
 			if !found {
-				discovered, err = a.mcp.Discover(ctx, server)
+				discovered, err = a.discoverMCP(ctx, sessionID, server)
 				if err != nil {
+					failure := mcpConnectionFailureEvent(server)
+					if mcpclient.IsAuthenticationError(err) {
+						failure = mcpAuthenticationFailureEvent(server)
+					}
 					setupEvents = append(
 						setupEvents,
-						mcpConnectionFailureEvent(server),
+						failure,
 					)
 					continue
 				}
@@ -897,11 +907,15 @@ func (a *Activities) addMCPTools(
 				}
 			}
 		} else {
-			discovered, err = a.mcp.Discover(ctx, server)
+			discovered, err = a.discoverMCP(ctx, sessionID, server)
 			if err != nil {
+				failure := mcpConnectionFailureEvent(server)
+				if mcpclient.IsAuthenticationError(err) {
+					failure = mcpAuthenticationFailureEvent(server)
+				}
 				setupEvents = append(
 					setupEvents,
-					mcpConnectionFailureEvent(server),
+					failure,
 				)
 				continue
 			}
@@ -955,6 +969,17 @@ func (a *Activities) addMCPTools(
 	return setupEvents, nil
 }
 
+func (a *Activities) discoverMCP(
+	ctx context.Context,
+	sessionID string,
+	server domain.MCPServer,
+) ([]mcpclient.Tool, error) {
+	if authenticated, ok := a.mcp.(mcpclient.AuthenticatedClient); ok {
+		return authenticated.DiscoverAuthenticated(ctx, sessionID, server, a.mcpAuth)
+	}
+	return a.mcp.Discover(ctx, server)
+}
+
 func mcpConnectionFailureEvent(server domain.MCPServer) domain.EventDraft {
 	return domain.EventDraft{
 		Type: domain.EvSessionError,
@@ -962,6 +987,22 @@ func mcpConnectionFailureEvent(server domain.MCPServer) domain.EventDraft {
 			"error": map[string]any{
 				"type":            "mcp_connection_failed_error",
 				"message":         "Could not connect to MCP server " + server.Name + ".",
+				"mcp_server_name": server.Name,
+				"retry_status": map[string]any{
+					"type": "exhausted",
+				},
+			},
+		},
+	}
+}
+
+func mcpAuthenticationFailureEvent(server domain.MCPServer) domain.EventDraft {
+	return domain.EventDraft{
+		Type: domain.EvSessionError,
+		Payload: map[string]any{
+			"error": map[string]any{
+				"type":            "mcp_authentication_failed_error",
+				"message":         "Authentication failed for MCP server " + server.Name + ".",
 				"mcp_server_name": server.Name,
 				"retry_status": map[string]any{
 					"type": "exhausted",
@@ -1491,6 +1532,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		if step.Result == nil {
 			return ExecuteToolResult{}, fmt.Errorf("temporal: completed tool step %s has no result", step.ID)
 		}
+		out.Events = append([]domain.EventDraft(nil), step.Result.Events...)
 		out.Result = workflowToolResult(*step.Result)
 		return out, nil
 	case domain.ToolStepAmbiguous:
@@ -1663,35 +1705,50 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		// transport failure after this point may have happened after the remote
 		// server executed the tool, so the Activity error intentionally becomes
 		// ambiguous on retry rather than blindly calling the MCP tool again.
-		called, err := a.mcp.Call(
-			ctx,
-			in.MCPServer,
-			in.MCPToolName,
-			in.Input,
-		)
+		var called mcpclient.Result
+		var err error
+		if authenticated, ok := a.mcp.(mcpclient.AuthenticatedClient); ok {
+			called, err = authenticated.CallAuthenticated(
+				ctx, in.SessionID, in.MCPServer, in.MCPToolName, in.Input, a.mcpAuth,
+			)
+		} else {
+			called, err = a.mcp.Call(ctx, in.MCPServer, in.MCPToolName, in.Input)
+		}
 		if err != nil {
-			return ExecuteToolResult{}, err
-		}
-		executed, raw, rawPath, projectErr := tools.ProjectMCPResult(
-			context.WithoutCancel(ctx),
-			box,
-			in.ToolUseEventID,
-			called,
-		)
-		if projectErr != nil {
-			executed = tools.Result{
-				Content: []any{map[string]any{
-					"type": "text",
-					"text": projectErr.Error(),
-				}},
-				IsError: true,
+			if mcpclient.IsAuthenticationError(err) {
+				out.Events = append(out.Events, mcpAuthenticationFailureEvent(in.MCPServer))
+				out.Result = domain.ToolStepResult{
+					Content: []any{map[string]any{
+						"type": "text",
+						"text": "Authentication failed for MCP server " + in.MCPServer.Name + ".",
+					}},
+					IsError: true,
+				}
+			} else {
+				return ExecuteToolResult{}, err
 			}
-		}
-		out.Result = domain.ToolStepResult{
-			Content: executed.Content,
-			IsError: executed.IsError,
-			Raw:     raw,
-			RawPath: rawPath,
+		} else {
+			executed, raw, rawPath, projectErr := tools.ProjectMCPResult(
+				context.WithoutCancel(ctx),
+				box,
+				in.ToolUseEventID,
+				called,
+			)
+			if projectErr != nil {
+				executed = tools.Result{
+					Content: []any{map[string]any{
+						"type": "text",
+						"text": projectErr.Error(),
+					}},
+					IsError: true,
+				}
+			}
+			out.Result = domain.ToolStepResult{
+				Content: executed.Content,
+				IsError: executed.IsError,
+				Raw:     raw,
+				RawPath: rawPath,
+			}
 		}
 	} else {
 		executed := executor(ctx, box, in.Input)
@@ -1726,6 +1783,9 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 			})
 			out.Result.IsError = true
 		}
+	}
+	if len(out.Events) > 0 {
+		out.Result.Events = append([]domain.EventDraft(nil), out.Events...)
 	}
 	if err := completeToolResultDurably(ctx, a.journal, step.ID, out.Result); err != nil {
 		return ExecuteToolResult{}, err
@@ -1948,6 +2008,7 @@ func environmentPackageList(raw any, manager string) ([]string, error) {
 func workflowToolResult(result domain.ToolStepResult) domain.ToolStepResult {
 	result.Raw = nil
 	result.RawPath = ""
+	result.Events = nil
 	return result
 }
 

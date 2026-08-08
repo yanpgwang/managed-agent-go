@@ -205,7 +205,7 @@ func TestUpdateSession_RejectsVaultIDs(t *testing.T) {
 	}
 }
 
-func TestCreateSession_RejectsVaultIDsAsMangoGap(t *testing.T) {
+func TestCreateSession_AcceptsAndEchoesVaultIDs(t *testing.T) {
 	h := NewTestHandler(t)
 	agent := createID(t, h, "POST", "/v1/agents",
 		`{"name":"a","model":"claude-opus-4-8"}`)
@@ -213,13 +213,13 @@ func TestCreateSession_RejectsVaultIDsAsMangoGap(t *testing.T) {
 		`{"name":"e","config":{"type":"cloud"}}`)
 	rec := do(h, "POST", "/v1/sessions", `{"agent":"`+agent+`",`+
 		`"environment_id":"`+environment+`","vault_ids":["vlt_1"]}`)
-	if rec.Code != http.StatusUnprocessableEntity {
-		t.Fatalf("vault_ids -> %d, want 422: %s", rec.Code, rec.Body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("vault_ids -> %d, want 200: %s", rec.Code, rec.Body)
 	}
-	envelope := decodeBody(t, rec.Body.Bytes())
-	failure, _ := envelope["error"].(map[string]any)
-	if message, _ := failure["message"].(string); message != vaultIDsCreateUnsupportedMessage {
-		t.Fatalf("vault_ids message = %q", message)
+	response := decodeBody(t, rec.Body.Bytes())
+	vaultIDs, _ := response["vault_ids"].([]any)
+	if len(vaultIDs) != 1 || vaultIDs[0] != "vlt_1" {
+		t.Fatalf("vault_ids = %#v", response["vault_ids"])
 	}
 }
 
