@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
 )
@@ -21,7 +23,10 @@ func TestVaultServiceSealsCredentialAndReturnsOnlyPublicFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := &vaultRepositoryFake{}
-	service := NewVaultService(repo, keyring, domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1000, 0)})
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: time.Unix(1000, 0)},
+	})
 	result, err := service.CreateCredential(context.Background(), "vlt_1", CredentialCreateInput{
 		Auth: CredentialAuthCreateInput{
 			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://MCP.Example:443",
@@ -74,7 +79,10 @@ func TestVaultServiceDetectsPublicAuthTampering(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := &vaultRepositoryFake{}
-	service := NewVaultService(repo, keyring, domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1000, 0)})
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: time.Unix(1000, 0)},
+	})
 	created, err := service.CreateCredential(context.Background(), "vlt_1", CredentialCreateInput{
 		Auth: CredentialAuthCreateInput{
 			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://mcp.example/", Token: "token",
@@ -104,7 +112,10 @@ func TestVaultServiceRejectsEnvironmentVariableWithoutSecretEgress(t *testing.T)
 		t.Fatal(err)
 	}
 	repo := &vaultRepositoryFake{}
-	service := NewVaultService(repo, keyring, domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1000, 0)})
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: time.Unix(1000, 0)},
+	})
 	_, err = service.CreateCredential(context.Background(), "vlt_1", CredentialCreateInput{
 		Auth: CredentialAuthCreateInput{Type: "environment_variable", MCPServerURL: "https://mcp.example/"},
 	})
@@ -165,7 +176,10 @@ func TestVaultServiceAppliesNullableCredentialUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := &vaultRepositoryFake{}
-	service := NewVaultService(repo, keyring, domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1000, 0)})
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: time.Unix(1000, 0)},
+	})
 	displayName := "OAuth credential"
 	expiresAt := time.Unix(2000, 0).UTC()
 	clientSecret := "client-secret"
@@ -246,10 +260,10 @@ func TestVaultRuntimeRejectsExpiredOAuthWithoutRefresh(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo := &vaultRepositoryFake{}
-	service := NewVaultService(
-		repo, keyring, domain.NewSeqIDGen(),
-		domain.FixedClock{T: time.Unix(1000, 0).UTC()},
-	)
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: time.Unix(1000, 0).UTC()},
+	})
 	expired := time.Unix(999, 0).UTC()
 	if _, err := service.CreateCredential(context.Background(), "vlt_1", CredentialCreateInput{
 		Auth: CredentialAuthCreateInput{
@@ -264,6 +278,218 @@ func TestVaultRuntimeRejectsExpiredOAuthWithoutRefresh(t *testing.T) {
 	)
 	if err == nil || matched || !strings.Contains(err.Error(), "expired") {
 		t.Fatalf("expired OAuth resolution matched=%v, err=%v", matched, err)
+	}
+}
+
+func TestVaultRuntimeRefreshesExpiredOAuthAndPersistsRotation(t *testing.T) {
+	clock := domain.FixedClock{T: time.Unix(1000, 0).UTC()}
+	keyring, err := secretcrypto.NewAESGCMKeyring("test", map[string][]byte{
+		"test": bytes.Repeat([]byte{13}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedRefresh := "rotated-refresh"
+	expiresIn := time.Hour
+	refresher := &oauthRefresherFake{result: credentialruntime.OAuthRefreshResult{
+		Status: credentialruntime.OAuthRefreshSucceeded, Verdict: credentialruntime.VerdictValid,
+		AccessToken: "fresh-access", RefreshToken: &rotatedRefresh, ExpiresIn: &expiresIn,
+	}}
+	repo := &vaultRepositoryFake{}
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(), Clock: clock,
+		OAuthRefresher: refresher,
+	})
+	expired := time.Unix(999, 0).UTC()
+	clientSecret := "client-secret"
+	if _, err := service.CreateCredential(t.Context(), "vlt_1", CredentialCreateInput{
+		Auth: CredentialAuthCreateInput{
+			Type: domain.CredentialAuthMCPOAuth, MCPServerURL: "https://mcp.example/mcp",
+			AccessToken: "expired-access", ExpiresAt: &expired,
+			Refresh: &OAuthRefreshCreateInput{
+				ClientID: "client", RefreshToken: "original-refresh",
+				TokenEndpoint:     "https://auth.example/token",
+				TokenEndpointAuth: "client_secret_post", ClientSecret: &clientSecret,
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resolved, matched, err := service.ResolveMCPBearer(
+		t.Context(), "sesn_1", "https://mcp.example/mcp",
+	)
+	if err != nil || !matched || resolved.Token != "fresh-access" {
+		t.Fatalf("refreshed resolution = %#v, matched=%v, err=%v", resolved, matched, err)
+	}
+	if refresher.calls != 1 || refresher.request.RefreshToken != "original-refresh" ||
+		refresher.request.ClientSecret != clientSecret {
+		t.Fatalf("refresh request = %#v, calls=%d", refresher.request, refresher.calls)
+	}
+	if repo.credential.Version != 2 || repo.credential.Auth.ExpiresAt == nil ||
+		!repo.credential.Auth.ExpiresAt.Equal(clock.T.Add(time.Hour)) {
+		t.Fatalf("persisted credential = %#v", repo.credential)
+	}
+	secret, err := service.openCredentialSecret(repo.credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secret.zero()
+	if string(secret.AccessToken) != "fresh-access" || string(secret.RefreshToken) != rotatedRefresh {
+		t.Fatalf("persisted OAuth rotation = %#v", secret)
+	}
+}
+
+func TestValidateMCPOAuthCredentialRefreshesRejectedTokenAndReprobes(t *testing.T) {
+	clock := domain.FixedClock{T: time.Unix(1000, 0).UTC()}
+	keyring, err := secretcrypto.NewAESGCMKeyring("test", map[string][]byte{
+		"test": bytes.Repeat([]byte{14}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresIn := time.Hour
+	refresher := &oauthRefresherFake{result: credentialruntime.OAuthRefreshResult{
+		Status: credentialruntime.OAuthRefreshSucceeded, Verdict: credentialruntime.VerdictValid,
+		AccessToken: "fresh-access", ExpiresIn: &expiresIn,
+		HTTPResponse: &credentialruntime.HTTPResponse{StatusCode: http.StatusOK},
+	}}
+	validator := &mcpValidatorFake{results: []credentialruntime.MCPProbeResult{
+		{
+			Verdict: credentialruntime.VerdictInvalid,
+			Failure: &credentialruntime.MCPProbeFailure{
+				Method:       "initialize",
+				HTTPResponse: &credentialruntime.HTTPResponse{StatusCode: http.StatusUnauthorized},
+			},
+		},
+		{Verdict: credentialruntime.VerdictValid},
+	}}
+	repo := &vaultRepositoryFake{}
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(), Clock: clock,
+		OAuthRefresher: refresher, MCPValidator: validator,
+	})
+	if _, err := service.CreateCredential(t.Context(), "vlt_1", CredentialCreateInput{
+		Auth: CredentialAuthCreateInput{
+			Type: domain.CredentialAuthMCPOAuth, MCPServerURL: "https://mcp.example/mcp",
+			AccessToken: "rejected-access", Refresh: &OAuthRefreshCreateInput{
+				ClientID: "client", RefreshToken: "refresh",
+				TokenEndpoint: "https://auth.example/token", TokenEndpointAuth: "none",
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ValidateMCPOAuthCredential(t.Context(), "vlt_1", repo.credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != credentialruntime.VerdictValid || !result.HasRefreshToken ||
+		result.MCPProbe != nil || result.Refresh == nil ||
+		result.Refresh.Status != credentialruntime.OAuthRefreshSucceeded {
+		t.Fatalf("validation result = %#v", result)
+	}
+	if len(validator.tokens) != 2 || validator.tokens[0] != "rejected-access" ||
+		validator.tokens[1] != "fresh-access" {
+		t.Fatalf("probe tokens = %#v", validator.tokens)
+	}
+}
+
+func TestValidateMCPOAuthCredentialClassifiesMissingRefresh(t *testing.T) {
+	clock := domain.FixedClock{T: time.Unix(1000, 0).UTC()}
+	keyring, err := secretcrypto.NewAESGCMKeyring("test", map[string][]byte{
+		"test": bytes.Repeat([]byte{15}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validator := &mcpValidatorFake{results: []credentialruntime.MCPProbeResult{{
+		Verdict: credentialruntime.VerdictInvalid,
+		Failure: &credentialruntime.MCPProbeFailure{
+			Method:       "initialize",
+			HTTPResponse: &credentialruntime.HTTPResponse{StatusCode: http.StatusUnauthorized},
+		},
+	}}}
+	repo := &vaultRepositoryFake{}
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(), Clock: clock,
+		MCPValidator: validator,
+	})
+	if _, err := service.CreateCredential(t.Context(), "vlt_1", CredentialCreateInput{
+		Auth: CredentialAuthCreateInput{
+			Type: domain.CredentialAuthMCPOAuth, MCPServerURL: "https://mcp.example/mcp",
+			AccessToken: "rejected-access",
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := service.ValidateMCPOAuthCredential(t.Context(), "vlt_1", repo.credential.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != credentialruntime.VerdictInvalid || result.HasRefreshToken ||
+		result.MCPProbe == nil || result.Refresh == nil ||
+		result.Refresh.Status != credentialruntime.OAuthRefreshUnavailable {
+		t.Fatalf("validation result = %#v", result)
+	}
+}
+
+func TestOAuthRefreshDoesNotOverwriteConcurrentGrantRotation(t *testing.T) {
+	clock := domain.FixedClock{T: time.Unix(1000, 0).UTC()}
+	keyring, err := secretcrypto.NewAESGCMKeyring("test", map[string][]byte{
+		"test": bytes.Repeat([]byte{16}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := &vaultRepositoryFake{}
+	refresher := &oauthRefresherFake{result: credentialruntime.OAuthRefreshResult{
+		Status: credentialruntime.OAuthRefreshSucceeded, Verdict: credentialruntime.VerdictValid,
+		AccessToken: "stale-refresh-result",
+	}}
+	service := NewVaultService(VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(), Clock: clock,
+		OAuthRefresher: refresher,
+	})
+	expired := clock.T.Add(-time.Second)
+	created, err := service.CreateCredential(t.Context(), "vlt_1", CredentialCreateInput{
+		Auth: CredentialAuthCreateInput{
+			Type: domain.CredentialAuthMCPOAuth, MCPServerURL: "https://mcp.example/mcp",
+			AccessToken: "expired-access", ExpiresAt: &expired,
+			Refresh: &OAuthRefreshCreateInput{
+				ClientID: "client", RefreshToken: "original-refresh",
+				TokenEndpoint: "https://auth.example/token", TokenEndpointAuth: "none",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresher.onRefresh = func() {
+		_, updateErr := service.UpdateCredential(t.Context(), "vlt_1", created.ID, CredentialUpdateInput{
+			Auth: &CredentialAuthUpdateInput{
+				Type: domain.CredentialAuthMCPOAuth,
+				Refresh: PatchValue(OAuthRefreshUpdateInput{
+					RefreshToken: PatchValue("concurrent-refresh"),
+				}),
+			},
+		})
+		if updateErr != nil {
+			t.Errorf("concurrent rotation: %v", updateErr)
+		}
+	}
+	_, _, err = service.ResolveMCPBearer(t.Context(), "sesn_1", "https://mcp.example/mcp")
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindConflict {
+		t.Fatalf("resolution error = %v, want conflict", err)
+	}
+	secret, err := service.openCredentialSecret(repo.credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer secret.zero()
+	if string(secret.RefreshToken) != "concurrent-refresh" ||
+		string(secret.AccessToken) == "stale-refresh-result" {
+		t.Fatalf("concurrent credential was overwritten: %#v", secret)
 	}
 }
 
@@ -285,6 +511,44 @@ func TestUnavailableVaultAuthFailsOnlyForMatchingCredential(t *testing.T) {
 	); err == nil || matched || !strings.Contains(err.Error(), "keyring") {
 		t.Fatalf("matching endpoint matched=%v, err=%v", matched, err)
 	}
+}
+
+type oauthRefresherFake struct {
+	result    credentialruntime.OAuthRefreshResult
+	request   credentialruntime.OAuthRefreshRequest
+	calls     int
+	onRefresh func()
+}
+
+func (f *oauthRefresherFake) Refresh(
+	_ context.Context,
+	request credentialruntime.OAuthRefreshRequest,
+) (credentialruntime.OAuthRefreshResult, error) {
+	f.calls++
+	f.request = request
+	if f.onRefresh != nil {
+		f.onRefresh()
+	}
+	return f.result, nil
+}
+
+type mcpValidatorFake struct {
+	results []credentialruntime.MCPProbeResult
+	tokens  []string
+}
+
+func (f *mcpValidatorFake) ValidateBearer(
+	_ context.Context,
+	_ string,
+	token string,
+) (credentialruntime.MCPProbeResult, error) {
+	f.tokens = append(f.tokens, token)
+	if len(f.results) == 0 {
+		return credentialruntime.MCPProbeResult{}, errors.New("unexpected MCP validation call")
+	}
+	result := f.results[0]
+	f.results = f.results[1:]
+	return result, nil
 }
 
 type vaultRepositoryFake struct {

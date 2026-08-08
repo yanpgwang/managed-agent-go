@@ -20,7 +20,9 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
 	"github.com/yanpgwang/managed-agent-go/internal/live"
+	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/managed-agent-go/internal/oauthclient"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
 	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
@@ -570,7 +572,12 @@ func resolveVaultService(
 	if err != nil {
 		return nil, err
 	}
-	return app.NewVaultService(pg.NewVaultRepository(store), keyring, ids, clock), nil
+	return app.NewVaultService(app.VaultServiceConfig{
+		Repository: pg.NewVaultRepository(store),
+		Cipher:     keyring, IDGenerator: ids, Clock: clock,
+		OAuthRefresher: oauthclient.New(nil),
+		MCPValidator:   mcpclient.NewRemote(nil),
+	}), nil
 }
 
 func serveHTTP(addr string, handler http.Handler) {

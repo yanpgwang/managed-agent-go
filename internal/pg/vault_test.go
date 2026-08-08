@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
 )
@@ -32,7 +33,10 @@ func TestVaultRuntimeResolutionUsesSessionOrderAndCurrentCredentialState(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := app.NewVaultService(repo, keyring, domain.NewSeqIDGen(), domain.FixedClock{T: now})
+	service := app.NewVaultService(app.VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: now},
+	})
 	first, err := service.CreateCredential(ctx, "vlt_first", app.CredentialCreateInput{
 		Auth: app.CredentialAuthCreateInput{
 			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://MCP.example/mcp/", Token: "first-token",
@@ -66,6 +70,82 @@ func TestVaultRuntimeResolutionUsesSessionOrderAndCurrentCredentialState(t *test
 	}
 }
 
+func TestVaultRuntimeRefreshPersistsAcrossResolutions(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	repo := NewVaultRepository(store)
+	now := time.Unix(1000, 0).UTC()
+	if _, err := repo.CreateVault(ctx, domain.Vault{
+		ID: "vlt_refresh", DisplayName: "Refresh", Metadata: map[string]string{},
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	keyring, err := secretcrypto.NewAESGCMKeyring("test", map[string][]byte{
+		"test": bytes.Repeat([]byte{33}, 32),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresIn := time.Hour
+	refresher := &pgOAuthRefresherFake{result: credentialruntime.OAuthRefreshResult{
+		Status: credentialruntime.OAuthRefreshSucceeded, Verdict: credentialruntime.VerdictValid,
+		AccessToken: "fresh-access", ExpiresIn: &expiresIn,
+	}}
+	service := app.NewVaultService(app.VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: now}, OAuthRefresher: refresher,
+	})
+	expired := now.Add(-time.Second)
+	created, err := service.CreateCredential(ctx, "vlt_refresh", app.CredentialCreateInput{
+		Auth: app.CredentialAuthCreateInput{
+			Type: domain.CredentialAuthMCPOAuth, MCPServerURL: "https://mcp.example/mcp",
+			AccessToken: "expired-access", ExpiresAt: &expired,
+			Refresh: &app.OAuthRefreshCreateInput{
+				ClientID: "client", RefreshToken: "refresh",
+				TokenEndpoint: "https://auth.example/token", TokenEndpointAuth: "none",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := newSession("sesn_vault_refresh")
+	session.VaultIDs = []string{"vlt_refresh"}
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatal(err)
+	}
+	for attempt := 0; attempt < 2; attempt++ {
+		resolved, matched, err := service.ResolveMCPBearer(
+			ctx, session.ID, "https://mcp.example/mcp",
+		)
+		if err != nil || !matched || resolved.Token != "fresh-access" {
+			t.Fatalf("resolution %d = %#v, matched=%v, err=%v", attempt, resolved, matched, err)
+		}
+	}
+	if refresher.calls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refresher.calls)
+	}
+	stored, err := repo.GetCredential(ctx, "vlt_refresh", created.ID)
+	if err != nil || stored.Version != 2 || stored.Auth.ExpiresAt == nil ||
+		!stored.Auth.ExpiresAt.Equal(now.Add(time.Hour)) {
+		t.Fatalf("persisted credential = %#v, %v", stored, err)
+	}
+}
+
+type pgOAuthRefresherFake struct {
+	result credentialruntime.OAuthRefreshResult
+	calls  int
+}
+
+func (f *pgOAuthRefresherFake) Refresh(
+	context.Context,
+	credentialruntime.OAuthRefreshRequest,
+) (credentialruntime.OAuthRefreshResult, error) {
+	f.calls++
+	return f.result, nil
+}
+
 func TestVaultRepositoryRejectsLegacyCanonicalURLCollision(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
@@ -89,7 +169,10 @@ func TestVaultRepositoryRejectsLegacyCanonicalURLCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := app.NewVaultService(repo, keyring, domain.NewSeqIDGen(), domain.FixedClock{T: now})
+	service := app.NewVaultService(app.VaultServiceConfig{
+		Repository: repo, Cipher: keyring, IDGenerator: domain.NewSeqIDGen(),
+		Clock: domain.FixedClock{T: now},
+	})
 	_, err = service.CreateCredential(ctx, "vlt_collision", app.CredentialCreateInput{
 		Auth: app.CredentialAuthCreateInput{
 			Type: domain.CredentialAuthStaticBearer, MCPServerURL: "https://mcp.example/mcp", Token: "new",

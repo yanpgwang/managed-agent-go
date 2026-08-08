@@ -28,7 +28,7 @@ matrices.
 | Files | `POST/GET /v1/files`, metadata, content download, delete |
 | Skills | Create/list/get/delete custom Skills and immutable Versions; download Version zip archives |
 | Memory | Create/list/get/update/archive/delete Stores; create/list/get/update/delete Memories; get/list/redact immutable Versions |
-| Vaults | Create/list/get/update/archive/delete Vaults; create/list/get/update/archive/delete encrypted Credentials |
+| Vaults | Create/list/get/update/archive/delete Vaults; create/list/get/update/archive/delete encrypted Credentials; validate MCP OAuth Credentials |
 | Session Resources | Add, list, get, update contract, and delete under `/v1/sessions/{id}/resources` |
 | Operations | `GET /healthz`, `GET /readyz`, `GET /openapi.yaml` |
 
@@ -139,7 +139,7 @@ Vault ID and archive filter.
 The running server exposes `/openapi.yaml`, sourced from
 `internal/httpapi/openapi.yaml`. All 21 core operations, five Files operations,
 five Session Resources operations, nine custom Skills operations, fourteen
-Memory operations, and twelve Vault/Credential operations define
+Memory operations, and thirteen Vault/Credential operations define
 stable operation IDs, path and query parameters, request and response schemas,
 list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core

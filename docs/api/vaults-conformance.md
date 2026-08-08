@@ -15,8 +15,8 @@ only when `MANAGED_AGENT_VAULT_KEYRING_FILE` is configured.
 | --- | --- | --- |
 | Vaults | create, get, update, list, archive, delete | Official Go SDK lifecycle and auto-pagination; PostgreSQL lifecycle, cascade, cursor, and archive tests |
 | Credentials | create, get, update, list, archive, delete | Official Go SDK static-bearer and OAuth lifecycle, nullable-field, and auto-pagination tests; strict tagged-union parsing; PostgreSQL lifecycle and encrypted response-redaction tests |
-| Session and MCP runtime | ordered `vault_ids`; canonical URL matching; static bearer and current OAuth access-token injection | PostgreSQL Session snapshot and live re-resolution tests; MCP authorization, 401/403 classification, and redirect-replay tests |
-| MCP OAuth validation | not implemented | Deferred with live MCP probing and refresh recovery |
+| Session and MCP runtime | ordered `vault_ids`; canonical URL matching; static bearer injection; expired OAuth refresh and encrypted token rotation | PostgreSQL Session snapshot, live re-resolution, and durable refresh tests; MCP authorization, 401/403 classification, and redirect-replay tests |
+| MCP OAuth validation | `mcp_oauth_validate` | Official Go SDK call; live `initialize` and `tools/list` probes; refresh outcome classification; bounded, scrubbed HTTP diagnostics |
 
 ## Security contract
 
@@ -44,27 +44,37 @@ only when `MANAGED_AGENT_VAULT_KEYRING_FILE` is configured.
   Session sandbox or added to model context.
 - Authenticated redirects may remain on the exact scheme, host, and effective
   port. Cross-origin redirects are rejected before replaying an MCP body.
+- OAuth token endpoints use the same public-network egress boundary and never
+  replay form or Basic-auth secrets through redirects. Captured validation
+  bodies are bounded and redact token-, secret-, password-, and authorization-
+  shaped JSON fields plus every known credential value.
 
 ## Current boundary
 
-Session authentication currently covers static bearer credentials and
-non-expired OAuth access tokens:
+Session authentication covers static bearer and OAuth credentials:
 
 - Session create accepts ordered `vault_ids`; the first Vault with an exact
   normalized MCP URL match wins.
 - Credentials are re-resolved for each MCP request, so rotation, archive, and
   deletion affect a running Session without a restart.
+- An expired OAuth access token with a configured refresh grant is exchanged
+  outside the PostgreSQL transaction. The encrypted access token, optional
+  rotated refresh token, and new expiry are then committed beneath a row lock;
+  a concurrently replaced refresh grant is never overwritten.
 - An unmatched endpoint is attempted without authentication. Remote 401/403
   responses emit `mcp_authentication_failed_error` without terminating the
   Session.
-- OAuth validation and automatic refresh are not implemented.
+- `mcp_oauth_validate` live-probes the current bearer, refreshes only after
+  expiry or an explicit authentication rejection, and reports `valid`,
+  `invalid`, or `unknown`. HTTP 4xx refresh rejection is invalid; rate limits,
+  5xx responses, protocol failures, and network failures are unknown.
 - `environment_variable` requests return `422` until a sandbox provider exposes
   a SecretEgress capability that can substitute a placeholder only at controlled
   outbound hosts and locations. Real secret values will not be placed in a
   sandbox environment or model context.
 
-OAuth refresh follows as a separate stateful workflow because a remote token
-exchange cannot be made exactly-once with a local database transaction.
+Webhook delivery is not implemented, so the upstream
+`vault_credential.refresh_failed` notification remains outside this slice.
 
 ## Upstream references
 

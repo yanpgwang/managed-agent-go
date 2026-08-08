@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"strconv"
@@ -13,8 +14,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
 )
 
@@ -124,6 +125,21 @@ type CredentialListPage struct {
 	HasNext     bool
 }
 
+type CredentialRefreshValidation struct {
+	Status       credentialruntime.OAuthRefreshStatus `json:"status"`
+	HTTPResponse *credentialruntime.HTTPResponse      `json:"http_response"`
+}
+
+type CredentialValidation struct {
+	CredentialID    string
+	VaultID         string
+	ValidatedAt     time.Time
+	HasRefreshToken bool
+	Status          credentialruntime.Verdict
+	MCPProbe        *credentialruntime.MCPProbeFailure
+	Refresh         *CredentialRefreshValidation
+}
+
 type VaultRepository interface {
 	CreateVault(context.Context, domain.Vault) (domain.Vault, error)
 	GetVault(context.Context, string) (domain.Vault, error)
@@ -145,14 +161,29 @@ type VaultRuntimeRepository interface {
 }
 
 type VaultService struct {
-	repo   VaultRepository
-	cipher secretcrypto.Cipher
-	ids    domain.IDGenerator
-	clock  domain.Clock
+	repo      VaultRepository
+	cipher    secretcrypto.Cipher
+	ids       domain.IDGenerator
+	clock     domain.Clock
+	refresher credentialruntime.OAuthRefresher
+	validator credentialruntime.MCPValidator
 }
 
-func NewVaultService(repo VaultRepository, cipher secretcrypto.Cipher, ids domain.IDGenerator, clock domain.Clock) *VaultService {
-	return &VaultService{repo: repo, cipher: cipher, ids: ids, clock: clock}
+type VaultServiceConfig struct {
+	Repository     VaultRepository
+	Cipher         secretcrypto.Cipher
+	IDGenerator    domain.IDGenerator
+	Clock          domain.Clock
+	OAuthRefresher credentialruntime.OAuthRefresher
+	MCPValidator   credentialruntime.MCPValidator
+}
+
+func NewVaultService(config VaultServiceConfig) *VaultService {
+	return &VaultService{
+		repo: config.Repository, cipher: config.Cipher,
+		ids: config.IDGenerator, clock: config.Clock,
+		refresher: config.OAuthRefresher, validator: config.MCPValidator,
+	}
 }
 
 func (s *VaultService) CreateVault(ctx context.Context, input VaultCreateInput) (domain.Vault, error) {
@@ -353,24 +384,24 @@ func (s *VaultService) ResolveMCPBearer(
 	ctx context.Context,
 	sessionID string,
 	mcpServerURL string,
-) (mcpclient.BearerCredential, bool, error) {
+) (credentialruntime.BearerCredential, bool, error) {
 	repo, ok := s.repo.(VaultRuntimeRepository)
 	if !ok {
-		return mcpclient.BearerCredential{}, false, errors.New("vault runtime repository is unavailable")
+		return credentialruntime.BearerCredential{}, false, errors.New("vault runtime repository is unavailable")
 	}
 	parsedServerURL, err := url.Parse(mcpServerURL)
 	if err != nil || !strings.EqualFold(parsedServerURL.Scheme, "https") {
 		// Vault MCP credentials are HTTPS-only, so non-HTTPS servers cannot
 		// match and retain the ordinary unauthenticated MCP behavior.
-		return mcpclient.BearerCredential{}, false, nil
+		return credentialruntime.BearerCredential{}, false, nil
 	}
 	canonical, err := CanonicalMCPServerURL(mcpServerURL)
 	if err != nil {
-		return mcpclient.BearerCredential{}, false, err
+		return credentialruntime.BearerCredential{}, false, err
 	}
 	items, err := repo.ResolveSessionCredentials(ctx, sessionID)
 	if err != nil {
-		return mcpclient.BearerCredential{}, false, err
+		return credentialruntime.BearerCredential{}, false, err
 	}
 	var selected *domain.VaultCredential
 	for index := range items {
@@ -383,7 +414,7 @@ func (s *VaultService) ResolveMCPBearer(
 			continue
 		}
 		if items[index].VaultID == selected.VaultID {
-			return mcpclient.BearerCredential{}, false, errors.New(
+			return credentialruntime.BearerCredential{}, false, errors.New(
 				"multiple active credentials in the same Vault match this MCP server",
 			)
 		}
@@ -392,22 +423,11 @@ func (s *VaultService) ResolveMCPBearer(
 		break
 	}
 	if selected == nil {
-		return mcpclient.BearerCredential{}, false, nil
+		return credentialruntime.BearerCredential{}, false, nil
 	}
-	if selected.SecretEnvelope == nil {
-		return mcpclient.BearerCredential{}, false, errors.New("selected credential secret is unavailable")
-	}
-	plaintext, err := s.cipher.Open(
-		*selected.SecretEnvelope,
-		credentialAAD(selected.VaultID, selected.ID, selected.CredentialKey, selected.Auth),
-	)
+	secret, err := s.openCredentialSecret(*selected)
 	if err != nil {
-		return mcpclient.BearerCredential{}, false, errors.New("selected credential failed its integrity check")
-	}
-	defer secretcrypto.Zero(plaintext)
-	var secret credentialSecret
-	if err := json.Unmarshal(plaintext, &secret); err != nil {
-		return mcpclient.BearerCredential{}, false, errors.New("selected credential payload is invalid")
+		return credentialruntime.BearerCredential{}, false, err
 	}
 	defer secret.zero()
 	var token []byte
@@ -416,18 +436,32 @@ func (s *VaultService) ResolveMCPBearer(
 		token = secret.Token
 	case domain.CredentialAuthMCPOAuth:
 		if selected.Auth.ExpiresAt != nil && !selected.Auth.ExpiresAt.After(s.clock.Now()) {
-			return mcpclient.BearerCredential{}, false, errors.New(
-				"selected OAuth credential is expired; automatic refresh is not available",
-			)
+			if selected.Auth.Refresh == nil || len(secret.RefreshToken) == 0 {
+				return credentialruntime.BearerCredential{}, false, errors.New(
+					"selected OAuth credential is expired and has no refresh token",
+				)
+			}
+			refresh, err := s.refreshOAuthCredential(ctx, *selected, secret)
+			if err != nil {
+				return credentialruntime.BearerCredential{}, false, err
+			}
+			if refresh.Result.Status != credentialruntime.OAuthRefreshSucceeded {
+				return credentialruntime.BearerCredential{}, false, fmt.Errorf(
+					"selected OAuth credential refresh %s",
+					refresh.Result.Status,
+				)
+			}
+			token = []byte(refresh.Result.AccessToken)
+		} else {
+			token = secret.AccessToken
 		}
-		token = secret.AccessToken
 	default:
-		return mcpclient.BearerCredential{}, false, errors.New("selected credential type is unsupported at runtime")
+		return credentialruntime.BearerCredential{}, false, errors.New("selected credential type is unsupported at runtime")
 	}
 	if len(token) == 0 {
-		return mcpclient.BearerCredential{}, false, errors.New("selected credential has no usable bearer token")
+		return credentialruntime.BearerCredential{}, false, errors.New("selected credential has no usable bearer token")
 	}
-	return mcpclient.BearerCredential{
+	return credentialruntime.BearerCredential{
 		// The MCP SDK requires a string. Its lifetime is scoped to the current
 		// request; source byte buffers are zeroed on return.
 		Token: string(token), VaultID: selected.VaultID, CredentialID: selected.ID,
@@ -436,7 +470,7 @@ func (s *VaultService) ResolveMCPBearer(
 
 type unavailableVaultAuthSource struct{ repo VaultRuntimeRepository }
 
-func NewUnavailableVaultAuthSource(repo VaultRuntimeRepository) mcpclient.AuthSource {
+func NewUnavailableVaultAuthSource(repo VaultRuntimeRepository) credentialruntime.AuthSource {
 	return unavailableVaultAuthSource{repo: repo}
 }
 
@@ -444,28 +478,28 @@ func (s unavailableVaultAuthSource) ResolveMCPBearer(
 	ctx context.Context,
 	sessionID string,
 	mcpServerURL string,
-) (mcpclient.BearerCredential, bool, error) {
+) (credentialruntime.BearerCredential, bool, error) {
 	parsedServerURL, err := url.Parse(mcpServerURL)
 	if err != nil || !strings.EqualFold(parsedServerURL.Scheme, "https") {
-		return mcpclient.BearerCredential{}, false, nil
+		return credentialruntime.BearerCredential{}, false, nil
 	}
 	canonical, err := CanonicalMCPServerURL(mcpServerURL)
 	if err != nil {
-		return mcpclient.BearerCredential{}, false, err
+		return credentialruntime.BearerCredential{}, false, err
 	}
 	items, err := s.repo.ResolveSessionCredentials(ctx, sessionID)
 	if err != nil {
-		return mcpclient.BearerCredential{}, false, err
+		return credentialruntime.BearerCredential{}, false, err
 	}
 	for _, item := range items {
 		candidate, candidateErr := CanonicalMCPServerURL(item.Auth.MCPServerURL)
 		if candidateErr == nil && candidate == canonical {
-			return mcpclient.BearerCredential{}, false, errors.New(
+			return credentialruntime.BearerCredential{}, false, errors.New(
 				"this worker cannot decrypt the matching Session Vault credential because its keyring is unavailable",
 			)
 		}
 	}
-	return mcpclient.BearerCredential{}, false, nil
+	return credentialruntime.BearerCredential{}, false, nil
 }
 
 type credentialSecret struct {

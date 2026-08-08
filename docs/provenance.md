@@ -107,8 +107,9 @@ verification where applicable.
 - [Vaults API](https://platform.claude.com/docs/en/api/beta/vaults) and
   [Go Credential API](https://platform.claude.com/docs/en/api/go/beta/vaults/credentials) —
   Vault and Credential lifecycle routes, tagged authentication inputs,
-  write-only sensitive fields, list bounds, and MCP OAuth validation. Verified
-  2026-08-08 against Anthropic Go SDK `v1.61.0`.
+  write-only sensitive fields, list bounds, MCP OAuth validation, automatic
+  expiry refresh, and refresh-failure classification. Verified 2026-08-08
+  against Anthropic Go SDK `v1.61.0` and the current Vault runtime guide.
 - [Claude Code Skill content lifecycle](https://code.claude.com/docs/en/slash-commands#skill-content-lifecycle)
   — on-demand main-instruction loading, supporting-file access, persistence
   after invocation, and the documented 5,000-token per-Skill / 25,000-token

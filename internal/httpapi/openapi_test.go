@@ -325,12 +325,13 @@ func TestOpenAPIVaultContract(t *testing.T) {
 	doc := parseOpenAPIDocument(t)
 	paths := openAPIMap(t, doc["paths"], "paths")
 	operations := map[string][]string{
-		"/v1/vaults":                                                {"get", "post"},
-		"/v1/vaults/{vault_id}":                                     {"delete", "get", "post"},
-		"/v1/vaults/{vault_id}/archive":                             {"post"},
-		"/v1/vaults/{vault_id}/credentials":                         {"get", "post"},
-		"/v1/vaults/{vault_id}/credentials/{credential_id}":         {"delete", "get", "post"},
-		"/v1/vaults/{vault_id}/credentials/{credential_id}/archive": {"post"},
+		"/v1/vaults":                                                           {"get", "post"},
+		"/v1/vaults/{vault_id}":                                                {"delete", "get", "post"},
+		"/v1/vaults/{vault_id}/archive":                                        {"post"},
+		"/v1/vaults/{vault_id}/credentials":                                    {"get", "post"},
+		"/v1/vaults/{vault_id}/credentials/{credential_id}":                    {"delete", "get", "post"},
+		"/v1/vaults/{vault_id}/credentials/{credential_id}/archive":            {"post"},
+		"/v1/vaults/{vault_id}/credentials/{credential_id}/mcp_oauth_validate": {"post"},
 	}
 	requestBodies := map[string]string{
 		"post /v1/vaults":                                        "#/components/schemas/VaultCreateRequest",
@@ -369,8 +370,8 @@ func TestOpenAPIVaultContract(t *testing.T) {
 			count++
 		}
 	}
-	if count != 12 {
-		t.Fatalf("Vault operation count = %d, want 12", count)
+	if count != 13 {
+		t.Fatalf("Vault operation count = %d, want 13", count)
 	}
 	components := openAPIMap(t, doc["components"], "components")
 	schemas := openAPIMap(t, components["schemas"], "schemas")
