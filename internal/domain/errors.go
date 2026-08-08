@@ -8,6 +8,7 @@ const (
 	KindNotFound
 	KindUnsupported
 	KindTooLarge
+	KindPrecondition
 )
 
 type DomainError struct {
@@ -25,6 +26,9 @@ func Conflict(msg string) *DomainError    { return &DomainError{Kind: KindConfli
 func NotFound(msg string) *DomainError    { return &DomainError{Kind: KindNotFound, Message: msg} }
 func Unsupported(msg string) *DomainError { return &DomainError{Kind: KindUnsupported, Message: msg} }
 func TooLarge(msg string) *DomainError    { return &DomainError{Kind: KindTooLarge, Message: msg} }
+func Precondition(msg string) *DomainError {
+	return &DomainError{Kind: KindPrecondition, Message: msg}
+}
 
 func MemoryPrecondition(msg string) *DomainError {
 	return &DomainError{

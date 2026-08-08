@@ -128,6 +128,17 @@ func TestWriteError_PreservesMemoryPreconditionCode(t *testing.T) {
 	}
 }
 
+func TestWriteError_EnvironmentWorkPreconditionUses412(t *testing.T) {
+	rec := httptest.NewRecorder()
+	writeError(rec, domain.Precondition("work heartbeat precondition failed"))
+	if rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("status = %d, want 412", rec.Code)
+	}
+	if got := decodeErrorEnvelope(t, rec.Body.Bytes())["type"]; got != "precondition_failed_error" {
+		t.Fatalf("error type = %v, want precondition_failed_error", got)
+	}
+}
+
 func TestAuthMiddleware_Strict(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)

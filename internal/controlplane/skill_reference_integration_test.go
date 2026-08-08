@@ -97,6 +97,41 @@ func TestPostgresAgentAndSessionSkillVersionResolution(t *testing.T) {
 	if overridden.AgentSnapshot.Skills[0].Version != second.Version {
 		t.Fatalf("overridden Session pin = %+v", overridden.AgentSnapshot.Skills)
 	}
+
+	// Cloud bundle materialization is adapter-gated, while the official
+	// self-hosted EnvironmentWorker downloads the same pinned bundle through
+	// the public Skills API and must not inherit that cloud adapter restriction.
+	sessions.ConfigureCloudSkillBundles(false)
+	if _, err := sessions.Create(ctx, app.CreateSessionInput{
+		AgentID: agent.ID, EnvironmentID: environment.ID,
+	}); err == nil {
+		t.Fatal("cloud Session accepted Skills without adapter capability")
+	}
+	selfHosted, err := environments.Create(ctx, domain.Environment{
+		Name: "self hosted", ConfigType: "self_hosted",
+		Config: map[string]any{"type": "self_hosted"}, Scope: "account",
+	})
+	if err != nil {
+		t.Fatalf("create self-hosted Environment: %v", err)
+	}
+	selfHostedSession, err := sessions.Create(ctx, app.CreateSessionInput{
+		AgentID: agent.ID, EnvironmentID: selfHosted.ID,
+		InitialEvents: []domain.EventDraft{{
+			Type: domain.EvUserMessage, Payload: map[string]any{"content": "use the Skill"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create self-hosted Session with Skill: %v", err)
+	}
+	if selfHostedSession.AgentSnapshot.Skills[0].Version != first.Version {
+		t.Fatalf("self-hosted Session pin = %+v", selfHostedSession.AgentSnapshot.Skills)
+	}
+	work, err := pg.NewEnvironmentWorkRepository(fixture.store).ListWork(
+		ctx, selfHosted.ID, app.EnvironmentWorkListQuery{Limit: 10},
+	)
+	if err != nil || len(work.Work) != 1 || work.Work[0].SessionID != selfHostedSession.ID {
+		t.Fatalf("self-hosted Skill Work = %+v, err=%v", work, err)
+	}
 	for _, version := range []string{first.Version, second.Version} {
 		if _, err := skillRepo.BeginDeleteVersion(ctx, skill.ID, version); err == nil {
 			t.Fatalf("deleted Version %s while a Session pins it", version)

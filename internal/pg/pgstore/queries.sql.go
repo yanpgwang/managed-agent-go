@@ -58,6 +58,36 @@ func (q *Queries) DeleteOutboxIfSeq(ctx context.Context, arg DeleteOutboxIfSeqPa
 	return result.RowsAffected(), nil
 }
 
+const enqueueEnvironmentWork = `-- name: EnqueueEnvironmentWork :exec
+INSERT INTO environment_work (
+    id, environment_id, session_id, activation_seq, state, metadata, created_at
+)
+VALUES ($1, $2, $3, $4, 'queued', '{}'::jsonb, $5)
+ON CONFLICT (session_id) WHERE state IN ('queued', 'starting', 'active') DO NOTHING
+`
+
+type EnqueueEnvironmentWorkParams struct {
+	ID            string
+	EnvironmentID string
+	SessionID     string
+	ActivationSeq int64
+	CreatedAt     pgtype.Timestamptz
+}
+
+// EnqueueEnvironmentWork writes the self-hosted worker activation in the same
+// transaction as event admission and the Temporal wakeup. The partial unique
+// index coalesces admissions while a worker already owns the Session.
+func (q *Queries) EnqueueEnvironmentWork(ctx context.Context, arg EnqueueEnvironmentWorkParams) error {
+	_, err := q.db.Exec(ctx, enqueueEnvironmentWork,
+		arg.ID,
+		arg.EnvironmentID,
+		arg.SessionID,
+		arg.ActivationSeq,
+		arg.CreatedAt,
+	)
+	return err
+}
+
 const firstUnprocessedInterruptAfter = `-- name: FirstUnprocessedInterruptAfter :one
 SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
 FROM events

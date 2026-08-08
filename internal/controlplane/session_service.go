@@ -49,6 +49,10 @@ type SessionService struct {
 	}
 	skillRef      app.SkillReferenceResolver
 	vaultsEnabled bool
+	// cloudSkillBundles gates server-managed sandbox materialization only.
+	// Self-hosted EnvironmentWorker instances download pinned Skills through
+	// the public Skills API and therefore do not depend on this capability.
+	cloudSkillBundles bool
 }
 
 // EnableVaults permits Session Vault attachments for deployments whose API and
@@ -70,11 +74,19 @@ func NewSessionService(
 	service := &SessionService{
 		store: store, agents: agents, environments: environments,
 		orchestrator: orchestrator, ids: ids, clock: clock, skillRef: skillRef,
+		cloudSkillBundles: true,
 	}
 	if len(resourceServices) > 0 {
 		service.resources = resourceServices[0]
 	}
 	return service
+}
+
+// ConfigureCloudSkillBundles declares whether the configured cloud sandbox
+// adapter can materialize custom Skill bundles. It does not gate self-hosted
+// workers, which use the official EnvironmentWorker download flow.
+func (s *SessionService) ConfigureCloudSkillBundles(enabled bool) {
+	s.cloudSkillBundles = enabled
 }
 
 // EnableMemoryStoreResources installs the deployment's Memory Store reader.
@@ -155,9 +167,9 @@ func (s *SessionService) Create(
 	if err != nil {
 		return domain.Session{}, err
 	}
-	if environment.ConfigType == "self_hosted" && len(snapshot.Skills) > 0 {
+	if environment.ConfigType == "cloud" && len(snapshot.Skills) > 0 && !s.cloudSkillBundles {
 		return domain.Session{}, domain.Unsupported(
-			"custom Skills are unavailable for self-hosted Sessions",
+			"custom Skills are unavailable for the configured cloud sandbox provider",
 		)
 	}
 	if environment.ConfigType == "self_hosted" && len(input.MemoryResources) > 0 {

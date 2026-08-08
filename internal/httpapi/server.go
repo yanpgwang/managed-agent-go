@@ -33,6 +33,17 @@ type EnvironmentService interface {
 	Delete(context.Context, string) error
 }
 
+type EnvironmentWorkService interface {
+	Get(context.Context, string, string) (domain.EnvironmentWork, error)
+	Update(context.Context, string, string, map[string]*string) (domain.EnvironmentWork, error)
+	List(context.Context, string, app.EnvironmentWorkListQuery) (app.EnvironmentWorkListPage, error)
+	Ack(context.Context, string, string) (domain.EnvironmentWork, error)
+	Heartbeat(context.Context, string, string, *string, *int64) (domain.EnvironmentWorkHeartbeat, error)
+	Poll(context.Context, string, string, time.Duration, *time.Duration) (*domain.EnvironmentWork, error)
+	Stop(context.Context, string, string, bool) error
+	Stats(context.Context, string) (domain.EnvironmentWorkQueueStats, error)
+}
+
 type SessionService interface {
 	Create(context.Context, app.CreateSessionInput) (domain.Session, error)
 	Get(context.Context, string) (domain.Session, error)
@@ -136,6 +147,7 @@ type Deps struct {
 	Memory           MemoryService
 	Vaults           VaultService
 	Deployments      DeploymentService
+	EnvironmentWork  EnvironmentWorkService
 	SessionResources SessionResourceService
 }
 
@@ -172,6 +184,14 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/environments/{id}", s.updateEnvironment)
 	s.mux.HandleFunc("POST /v1/environments/{id}/archive", s.archiveEnvironment)
 	s.mux.HandleFunc("DELETE /v1/environments/{id}", s.deleteEnvironment)
+	s.mux.HandleFunc("GET /v1/environments/{environment_id}/work", s.listEnvironmentWork)
+	s.mux.HandleFunc("GET /v1/environments/{environment_id}/work/poll", s.pollEnvironmentWork)
+	s.mux.HandleFunc("GET /v1/environments/{environment_id}/work/stats", s.environmentWorkStats)
+	s.mux.HandleFunc("GET /v1/environments/{environment_id}/work/{work_id}", s.getEnvironmentWork)
+	s.mux.HandleFunc("POST /v1/environments/{environment_id}/work/{work_id}", s.updateEnvironmentWork)
+	s.mux.HandleFunc("POST /v1/environments/{environment_id}/work/{work_id}/ack", s.ackEnvironmentWork)
+	s.mux.HandleFunc("POST /v1/environments/{environment_id}/work/{work_id}/heartbeat", s.heartbeatEnvironmentWork)
+	s.mux.HandleFunc("POST /v1/environments/{environment_id}/work/{work_id}/stop", s.stopEnvironmentWork)
 
 	s.mux.HandleFunc("POST /v1/files", s.uploadFile)
 	s.mux.HandleFunc("GET /v1/files", s.listFiles)

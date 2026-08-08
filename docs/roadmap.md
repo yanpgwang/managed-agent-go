@@ -88,6 +88,16 @@ Scheduled claims are PostgreSQL-leased across workers; successful Session and
 Run creation is atomic. See the [Deployments conformance
 matrix](api/deployments-conformance.md).
 
+The Environment Work slice now implements all eight worker-protocol operations
+used by Anthropic's prebuilt `EnvironmentWorker` and CLI. A runnable admission
+to a `self_hosted` Session creates or coalesces its Work activation in the same
+PostgreSQL transaction as the event ledger and Temporal outbox. External
+workers poll, acknowledge, heartbeat, and stop that lease while executing the
+existing Session event and `user.tool_result` protocol; no second Agent runtime
+or event state machine is introduced. See the [Environment Work guide](api/environment-work.md)
+and [conformance matrix](api/environment-work-conformance.md). Environment-key
+issuance and tenant-scoped authorization remain platform hardening work.
+
 Skills and Memory are not deferred to multi-agent work. They provide reusable
 capabilities and continuity to one Agent today, and later become foundations
 that multi-agent orchestration can consume without inventing a second storage

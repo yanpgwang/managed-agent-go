@@ -165,6 +165,12 @@ declaration, the custom/permission handoff, and the tool-block event wire.
   Sessions sharing an Environment. Verified 2026-08-03.
 - [Self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
   — the control-plane/worker boundary and session-scoped sandbox guidance.
+  Verified 2026-08-09 together with the official Go SDK v1.61.0
+  `BetaEnvironmentWorkService`, `lib/environments.WorkPoller`, and
+  `lib/environments.EnvironmentWorker`: the eight Work routes, queue/Ack state
+  transition, conditional heartbeat, reclaim parameters, worker identity,
+  graceful/forced Stop, Session Work payload, Skill download, and reuse of the
+  Session Events tool-result loop.
 - [Bash tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool)
   and
   [Text editor tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/text-editor-tool)

@@ -4,9 +4,9 @@ info:
   version: 0.1.0
   description: >-
     Clean-room implementation of the supported Claude Managed Agents API core,
-    Deployments, conditional Files and Memory APIs, Vaults, and File- and
-    Memory-backed Session Resources. This project is Apache-2.0 licensed and is
-    not an Anthropic product.
+    Deployments, self-hosted Environment Work, conditional Files and Memory
+    APIs, Vaults, and File- and Memory-backed Session Resources. This project is
+    Apache-2.0 licensed and is not an Anthropic product.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -22,6 +22,8 @@ tags:
     description: Versioned Agent definitions.
   - name: Environments
     description: Session execution environments.
+  - name: Environment Work
+    description: Lease and activation protocol for self-hosted Environment workers.
   - name: Sessions
     description: Durable single-agent Sessions.
   - name: Session Events
@@ -220,6 +222,117 @@ paths:
           $ref: '#/components/responses/EnvironmentResponse'
         '404':
           $ref: '#/components/responses/NotFound'
+
+  /v1/environments/{environment_id}/work:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+    get:
+      operationId: listEnvironmentWork
+      tags: [Environment Work]
+      summary: List self-hosted Environment Work items
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentWorkListLimit'
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200': {$ref: '#/components/responses/EnvironmentWorkListResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/environments/{environment_id}/work/poll:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+    get:
+      operationId: pollEnvironmentWork
+      tags: [Environment Work]
+      summary: Poll and tentatively claim the oldest available Work item
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentWorkBlockMs'
+        - $ref: '#/components/parameters/EnvironmentWorkReclaimMs'
+        - $ref: '#/components/parameters/EnvironmentWorkerID'
+      responses:
+        '200': {$ref: '#/components/responses/EnvironmentWorkPollResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/environments/{environment_id}/work/stats:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+    get:
+      operationId: getEnvironmentWorkStats
+      tags: [Environment Work]
+      summary: Get Environment Work queue statistics
+      responses:
+        '200': {$ref: '#/components/responses/EnvironmentWorkStatsResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/environments/{environment_id}/work/{work_id}:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+      - $ref: '#/components/parameters/EnvironmentWorkID'
+    get:
+      operationId: getEnvironmentWork
+      tags: [Environment Work]
+      summary: Get an Environment Work item
+      responses:
+        '200': {$ref: '#/components/responses/EnvironmentWorkResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: updateEnvironmentWork
+      tags: [Environment Work]
+      summary: Merge metadata into an Environment Work item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnvironmentWorkUpdateRequest'}
+      responses:
+        '200': {$ref: '#/components/responses/EnvironmentWorkResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /v1/environments/{environment_id}/work/{work_id}/ack:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+      - $ref: '#/components/parameters/EnvironmentWorkID'
+    post:
+      operationId: acknowledgeEnvironmentWork
+      tags: [Environment Work]
+      summary: Acknowledge a polled Work item and transition it to starting
+      responses:
+        '200': {$ref: '#/components/responses/EnvironmentWorkResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+  /v1/environments/{environment_id}/work/{work_id}/heartbeat:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+      - $ref: '#/components/parameters/EnvironmentWorkID'
+    post:
+      operationId: heartbeatEnvironmentWork
+      tags: [Environment Work]
+      summary: Record a conditional heartbeat and extend the Work lease
+      parameters:
+        - $ref: '#/components/parameters/EnvironmentWorkExpectedHeartbeat'
+        - $ref: '#/components/parameters/EnvironmentWorkDesiredTTL'
+      responses:
+        '200': {$ref: '#/components/responses/EnvironmentWorkHeartbeatResponse'}
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+  /v1/environments/{environment_id}/work/{work_id}/stop:
+    parameters:
+      - $ref: '#/components/parameters/EnvironmentID'
+      - $ref: '#/components/parameters/EnvironmentWorkID'
+    post:
+      operationId: stopEnvironmentWork
+      tags: [Environment Work]
+      summary: Request graceful or forced Work shutdown
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/EnvironmentWorkStopRequest'}
+      responses:
+        '204':
+          description: Work stop accepted; no response body
+        '400': {$ref: '#/components/responses/InvalidRequest'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
 
   /v1/sessions:
     post:
@@ -1457,6 +1570,50 @@ components:
       schema:
         type: string
         minLength: 1
+    EnvironmentWorkID:
+      name: work_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^work_'
+    EnvironmentWorkListLimit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+        default: 100
+    EnvironmentWorkBlockMs:
+      name: block_ms
+      in: query
+      description: Long-poll duration. Omit for a non-blocking poll.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 999
+    EnvironmentWorkReclaimMs:
+      name: reclaim_older_than_ms
+      in: query
+      description: Reclaim a polled but unacknowledged item after this duration; defaults to 5000.
+      schema:
+        type: integer
+        minimum: 0
+    EnvironmentWorkerID:
+      name: Anthropic-Worker-ID
+      in: header
+      required: false
+      schema: {type: string, minLength: 1}
+    EnvironmentWorkExpectedHeartbeat:
+      name: expected_last_heartbeat
+      in: query
+      description: Exact previous heartbeat timestamp, or NO_HEARTBEAT for the first lease heartbeat.
+      schema: {type: string, minLength: 1}
+    EnvironmentWorkDesiredTTL:
+      name: desired_ttl_seconds
+      in: query
+      schema: {type: integer, minimum: 1}
     SessionID:
       name: session_id
       in: path
@@ -1795,6 +1952,45 @@ components:
         format: date-time
 
   responses:
+    EnvironmentWorkResponse:
+      description: Self-hosted Environment Work item
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/EnvironmentWork'}
+    EnvironmentWorkListResponse:
+      description: Environment Work page
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/EnvironmentWorkList'}
+    EnvironmentWorkPollResponse:
+      description: A tentatively claimed Work item, or an empty object when the queue is empty.
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema:
+            oneOf:
+              - $ref: '#/components/schemas/EnvironmentWork'
+              - type: object
+                maxProperties: 0
+    EnvironmentWorkHeartbeatResponse:
+      description: Environment Work lease heartbeat
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/EnvironmentWorkHeartbeat'}
+    EnvironmentWorkStatsResponse:
+      description: Environment Work queue statistics
+      headers:
+        request-id: {$ref: '#/components/headers/RequestID'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/EnvironmentWorkQueueStats'}
     DeploymentResponse:
       description: Deployment resource
       headers:
@@ -2212,6 +2408,15 @@ components:
             $ref: '#/components/schemas/ErrorResponse'
     Conflict:
       description: State or optimistic-concurrency conflict
+      headers:
+        request-id:
+          $ref: '#/components/headers/RequestID'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PreconditionFailed:
+      description: Conditional lease update did not match the stored heartbeat
       headers:
         request-id:
           $ref: '#/components/headers/RequestID'
@@ -3723,6 +3928,96 @@ components:
         type:
           type: string
           const: environment_deleted
+
+    EnvironmentWorkState:
+      type: string
+      enum: [queued, starting, active, stopping, stopped]
+    EnvironmentWorkData:
+      type: object
+      additionalProperties: false
+      required: [id, type]
+      properties:
+        id: {type: string, pattern: '^sesn_'}
+        type: {type: string, const: session}
+    EnvironmentWork:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - acknowledged_at
+        - created_at
+        - data
+        - environment_id
+        - latest_heartbeat_at
+        - metadata
+        - secret
+        - started_at
+        - state
+        - stop_requested_at
+        - stopped_at
+        - type
+      properties:
+        id: {type: string, pattern: '^work_'}
+        type: {type: string, const: work}
+        environment_id: {type: string, pattern: '^env_'}
+        data: {$ref: '#/components/schemas/EnvironmentWorkData'}
+        state: {$ref: '#/components/schemas/EnvironmentWorkState'}
+        metadata:
+          type: object
+          additionalProperties: {type: string}
+        secret:
+          type: [string, 'null']
+          description: Null outside a poll response; Mango does not currently issue an environment-scoped secret payload.
+        created_at: {type: string, format: date-time}
+        acknowledged_at: {$ref: '#/components/schemas/NullableTimestamp'}
+        started_at: {$ref: '#/components/schemas/NullableTimestamp'}
+        latest_heartbeat_at: {$ref: '#/components/schemas/NullableTimestamp'}
+        stop_requested_at: {$ref: '#/components/schemas/NullableTimestamp'}
+        stopped_at: {$ref: '#/components/schemas/NullableTimestamp'}
+    EnvironmentWorkList:
+      type: object
+      additionalProperties: false
+      required: [data, next_page]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/EnvironmentWork'}
+        next_page: {$ref: '#/components/schemas/Cursor'}
+    EnvironmentWorkUpdateRequest:
+      type: object
+      additionalProperties: false
+      required: [metadata]
+      properties:
+        metadata:
+          type: object
+          description: String values upsert keys and null values remove keys.
+          additionalProperties:
+            type: [string, 'null']
+    EnvironmentWorkStopRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        force: {type: boolean, default: false}
+    EnvironmentWorkHeartbeat:
+      type: object
+      additionalProperties: false
+      required: [last_heartbeat, lease_extended, state, ttl_seconds, type]
+      properties:
+        type: {type: string, const: work_heartbeat}
+        last_heartbeat: {type: string, format: date-time}
+        lease_extended: {type: boolean}
+        state: {$ref: '#/components/schemas/EnvironmentWorkState'}
+        ttl_seconds: {type: integer, minimum: 1}
+    EnvironmentWorkQueueStats:
+      type: object
+      additionalProperties: false
+      required: [depth, oldest_queued_at, pending, type, workers_polling]
+      properties:
+        type: {type: string, const: work_queue_stats}
+        depth: {type: integer, minimum: 0}
+        pending: {type: integer, minimum: 0}
+        workers_polling: {type: integer, minimum: 0}
+        oldest_queued_at: {$ref: '#/components/schemas/NullableTimestamp'}
 
     AgentReference:
       type: object
