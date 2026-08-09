@@ -151,6 +151,12 @@ func TestMCPDiscoverySnapshot_PrimaryConfigurationUpdateInvalidatesCache(t *test
 	store := testStore(t)
 	ctx := context.Background()
 	session := newSession("sess_mcp_update")
+	session.AgentSnapshot.Tools = []any{map[string]any{
+		"type": "mcp_toolset", "mcp_server_name": "github",
+	}}
+	session.AgentSnapshot.MCPServers = []any{map[string]any{
+		"type": "url", "name": "github", "url": "https://old.example.com",
+	}}
 	if _, err := store.CreateSession(ctx, session, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -163,11 +169,11 @@ func TestMCPDiscoverySnapshot_PrimaryConfigurationUpdateInvalidatesCache(t *test
 		[]mcpclient.Tool{{Name: "old_tool"}}); err != nil {
 		t.Fatal(err)
 	}
-	replacement := []any{map[string]any{
-		"type": "url", "name": "github", "url": "https://new.example.com",
-	}}
+	replacementTools := []any{}
+	replacementServers := []any{}
 	if _, err := store.UpdateSession(ctx, session.ID, domain.SessionUpdate{
-		AgentMCPServers: &replacement,
+		AgentTools:      &replacementTools,
+		AgentMCPServers: &replacementServers,
 	}); err != nil {
 		t.Fatal(err)
 	}
