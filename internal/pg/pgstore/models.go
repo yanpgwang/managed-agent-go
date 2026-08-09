@@ -119,6 +119,7 @@ type McpDiscoverySnapshot struct {
 	ServerUrl  string
 	Tools      []byte
 	CreatedAt  pgtype.Timestamptz
+	ThreadID   string
 }
 
 type Memory struct {

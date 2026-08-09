@@ -16,12 +16,14 @@ import (
 func (s *Store) GetMCPDiscoverySnapshot(
 	ctx context.Context,
 	sessionID string,
+	threadID string,
 	server domain.MCPServer,
 ) ([]mcpclient.Tool, bool, error) {
 	row, err := s.q.GetMCPDiscoverySnapshot(
 		ctx,
 		pgstore.GetMCPDiscoverySnapshotParams{
 			SessionID:  sessionID,
+			ThreadID:   threadID,
 			ServerName: server.Name,
 		},
 	)
@@ -33,7 +35,7 @@ func (s *Store) GetMCPDiscoverySnapshot(
 	}
 	if row.ServerUrl != server.URL {
 		return nil, false, domain.Conflict(
-			"MCP server URL differs from the Session discovery snapshot",
+			"MCP server URL differs from the Thread discovery snapshot",
 		)
 	}
 	var tools []mcpclient.Tool
@@ -51,6 +53,7 @@ func (s *Store) GetMCPDiscoverySnapshot(
 func (s *Store) PutMCPDiscoverySnapshot(
 	ctx context.Context,
 	sessionID string,
+	threadID string,
 	server domain.MCPServer,
 	tools []mcpclient.Tool,
 ) ([]mcpclient.Tool, error) {
@@ -62,6 +65,7 @@ func (s *Store) PutMCPDiscoverySnapshot(
 		ctx,
 		pgstore.InsertMCPDiscoverySnapshotParams{
 			SessionID:  sessionID,
+			ThreadID:   threadID,
 			ServerName: server.Name,
 			ServerUrl:  server.URL,
 			Tools:      raw,
@@ -73,6 +77,7 @@ func (s *Store) PutMCPDiscoverySnapshot(
 	authoritative, found, err := s.GetMCPDiscoverySnapshot(
 		ctx,
 		sessionID,
+		threadID,
 		server,
 	)
 	if err != nil {

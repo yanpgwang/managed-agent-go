@@ -174,18 +174,21 @@ type WorkflowRetrySource interface {
 	) error
 }
 
-// MCPDiscoveryStore pins the discovered tool surface for each Session/server.
-// The first PrepareTurn discovers remotely; later turns reuse the durable
-// snapshot even if the remote server changes.
+// MCPDiscoveryStore pins the discovered tool surface for each Thread/server.
+// Threads share a Session sandbox, but their Agent configurations and remote
+// tool surfaces remain private. The first PrepareTurn discovers remotely;
+// later turns in that Thread reuse the durable snapshot.
 type MCPDiscoveryStore interface {
 	GetMCPDiscoverySnapshot(
 		ctx context.Context,
 		sessionID string,
+		threadID string,
 		server domain.MCPServer,
 	) ([]mcpclient.Tool, bool, error)
 	PutMCPDiscoverySnapshot(
 		ctx context.Context,
 		sessionID string,
+		threadID string,
 		server domain.MCPServer,
 		tools []mcpclient.Tool,
 	) ([]mcpclient.Tool, error)
@@ -764,6 +767,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		setupEvents, err := a.addMCPTools(
 			ctx,
 			in.SessionID,
+			trigger.ThreadID,
 			session.AgentSnapshot.MCPServers,
 			toolSet,
 			&result,
@@ -847,6 +851,7 @@ func requestContextOverhead(request model.Request) int {
 func (a *Activities) addMCPTools(
 	ctx context.Context,
 	sessionID string,
+	threadID string,
 	rawServers []any,
 	toolSet domain.ToolSet,
 	result *PrepareTurnResult,
@@ -879,6 +884,7 @@ func (a *Activities) addMCPTools(
 			discovered, found, err = snapshots.GetMCPDiscoverySnapshot(
 				ctx,
 				sessionID,
+				threadID,
 				server,
 			)
 			if err != nil {
@@ -900,6 +906,7 @@ func (a *Activities) addMCPTools(
 				discovered, err = snapshots.PutMCPDiscoverySnapshot(
 					ctx,
 					sessionID,
+					threadID,
 					server,
 					discovered,
 				)

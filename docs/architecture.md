@@ -65,6 +65,15 @@ compaction, and large results. See
 [Storage, context, and connected tools](architecture/storage-context-and-tools.md).
 The model endpoint performs inference; it does not own session state.
 
+The sandbox filesystem and attached Session Resources are shared across
+Threads, but Agent runtime configuration is not. MCP discovery snapshots are
+owned by `(Session, Thread, server name)`, so roster members may use the same
+server name with different endpoints or tool surfaces without contaminating
+one another. Updating the primary Agent's MCP configuration invalidates only
+that Thread's snapshots in the same transaction as the Session projection.
+Custom Skill pins and materialization are being moved across the same boundary
+before child execution is enabled.
+
 ### Wire and domain models are separate
 
 `internal/httpapi` owns request decoding and response encoding.
