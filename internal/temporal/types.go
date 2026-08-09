@@ -107,6 +107,8 @@ type PrepareTurnResult struct {
 	Terminated       bool           `json:"terminated"`
 	FatalError       string         `json:"fatal_error,omitempty"`
 	AttemptID        string         `json:"attempt_id,omitempty"`
+	ThreadID         string         `json:"thread_id,omitempty"`
+	SkillRuntimeRoot string         `json:"skill_runtime_root,omitempty"`
 	Request          model.Request  `json:"request"`
 	Tools            []TurnTool     `json:"tools,omitempty"`
 	ResumeActions    []ResumeAction `json:"resume_actions,omitempty"`
@@ -254,6 +256,7 @@ type ResumeModelRetryInput struct {
 // stable because it came from the completed CallModel Activity result.
 type ExecuteToolInput struct {
 	SessionID          string           `json:"session_id"`
+	ThreadID           string           `json:"thread_id,omitempty"`
 	TriggerEventID     string           `json:"trigger_event_id"`
 	AttemptID          string           `json:"attempt_id"`
 	Ordinal            int              `json:"ordinal"`
@@ -264,6 +267,7 @@ type ExecuteToolInput struct {
 	MCPServer          domain.MCPServer `json:"mcp_server,omitempty"`
 	MCPToolName        string           `json:"mcp_tool_name,omitempty"`
 	Input              map[string]any   `json:"input"`
+	SkillRuntimeRoot   string           `json:"skill_runtime_root,omitempty"`
 	SkillAlreadyLoaded bool             `json:"skill_already_loaded,omitempty"`
 }
 

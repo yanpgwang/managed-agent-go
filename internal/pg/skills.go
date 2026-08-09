@@ -352,13 +352,58 @@ ORDER BY created_at, skill_id, version`)
 	return items, rows.Err()
 }
 
-// SessionSkillsForRuntime returns the immutable Version metadata pinned by a
-// Session in public-list order. The relational rows are the runtime authority;
-// joining ready Versions also fails closed if persisted lifecycle state is ever
-// repaired inconsistently.
+// SessionSkillsForRuntime preserves the single-Agent runtime entry point by
+// selecting the Session primary Thread's resolved execution scope.
 func (s *Store) SessionSkillsForRuntime(
 	ctx context.Context,
 	sessionID string,
+) ([]domain.SkillVersion, error) {
+	threadID, err := s.q.GetPrimarySessionThreadID(ctx, sessionID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, domain.NotFound("session not found")
+		}
+		return nil, err
+	}
+	runtime, err := s.SessionThreadSkillRuntime(ctx, sessionID, threadID)
+	return runtime.Versions, err
+}
+
+// SessionThreadSkillRuntime returns the immutable Version metadata and runtime
+// root selected by a Thread's resolved Agent. The relational pins are the
+// authority; no mutable Agent resource lookup belongs on this path.
+func (s *Store) SessionThreadSkillRuntime(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) (domain.SkillRuntime, error) {
+	thread, err := s.GetSessionThread(ctx, sessionID, threadID)
+	if err != nil {
+		return domain.SkillRuntime{}, err
+	}
+	session, err := s.GetSession(ctx, sessionID)
+	if err != nil {
+		return domain.SkillRuntime{}, err
+	}
+	versions, err := s.sessionAgentSkillsForRuntime(
+		ctx, sessionID, thread.Agent.ID, thread.Agent.Version,
+	)
+	if err != nil {
+		return domain.SkillRuntime{}, err
+	}
+	return domain.SkillRuntime{
+		Root: domain.SessionAgentSkillRoot(
+			session.AgentID, session.AgentVersion, thread.Agent,
+		),
+		Versions: versions,
+	}, nil
+}
+
+func (s *Store) sessionAgentSkillsForRuntime(
+	ctx context.Context,
+	sessionID string,
+	agentID string,
+	agentVersion int,
 ) ([]domain.SkillVersion, error) {
 	rows, err := s.pool.Query(ctx, `
 SELECT version.skill_id, version.version, version.created_at,
@@ -372,7 +417,9 @@ JOIN skill_versions AS version
  AND version.state = 'ready'
 JOIN skills AS skill ON skill.id = version.skill_id AND skill.ready
 WHERE pin.session_id = $1
-ORDER BY pin.position`, sessionID)
+  AND pin.agent_id = $2
+  AND pin.agent_version = $3
+ORDER BY pin.position`, sessionID, agentID, agentVersion)
 	if err != nil {
 		return nil, err
 	}

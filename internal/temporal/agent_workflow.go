@@ -159,6 +159,8 @@ func runWorkflowTurnInternal(
 	turn := &workflowTurnState{
 		actx:                     actx,
 		sessionID:                sessionID,
+		threadID:                 prepared.ThreadID,
+		skillRuntimeRoot:         prepared.SkillRuntimeRoot,
 		triggerEventID:           triggerEventID,
 		resolutionEventIDs:       resolutionEventIDs,
 		interrupts:               interrupts,

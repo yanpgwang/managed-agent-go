@@ -529,6 +529,31 @@ func TestDocker_SkillBundleSurvivesAttachRepairsCorruptionAndIsReadOnly(t *testi
 	if err != nil || result.ExitCode == 0 {
 		t.Fatalf("write to read-only Skill mount: result=%+v err=%v", result, err)
 	}
+	childArchive, childExpanded := testSkillArchive(t, "Report_Tool", map[string]skillTestFile{
+		"SKILL.md": {
+			body: []byte("---\nname: report-tool\ndescription: Child reports\n---\nChild scope.\n"),
+			mode: 0o644,
+		},
+	})
+	childMount := testReadOnlySkillMount(
+		"skill_reports@200", "report-tool", "Report_Tool",
+		childArchive, childExpanded,
+	)
+	childMount.RuntimePath = domain.SessionSkillsRoot +
+		"/.agents/0123456789abcdef01234567/report-tool"
+	if err := skills.ImportReadOnlySkill(
+		ctx, childMount, bytes.NewReader(childArchive),
+	); err != nil {
+		t.Fatalf("import Agent-scoped Skill: %v", err)
+	}
+	result, err = first.Exec(ctx, Command{
+		Path: "sh", Args: []string{"-c",
+			"grep -q 'Analyze reports' /workspace/skills/report-tool/SKILL.md && " +
+				"grep -q 'Child reports' /workspace/skills/.agents/0123456789abcdef01234567/report-tool/SKILL.md"},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("isolated same-name Skill bundles: result=%+v err=%v", result, err)
+	}
 
 	firstBox := first.(*dockerSandbox)
 	stagedSkillMD := filepath.Join(
@@ -583,6 +608,38 @@ func TestDocker_SkillBundleSurvivesAttachRepairsCorruptionAndIsReadOnly(t *testi
 	}
 	if _, err := os.Stat(resourceRoot); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Skill resource root survived sandbox destruction: %v", err)
+	}
+}
+
+func TestReadOnlySkillMountAcceptsOnlyPrimaryOrAgentScopedPaths(t *testing.T) {
+	archive, expanded := testSkillArchive(t, "reports", map[string]skillTestFile{
+		"SKILL.md": {
+			body: []byte("---\nname: reports\ndescription: Test reports\n---\n"),
+			mode: 0o644,
+		},
+	})
+	mount := testReadOnlySkillMount(
+		"skill_reports@100", "reports", "reports", archive, expanded,
+	)
+	for _, runtimePath := range []string{
+		domain.SessionSkillsRoot + "/reports",
+		domain.SessionSkillsRoot + "/.agents/0123456789abcdef01234567/reports",
+	} {
+		mount.RuntimePath = runtimePath
+		if err := validateReadOnlySkillMount(mount); err != nil {
+			t.Fatalf("valid runtime path %q: %v", runtimePath, err)
+		}
+	}
+	for _, runtimePath := range []string{
+		domain.SessionSkillsRoot + "/other",
+		domain.SessionSkillsRoot + "/../reports",
+		domain.SessionSkillsRoot + "/.agents/not-a-scope/reports",
+		domain.SessionSkillsRoot + "/.agents/0123456789abcdef01234567/nested/reports",
+	} {
+		mount.RuntimePath = runtimePath
+		if err := validateReadOnlySkillMount(mount); err == nil {
+			t.Fatalf("invalid runtime path %q was accepted", runtimePath)
+		}
 	}
 }
 

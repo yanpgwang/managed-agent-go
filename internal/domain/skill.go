@@ -1,6 +1,11 @@
 package domain
 
-import "time"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strconv"
+	"time"
+)
 
 // Skill is the stable identity for a custom Skill. LatestVersion is empty when
 // every immutable Version has been deleted.
@@ -46,6 +51,35 @@ type SkillVersion struct {
 	ChecksumSHA256        string
 	State                 SkillVersionState
 	Initial               bool
+}
+
+// SkillRuntime is the immutable custom Skill surface selected for one Session
+// Agent execution scope. Multiple Threads running the same resolved Agent may
+// share this bundle; their conversation context remains independent.
+type SkillRuntime struct {
+	Root     string
+	Versions []SkillVersion
+}
+
+// SessionAgentSkillRoot preserves the Claude Code-compatible flat path for the
+// coordinator and self copies. External roster Agents use a stable opaque
+// namespace so equal Skill names with different Versions cannot collide in the
+// shared Session sandbox.
+func SessionAgentSkillRoot(
+	sessionAgentID string,
+	sessionAgentVersion int,
+	agent Agent,
+) string {
+	if agent.ID == sessionAgentID && agent.Version == sessionAgentVersion {
+		return SessionSkillsRoot
+	}
+	identity := agent.ID + "\x00" + strconv.Itoa(agent.Version)
+	digest := sha256.Sum256([]byte(identity))
+	return SessionSkillsRoot + "/.agents/" + hex.EncodeToString(digest[:12])
+}
+
+func (r SkillRuntime) SkillPath(name string) string {
+	return r.Root + "/" + name
 }
 
 const (

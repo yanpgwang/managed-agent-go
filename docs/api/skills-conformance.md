@@ -62,20 +62,24 @@ Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
   500 effective Skill references.
 - Agent/Session pins and Skill Version deletion linearize on the PostgreSQL
   Version row. A deleting Version cannot enter a new Agent configuration or
-  Session; the latest active Agent configuration and every committed Session
-  retain their archives. Migration backfills concrete, ready references from
-  pre-existing projections.
-- Docker-backed cloud Sessions expose each pinned custom Skill at
-  `/workspace/skills/<name>/`. The uploaded top-level directory is stripped and
-  re-rooted under the validated frontmatter name, so case and underscore
-  normalization cannot make discovery disagree with the runtime path.
+  Session; the latest active Agent configuration and every resolved Agent scope
+  in a committed Session retain their archives. Migration backfills concrete,
+  ready references from pre-existing primary projections.
+- Docker-backed cloud Sessions expose primary/self custom Skills at
+  `/workspace/skills/<name>/`. External roster Agents use stable isolated
+  namespaces below `/workspace/skills/.agents/`, so two Agent configurations
+  may safely reuse a runtime name with different Versions. The uploaded
+  top-level directory is stripped and re-rooted under the validated frontmatter
+  name, so case and underscore normalization cannot make discovery disagree
+  with the runtime path.
 - Skill contents are reconciled lazily before the first sandbox tool call. The
   model initially receives only JSON-encoded name, description, and `SKILL.md`
   path metadata. Selecting the private `Skill` dispatcher causes the runtime,
   rather than a model-issued `read`, to inject the complete main instruction
   file. Supporting files and scripts remain available through normal tools.
 - Admission rejects duplicate runtime names or more than 500 MB of aggregate
-  expanded bundle content. Discovery always retains every Skill name and uses
+  expanded bundle content within one Agent scope. Discovery always retains
+  every current-Agent Skill name and uses
   one percent of the configured context window for descriptions; once that
   budget is exhausted, later entries remain invocable as name-only records.
   Executable bits are preserved while the complete Docker bind mount remains

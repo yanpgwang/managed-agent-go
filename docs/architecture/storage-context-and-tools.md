@@ -180,10 +180,13 @@ S3-compatible store owns a canonical zip archive under a Skill-specific key.
 Only a completed `ready` Version is public; restart reconciliation deletes
 orphaned uploading archives and completes interrupted deletions. Agent and
 Session inputs resolve `latest` to an immutable Version, and PostgreSQL commits
-Session-Version pins with the Session projection so archive deletion cannot
-race admission. Before a Docker sandbox tool runs, the worker reads only those
+Version pins for every distinct resolved roster Agent scope with the Session
+projection so archive deletion cannot race admission. Before a Docker sandbox
+tool runs, the worker selects the current Thread Agent scope, reads only those
 relational pins, verifies the corresponding object bytes and archive entries,
-and atomically publishes a read-only tree at `/workspace/skills/<name>/`.
+and atomically publishes a read-only tree. Primary/self scopes retain
+`/workspace/skills/<name>/`; external roster Agents use stable namespaces below
+`/workspace/skills/.agents/` so equal runtime names cannot collide.
 `PrepareTurn` projects bounded JSON-encoded name, description, and `SKILL.md`
 path metadata plus a private `Skill` schema. A successful dispatch returns the
 normal tool result first, then adds a sibling user-text block containing

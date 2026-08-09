@@ -143,12 +143,13 @@ implemented. Session creation freezes the full resolved roster definitions,
 including Session overrides on `self`. Independent Thread projections,
 per-Thread public event, private provider-transcript, and MCP discovery
 ownership, migration backfill, and atomic child creation from that frozen
-roster are in place. The remaining runtime-configuration prerequisite is
-Thread-owned custom Skill pinning and isolated materialization. The remaining
-M2 work is then connecting the coordinator runtime to child creation and the
-Thread-owned transcript, independent child execution, delegation/message
-delivery, cross-posted lifecycle and confirmation events, context compaction,
-and targeted interrupts.
+roster are in place. Custom Skill retention, discovery, materialization, and
+activation now select the resolved Agent execution scope used by each Thread;
+primary/self paths remain compatible while external Agent paths are isolated.
+The remaining M2 work is connecting the coordinator runtime to child creation
+and the Thread-owned transcript, independent child execution,
+delegation/message delivery, cross-posted lifecycle and confirmation events,
+context compaction, and targeted interrupts.
 Advisor consultation Threads and shared Session budget enforcement follow the
 ordinary child runtime because both depend on correct per-Thread usage and
 Session-level aggregation, but retain their distinct public behavior.

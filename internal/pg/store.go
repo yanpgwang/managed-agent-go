@@ -366,13 +366,48 @@ VALUES ($1, $2, $3)`, session.ID, position, vaultID); err != nil {
 }
 
 func insertSessionSkillVersions(ctx context.Context, tx pgx.Tx, session domain.Session) error {
-	if len(session.AgentSnapshot.Skills) > app.MaxSessionSkills {
+	type executionScope struct {
+		id      string
+		version int
+	}
+	agents := make([]domain.Agent, 0, len(session.MultiagentRoster)+1)
+	agents = append(agents, session.AgentSnapshot)
+	seen := map[executionScope]struct{}{{
+		id: session.AgentSnapshot.ID, version: session.AgentSnapshot.Version,
+	}: {}}
+	for _, member := range session.MultiagentRoster {
+		scope := executionScope{id: member.ID, version: member.Version}
+		if _, duplicate := seen[scope]; duplicate {
+			continue
+		}
+		seen[scope] = struct{}{}
+		agents = append(agents, member)
+	}
+	for _, agent := range agents {
+		if err := insertSessionAgentSkillVersions(
+			ctx, tx, session.ID, agent,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func insertSessionAgentSkillVersions(
+	ctx context.Context,
+	tx pgx.Tx,
+	sessionID string,
+	agent domain.Agent,
+) error {
+	if len(agent.Skills) > app.MaxSessionSkills {
 		return domain.Validation("skills must contain at most 500 entries")
 	}
-	for position, reference := range session.AgentSnapshot.Skills {
+	for position, reference := range agent.Skills {
 		if reference.Type != "custom" || reference.SkillID == "" ||
 			reference.Version == "" || reference.Version == "latest" {
-			return domain.Validation("Session Skill references must use concrete custom Versions")
+			return domain.Validation(
+				"Session Agent Skill references must use concrete custom Versions",
+			)
 		}
 		locked, err := lockReadySkillVersion(ctx, tx, reference)
 		if err != nil {
@@ -383,9 +418,10 @@ func insertSessionSkillVersions(ctx context.Context, tx pgx.Tx, session domain.S
 		}
 		if _, err := tx.Exec(ctx, `
 INSERT INTO session_skill_versions (
-    session_id, position, skill_id, skill_version
-) VALUES ($1, $2, $3, $4)`,
-			session.ID, position, reference.SkillID, reference.Version,
+    session_id, agent_id, agent_version, position, skill_id, skill_version
+) VALUES ($1, $2, $3, $4, $5, $6)`,
+			sessionID, agent.ID, agent.Version, position,
+			reference.SkillID, reference.Version,
 		); err != nil {
 			if isForeignKeyViolation(err) {
 				return domain.Validation("Session references a missing custom Skill Version")

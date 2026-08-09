@@ -402,7 +402,21 @@ func ProjectSessionSkillContext(
 	skills []SkillVersion,
 	descriptionCharacterBudget int,
 ) string {
-	section := sessionSkillContextSection(skills, descriptionCharacterBudget)
+	return ProjectSkillRuntimeContext(
+		base, SkillRuntime{Root: SessionSkillsRoot, Versions: skills},
+		descriptionCharacterBudget,
+	)
+}
+
+// ProjectSkillRuntimeContext exposes discovery metadata only for the current
+// resolved Agent scope. Supporting files remain in the shared sandbox, but no
+// other Agent's Skill list enters this Thread's model context.
+func ProjectSkillRuntimeContext(
+	base string,
+	runtime SkillRuntime,
+	descriptionCharacterBudget int,
+) string {
+	section := skillRuntimeContextSection(runtime, descriptionCharacterBudget)
 	if section == "" {
 		return base
 	}
@@ -412,11 +426,11 @@ func ProjectSessionSkillContext(
 	return base + "\n\n" + section
 }
 
-func sessionSkillContextSection(
-	skills []SkillVersion,
+func skillRuntimeContextSection(
+	runtime SkillRuntime,
 	descriptionCharacterBudget int,
 ) string {
-	if len(skills) == 0 {
+	if len(runtime.Versions) == 0 {
 		return ""
 	}
 	if descriptionCharacterBudget < 0 {
@@ -425,7 +439,7 @@ func sessionSkillContextSection(
 	var section strings.Builder
 	section.WriteString("<available_skills>\n")
 	section.WriteString("Custom Skills available to the Skill tool. Invoke a Skill only when its description matches the task; the runtime will load its main instructions into the conversation. Use read or bash only for supporting files referenced by those instructions:\n")
-	for _, skill := range skills {
+	for _, skill := range runtime.Versions {
 		section.WriteString("- ")
 		description := []rune(skill.Description)
 		if len(description) > descriptionCharacterBudget {
@@ -446,7 +460,7 @@ func sessionSkillContextSection(
 		}{
 			Name:        skill.Name,
 			Description: string(description),
-			SkillMD:     SessionSkillsRoot + "/" + skill.Name + "/SKILL.md",
+			SkillMD:     runtime.SkillPath(skill.Name) + "/SKILL.md",
 		})
 		section.Write(encoded)
 		section.WriteByte('\n')

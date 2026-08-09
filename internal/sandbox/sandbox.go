@@ -253,11 +253,13 @@ type MemoryStoreSandbox interface {
 }
 
 // ReadOnlySkillMount describes one immutable canonical Skill archive expected
-// beneath /workspace/skills. Name is the safe runtime directory; ArchiveRoot is
-// the upload's validated top-level directory and is stripped during extraction.
+// beneath /workspace/skills. RuntimePath is the absolute Agent-scope directory;
+// Name is its safe final component. ArchiveRoot is the upload's validated
+// top-level directory and is stripped during extraction.
 type ReadOnlySkillMount struct {
 	Identity              string
 	Name                  string
+	RuntimePath           string
 	ArchiveRoot           string
 	SizeBytes             int64
 	UncompressedSizeBytes int64
