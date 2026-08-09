@@ -647,9 +647,10 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	result := PrepareTurnResult{
 		AttemptID: a.ids.NewID(domain.PrefixRunAttempt),
 		Request: model.Request{
-			Model:  session.AgentSnapshot.Model.ID,
-			System: system,
-			Tools:  toolSchemas,
+			Model:        session.AgentSnapshot.Model.ID,
+			InferenceGeo: session.AgentSnapshot.Model.InferenceGeo,
+			System:       system,
+			Tools:        toolSchemas,
 		},
 	}
 	if trigger.Type == domain.EvUserDefineOutcome {
@@ -1098,7 +1099,7 @@ func (a *Activities) EvaluateOutcome(
 		return EvaluateOutcomeResult{FatalError: err.Error()}, nil
 	}
 	response, err := a.modelClient.CreateMessage(ctx, model.Request{
-		Model: in.Model, Effort: in.Effort, Speed: in.Speed,
+		Model: in.Model, Effort: in.Effort, Speed: in.Speed, InferenceGeo: in.InferenceGeo,
 		System: outcomeGraderSystem + " Return exactly one JSON object with " +
 			`{"result":"satisfied|needs_revision|failed","explanation":"..."}.`,
 		MaxTokens: 1024,

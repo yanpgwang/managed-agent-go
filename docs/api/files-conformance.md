@@ -20,7 +20,7 @@ use `anthropic-beta: files-api-2025-04-14`; they do not expand the core
 | `GET /v1/files/{file_id}/content` | Binary content and non-downloadable rejection | Byte-exact output-file download | S3-compatible read for an internally seeded downloadable output |
 | `DELETE /v1/files/{file_id}` | Deleted response and not-found shape | Delete lifecycle | Metadata is hidden before object deletion; incomplete deletion is reconciled on restart |
 
-The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.61.0`.
+The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.62.0`.
 Service tests run the same HTTP lifecycle against real PostgreSQL and MinIO.
 
 ## Implemented contract

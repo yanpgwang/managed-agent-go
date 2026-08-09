@@ -5,7 +5,7 @@ slug: /api/session-threads-conformance
 
 # Session Threads conformance matrix
 
-Baseline: `managed-agents-2026-04-01`, Anthropic Go SDK `v1.61.0`.
+Baseline: `managed-agents-2026-04-01`, Anthropic Go SDK `v1.62.0`.
 
 | Operation | Route | HTTP | Official Go SDK | Durable semantics | Known limitation |
 | --- | --- | --- | --- | --- | --- |
@@ -27,3 +27,4 @@ Not yet claimed:
 - `agent.thread_message_*` and `session.thread_*` lifecycle events;
 - cross-posted tool/custom events and targeted interrupts;
 - child-Thread context compaction and per-Thread provider transcripts.
+- advisor consultation Threads and Session-wide list-cost budget enforcement.

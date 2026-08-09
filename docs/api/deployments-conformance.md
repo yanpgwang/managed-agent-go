@@ -6,14 +6,14 @@ title: Deployments conformance matrix
 
 This matrix tracks the ten SDK-visible Deployment and Deployment Run operations
 in the public Managed Agents API. It is based on the official API reference and
-Anthropic Go SDK v1.61.0, verified on 2026-08-09.
+Anthropic Go SDK v1.62.0, verified on 2026-08-09.
 
 | Resource | Operation | HTTP route | Route | Official SDK black box | Durable/service path | Known gap |
 | --- | --- | --- | --- | --- | --- | --- |
-| Deployment | Create | `POST /v1/deployments` | Yes | Yes | Yes | GitHub repository resources are rejected. |
+| Deployment | Create | `POST /v1/deployments` | Yes | Yes | Yes | GitHub repository resources and non-null Session budget templates are rejected. |
 | Deployment | List | `GET /v1/deployments` | Yes | Yes | Yes | None identified for documented filters and forward pagination. |
 | Deployment | Get | `GET /v1/deployments/{deployment_id}` | Yes | Yes | Yes | None identified for the current SDK response shape. |
-| Deployment | Update | `POST /v1/deployments/{deployment_id}` | Yes | Yes | Yes | Automatic archival after Agent archival is not implemented. |
+| Deployment | Update | `POST /v1/deployments/{deployment_id}` | Yes | Yes | Yes | Non-null Session budget templates and automatic archival after Agent archival are not implemented. |
 | Deployment | Archive | `POST /v1/deployments/{deployment_id}/archive` | Yes | Yes | Yes | None identified for idempotent terminal archive. |
 | Deployment | Pause | `POST /v1/deployments/{deployment_id}/pause` | Yes | Yes | Yes | None identified for suppressing scheduled triggers. |
 | Deployment | Unpause | `POST /v1/deployments/{deployment_id}/unpause` | Yes | Yes | Yes | None identified for future-only resume without missed-run backfill. |
@@ -40,10 +40,12 @@ Scheduled execution runs only in the `orchestrate` worker role. PostgreSQL
 leases recover abandoned work, and each scheduled occurrence has a unique
 durable identity. The implementation deliberately does not claim Anthropic's
 internal scheduler, jitter distribution, quotas, or infrastructure.
+The v1.62 nullable `budget` field interoperates through the official SDK;
+non-null limits return `422` until list-cost enforcement is implemented.
 
 ## Normative references
 
 - [Scheduled deployments](https://platform.claude.com/docs/en/managed-agents/scheduled-deployments)
 - [Deployments API](https://platform.claude.com/docs/en/api/beta/deployments)
 - [Deployment Runs API](https://platform.claude.com/docs/en/api/beta/deployment-runs)
-- [Anthropic Go SDK v1.61.0](https://github.com/anthropics/anthropic-sdk-go/tree/v1.61.0)
+- [Anthropic Go SDK v1.62.0](https://github.com/anthropics/anthropic-sdk-go/tree/v1.62.0)

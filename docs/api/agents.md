@@ -29,9 +29,13 @@ Required fields:
 - `name`: non-empty string;
 - `model`: model ID string or an object with a non-empty `id`.
 
-The object model form also preserves supported `effort` and `speed` values.
+The object model form also preserves supported `effort`, `speed`, and
+`inference_geo` values.
 `effort` accepts either a level string such as `"high"` or the tagged object
 `{"type":"high"}`; responses use the tagged object form.
+An explicit non-empty `inference_geo` is forwarded on every working and outcome
+grader request. On Agent update, `model` is whole-object replacement for this
+field: omitting `inference_geo` clears a previous pin.
 Optional collection and metadata fields may be omitted or supplied with their
 documented array/object shape; explicit `null` is not a create-time default.
 
@@ -55,8 +59,17 @@ Version being written and may appear at most once. Responses and stored Agent
 history contain only concrete `{"type":"agent","id","version"}` references,
 so later updates to a referenced Agent do not change an existing coordinator.
 Archived, missing, duplicate, and nested coordinator references are rejected.
+If the coordinator pins `model.inference_geo`, every independently referenced
+Agent must pin the same value; if the coordinator leaves it unset, every member
+must also leave it unset. A model change that would violate this invariant must
+replace or clear the roster in the same Agent update.
 Runtime delegation and child Session Threads remain a separate compatibility
 milestone.
+
+Anthropic Go SDK v1.62 also exposes an `advisor` roster entry. Mango rejects
+that variant rather than treating it as an ordinary Agent: advisor
+consultations have a reserved identity, a distinct ephemeral Thread lifecycle,
+redaction rules, and separate usage semantics that are not implemented yet.
 
 Agents written by releases that accepted opaque `multiagent` objects remain
 readable without inventing historical version pins. An unresolved legacy

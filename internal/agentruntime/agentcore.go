@@ -133,10 +133,11 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 			messageID := a.ids.NewID(domain.PrefixEvent)
 			started := false
 			resp, err = a.client.CreateMessageStream(ctx, model.Request{
-				Model:    req.AgentSnapshot.Model.ID,
-				System:   system,
-				Messages: messages,
-				Tools:    toolSchemas,
+				Model:        req.AgentSnapshot.Model.ID,
+				InferenceGeo: req.AgentSnapshot.Model.InferenceGeo,
+				System:       system,
+				Messages:     messages,
+				Tools:        toolSchemas,
 			}, func(index int, text string) {
 				if !started {
 					previewer.PreviewStart(messageID, domain.EvAgentMessage)
@@ -171,10 +172,11 @@ func (a *AgentCore) Run(ctx context.Context, req RunRequest, sink EventSink) (Ru
 			}
 		} else {
 			resp, err = a.client.CreateMessage(ctx, model.Request{
-				Model:    req.AgentSnapshot.Model.ID,
-				System:   system,
-				Messages: messages,
-				Tools:    toolSchemas,
+				Model:        req.AgentSnapshot.Model.ID,
+				InferenceGeo: req.AgentSnapshot.Model.InferenceGeo,
+				System:       system,
+				Messages:     messages,
+				Tools:        toolSchemas,
 			})
 			if err != nil {
 				return RunOutcome{}, err

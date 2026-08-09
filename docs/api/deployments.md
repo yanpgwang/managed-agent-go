@@ -8,7 +8,7 @@ slug: /api/deployments
 A Deployment is a durable template for creating autonomous Sessions. It pins a
 specific Agent Version and stores the Environment, initial events, resources,
 ordered Vault references, metadata, and an optional cron schedule used for each
-Run.
+Run. The v1.62 response also carries a nullable Session budget template.
 
 ## Create and inspect
 
@@ -52,6 +52,11 @@ must immediately follow the user event it annotates. Schedules use five-field
 POSIX cron syntax and an IANA timezone. The response includes the next five
 occurrences in `schedule.upcoming_runs_at`.
 
+`budget: null` explicitly stores no Session spend ceiling. Non-null limits
+currently return `422` rather than being ignored; Deployment-created Sessions
+cannot enforce the template until provider list cost is aggregated across all
+of their Threads.
+
 Deployment lists support `agent_id`, `status`, `include_archived`,
 `created_at[gte]`, `created_at[lte]`, `limit`, and a forward-only opaque `page`
 cursor.
@@ -68,6 +73,8 @@ POST /v1/deployments/{deployment_id}/archive
 Update can replace the Agent pin, Environment, initial events, resources,
 Vaults, or schedule. Metadata is a per-key patch; a null value deletes one key.
 Setting `schedule` to null removes the schedule.
+An explicit null budget is accepted as the existing no-ceiling state; a
+non-null budget returns `422` under the same boundary as create.
 
 Pause suppresses scheduled triggers but does not prevent a manual Run. Unpause
 resumes with the next future occurrence and does not backfill missed times.

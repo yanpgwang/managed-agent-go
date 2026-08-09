@@ -4,13 +4,15 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"time"
 )
 
 type Model struct {
-	ID     string
-	Effort string
-	Speed  string
+	ID           string
+	Effort       string
+	Speed        string
+	InferenceGeo string
 	// EffortExplicit and SpeedExplicit distinguish an explicit Agent setting
 	// from the Managed Agents defaults echoed in the resolved resource. The
 	// Messages adapter uses this distinction to avoid sending preview fields to
@@ -51,6 +53,9 @@ func ValidateModel(model Model) error {
 	case "", "standard", "fast":
 	default:
 		return Validation("model speed must be standard or fast")
+	}
+	if model.InferenceGeo != "" && strings.TrimSpace(model.InferenceGeo) == "" {
+		return Validation("model inference_geo must be a non-empty string")
 	}
 	return nil
 }
@@ -256,6 +261,23 @@ func (m *Multiagent) RebindAgentVersion(ownerID string, version int) *Multiagent
 	return clone
 }
 
+// HasExternalAgent reports whether the resolved roster contains an Agent other
+// than the owning coordinator. Session model overrides also apply to self
+// copies, but never to independently referenced Agents, so callers use this to
+// enforce roster-wide model constraints without resolving immutable versions a
+// second time.
+func (m *Multiagent) HasExternalAgent(ownerID string) bool {
+	if m == nil {
+		return false
+	}
+	for _, reference := range m.Agents {
+		if reference.Type == "agent" && reference.ID != ownerID {
+			return true
+		}
+	}
+	return false
+}
+
 // NullableMultiagent preserves the update tri-state: an omitted patch leaves
 // the roster unchanged, Value=nil clears it, and a non-nil Value replaces it.
 type NullableMultiagent struct {
@@ -346,6 +368,9 @@ func (a Agent) SessionSnapshotJSON() map[string]any {
 	}
 	if a.Model.Speed != "" {
 		model["speed"] = a.Model.Speed
+	}
+	if a.Model.InferenceGeo != "" {
+		model["inference_geo"] = a.Model.InferenceGeo
 	}
 	system, description := "", ""
 	if a.System != nil {

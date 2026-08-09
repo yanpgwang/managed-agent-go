@@ -9,6 +9,7 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
@@ -545,6 +546,103 @@ func TestSDK_AgentMultiagentSelfResolvesAndTracksCoordinatorVersion(t *testing.T
 	}
 }
 
+func TestSDK_AgentInferenceGeoRoundTripsAndClearsOnModelReplacement(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name: "Geo-pinned Agent",
+		Model: anthropic.BetaManagedAgentsModelConfigParams{
+			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_8, InferenceGeo: anthropic.String("us"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create geo-pinned Agent: %v", err)
+	}
+	if agent.Model.InferenceGeo != "us" || !agent.Model.JSON.InferenceGeo.Valid() {
+		t.Fatalf("created model = %s", agent.Model.RawJSON())
+	}
+
+	updated, err := client.Beta.Agents.Update(ctx, agent.ID, anthropic.BetaAgentUpdateParams{
+		Model: anthropic.BetaManagedAgentsModelConfigParams{
+			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_8,
+		},
+	})
+	if err != nil {
+		t.Fatalf("clear inference_geo through whole-model replacement: %v", err)
+	}
+	if updated.Model.InferenceGeo != "" || updated.Model.JSON.InferenceGeo.Valid() {
+		t.Fatalf("updated model retained inference_geo: %s", updated.Model.RawJSON())
+	}
+}
+
+func TestSDK_SessionInferenceGeoOverridePreservesRosterInvariant(t *testing.T) {
+	client, server := sdkClientAndServer(t)
+	ctx := context.Background()
+	model := func(geo string) anthropic.BetaManagedAgentsModelConfigParams {
+		return anthropic.BetaManagedAgentsModelConfigParams{
+			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_8, InferenceGeo: anthropic.String(geo),
+		}
+	}
+	peer, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name: "Global peer", Model: model("global"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name: "Global coordinator", Model: model("global"),
+		Multiagent: anthropic.BetaManagedAgentsMultiagentParams{
+			Type: anthropic.BetaManagedAgentsMultiagentParamsTypeCoordinator,
+			Agents: []anthropic.BetaManagedAgentsMultiagentRosterEntryParamsUnion{{
+				OfString: anthropic.String(peer.ID),
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environmentID := mustEnv(t, server.URL)
+	_, err = client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent: anthropic.BetaSessionNewParamsAgentUnion{
+			OfBetaManagedAgentsAgentWithOverridess: &anthropic.BetaManagedAgentsAgentWithOverridesParams{
+				ID: coordinator.ID, Type: anthropic.BetaManagedAgentsAgentWithOverridesParamsTypeAgentWithOverrides,
+				Model: model("us"),
+			},
+		},
+		EnvironmentID: environmentID,
+	})
+	assertAPIStatus(t, err, http.StatusBadRequest)
+
+	selfEntry := anthropic.BetaManagedAgentsMultiagentRosterEntryParamsOfBetaManagedAgentsMultiagentSelfs(
+		anthropic.BetaManagedAgentsMultiagentSelfParamsTypeSelf,
+	)
+	selfCoordinator, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name: "Self coordinator", Model: model("global"),
+		Multiagent: anthropic.BetaManagedAgentsMultiagentParams{
+			Type:   anthropic.BetaManagedAgentsMultiagentParamsTypeCoordinator,
+			Agents: []anthropic.BetaManagedAgentsMultiagentRosterEntryParamsUnion{selfEntry},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent: anthropic.BetaSessionNewParamsAgentUnion{
+			OfBetaManagedAgentsAgentWithOverridess: &anthropic.BetaManagedAgentsAgentWithOverridesParams{
+				ID: selfCoordinator.ID, Type: anthropic.BetaManagedAgentsAgentWithOverridesParamsTypeAgentWithOverrides,
+				Model: model("us"),
+			},
+		},
+		EnvironmentID: environmentID,
+	})
+	if err != nil {
+		t.Fatalf("self copies should inherit the session model override: %v", err)
+	}
+	if session.Agent.Model.InferenceGeo != "us" {
+		t.Fatalf("session model = %s", session.Agent.Model.RawJSON())
+	}
+}
+
 func TestSDK_SkillReferencesPinAcrossAgentAndSessionSnapshots(t *testing.T) {
 	client, server, sessions := sdkClientServerAndSessions(t)
 	ctx := context.Background()
@@ -644,7 +742,7 @@ func TestSDK_SessionLifecycleAndSnapshot(t *testing.T) {
 		t.Fatalf("title = %q", session.Title)
 	}
 	assertRawObjectHasFields(t, session.RawJSON(),
-		"outcome_evaluations", "resources", "stats", "usage", "vault_ids", "deployment_id")
+		"budget", "outcome_evaluations", "resources", "stats", "usage", "vault_ids", "deployment_id")
 	assertRawObjectHasFields(t, session.Agent.RawJSON(), "multiagent")
 	if !session.JSON.OutcomeEvaluations.Valid() || !session.JSON.Resources.Valid() ||
 		!session.JSON.Stats.Valid() || !session.JSON.Usage.Valid() || !session.JSON.VaultIDs.Valid() {
@@ -653,6 +751,12 @@ func TestSDK_SessionLifecycleAndSnapshot(t *testing.T) {
 	if session.JSON.DeploymentID.Raw() == "" {
 		t.Fatal("session response omitted nullable deployment_id")
 	}
+	if session.JSON.Budget.Raw() != "null" {
+		t.Fatalf("session response budget = %q, want explicit null", session.JSON.Budget.Raw())
+	}
+	assertRawObjectHasFields(t, session.Usage.RawJSON(),
+		"active_seconds", "cache_creation", "cache_read_input_tokens", "input_tokens",
+		"list_cost", "output_tokens", "server_tool_use")
 	if session.Agent.JSON.Multiagent.Raw() == "" {
 		t.Fatal("session agent snapshot omitted multiagent")
 	}
@@ -712,6 +816,45 @@ func TestSDK_SessionLifecycleAndSnapshot(t *testing.T) {
 	if deleted.ID != session.ID || deleted.Type != anthropic.BetaManagedAgentsDeletedSessionTypeSessionDeleted {
 		t.Fatalf("deleted session response = %+v", deleted)
 	}
+}
+
+func TestSDK_SessionBudgetBoundaryIsExplicit(t *testing.T) {
+	client, ts := sdkClientAndServer(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "budget", "sys")
+	environmentID := mustEnv(t, ts.URL)
+
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: environmentID,
+		Budget:        param.NullStruct[anthropic.BetaManagedAgentsBudgetLimitParam](),
+	})
+	if err != nil {
+		t.Fatalf("explicit null budget should mean no ceiling: %v", err)
+	}
+	if session.JSON.Budget.Raw() != "null" {
+		t.Fatalf("session budget = %q, want null", session.JSON.Budget.Raw())
+	}
+	limit := anthropic.BetaManagedAgentsBudgetLimitParam{
+		Type: anthropic.BetaManagedAgentsBudgetLimitTypeLimit,
+		MaxListCost: anthropic.BetaMonetaryAmountParam{
+			Amount: "2500", Currency: anthropic.BetaCurrencyUsd,
+		},
+	}
+	_, err = client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
+		EnvironmentID: environmentID,
+		Budget:        limit,
+	})
+	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+
+	if _, err := client.Beta.Sessions.Update(ctx, session.ID, anthropic.BetaSessionUpdateParams{
+		Budget: param.NullStruct[anthropic.BetaManagedAgentsBudgetLimitParam](),
+	}); err != nil {
+		t.Fatalf("explicit null budget update should remain a no-op: %v", err)
+	}
+	_, err = client.Beta.Sessions.Update(ctx, session.ID, anthropic.BetaSessionUpdateParams{Budget: limit})
+	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
 }
 
 func TestSDK_SessionPinnedVersion(t *testing.T) {

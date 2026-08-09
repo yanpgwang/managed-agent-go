@@ -25,7 +25,7 @@ File and Memory Store inputs are accepted in `POST /v1/sessions`. Session
 publication, initial events, File-copy visibility, and resource rows share one
 PostgreSQL transaction after any object copies are prepared.
 
-The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.61.0`.
+The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.62.0`.
 Service tests use real PostgreSQL. Sandbox tests use a real Docker container and
 verify reattachment after a provider-client restart.
 

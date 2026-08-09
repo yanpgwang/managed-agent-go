@@ -6,8 +6,8 @@ title: Core API conformance matrix
 
 This matrix tracks the 21 SDK-visible operations in Mango's core single-agent
 scope. It is based on the public Managed Agents API reference and the official
-Anthropic Go SDK v1.61.0 types. It was last verified against those sources on
-2026-08-03.
+Anthropic Go SDK v1.62.0 types. It was last reverified against those sources on
+2026-08-09. The frozen v1.0.0 claim retains its original v1.61.0 evidence.
 
 Route presence is only an inventory signal. A **yes** in the route column does
 not claim full compatibility: accepted fields, defaults, null behavior, error

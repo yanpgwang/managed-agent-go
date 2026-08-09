@@ -19,6 +19,9 @@ import (
 const vaultIDsUpdateRejectedMessage = "vault_ids is reserved for future use on session update and is " +
 	"rejected by the Managed Agents API; omit it"
 
+const sessionBudgetUnsupportedMessage = "session budgets require provider list-cost accounting across all " +
+	"session threads and are not available in this release"
+
 func (s *Server) registerSessionRoutes() {
 	s.mux.HandleFunc("POST /v1/sessions", s.createSession)
 	s.mux.HandleFunc("GET /v1/sessions", s.listSessions)
@@ -68,6 +71,7 @@ func sessionToJSON(s domain.Session) map[string]any {
 	}
 	out := map[string]any{
 		"id": s.ID, "type": "session", "status": string(s.Status),
+		"budget":         nil,
 		"agent":          agentSnapshotJSON(s.AgentSnapshot),
 		"environment_id": s.EnvironmentID, "title": s.Title, "metadata": orEmptyMap(s.Metadata),
 		"created_at": s.CreatedAt.Format(timeFmt), "updated_at": s.UpdatedAt.Format(timeFmt),
@@ -78,13 +82,16 @@ func sessionToJSON(s domain.Session) map[string]any {
 			"duration_seconds": durationSeconds,
 		},
 		"usage": map[string]any{
+			"active_seconds": activeSeconds,
 			"cache_creation": map[string]any{
 				"ephemeral_1h_input_tokens": s.Usage.CacheCreation.Ephemeral1hInputTokens,
 				"ephemeral_5m_input_tokens": s.Usage.CacheCreation.Ephemeral5mInputTokens,
 			},
 			"cache_read_input_tokens": s.Usage.CacheReadInputTokens,
 			"input_tokens":            s.Usage.InputTokens,
+			"list_cost":               nil,
 			"output_tokens":           s.Usage.OutputTokens,
+			"server_tool_use":         nil,
 		},
 		"vault_ids": append([]string{}, s.VaultIDs...),
 	}
@@ -193,6 +200,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		InitialEvents json.RawMessage `json:"initial_events"`
 		Resources     json.RawMessage `json:"resources"`
 		VaultIDs      json.RawMessage `json:"vault_ids"`
+		Budget        json.RawMessage `json:"budget"`
 	}
 	if err := decodeJSONBody(r, &in); err != nil {
 		writeError(w, err)
@@ -220,6 +228,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	vaultIDs, err := parseOptionalNonNullJSON[[]string](in.VaultIDs, "vault_ids")
 	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if err := rejectUnsupportedSessionBudget(in.Budget); err != nil {
 		writeError(w, err)
 		return
 	}
@@ -477,12 +489,13 @@ func parseSessionListParams(r *http.Request) (app.ListPage, sessionCursorFilter,
 	return params, filter, nil
 }
 
-// updateSession implements the documented four-field update body: `agent`
+// updateSession implements the documented five-field update body: `agent`
 // (mid-session tools/mcp_servers replacement), `metadata` (per-key patch),
-// `title`, and `vault_ids` (rejected, as upstream rejects it too).
+// `title`, `budget`, and `vault_ids` (rejected, as upstream rejects it too).
 func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		Agent    json.RawMessage `json:"agent"`
+		Budget   json.RawMessage `json:"budget"`
 		Metadata json.RawMessage `json:"metadata"`
 		Title    json.RawMessage `json:"title"`
 		VaultIDs json.RawMessage `json:"vault_ids"`
@@ -493,6 +506,10 @@ func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(bytes.TrimSpace(in.VaultIDs)) > 0 {
 		writeError(w, domain.Unsupported(vaultIDsUpdateRejectedMessage))
+		return
+	}
+	if err := rejectUnsupportedSessionBudget(in.Budget); err != nil {
+		writeError(w, err)
 		return
 	}
 	title, err := parseOptionalNonNullJSON[string](in.Title, "title")
@@ -524,6 +541,18 @@ func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, sessionToJSON(sess))
+}
+
+// rejectUnsupportedSessionBudget accepts omission and explicit null, both of
+// which mean that no spend ceiling is configured. A non-null limit is rejected
+// instead of being silently ignored: enforcing it requires durable list-cost
+// aggregation across every current and future Session Thread.
+func rejectUnsupportedSessionBudget(raw json.RawMessage) error {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	return domain.Unsupported(sessionBudgetUnsupportedMessage)
 }
 
 // parseSessionMetadataPatch decodes the session metadata patch. Omitted

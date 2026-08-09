@@ -71,6 +71,9 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 		"id", "agent", "archived_at", "created_at", "parent_thread_id",
 		"session_id", "stats", "status", "type", "updated_at", "usage",
 	)
+	assertRawObjectHasFields(t, thread.Usage.RawJSON(),
+		"active_seconds", "cache_creation", "cache_read_input_tokens", "input_tokens",
+		"list_cost", "output_tokens", "server_tool_use")
 	if strings.Contains(thread.Agent.RawJSON(), `"multiagent"`) {
 		t.Fatal("thread agent repeated the coordinator multiagent roster")
 	}

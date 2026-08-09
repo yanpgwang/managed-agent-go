@@ -106,6 +106,17 @@ primary projection and Session aggregate transactionally. Primary event history
 and live streaming remain views of the existing Session ledger and NATS channel.
 The child-thread runtime remains an M2 capability.
 
+The living SDK baseline is now v1.62. Agent inference geography is persisted,
+forwarded to every model request, and validated across coordinator rosters and
+Session overrides. The new Session budget response fields are represented
+truthfully as nullable, while non-null limits remain explicitly unsupported
+until provider list-cost accounting can enforce one cap across all Threads.
+The v1.62 advisor entry is tracked as a separate M2 runtime variant rather than
+being folded into ordinary child-Agent execution.
+Deployment budget templates follow the same boundary: their nullable wire
+projection is present, and non-null values remain explicit `422` responses
+until the Sessions they create can enforce the shared cap.
+
 Skills and Memory are not deferred to multi-agent work. They provide reusable
 capabilities and continuity to one Agent today, and later become foundations
 that multi-agent orchestration can consume without inventing a second storage
@@ -129,6 +140,9 @@ Official coordinator roster resolution and immutable Agent Version pinning are
 implemented, as is the independent Thread execution projection. The remaining
 M2 work is child-thread creation, delegation/message execution, cross-posted
 confirmation, context compaction, and targeted interrupt events.
+Advisor consultation Threads and shared Session budget enforcement follow the
+ordinary child runtime because both depend on correct per-Thread usage and
+Session-level aggregation, but retain their distinct public behavior.
 The primary Thread HTTP surface, single-agent event ledger, pending-action
 barrier, private provider transcript, Skills, Memory, and Temporal turn loop
 are intended to be reused rather than replaced.

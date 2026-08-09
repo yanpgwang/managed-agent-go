@@ -39,11 +39,12 @@ func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 	resp, err := c.CreateMessage(context.Background(), Request{
-		Model:    "claude-x",
-		Effort:   "max",
-		Speed:    "fast",
-		System:   "sys",
-		Messages: []domain.Message{{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "hi"}}}},
+		Model:        "claude-x",
+		Effort:       "max",
+		Speed:        "fast",
+		InferenceGeo: "us",
+		System:       "sys",
+		Messages:     []domain.Message{{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "hi"}}}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -62,6 +63,9 @@ func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 	}
 	if gotBody["speed"] != "fast" {
 		t.Errorf("body speed = %v, want fast", gotBody["speed"])
+	}
+	if gotBody["inference_geo"] != "us" {
+		t.Errorf("body inference_geo = %v, want us", gotBody["inference_geo"])
 	}
 	outputConfig, ok := gotBody["output_config"].(map[string]any)
 	if !ok || outputConfig["effort"] != "max" {
@@ -105,6 +109,9 @@ func TestAnthropic_OmitsSemanticModelDefaults(t *testing.T) {
 	}
 	if _, present := wire["speed"]; present {
 		t.Fatalf("default speed must be omitted for compatible endpoints: %s", encoded)
+	}
+	if _, present := wire["inference_geo"]; present {
+		t.Fatalf("unset inference_geo must be omitted: %s", encoded)
 	}
 }
 
