@@ -188,6 +188,9 @@ func (s *Store) createSession(
 			} else if err != nil {
 				return err
 			}
+			if err := lockActiveSessionRoster(ctx, q, session); err != nil {
+				return err
+			}
 			if _, err := q.LockActiveEnvironment(ctx, session.EnvironmentID); errors.Is(err, pgx.ErrNoRows) {
 				return domain.Validation("environment is missing or archived")
 			} else if err != nil {
@@ -227,6 +230,43 @@ func (s *Store) createSession(
 	}
 	s.notifySession(ctx, session.ID)
 	return admission, nil
+}
+
+func lockActiveSessionRoster(
+	ctx context.Context,
+	q *pgstore.Queries,
+	session domain.Session,
+) error {
+	type pin struct {
+		id      string
+		version int
+	}
+	pins := make([]pin, 0, len(session.MultiagentRoster))
+	seen := map[pin]struct{}{{id: session.AgentID, version: session.AgentVersion}: {}}
+	for _, member := range session.MultiagentRoster {
+		candidate := pin{id: member.ID, version: member.Version}
+		if _, duplicate := seen[candidate]; duplicate {
+			continue
+		}
+		seen[candidate] = struct{}{}
+		pins = append(pins, candidate)
+	}
+	sort.Slice(pins, func(i, j int) bool {
+		if pins[i].id == pins[j].id {
+			return pins[i].version < pins[j].version
+		}
+		return pins[i].id < pins[j].id
+	})
+	for _, candidate := range pins {
+		if _, err := q.LockActiveAgentVersion(ctx, pgstore.LockActiveAgentVersionParams{
+			ID: candidate.id, Version: int32(candidate.version),
+		}); errors.Is(err, pgx.ErrNoRows) {
+			return domain.Validation("multiagent roster member is missing or archived")
+		} else if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) insertPrimarySessionThread(

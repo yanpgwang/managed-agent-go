@@ -178,7 +178,15 @@ func (s *SessionService) Create(
 	if err != nil {
 		return domain.Session{}, err
 	}
-	if environment.ConfigType == "cloud" && len(snapshot.Skills) > 0 && !s.cloudSkillBundles {
+	roster, err := s.resolveSessionMultiagentRoster(ctx, agent, snapshot)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	hasCloudSkills := len(snapshot.Skills) > 0
+	for _, member := range roster {
+		hasCloudSkills = hasCloudSkills || len(member.Skills) > 0
+	}
+	if environment.ConfigType == "cloud" && hasCloudSkills && !s.cloudSkillBundles {
 		return domain.Session{}, domain.Unsupported(
 			"custom Skills are unavailable for the configured cloud sandbox provider",
 		)
@@ -221,6 +229,7 @@ func (s *SessionService) Create(
 		Title:             input.Title,
 		Metadata:          metadata,
 		AgentSnapshot:     snapshot,
+		MultiagentRoster:  roster,
 		VaultIDs:          append([]string(nil), input.VaultIDs...),
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -273,6 +282,41 @@ func (s *SessionService) Create(
 		}
 	}
 	return created, err
+}
+
+// resolveSessionMultiagentRoster expands the immutable version pins stored on
+// an Agent resource into the full Agent definitions required by the Session
+// contract. The PostgreSQL admission transaction locks these same versions,
+// closing the archival race between this read and Session creation.
+func (s *SessionService) resolveSessionMultiagentRoster(
+	ctx context.Context,
+	coordinator domain.Agent,
+	snapshot domain.Agent,
+) ([]domain.Agent, error) {
+	if coordinator.Multiagent == nil {
+		return nil, nil
+	}
+	roster := make([]domain.Agent, 0, len(coordinator.Multiagent.Agents))
+	for _, reference := range coordinator.Multiagent.Agents {
+		var member domain.Agent
+		if reference.ID == coordinator.ID {
+			member = snapshot
+		} else {
+			var err error
+			member, err = s.agents.GetVersion(ctx, reference.ID, reference.Version)
+			if err != nil || member.ArchivedAt != nil {
+				return nil, domain.Validation(
+					"multiagent references an agent version that is missing or archived",
+				)
+			}
+		}
+		// Roster members are one level deep. Keeping the coordinator topology on
+		// a self snapshot would make the public Session shape recursive and would
+		// incorrectly grant a child the right to spawn another generation.
+		member.Multiagent = nil
+		roster = append(roster, member)
+	}
+	return roster, nil
 }
 
 func (s *SessionService) prepareMemoryStoreResources(

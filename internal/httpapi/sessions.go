@@ -72,7 +72,7 @@ func sessionToJSON(s domain.Session) map[string]any {
 	out := map[string]any{
 		"id": s.ID, "type": "session", "status": string(s.Status),
 		"budget":         nil,
-		"agent":          agentSnapshotJSON(s.AgentSnapshot),
+		"agent":          s.ResolvedAgentSnapshotJSON(),
 		"environment_id": s.EnvironmentID, "title": s.Title, "metadata": orEmptyMap(s.Metadata),
 		"created_at": s.CreatedAt.Format(timeFmt), "updated_at": s.UpdatedAt.Format(timeFmt),
 		"outcome_evaluations": outcomes,

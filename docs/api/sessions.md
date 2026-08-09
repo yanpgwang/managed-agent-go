@@ -55,6 +55,14 @@ copies in a coordinator roster. Independently referenced Agents are unaffected,
 so a geography override that would make the coordinator disagree with one of
 those pinned Agents is rejected.
 
+For a coordinator, `session.agent.multiagent.agents` expands the Agent
+resource's Version references into full immutable Agent definitions. The
+definitions are captured with the Session, in roster order, rather than loaded
+again when a child Thread starts. A `self` definition reflects the effective
+Session overrides and every roster member omits its own `multiagent` field,
+preserving the one-level topology. Existing Sessions keep those snapshots even
+if a referenced Agent is later updated or archived.
+
 The effective custom Skill list is revalidated when the Session is created.
 Every omitted or `latest` value is replaced by a concrete immutable Version in
 the returned `session.agent.skills` snapshot. PostgreSQL pins those Versions in

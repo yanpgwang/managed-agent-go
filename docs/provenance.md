@@ -83,7 +83,8 @@ verification where applicable.
   Session stream and child activity. Verified 2026-08-09 against the current
   documentation and Anthropic Go SDK `v1.62.0` types and methods. This focused
   verification also covered `model.inference_geo`, roster-wide geography
-  consistency, the advisor variant, and shared Session budgets.
+  consistency, full Session-resolved roster definitions, `self` override
+  propagation, the advisor variant, and shared Session budgets.
 - [Files API](https://platform.claude.com/docs/en/api/beta/files) and
   [Files guide](https://platform.claude.com/docs/en/build-with-claude/files) —
   the five operations, `files-api-2025-04-14` beta header, multipart upload,
@@ -232,10 +233,12 @@ forwarding upstream frames.
   optional Docker provider supplies container isolation.
 - Multiagent coordinator rosters are strictly validated and resolve ID,
   versioned, and `self` inputs to immutable concrete Agent Version references.
-  Every Session has a durable primary Thread with an independent execution
-  projection, and all five Thread read/archive/event operations are
-  implemented. Child execution, delegation, cross-thread messaging/event
-  projection, and orchestration are not yet implemented.
+  Session creation freezes the corresponding full Agent definitions and applies
+  Session overrides to `self` snapshots. Every Session has a durable primary
+  Thread with an independent execution projection, and all five Thread
+  read/archive/event operations are implemented. Child execution, delegation,
+  cross-thread messaging/event projection, and orchestration are not yet
+  implemented.
 - The Files API and File-backed Session Resources have separate conditional
   conformance matrices. They are not part of the frozen Managed Agents core
   claim.

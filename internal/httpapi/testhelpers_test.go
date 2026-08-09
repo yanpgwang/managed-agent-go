@@ -428,6 +428,23 @@ func (s *testSessionService) Create(
 	if err != nil {
 		return domain.Session{}, err
 	}
+	var roster []domain.Agent
+	if agent.Multiagent != nil {
+		roster = make([]domain.Agent, 0, len(agent.Multiagent.Agents))
+		for _, reference := range agent.Multiagent.Agents {
+			member := snapshot
+			if reference.ID != agent.ID {
+				member, err = s.agents.GetVersion(ctx, reference.ID, reference.Version)
+				if err != nil || member.ArchivedAt != nil {
+					return domain.Session{}, domain.Validation(
+						"multiagent references an agent version that is missing or archived",
+					)
+				}
+			}
+			member.Multiagent = nil
+			roster = append(roster, member)
+		}
+	}
 	metadata := input.Metadata
 	if metadata == nil {
 		metadata = map[string]any{}
@@ -435,7 +452,7 @@ func (s *testSessionService) Create(
 	now := s.clock.Now().UTC()
 	session := domain.Session{
 		ID: s.ids.NewID(domain.PrefixSession), AgentID: agent.ID,
-		AgentVersion: agent.Version, AgentSnapshot: snapshot,
+		AgentVersion: agent.Version, AgentSnapshot: snapshot, MultiagentRoster: roster,
 		EnvironmentID: environment.ID, EnvironmentType: environment.ConfigType,
 		EnvironmentConfig: environment.SessionConfig(),
 		Status:            domain.StatusIdle,

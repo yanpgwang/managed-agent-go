@@ -58,6 +58,9 @@ with `version` selects that exact Version. `self` resolves to the coordinator
 Version being written and may appear at most once. Responses and stored Agent
 history contain only concrete `{"type":"agent","id","version"}` references,
 so later updates to a referenced Agent do not change an existing coordinator.
+Creating a Session expands those pins into the full immutable definitions
+returned in `session.agent.multiagent.agents`; child Threads will execute those
+Session-owned snapshots rather than re-resolving Agent resources.
 Archived, missing, duplicate, and nested coordinator references are rejected.
 If the coordinator pins `model.inference_geo`, every independently referenced
 Agent must pin the same value; if the coordinator leaves it unset, every member

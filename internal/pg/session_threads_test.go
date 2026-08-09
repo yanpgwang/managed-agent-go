@@ -187,3 +187,86 @@ VALUES ($1, $2, $3, $4, $5, $6)`,
 		t.Fatalf("backfilled threads = %+v, err=%v", threads, err)
 	}
 }
+
+func TestSessionResolvedRosterMigrationBackfillsFullAgentSnapshots(t *testing.T) {
+	store := testStoreAtMigration(t, 22)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	peer := domain.Agent{
+		ID: "agent_roster_peer", Version: 2, Name: "Reviewer",
+		Model:  domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		System: stringPointer("peer-system"), CreatedAt: base, UpdatedAt: base,
+	}
+	coordinator := domain.Agent{
+		ID: "agent_roster_coordinator", Version: 4, Name: "Coordinator",
+		Model:  domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		System: stringPointer("coordinator-system"), CreatedAt: base, UpdatedAt: base,
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{
+			{Type: "agent", ID: peer.ID, Version: peer.Version},
+			{Type: "agent", ID: "agent_roster_coordinator", Version: 4},
+		}},
+	}
+	for _, agent := range []domain.Agent{peer, coordinator} {
+		body, err := json.Marshal(agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.pool.Exec(ctx, `
+INSERT INTO agents (id, version, name, body, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6)`,
+			agent.ID, agent.Version, agent.Name, body, base, base,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := newSession("sesn_roster_backfill")
+	session.AgentID = coordinator.ID
+	session.AgentVersion = coordinator.Version
+	session.AgentSnapshot = coordinator
+	session.AgentSnapshot.System = stringPointer("session-override")
+	encoded, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var legacyBody map[string]any
+	if err := json.Unmarshal(encoded, &legacyBody); err != nil {
+		t.Fatal(err)
+	}
+	delete(legacyBody, "MultiagentRoster")
+	encoded, err = json.Marshal(legacyBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO sessions (
+    id, status, body, created_at, updated_at, agent_id, agent_version
+) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		session.ID, session.Status, encoded, session.CreatedAt, session.UpdatedAt,
+		session.AgentID, session.AgentVersion,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Migrate(ctx, store.pool); err != nil {
+		t.Fatalf("migrate resolved roster: %v", err)
+	}
+	migrated, err := store.GetSession(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(migrated.MultiagentRoster) != 2 ||
+		migrated.MultiagentRoster[0].ID != peer.ID ||
+		migrated.MultiagentRoster[0].Version != peer.Version ||
+		migrated.MultiagentRoster[1].ID != coordinator.ID ||
+		migrated.MultiagentRoster[1].System == nil ||
+		*migrated.MultiagentRoster[1].System != "session-override" {
+		t.Fatalf("migrated roster = %+v", migrated.MultiagentRoster)
+	}
+	for _, member := range migrated.MultiagentRoster {
+		if member.Multiagent != nil {
+			t.Fatalf("migrated member retained nested topology: %+v", member)
+		}
+	}
+}
+
+func stringPointer(value string) *string { return &value }
