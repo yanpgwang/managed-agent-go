@@ -34,9 +34,12 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	service.next.CreatedAt = now.Add(time.Second)
 	service.next.UpdatedAt = service.next.CreatedAt
 	event := domain.Event{
-		ID: "sevt_thread_sdk", SessionID: service.thread.SessionID, Sequence: 1,
-		Type:      domain.EvUserMessage,
-		Payload:   map[string]any{"content": []any{map[string]any{"type": "text", "text": "hello"}}},
+		ID: "sevt_thread_sdk", SessionID: service.thread.SessionID,
+		ThreadID: service.thread.ID, Sequence: 1,
+		Type: domain.EvSessionThreadCreated,
+		Payload: map[string]any{
+			"agent_name": "reviewer", "session_thread_id": service.next.ID,
+		},
 		CreatedAt: now, ProcessedAt: &now,
 	}
 	nextEvent := event
@@ -44,12 +47,20 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	nextEvent.Sequence = 2
 	nextEvent.CreatedAt = now.Add(time.Second)
 	nextEvent.ProcessedAt = &nextEvent.CreatedAt
+	childEvent := event
+	childEvent.ID = "sevt_child_thread_sdk"
+	childEvent.ThreadID = service.next.ID
+	childEvent.Sequence = 3
+	childEvent.Type = domain.EvUserMessage
+	childEvent.Payload = map[string]any{
+		"content": []any{map[string]any{"type": "text", "text": "hello"}},
+	}
 	server := httptest.NewServer(NewServer(Deps{
 		Sessions: &testSessionService{sessions: map[string]domain.Session{
 			service.thread.SessionID: {ID: service.thread.SessionID},
 		}},
 		Threads: service,
-		Events:  &sdkThreadEvents{event: event, next: nextEvent},
+		Events:  &sdkThreadEvents{event: event, next: nextEvent, child: childEvent},
 		Stream:  &sdkThreadStream{event: event},
 	}, Config{RequireBeta: true, RequireAuth: true, RequireVersion: true}).Handler())
 	t.Cleanup(server.Close)
@@ -87,19 +98,20 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	if err != nil || len(nextPage.Data) != 1 || nextPage.Data[0].ID != service.next.ID {
 		t.Fatalf("List next Session Threads page = %+v, err=%v", nextPage, err)
 	}
-	if _, err := client.Beta.Sessions.Threads.Events.List(ctx, service.next.ID,
+	childEvents, err := client.Beta.Sessions.Threads.Events.List(ctx, service.next.ID,
 		anthropic.BetaSessionThreadEventListParams{SessionID: service.thread.SessionID},
-	); err == nil {
-		t.Fatal("child Thread read leaked the primary event ledger")
-	} else {
-		assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+	)
+	if err != nil || len(childEvents.Data) != 1 || childEvents.Data[0].ID != childEvent.ID {
+		t.Fatalf("List child Session Thread Events = %+v, err=%v", childEvents, err)
 	}
 
 	events, err := client.Beta.Sessions.Threads.Events.List(ctx, service.thread.ID,
 		anthropic.BetaSessionThreadEventListParams{
 			SessionID: service.thread.SessionID, Limit: param.NewOpt(int64(1)),
 		})
-	if err != nil || len(events.Data) != 1 || events.Data[0].Type != domain.EvUserMessage {
+	if err != nil || len(events.Data) != 1 ||
+		events.Data[0].Type != domain.EvSessionThreadCreated ||
+		events.Data[0].AsSessionThreadCreated().SessionThreadID != service.next.ID {
 		t.Fatalf("List Session Thread Events = %+v, err=%v", events, err)
 	}
 	nextEvents, err := events.GetNextPage()
@@ -130,7 +142,8 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	if !stream.Next() {
 		t.Fatalf("Stream Session Thread Events yielded no event: %v", stream.Err())
 	}
-	if got := stream.Current(); got.ID != event.ID || got.Type != domain.EvUserMessage {
+	if got := stream.Current(); got.ID != event.ID ||
+		got.Type != domain.EvSessionThreadCreated || got.AgentName != "reviewer" {
 		t.Fatalf("streamed event = %+v", got)
 	}
 
@@ -192,6 +205,7 @@ func (s *sdkThreadService) Archive(
 type sdkThreadEvents struct {
 	event domain.Event
 	next  domain.Event
+	child domain.Event
 }
 
 func (s *sdkThreadEvents) Query(
@@ -199,6 +213,9 @@ func (s *sdkThreadEvents) Query(
 ) ([]domain.Event, error) {
 	if sessionID != s.event.SessionID {
 		return nil, domain.NotFound("session not found")
+	}
+	if query.ThreadID == s.child.ThreadID {
+		return []domain.Event{s.child}, nil
 	}
 	if query.Boundary != nil {
 		return []domain.Event{s.next}, nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"sort"
 	"time"
@@ -700,6 +701,30 @@ func (s *Store) appendDrafts(
 	startSeq int64,
 	turnEventID *string,
 ) ([]domain.Event, int64, error) {
+	threadID, err := q.GetPrimarySessionThreadID(ctx, sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, 0, fmt.Errorf("pg: primary session thread is missing for %s", sessionID)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	return s.appendThreadDrafts(
+		ctx, q, sessionID, threadID, drafts, startSeq, turnEventID,
+	)
+}
+
+// appendThreadDrafts writes into one Thread ledger while preserving the
+// Session-wide sequence used for aggregate ordering and cross-post causality.
+// The caller holds the Session admission lock.
+func (s *Store) appendThreadDrafts(
+	ctx context.Context,
+	q *pgstore.Queries,
+	sessionID string,
+	threadID string,
+	drafts []domain.EventDraft,
+	startSeq int64,
+	turnEventID *string,
+) ([]domain.Event, int64, error) {
 	seq := startSeq
 	out := make([]domain.Event, 0, len(drafts))
 	for _, d := range drafts {
@@ -727,6 +752,7 @@ func (s *Store) appendDrafts(
 		if err := q.InsertEvent(ctx, pgstore.InsertEventParams{
 			ID:          id,
 			SessionID:   sessionID,
+			ThreadID:    threadID,
 			Seq:         seq,
 			Type:        d.Type,
 			Payload:     payloadJSON,
@@ -739,6 +765,7 @@ func (s *Store) appendDrafts(
 		out = append(out, domain.Event{
 			ID:          id,
 			SessionID:   sessionID,
+			ThreadID:    threadID,
 			Sequence:    seq,
 			Type:        d.Type,
 			Payload:     payload,

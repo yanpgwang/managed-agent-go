@@ -33,6 +33,25 @@ func NewPrimarySessionThread(id string, session Session) SessionThread {
 	return thread
 }
 
+// NewChildSessionThread captures one callable roster member for independent
+// execution inside a Session. The Agent is already a full Session-owned
+// snapshot; no Agent resource lookup belongs on this path.
+func NewChildSessionThread(
+	id string,
+	sessionID string,
+	parentThreadID string,
+	agent Agent,
+	now time.Time,
+) SessionThread {
+	now = now.UTC().Truncate(time.Microsecond)
+	parent := parentThreadID
+	agent.Multiagent = nil
+	return SessionThread{
+		ID: id, SessionID: sessionID, ParentThreadID: &parent,
+		Agent: agent, Status: StatusIdle, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
 // ApplyPrimarySessionProjection synchronizes the existing single-Thread
 // runtime into its independent primary projection. Once child execution is
 // enabled, child writers update their own Thread first and the Session layer

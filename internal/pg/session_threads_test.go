@@ -158,6 +158,137 @@ INSERT INTO session_threads (
 	}
 }
 
+func TestCreateChildSessionThreadOwnsIndependentEventLedger(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_child_ledger")
+	peerSystem := "review independently"
+	session.AgentSnapshot = domain.Agent{
+		ID: session.AgentID, Version: session.AgentVersion, Name: "coordinator",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{
+			Type: "agent", ID: "agent_peer", Version: 7,
+		}}},
+	}
+	session.MultiagentRoster = []domain.Agent{{
+		ID: "agent_peer", Version: 7, Name: "reviewer",
+		Model:  domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		System: &peerSystem,
+	}}
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := store.ListSessionThreads(ctx, session.ID, app.SessionThreadListQuery{Limit: 10})
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("primary Threads = %+v, err=%v", threads, err)
+	}
+	primary := threads[0]
+
+	child, createdEvent, err := store.CreateChildSessionThread(
+		ctx, session.ID, primary.ID, "reviewer",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child.ParentThreadID == nil || *child.ParentThreadID != primary.ID ||
+		child.Agent.ID != "agent_peer" || child.Agent.Version != 7 ||
+		child.Agent.System == nil || *child.Agent.System != peerSystem ||
+		child.Agent.Multiagent != nil || child.Status != domain.StatusIdle {
+		t.Fatalf("created child = %+v", child)
+	}
+	if createdEvent.ThreadID != primary.ID || createdEvent.Sequence != 1 ||
+		createdEvent.Type != domain.EvSessionThreadCreated ||
+		createdEvent.Payload["session_thread_id"] != child.ID ||
+		createdEvent.Payload["agent_name"] != "reviewer" {
+		t.Fatalf("thread_created event = %+v", createdEvent)
+	}
+
+	childEvents, err := store.AppendThreadEvents(ctx, session.ID, child.ID, []domain.EventDraft{{
+		Type: domain.EvAgentMessage,
+		Payload: map[string]any{"content": []any{map[string]any{
+			"type": "text", "text": "child result",
+		}}},
+	}})
+	if err != nil || len(childEvents) != 1 || childEvents[0].ThreadID != child.ID ||
+		childEvents[0].Sequence != 2 {
+		t.Fatalf("child ledger append = %+v, err=%v", childEvents, err)
+	}
+	primaryHistory, err := store.QueryEvents(ctx, session.ID, app.EventQuery{Limit: 10})
+	if err != nil || len(primaryHistory) != 1 || primaryHistory[0].ID != createdEvent.ID {
+		t.Fatalf("primary ledger = %+v, err=%v", primaryHistory, err)
+	}
+	childHistory, err := store.QueryEvents(ctx, session.ID, app.EventQuery{
+		ThreadID: child.ID, Limit: 10,
+	})
+	if err != nil || len(childHistory) != 1 || childHistory[0].ID != childEvents[0].ID {
+		t.Fatalf("child ledger = %+v, err=%v", childHistory, err)
+	}
+	workflowHistory, err := store.EventsAfter(ctx, session.ID, 0, 10)
+	if err != nil || len(workflowHistory) != 1 || workflowHistory[0].ThreadID != primary.ID {
+		t.Fatalf("primary workflow history = %+v, err=%v", workflowHistory, err)
+	}
+
+	// The roster limits unique callable definitions, not the number of times a
+	// coordinator may instantiate one definition.
+	second, _, err := store.CreateChildSessionThread(ctx, session.ID, primary.ID, "reviewer")
+	if err != nil || second.ID == child.ID || second.Agent.ID != child.Agent.ID {
+		t.Fatalf("second child copy = %+v, err=%v", second, err)
+	}
+	if _, _, err := store.CreateChildSessionThread(
+		ctx, session.ID, child.ID, "reviewer",
+	); err == nil {
+		t.Fatal("nested child creation succeeded")
+	}
+}
+
+func TestThreadOwnedEventsMigrationBackfillsPrimaryLedger(t *testing.T) {
+	store := testStoreAtMigration(t, 23)
+	ctx := context.Background()
+	session := newSession("sesn_thread_event_backfill")
+	body, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO sessions (id, status, body, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5)`,
+		session.ID, session.Status, body, session.CreatedAt, session.UpdatedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	primary := domain.NewPrimarySessionThread("sthr_backfill_primary", session)
+	threadBody, err := json.Marshal(primary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO session_threads (
+    id, session_id, parent_thread_id, kind, status, body, created_at, updated_at
+) VALUES ($1, $2, NULL, 'primary', $3, $4, $5, $6)`,
+		primary.ID, session.ID, primary.Status, threadBody,
+		primary.CreatedAt, primary.UpdatedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO events (
+    id, session_id, seq, type, payload, created_at, processed_at
+) VALUES ('sevt_backfill', $1, 1, 'agent.message', '{}'::jsonb, $2, $2)`,
+		session.ID, session.CreatedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := Migrate(ctx, store.pool); err != nil {
+		t.Fatal(err)
+	}
+	var threadID string
+	if err := store.pool.QueryRow(ctx,
+		`SELECT thread_id FROM events WHERE id = 'sevt_backfill'`,
+	).Scan(&threadID); err != nil || threadID != primary.ID {
+		t.Fatalf("backfilled thread_id = %q, err=%v", threadID, err)
+	}
+}
+
 func TestSessionThreadMigrationBackfillsExistingSessions(t *testing.T) {
 	store := testStoreAtMigration(t, 20)
 	ctx := context.Background()

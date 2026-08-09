@@ -94,6 +94,8 @@ type Event struct {
 	TurnEventID *string
 	CreatedAt   pgtype.Timestamptz
 	ProcessedAt pgtype.Timestamptz
+	// Owning Session Thread ledger; Session-wide seq remains the total-order cursor
+	ThreadID string
 }
 
 type File struct {
