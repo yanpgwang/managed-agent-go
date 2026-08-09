@@ -95,6 +95,40 @@ func (r *retryingSessionResourceReconciler) Reconcile(
 	return materializer.Reconcile(ctx, sessionID, box)
 }
 
+func (r *retryingSessionResourceReconciler) ReconcileThread(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	box sandbox.Sandbox,
+) error {
+	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	runtime, err := r.store.SessionThreadSkillRuntime(ctx, sessionID, threadID)
+	if err != nil || len(resources) == 0 && len(runtime.Versions) == 0 {
+		return err
+	}
+	needsObjectStore := len(runtime.Versions) > 0
+	for _, resource := range resources {
+		if resource.Type() == domain.SessionResourceTypeFile {
+			needsObjectStore = true
+			break
+		}
+	}
+	if !needsObjectStore {
+		if r.memory == nil {
+			return nil
+		}
+		return r.memory.Reconcile(ctx, sessionID, box)
+	}
+	materializer, err := r.resolveMaterializer(ctx)
+	if err != nil {
+		return err
+	}
+	return materializer.ReconcileThread(ctx, sessionID, threadID, box)
+}
+
 func (r *retryingSessionResourceReconciler) Writeback(
 	ctx context.Context,
 	sessionID string,
@@ -174,6 +208,41 @@ func (r unavailableSessionResourceReconciler) Reconcile(
 		}
 	}
 	needsObjectStore := len(skills) > 0
+	for _, resource := range resources {
+		if resource.Type() == domain.SessionResourceTypeFile {
+			needsObjectStore = true
+			break
+		}
+	}
+	if !needsObjectStore {
+		return nil
+	}
+	return sandbox.Permanent(fmt.Errorf(
+		"session File Resources or custom Skills are unavailable on this worker: %w",
+		r.cause,
+	))
+}
+
+func (r unavailableSessionResourceReconciler) ReconcileThread(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	box sandbox.Sandbox,
+) error {
+	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	runtime, err := r.store.SessionThreadSkillRuntime(ctx, sessionID, threadID)
+	if err != nil || len(resources) == 0 && len(runtime.Versions) == 0 {
+		return err
+	}
+	if r.memory != nil {
+		if err := r.memory.Reconcile(ctx, sessionID, box); err != nil {
+			return err
+		}
+	}
+	needsObjectStore := len(runtime.Versions) > 0
 	for _, resource := range resources {
 		if resource.Type() == domain.SessionResourceTypeFile {
 			needsObjectStore = true

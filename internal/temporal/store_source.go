@@ -41,6 +41,22 @@ func (s storeSource) SessionSkillsForRuntime(
 	return s.store.SessionSkillsForRuntime(ctx, sessionID)
 }
 
+func (s storeSource) SessionThreadSkillRuntime(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) (domain.SkillRuntime, error) {
+	return s.store.SessionThreadSkillRuntime(ctx, sessionID, threadID)
+}
+
+func (s storeSource) GetSessionThread(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) (domain.SessionThread, error) {
+	return s.store.GetSessionThread(ctx, sessionID, threadID)
+}
+
 // NewStoreSource wraps a PostgreSQL store as an Activity EventSource.
 func NewStoreSource(store *pg.Store) EventSource { return storeSource{store: store} }
 
@@ -121,6 +137,14 @@ func (s storeSource) LoadProviderTranscript(
 	sessionID string,
 ) (domain.ProviderTranscript, error) {
 	return s.store.LoadProviderTranscript(ctx, sessionID)
+}
+
+func (s storeSource) LoadThreadProviderTranscript(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) (domain.ProviderTranscript, error) {
+	return s.store.LoadThreadProviderTranscript(ctx, sessionID, threadID)
 }
 
 func (s storeSource) CompleteWorkflowTurn(

@@ -354,6 +354,19 @@ type skillExecutionSource struct {
 	skills []domain.SkillVersion
 }
 
+type threadSkillExecutionSource struct {
+	*skillExecutionSource
+	runtime domain.SkillRuntime
+}
+
+func (s *threadSkillExecutionSource) SessionThreadSkillRuntime(
+	context.Context,
+	string,
+	string,
+) (domain.SkillRuntime, error) {
+	return s.runtime, nil
+}
+
 func (s *skillExecutionSource) SessionSkillsForRuntime(
 	context.Context,
 	string,
@@ -426,6 +439,57 @@ func TestExecuteTool_RuntimeSkillLoadsFullInstructionsWithoutReadTool(t *testing
 	})
 	require.NoError(t, err)
 	require.Equal(t, result.Result, recovered.Result)
+}
+
+func TestExecuteTool_RuntimeSkillUsesThreadAgentScope(t *testing.T) {
+	ctx := context.Background()
+	_, box, err := sandbox.NewLocalProvider().Create(ctx, t.Name(), sandbox.Spec{})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+
+	root := domain.SessionSkillsRoot + "/.agents/0123456789abcdef01234567"
+	const body = "---\nname: report-tools\ndescription: Child reports\n---\nchild body\n"
+	require.NoError(t, box.WriteFile(
+		ctx,
+		"skills/.agents/0123456789abcdef01234567/report-tools/SKILL.md",
+		[]byte(body),
+	))
+	source := &threadSkillExecutionSource{
+		skillExecutionSource: &skillExecutionSource{
+			mcpPrepareSource: &mcpPrepareSource{
+				fakeSource: newFakeSource(nil),
+				session:    domain.Session{ID: "sess_child_skill"},
+			},
+		},
+		runtime: domain.SkillRuntime{
+			Root: root,
+			Versions: []domain.SkillVersion{{
+				SkillID: "skill_reports", Version: "200", Name: "report-tools",
+			}},
+		},
+	}
+	journal := &memoryMCPJournal{}
+	activities := NewActivities(
+		nil, source, journal, &fixedSandboxLease{box: box}, &testIDGen{},
+	)
+	result, err := activities.ExecuteTool(ctx, ExecuteToolInput{
+		SessionID: "sess_child_skill", ThreadID: "sthr_child",
+		TriggerEventID: "sevt_child_trigger", AttemptID: "ratm_child_skill",
+		Ordinal: 0, ToolUseEventID: "sevt_child_skill_use",
+		ToolStepID:       "tstep_child_skill",
+		ToolName:         agentruntime.RuntimeSkillToolName,
+		ToolKind:         TurnToolRuntimeSkill,
+		Input:            map[string]any{"skill": "report-tools"},
+		SkillRuntimeRoot: root,
+	})
+	require.NoError(t, err)
+	require.False(t, result.Result.IsError)
+	require.Len(t, result.Result.InjectedContent, 1)
+	require.Contains(
+		t,
+		result.Result.InjectedContent[0].Text,
+		"Base directory for this skill: "+root+"/report-tools\n\n"+body,
+	)
 }
 
 func TestExecuteTool_RuntimeSkillStartedStepIsSafelyReloaded(t *testing.T) {

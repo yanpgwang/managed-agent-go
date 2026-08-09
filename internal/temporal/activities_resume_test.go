@@ -80,6 +80,28 @@ type configuredTranscriptFakeSource struct {
 	skills  []domain.SkillVersion
 }
 
+type threadConfiguredTranscriptFakeSource struct {
+	*configuredTranscriptFakeSource
+	thread  domain.SessionThread
+	runtime domain.SkillRuntime
+}
+
+func (s *threadConfiguredTranscriptFakeSource) GetSessionThread(
+	context.Context,
+	string,
+	string,
+) (domain.SessionThread, error) {
+	return s.thread, nil
+}
+
+func (s *threadConfiguredTranscriptFakeSource) SessionThreadSkillRuntime(
+	context.Context,
+	string,
+	string,
+) (domain.SkillRuntime, error) {
+	return s.runtime, nil
+}
+
 func (s *configuredTranscriptFakeSource) GetSession(
 	context.Context,
 	string,
@@ -146,6 +168,65 @@ func TestPrepareTurn_ProjectsPinnedSkillDiscoveryMetadata(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.Contains(t, unsupported.FatalError, "configured sandbox provider")
+}
+
+func TestPrepareTurn_SelectsThreadAgentRuntimeConfiguration(t *testing.T) {
+	root := domain.SessionSkillsRoot + "/.agents/0123456789abcdef01234567"
+	base := newFakeSource([]domain.Event{{
+		ID: "sevt_child_skill", SessionID: "sess_child_skill",
+		ThreadID: "sthr_child", Sequence: 1, Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "review the report"},
+		}},
+	}})
+	childSystem := "You are the child reviewer."
+	source := &threadConfiguredTranscriptFakeSource{
+		configuredTranscriptFakeSource: &configuredTranscriptFakeSource{
+			transcriptFakeSource: &transcriptFakeSource{fakeSource: base},
+			session: domain.Session{
+				ID: "sess_child_skill", Status: domain.StatusRunning,
+				AgentSnapshot: domain.Agent{
+					ID: "agent_primary", Version: 1, Name: "coordinator",
+					Model: domain.Model{ID: "primary-model"},
+				},
+			},
+		},
+		thread: domain.SessionThread{
+			ID: "sthr_child", SessionID: "sess_child_skill",
+			Agent: domain.Agent{
+				ID: "agent_child", Version: 2, Name: "reviewer",
+				Model: domain.Model{ID: "child-model"}, System: &childSystem,
+				Tools: []any{map[string]any{"type": domain.BuiltinToolsetType}},
+				Skills: []domain.SkillReference{{
+					Type: "custom", SkillID: "skill_child", Version: "200",
+				}},
+			},
+		},
+		runtime: domain.SkillRuntime{
+			Root: root,
+			Versions: []domain.SkillVersion{{
+				SkillID: "skill_child", Version: "200", Name: "child-review",
+				Description: "Review reports", UncompressedSizeBytes: 1024,
+			}},
+		},
+	}
+	prepared, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithSkillRuntimeSupported(true).PrepareTurn(
+		context.Background(),
+		PrepareTurnInput{
+			SessionID: "sess_child_skill", TriggerEventID: "sevt_child_skill",
+		},
+	)
+	require.NoError(t, err)
+	require.Empty(t, prepared.FatalError)
+	require.Equal(t, "sthr_child", prepared.ThreadID)
+	require.Equal(t, root, prepared.SkillRuntimeRoot)
+	require.Equal(t, "child-model", prepared.Request.Model)
+	require.Contains(t, prepared.Request.System, childSystem)
+	require.Contains(
+		t, prepared.Request.System, root+"/child-review/SKILL.md",
+	)
 }
 
 func TestPrepareTurn_ReattachesInvokedSkillFromTranscriptAfterWorkerRestart(t *testing.T) {

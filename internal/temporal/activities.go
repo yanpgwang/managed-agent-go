@@ -103,6 +103,14 @@ type ProviderTranscriptSource interface {
 	) (domain.ProviderTranscript, error)
 }
 
+type ThreadProviderTranscriptSource interface {
+	LoadThreadProviderTranscript(
+		ctx context.Context,
+		sessionID string,
+		threadID string,
+	) (domain.ProviderTranscript, error)
+}
+
 // ProviderTranscriptCompletionSource atomically commits the public turn and
 // the private provider transcript delta.
 type ProviderTranscriptCompletionSource interface {
@@ -218,6 +226,10 @@ type SandboxResourceReconciler interface {
 	Reconcile(context.Context, string, sandbox.Sandbox) error
 }
 
+type ThreadSandboxResourceReconciler interface {
+	ReconcileThread(context.Context, string, string, sandbox.Sandbox) error
+}
+
 type SandboxResourceWriteback interface {
 	Writeback(context.Context, string, sandbox.Sandbox) error
 }
@@ -233,6 +245,18 @@ type SkillRuntimeReconciler interface {
 
 type SessionSkillSource interface {
 	SessionSkillsForRuntime(context.Context, string) ([]domain.SkillVersion, error)
+}
+
+type SessionThreadSkillSource interface {
+	SessionThreadSkillRuntime(
+		context.Context,
+		string,
+		string,
+	) (domain.SkillRuntime, error)
+}
+
+type SessionThreadSource interface {
+	GetSessionThread(context.Context, string, string) (domain.SessionThread, error)
 }
 
 // PreviewPublisher carries best-effort model deltas to live subscribers. It is
@@ -546,6 +570,16 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if err != nil {
 		return PrepareTurnResult{}, err
 	}
+	executionAgent := session.AgentSnapshot
+	if trigger.ThreadID != "" {
+		if threads, ok := a.source.(SessionThreadSource); ok {
+			thread, err := threads.GetSessionThread(ctx, in.SessionID, trigger.ThreadID)
+			if err != nil {
+				return PrepareTurnResult{}, err
+			}
+			executionAgent = thread.Agent
+		}
+	}
 	var pending []domain.PendingAction
 	if len(in.ResolutionEventIDs) > 0 {
 		pending, err = a.source.UnresolvedPendingActions(ctx, in.SessionID)
@@ -574,21 +608,21 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if err != nil {
 		return PrepareTurnResult{}, err
 	}
-	toolSet, err := domain.ParseTools(session.AgentSnapshot.Tools)
+	toolSet, err := domain.ParseTools(executionAgent.Tools)
 	if err != nil {
 		return PrepareTurnResult{FatalError: "invalid toolset: " + err.Error()}, nil
 	}
 	if err := domain.ValidateStoredToolConfiguration(
-		session.AgentSnapshot.Tools,
-		session.AgentSnapshot.MCPServers,
+		executionAgent.Tools,
+		executionAgent.MCPServers,
 	); err != nil {
 		return PrepareTurnResult{
 			FatalError: "invalid tool configuration: " + err.Error(),
 		}, nil
 	}
 	if err := domain.ValidateSkillToolConfiguration(
-		session.AgentSnapshot.Tools,
-		len(session.AgentSnapshot.Skills) > 0,
+		executionAgent.Tools,
+		len(executionAgent.Skills) > 0,
 	); err != nil {
 		return PrepareTurnResult{
 			FatalError: "invalid Skill tool configuration: " + err.Error(),
@@ -600,8 +634,8 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			return PrepareTurnResult{FatalError: "unsupported tool capability: " + err.Error()}, nil
 		}
 	}
-	var runtimeSkills []domain.SkillVersion
-	if len(session.AgentSnapshot.Skills) > 0 {
+	runtimeSkills := domain.SkillRuntime{Root: domain.SessionSkillsRoot}
+	if len(executionAgent.Skills) > 0 {
 		if selfHosted {
 			return PrepareTurnResult{
 				FatalError: "custom Skills are unavailable for self-hosted Sessions",
@@ -612,30 +646,34 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 				FatalError: "custom Skills are unavailable on the configured sandbox provider",
 			}, nil
 		}
-		source, ok := a.source.(SessionSkillSource)
-		if !ok {
+		if source, ok := a.source.(SessionThreadSkillSource); ok && trigger.ThreadID != "" {
+			runtimeSkills, err = source.SessionThreadSkillRuntime(
+				ctx, in.SessionID, trigger.ThreadID,
+			)
+		} else if source, ok := a.source.(SessionSkillSource); ok {
+			runtimeSkills.Versions, err = source.SessionSkillsForRuntime(ctx, in.SessionID)
+		} else {
 			return PrepareTurnResult{
 				FatalError: "custom Skill runtime metadata is unavailable",
 			}, nil
 		}
-		runtimeSkills, err = source.SessionSkillsForRuntime(ctx, in.SessionID)
 		if err != nil {
 			return PrepareTurnResult{}, err
 		}
 		if validationErr := validateRuntimeSkillPins(
-			session.AgentSnapshot.Skills, runtimeSkills,
+			executionAgent.Skills, runtimeSkills.Versions,
 		); validationErr != "" {
 			return PrepareTurnResult{FatalError: validationErr}, nil
 		}
 	}
 
 	system := ""
-	if session.AgentSnapshot.System != nil {
-		system = *session.AgentSnapshot.System
+	if executionAgent.System != nil {
+		system = *executionAgent.System
 	}
 	system = domain.ProjectSystemContext(system, history, trigger)
 	system = domain.ProjectSessionResourceContext(system, session.Resources)
-	system = domain.ProjectSessionSkillContext(
+	system = domain.ProjectSkillRuntimeContext(
 		system,
 		runtimeSkills,
 		a.contextTokenBudget/100,
@@ -644,14 +682,16 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if selfHosted {
 		toolSchemas = agentruntime.EnabledSelfHostedToolSchemas(toolSet)
 	}
-	if len(runtimeSkills) > 0 {
+	if len(runtimeSkills.Versions) > 0 {
 		toolSchemas = append(toolSchemas, agentruntime.RuntimeSkillToolSchema())
 	}
 	result := PrepareTurnResult{
-		AttemptID: a.ids.NewID(domain.PrefixRunAttempt),
+		AttemptID:        a.ids.NewID(domain.PrefixRunAttempt),
+		ThreadID:         trigger.ThreadID,
+		SkillRuntimeRoot: runtimeSkills.Root,
 		Request: model.Request{
-			Model:        session.AgentSnapshot.Model.ID,
-			InferenceGeo: session.AgentSnapshot.Model.InferenceGeo,
+			Model:        executionAgent.Model.ID,
+			InferenceGeo: executionAgent.Model.InferenceGeo,
 			System:       system,
 			Tools:        toolSchemas,
 		},
@@ -673,11 +713,11 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			}
 		}
 	}
-	if session.AgentSnapshot.Model.EffortExplicit {
-		result.Request.Effort = session.AgentSnapshot.Model.Effort
+	if executionAgent.Model.EffortExplicit {
+		result.Request.Effort = executionAgent.Model.Effort
 	}
-	if session.AgentSnapshot.Model.SpeedExplicit {
-		result.Request.Speed = session.AgentSnapshot.Model.Speed
+	if executionAgent.Model.SpeedExplicit {
+		result.Request.Speed = executionAgent.Model.Speed
 	}
 	originalHistory := history
 	if len(in.ResolutionEventIDs) > 0 {
@@ -702,7 +742,15 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	}
 	result.Request.Messages = domain.ProjectMessages(history)
 	if transcriptSource, ok := a.source.(ProviderTranscriptSource); ok {
-		transcript, err := transcriptSource.LoadProviderTranscript(ctx, in.SessionID)
+		var transcript domain.ProviderTranscript
+		if threadSource, ok := a.source.(ThreadProviderTranscriptSource); ok &&
+			trigger.ThreadID != "" {
+			transcript, err = threadSource.LoadThreadProviderTranscript(
+				ctx, in.SessionID, trigger.ThreadID,
+			)
+		} else {
+			transcript, err = transcriptSource.LoadProviderTranscript(ctx, in.SessionID)
+		}
 		if err != nil {
 			return PrepareTurnResult{}, err
 		}
@@ -739,7 +787,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			}
 		}
 	}
-	if len(runtimeSkills) > 0 {
+	if len(runtimeSkills.Versions) > 0 {
 		result.Tools = append(result.Tools, TurnTool{
 			Name:       agentruntime.RuntimeSkillToolName,
 			Kind:       TurnToolRuntimeSkill,
@@ -763,12 +811,12 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			Name: custom.Name, Kind: TurnToolCustom,
 		})
 	}
-	if len(toolSet.MCP) > 0 || len(session.AgentSnapshot.MCPServers) > 0 {
+	if len(toolSet.MCP) > 0 || len(executionAgent.MCPServers) > 0 {
 		setupEvents, err := a.addMCPTools(
 			ctx,
 			in.SessionID,
 			trigger.ThreadID,
-			session.AgentSnapshot.MCPServers,
+			executionAgent.MCPServers,
 			toolSet,
 			&result,
 		)
@@ -1575,6 +1623,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	}
 	var executor tools.Executor
 	var skillSource SessionSkillSource
+	var threadSkillSource SessionThreadSkillSource
 	switch kind {
 	case TurnToolBuiltin:
 		var ok bool
@@ -1590,9 +1639,9 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 			return out, nil
 		}
 	case TurnToolRuntimeSkill:
-		var ok bool
-		skillSource, ok = a.source.(SessionSkillSource)
-		if !ok {
+		skillSource, _ = a.source.(SessionSkillSource)
+		threadSkillSource, _ = a.source.(SessionThreadSkillSource)
+		if skillSource == nil && threadSkillSource == nil {
 			out.FatalError = "custom Skill runtime metadata is unavailable"
 			return out, nil
 		}
@@ -1620,12 +1669,21 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		return ExecuteToolResult{}, err
 	}
 	if a.resources != nil {
-		if err := a.resources.Reconcile(ctx, in.SessionID, box); err != nil {
-			if sandbox.IsPermanent(err) {
-				out.FatalError = err.Error()
+		var reconcileErr error
+		if scoped, ok := a.resources.(ThreadSandboxResourceReconciler); ok &&
+			in.ThreadID != "" {
+			reconcileErr = scoped.ReconcileThread(
+				ctx, in.SessionID, in.ThreadID, box,
+			)
+		} else {
+			reconcileErr = a.resources.Reconcile(ctx, in.SessionID, box)
+		}
+		if reconcileErr != nil {
+			if sandbox.IsPermanent(reconcileErr) {
+				out.FatalError = reconcileErr.Error()
 				return out, nil
 			}
-			return ExecuteToolResult{}, err
+			return ExecuteToolResult{}, reconcileErr
 		}
 	}
 	if !retrySafeStarted {
@@ -1652,12 +1710,28 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 				}},
 			}
 		} else {
-			versions, err := skillSource.SessionSkillsForRuntime(ctx, in.SessionID)
+			runtime := domain.SkillRuntime{Root: domain.SessionSkillsRoot}
+			if threadSkillSource != nil && in.ThreadID != "" {
+				runtime, err = threadSkillSource.SessionThreadSkillRuntime(
+					ctx, in.SessionID, in.ThreadID,
+				)
+			} else if skillSource != nil {
+				runtime.Versions, err = skillSource.SessionSkillsForRuntime(
+					ctx, in.SessionID,
+				)
+			} else {
+				out.FatalError = "custom Skill runtime metadata is unavailable"
+				return out, nil
+			}
 			if err != nil {
 				return ExecuteToolResult{}, err
 			}
+			if in.SkillRuntimeRoot != "" && in.SkillRuntimeRoot != runtime.Root {
+				out.FatalError = "custom Skill runtime scope changed after turn preparation"
+				return out, nil
+			}
 			available := false
-			for _, version := range versions {
+			for _, version := range runtime.Versions {
 				if version.Name == name {
 					available = true
 					break
@@ -1672,11 +1746,17 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 					IsError: true,
 				}
 			} else {
-				// Sandbox file APIs are root-relative even though the model-visible
-				// CCB base directory remains /workspace/skills/<name>.
+				// Sandbox file APIs are workspace-relative even though the
+				// model-visible base directory is absolute.
+				runtimePath := runtime.SkillPath(name)
+				relativePath := strings.TrimPrefix(runtimePath, "/workspace/")
+				if relativePath == runtimePath {
+					out.FatalError = "custom Skill runtime path is outside /workspace"
+					return out, nil
+				}
 				body, readErr := box.ReadFile(
 					ctx,
-					"skills/"+name+"/SKILL.md",
+					relativePath+"/SKILL.md",
 				)
 				switch {
 				case readErr != nil:
@@ -1702,7 +1782,9 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 							"text": "Launching skill: " + name,
 						}},
 						InjectedContent: []domain.ContentBlock{
-							agentruntime.RuntimeSkillInjection(name, body),
+							agentruntime.RuntimeSkillInjectionAt(
+								runtime.Root, name, body,
+							),
 						},
 					}
 				}

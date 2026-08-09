@@ -14,6 +14,14 @@ type SessionSkillMountRepository interface {
 	SessionSkillsForRuntime(context.Context, string) ([]domain.SkillVersion, error)
 }
 
+type SessionThreadSkillMountRepository interface {
+	SessionThreadSkillRuntime(
+		context.Context,
+		string,
+		string,
+	) (domain.SkillRuntime, error)
+}
+
 // SessionSkillMaterializer converges canonical custom Skill archives into the
 // provider's read-only runtime tree. Version pins are immutable for a Session,
 // so reconciliation only needs idempotent presence/repair, not per-Skill delete.
@@ -45,8 +53,47 @@ func (m *SessionSkillMaterializer) Reconcile(
 	if err != nil {
 		return err
 	}
-	if len(versions) == 0 {
+	return m.reconcileRuntime(ctx, sessionID, domain.SkillRuntime{
+		Root: domain.SessionSkillsRoot, Versions: versions,
+	}, box)
+}
+
+// ReconcileThread materializes only the Skill bundle selected by the Thread's
+// resolved Agent execution scope. Session Files and Memory remain shared.
+func (m *SessionSkillMaterializer) ReconcileThread(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	box sandbox.Sandbox,
+) error {
+	source, ok := m.skills.(SessionThreadSkillMountRepository)
+	if !ok {
+		return sandbox.Permanent(fmt.Errorf(
+			"sandbox: Thread Skill runtime metadata is unavailable for Session %s",
+			sessionID,
+		))
+	}
+	runtime, err := source.SessionThreadSkillRuntime(ctx, sessionID, threadID)
+	if err != nil {
+		return err
+	}
+	return m.reconcileRuntime(ctx, sessionID, runtime, box)
+}
+
+func (m *SessionSkillMaterializer) reconcileRuntime(
+	ctx context.Context,
+	sessionID string,
+	runtime domain.SkillRuntime,
+	box sandbox.Sandbox,
+) error {
+	if len(runtime.Versions) == 0 {
 		return nil
+	}
+	if runtime.Root == "" {
+		return sandbox.Permanent(fmt.Errorf(
+			"sandbox: Session %s Skill runtime root is missing",
+			sessionID,
+		))
 	}
 	mounter, supported := box.(sandbox.SkillBundleSandbox)
 	if !supported {
@@ -55,9 +102,9 @@ func (m *SessionSkillMaterializer) Reconcile(
 			sessionID,
 		))
 	}
-	seenNames := make(map[string]struct{}, len(versions))
+	seenNames := make(map[string]struct{}, len(runtime.Versions))
 	var expandedBytes int64
-	for _, version := range versions {
+	for _, version := range runtime.Versions {
 		if _, exists := seenNames[version.Name]; exists {
 			return sandbox.Permanent(fmt.Errorf(
 				"sandbox: Session %s has conflicting Skill runtime name %q",
@@ -76,6 +123,7 @@ func (m *SessionSkillMaterializer) Reconcile(
 		mount := sandbox.ReadOnlySkillMount{
 			Identity:              version.SkillID + "@" + version.Version,
 			Name:                  version.Name,
+			RuntimePath:           runtime.SkillPath(version.Name),
 			ArchiveRoot:           version.Directory,
 			SizeBytes:             version.SizeBytes,
 			UncompressedSizeBytes: version.UncompressedSizeBytes,
@@ -140,6 +188,30 @@ func (m *SessionRuntimeMaterializer) Reconcile(
 	}
 	if m.skills != nil {
 		if err := m.skills.Reconcile(ctx, sessionID, box); err != nil {
+			return err
+		}
+	}
+	if m.memory != nil {
+		return m.memory.Reconcile(ctx, sessionID, box)
+	}
+	return nil
+}
+
+// ReconcileThread keeps Session-shared resources converged while selecting
+// custom Skills from the current Thread's resolved Agent scope.
+func (m *SessionRuntimeMaterializer) ReconcileThread(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	box sandbox.Sandbox,
+) error {
+	if m.files != nil {
+		if err := m.files.Reconcile(ctx, sessionID, box); err != nil {
+			return err
+		}
+	}
+	if m.skills != nil {
+		if err := m.skills.ReconcileThread(ctx, sessionID, threadID, box); err != nil {
 			return err
 		}
 	}

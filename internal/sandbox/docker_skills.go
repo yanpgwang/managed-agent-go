@@ -31,6 +31,9 @@ func validateReadOnlySkillMount(mount ReadOnlySkillMount) error {
 	if !validSkillRuntimeName(mount.Name) {
 		return errors.New("sandbox: Skill runtime name is invalid")
 	}
+	if !validSkillRuntimePath(resolvedSkillRuntimePath(mount), mount.Name) {
+		return errors.New("sandbox: Skill runtime path is invalid")
+	}
 	if !validSkillArchiveRoot(mount.ArchiveRoot, mount.Name) {
 		return errors.New("sandbox: Skill archive root is invalid")
 	}
@@ -48,6 +51,31 @@ func validateReadOnlySkillMount(mount ReadOnlySkillMount) error {
 		return errors.New("sandbox: Skill checksum must be a lowercase SHA-256 digest")
 	}
 	return nil
+}
+
+func resolvedSkillRuntimePath(mount ReadOnlySkillMount) string {
+	if mount.RuntimePath != "" {
+		return mount.RuntimePath
+	}
+	return domain.SessionSkillsRoot + "/" + mount.Name
+}
+
+func validSkillRuntimePath(runtimePath string, name string) bool {
+	prefix := domain.SessionSkillsRoot + "/"
+	if !strings.HasPrefix(runtimePath, prefix) || path.Clean(runtimePath) != runtimePath ||
+		strings.ContainsRune(runtimePath, '\x00') {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(runtimePath, prefix), "/")
+	if len(parts) == 1 {
+		return parts[0] == name
+	}
+	if len(parts) != 3 || parts[0] != ".agents" || parts[2] != name ||
+		len(parts[1]) != 24 {
+		return false
+	}
+	_, err := hex.DecodeString(parts[1])
+	return err == nil
 }
 
 func validSkillRuntimeName(name string) bool {
@@ -87,8 +115,12 @@ func (s *dockerSandbox) skillPaths(mount ReadOnlySkillMount) (string, string, er
 			"sandbox: Docker container predates the read-only Skill mount; recreate its sandbox",
 		))
 	}
-	target := filepath.Join(s.resourceRoot, dockerResourceSkillsDir, mount.Name)
-	sum := sha256.Sum256([]byte(mount.Name))
+	runtimePath := resolvedSkillRuntimePath(mount)
+	relative := strings.TrimPrefix(runtimePath, domain.SessionSkillsRoot+"/")
+	target := filepath.Join(
+		s.resourceRoot, dockerResourceSkillsDir, filepath.FromSlash(relative),
+	)
+	sum := sha256.Sum256([]byte(runtimePath))
 	marker := filepath.Join(
 		s.resourceRoot,
 		dockerResourceStateDir,
@@ -98,7 +130,8 @@ func (s *dockerSandbox) skillPaths(mount ReadOnlySkillMount) (string, string, er
 }
 
 func skillMarker(mount ReadOnlySkillMount) string {
-	return mount.Identity + "\n" + mount.Name + "\n" + mount.ArchiveRoot + "\n" +
+	return mount.Identity + "\n" + mount.Name + "\n" +
+		resolvedSkillRuntimePath(mount) + "\n" + mount.ArchiveRoot + "\n" +
 		strconv.FormatInt(mount.SizeBytes, 10) + "\n" +
 		strconv.FormatInt(mount.UncompressedSizeBytes, 10) + "\n" +
 		mount.ChecksumSHA256 + "\n"
@@ -287,11 +320,14 @@ func (s *dockerSandbox) ImportReadOnlySkill(
 	if err := os.RemoveAll(target); err != nil {
 		return fmt.Errorf("sandbox: replace stale Skill directory: %w", err)
 	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("sandbox: create Skill scope directory: %w", err)
+	}
 	if err := os.Rename(staging, target); err != nil {
 		return fmt.Errorf("sandbox: publish Skill directory: %w", err)
 	}
 	stagingPublished = true
-	if err := syncDirectory(skillsRoot); err != nil {
+	if err := syncDirectory(filepath.Dir(target)); err != nil {
 		return err
 	}
 	if err := writeResourceMarker(marker, skillMarker(mount)); err != nil {

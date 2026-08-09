@@ -1,6 +1,7 @@
 package agentruntime
 
 import (
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -70,7 +71,13 @@ func RuntimeSkillName(input map[string]any) (string, error) {
 // references remain on disk and are loaded progressively through ordinary
 // sandbox tools.
 func RuntimeSkillInjection(name string, body []byte) domain.ContentBlock {
-	base := domain.SessionSkillsRoot + "/" + name
+	return RuntimeSkillInjectionAt(domain.SessionSkillsRoot, name, body)
+}
+
+// RuntimeSkillInjectionAt records the actual immutable Agent-scope directory
+// so Claude Code-style supporting-file reads stay inside the selected bundle.
+func RuntimeSkillInjectionAt(root string, name string, body []byte) domain.ContentBlock {
+	base := root + "/" + name
 	return domain.ContentBlock{
 		Type: "text",
 		Text: runtimeSkillBasePrefix + base + "\n\n" + string(body),
@@ -113,8 +120,20 @@ func runtimeSkillInjectionName(block domain.ContentBlock) (string, bool) {
 	if !strings.HasPrefix(line, prefix) {
 		return "", false
 	}
-	name := strings.TrimPrefix(line, prefix)
-	if name == "" || strings.Contains(name, "/") {
+	parts := strings.Split(strings.TrimPrefix(line, prefix), "/")
+	var name string
+	switch {
+	case len(parts) == 1:
+		name = parts[0]
+	case len(parts) == 3 && parts[0] == ".agents" && len(parts[1]) == 24:
+		if _, err := hex.DecodeString(parts[1]); err != nil {
+			return "", false
+		}
+		name = parts[2]
+	default:
+		return "", false
+	}
+	if name == "" || strings.ContainsAny(name, "\\\x00") {
 		return "", false
 	}
 	return name, true

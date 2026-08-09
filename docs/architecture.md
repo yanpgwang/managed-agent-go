@@ -70,9 +70,13 @@ Threads, but Agent runtime configuration is not. MCP discovery snapshots are
 owned by `(Session, Thread, server name)`, so roster members may use the same
 server name with different endpoints or tool surfaces without contaminating
 one another. Updating the primary Agent's MCP configuration invalidates only
-that Thread's snapshots in the same transaction as the Session projection.
-Custom Skill pins and materialization are being moved across the same boundary
-before child execution is enabled.
+that Thread's snapshots in the same transaction as the Session projection. A
+Session also pins custom Skill Versions for every distinct resolved Agent
+execution scope, including its Session-overridden coordinator/self scope.
+Threads select only their Agent's discovery metadata and immutable bundle.
+Primary/self copies retain `/workspace/skills/<name>/`; external Agents use a
+stable namespace below `/workspace/skills/.agents/` so equal runtime names
+cannot overwrite one another in the shared filesystem.
 
 ### Wire and domain models are separate
 

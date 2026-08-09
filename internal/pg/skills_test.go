@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -391,6 +392,11 @@ INSERT INTO skill_versions (
 		}},
 		CreatedAt: base, UpdatedAt: base,
 	}
+	peer := agent
+	peer.ID = "agent_backfill_peer"
+	peer.Name = "backfill-peer"
+	peerArchivedAt := base.Add(time.Second)
+	peer.ArchivedAt = &peerArchivedAt
 	agentBody, err := json.Marshal(agent)
 	if err != nil {
 		t.Fatal(err)
@@ -402,10 +408,23 @@ VALUES ($1, $2, $3, $4, $5, $6)`,
 	); err != nil {
 		t.Fatal(err)
 	}
+	peerBody, err := json.Marshal(peer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO agents (
+    id, version, name, body, created_at, updated_at, archived_at
+) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		peer.ID, peer.Version, peer.Name, peerBody, base, base, peer.ArchivedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
 	session := newSession("sesn_backfill")
 	session.AgentID = agent.ID
 	session.AgentVersion = agent.Version
 	session.AgentSnapshot = agent
+	session.MultiagentRoster = []domain.Agent{peer}
 	sessionBody, err := json.Marshal(session)
 	if err != nil {
 		t.Fatal(err)
@@ -434,8 +453,39 @@ INSERT INTO sessions (
 	if err := store.pool.QueryRow(ctx, `SELECT count(*) FROM session_skill_versions`).Scan(&sessionPins); err != nil {
 		t.Fatal(err)
 	}
-	if agentPins != 1 || sessionPins != 1 {
-		t.Fatalf("backfilled pins = Agent:%d Session:%d, want 1 each", agentPins, sessionPins)
+	if agentPins != 1 || sessionPins != 2 {
+		t.Fatalf(
+			"backfilled pins = Agent:%d Session:%d, want 1 and 2",
+			agentPins, sessionPins,
+		)
+	}
+	var scopedAgentID string
+	var scopedAgentVersion int
+	if err := store.pool.QueryRow(ctx, `
+SELECT agent_id, agent_version
+FROM session_skill_versions
+WHERE session_id = $1 AND agent_id = $2`, session.ID, agent.ID).Scan(
+		&scopedAgentID, &scopedAgentVersion,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if scopedAgentID != agent.ID || scopedAgentVersion != agent.Version {
+		t.Fatalf(
+			"backfilled Session Skill scope = %s@%d, want %s@%d",
+			scopedAgentID, scopedAgentVersion, agent.ID, agent.Version,
+		)
+	}
+	var peerPins int
+	if err := store.pool.QueryRow(ctx, `
+SELECT count(*)
+FROM session_skill_versions
+WHERE session_id = $1 AND agent_id = $2 AND agent_version = $3`,
+		session.ID, peer.ID, peer.Version,
+	).Scan(&peerPins); err != nil {
+		t.Fatal(err)
+	}
+	if peerPins != 1 {
+		t.Fatalf("backfilled archived roster Agent pins = %d, want 1", peerPins)
 	}
 	if _, err := NewAgentRepository(store).Archive(ctx, agent.ID, base.Add(time.Second)); err != nil {
 		t.Fatal(err)
@@ -636,6 +686,98 @@ func TestSessionSkillPinsGuardVersionDeletionAndRollbackMissingReferences(t *tes
 	}
 	if _, err := store.GetSession(ctx, missing.ID); err == nil {
 		t.Fatal("failed Skill pin left a partial Session")
+	}
+}
+
+func TestSessionSkillPinsCoverResolvedRosterExecutionScopes(t *testing.T) {
+	store := testStore(t)
+	repo := NewSkillRepository(store)
+	ctx := context.Background()
+	base := time.Date(2026, 8, 9, 18, 0, 0, 0, time.UTC)
+	skill := domain.Skill{
+		ID: "skill_roster_scope", CreatedAt: base, UpdatedAt: base,
+		DisplayTitle: "Roster Scope", Source: "custom", TitleExplicit: true,
+	}
+	primaryVersion := repositorySkillVersion(skill.ID, "600", base, true)
+	if err := repo.BeginSkill(ctx, skill, primaryVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.CompleteVersion(ctx, skill.ID, primaryVersion.Version, app.BlobInfo{
+		SizeBytes: 10, ChecksumSHA256: "primary",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	childVersion := repositorySkillVersion(
+		skill.ID, "700", base.Add(time.Second), false,
+	)
+	if err := repo.BeginVersion(ctx, childVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := repo.CompleteVersion(ctx, skill.ID, childVersion.Version, app.BlobInfo{
+		SizeBytes: 11, ChecksumSHA256: "child",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	session := newSession("sesn_roster_skill_scopes")
+	session.AgentSnapshot = domain.Agent{
+		ID: session.AgentID, Version: session.AgentVersion, Name: "coordinator",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		Skills: []domain.SkillReference{{
+			Type: "custom", SkillID: skill.ID, Version: primaryVersion.Version,
+		}},
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{
+			Type: "agent", ID: "agent_skill_peer", Version: 3,
+		}}},
+	}
+	session.MultiagentRoster = []domain.Agent{{
+		ID: "agent_skill_peer", Version: 3, Name: "reviewer",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		Skills: []domain.SkillReference{{
+			Type: "custom", SkillID: skill.ID, Version: childVersion.Version,
+		}},
+	}}
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatal(err)
+	}
+	var pinCount int
+	if err := store.pool.QueryRow(ctx, `
+SELECT count(*) FROM session_skill_versions WHERE session_id = $1`,
+		session.ID).Scan(&pinCount); err != nil {
+		t.Fatal(err)
+	}
+	if pinCount != 2 {
+		t.Fatalf("Session execution-scope pins = %d, want 2", pinCount)
+	}
+	primaryID, err := store.q.GetPrimarySessionThreadID(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryRuntime, err := store.SessionThreadSkillRuntime(
+		ctx, session.ID, primaryID,
+	)
+	if err != nil || primaryRuntime.Root != domain.SessionSkillsRoot ||
+		len(primaryRuntime.Versions) != 1 ||
+		primaryRuntime.Versions[0].Version != primaryVersion.Version {
+		t.Fatalf("primary Skill runtime = %+v, err=%v", primaryRuntime, err)
+	}
+	child, _, err := store.CreateChildSessionThread(
+		ctx, session.ID, primaryID, "reviewer",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childRuntime, err := store.SessionThreadSkillRuntime(
+		ctx, session.ID, child.ID,
+	)
+	if err != nil || childRuntime.Root == domain.SessionSkillsRoot ||
+		!strings.HasPrefix(childRuntime.Root, domain.SessionSkillsRoot+"/.agents/") ||
+		len(childRuntime.Versions) != 1 ||
+		childRuntime.Versions[0].Version != childVersion.Version {
+		t.Fatalf("child Skill runtime = %+v, err=%v", childRuntime, err)
+	}
+	if _, err := repo.BeginDeleteVersion(ctx, skill.ID, childVersion.Version); err == nil {
+		t.Fatal("roster Skill Version was not retained by the Session")
 	}
 }
 

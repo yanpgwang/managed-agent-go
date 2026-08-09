@@ -34,6 +34,8 @@ type workflowTurnState struct {
 	actx                           workflow.Context
 	sessionID                      string
 	triggerEventID                 string
+	threadID                       string
+	skillRuntimeRoot               string
 	resolutionEventIDs             []string
 	output                         []domain.EventDraft
 	attemptID                      string
@@ -394,17 +396,19 @@ func (t *workflowTurnState) executeTool(
 ) (ExecuteToolResult, interruptibleActivityOutcome, error) {
 	t.attemptID = attemptID
 	input := ExecuteToolInput{
-		SessionID:      t.sessionID,
-		TriggerEventID: t.triggerEventID,
-		AttemptID:      attemptID,
-		Ordinal:        t.ordinal,
-		ToolUseEventID: publicEventID,
-		ToolStepID:     stepID,
-		ToolName:       use.ToolName,
-		ToolKind:       definition.Kind,
-		MCPServer:      definition.MCPServer,
-		MCPToolName:    definition.MCPToolName,
-		Input:          use.Input,
+		SessionID:        t.sessionID,
+		ThreadID:         t.threadID,
+		TriggerEventID:   t.triggerEventID,
+		AttemptID:        attemptID,
+		Ordinal:          t.ordinal,
+		ToolUseEventID:   publicEventID,
+		ToolStepID:       stepID,
+		ToolName:         use.ToolName,
+		ToolKind:         definition.Kind,
+		MCPServer:        definition.MCPServer,
+		MCPToolName:      definition.MCPToolName,
+		Input:            use.Input,
+		SkillRuntimeRoot: t.skillRuntimeRoot,
 	}
 	if definition.Kind == TurnToolRuntimeSkill {
 		if name, err := agentruntime.RuntimeSkillName(use.Input); err == nil {

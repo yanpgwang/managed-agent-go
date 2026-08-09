@@ -245,6 +245,8 @@ type SessionSkillVersion struct {
 	Position     int32
 	SkillID      string
 	SkillVersion string
+	AgentID      string
+	AgentVersion int32
 }
 
 type SessionThread struct {

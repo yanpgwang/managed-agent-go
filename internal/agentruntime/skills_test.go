@@ -45,6 +45,23 @@ func TestRuntimeSkillInjectionLoadsFullBodyAndCanBeRediscovered(t *testing.T) {
 	}
 }
 
+func TestRuntimeSkillInjectionRecognizesAgentScopedBaseDirectory(t *testing.T) {
+	root := domain.SessionSkillsRoot + "/.agents/0123456789abcdef01234567"
+	block := RuntimeSkillInjectionAt(root, "report-tools", []byte("child body"))
+	if !strings.HasPrefix(
+		block.Text,
+		"Base directory for this skill: "+root+"/report-tools\n\n",
+	) {
+		t.Fatalf("Agent-scoped injection = %q", block.Text)
+	}
+	loaded := LoadedRuntimeSkills([]domain.Message{{
+		Role: domain.RoleUser, Content: []domain.ContentBlock{block},
+	}})
+	if _, ok := loaded["report-tools"]; !ok {
+		t.Fatalf("Agent-scoped Skill was not recognized: %#v", loaded)
+	}
+}
+
 func TestRuntimeSkillInjectionIsReattachedAfterCompaction(t *testing.T) {
 	injection := RuntimeSkillInjection(
 		"report-tools",

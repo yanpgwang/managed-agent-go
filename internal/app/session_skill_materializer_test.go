@@ -12,6 +12,17 @@ import (
 
 type staticSessionSkillRepository struct {
 	versions []domain.SkillVersion
+	runtime  domain.SkillRuntime
+}
+
+func (r staticSessionSkillRepository) SessionThreadSkillRuntime(
+	context.Context,
+	string,
+	string,
+) (domain.SkillRuntime, error) {
+	runtime := r.runtime
+	runtime.Versions = append([]domain.SkillVersion(nil), runtime.Versions...)
+	return runtime, nil
 }
 
 func (r staticSessionSkillRepository) SessionSkillsForRuntime(
@@ -102,5 +113,44 @@ func TestSessionSkillMaterializerRejectsUnsupportedSandboxPermanently(t *testing
 	)
 	if !sandbox.IsPermanent(err) {
 		t.Fatalf("Reconcile error = %v, want permanent", err)
+	}
+}
+
+func TestSessionSkillMaterializerUsesThreadAgentRuntimePath(t *testing.T) {
+	bundle, err := prepareSkillBundle([]SkillUploadFile{{
+		Filename: "reports/SKILL.md",
+		Body: []byte(
+			"---\nname: reports\ndescription: Analyze reports\n---\nRead inputs.\n",
+		),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := ComputeBlobInfo(bundle.Archive)
+	version := domain.SkillVersion{
+		SkillID: "skill_reports", Version: "200", Name: bundle.Name,
+		Description: bundle.Description, Directory: bundle.Directory,
+		BlobKey: "skills/skill_reports/200.zip", SizeBytes: info.SizeBytes,
+		UncompressedSizeBytes: bundle.UncompressedSizeBytes,
+		ChecksumSHA256:        info.ChecksumSHA256, State: domain.SkillVersionReady,
+	}
+	root := domain.SessionSkillsRoot + "/.agents/0123456789abcdef01234567"
+	blobs := newMemoryBlobStore()
+	blobs.objects[version.BlobKey] = append([]byte(nil), bundle.Archive...)
+	box := &trackingSkillSandbox{}
+	materializer := NewSessionSkillMaterializer(
+		staticSessionSkillRepository{runtime: domain.SkillRuntime{
+			Root: root, Versions: []domain.SkillVersion{version},
+		}},
+		blobs,
+	)
+	if err := materializer.ReconcileThread(
+		context.Background(), "sesn_1", "sthr_child", box,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if box.mount.RuntimePath != root+"/reports" ||
+		box.mount.Name != "reports" {
+		t.Fatalf("child Skill mount = %+v", box.mount)
 	}
 }
