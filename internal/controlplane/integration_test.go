@@ -171,6 +171,67 @@ func TestPostgresHTTPResourceSessionAndEventPath(t *testing.T) {
 	}
 }
 
+func TestPostgresSessionPersistsResolvedMultiagentRoster(t *testing.T) {
+	handler := postgresHandler(t)
+	peerID := createResource(t, handler, "/v1/agents",
+		`{"name":"reviewer","model":"claude-test","system":"review-v1","description":"reviews code"}`)
+	coordinatorID := createResource(t, handler, "/v1/agents",
+		`{"name":"coordinator","model":"claude-test","system":"coordinate",`+
+			`"multiagent":{"type":"coordinator","agents":[{"type":"agent","id":"`+
+			peerID+`","version":1},{"type":"self"}]}}`)
+	environmentID := createResource(t, handler, "/v1/environments",
+		`{"name":"cloud","config":{"type":"cloud"}}`)
+
+	response := request(t, handler, http.MethodPost, "/v1/sessions",
+		`{"agent":{"type":"agent_with_overrides","id":"`+coordinatorID+`",`+
+			`"system":"session-coordinate"},"environment_id":"`+environmentID+`"}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create Session -> %d: %s", response.Code, response.Body.String())
+	}
+	var created map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	agent := created["agent"].(map[string]any)
+	topology := agent["multiagent"].(map[string]any)
+	roster := topology["agents"].([]any)
+	if len(roster) != 2 {
+		t.Fatalf("resolved roster = %#v", topology)
+	}
+	peer := roster[0].(map[string]any)
+	self := roster[1].(map[string]any)
+	if peer["id"] != peerID || peer["name"] != "reviewer" ||
+		peer["system"] != "review-v1" || peer["version"] != float64(1) {
+		t.Fatalf("resolved peer = %#v", peer)
+	}
+	if self["id"] != coordinatorID || self["system"] != "session-coordinate" ||
+		self["version"] != float64(1) {
+		t.Fatalf("resolved self = %#v", self)
+	}
+	if _, nested := self["multiagent"]; nested {
+		t.Fatalf("self snapshot retained nested topology: %#v", self)
+	}
+
+	if archived := request(
+		t, handler, http.MethodPost, "/v1/agents/"+peerID+"/archive", "",
+	); archived.Code != http.StatusOK {
+		t.Fatalf("archive peer -> %d: %s", archived.Code, archived.Body.String())
+	}
+	sessionID := created["id"].(string)
+	reloaded := request(t, handler, http.MethodGet, "/v1/sessions/"+sessionID, "")
+	if reloaded.Code != http.StatusOK {
+		t.Fatalf("reload Session -> %d: %s", reloaded.Code, reloaded.Body.String())
+	}
+	var after map[string]any
+	if err := json.Unmarshal(reloaded.Body.Bytes(), &after); err != nil {
+		t.Fatal(err)
+	}
+	frozen := after["agent"].(map[string]any)["multiagent"].(map[string]any)["agents"].([]any)[0].(map[string]any)
+	if frozen["version"] != float64(1) || frozen["system"] != "review-v1" {
+		t.Fatalf("Session roster drifted after peer archive: %#v", frozen)
+	}
+}
+
 func TestPostgresHTTPSessionPrimaryThreadLifecycle(t *testing.T) {
 	handler := postgresHandler(t)
 	agentID := createResource(t, handler, "/v1/agents",

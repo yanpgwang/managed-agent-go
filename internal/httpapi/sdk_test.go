@@ -546,6 +546,90 @@ func TestSDK_AgentMultiagentSelfResolvesAndTracksCoordinatorVersion(t *testing.T
 	}
 }
 
+func TestSDK_SessionMultiagentRosterExpandsAndFreezesAgentSnapshots(t *testing.T) {
+	client, server := sdkClientAndServer(t)
+	ctx := context.Background()
+	peer, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name:        "Reviewer",
+		Description: anthropic.String("Reviews changes before merge."),
+		Model: anthropic.BetaManagedAgentsModelConfigParams{
+			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_8,
+		},
+		System: anthropic.String("review-system-v1"),
+	})
+	if err != nil {
+		t.Fatalf("create peer: %v", err)
+	}
+	selfEntry := anthropic.BetaManagedAgentsMultiagentRosterEntryParamsOfBetaManagedAgentsMultiagentSelfs(
+		anthropic.BetaManagedAgentsMultiagentSelfParamsTypeSelf,
+	)
+	coordinator, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name: "Coordinator",
+		Model: anthropic.BetaManagedAgentsModelConfigParams{
+			ID: anthropic.BetaManagedAgentsModelClaudeOpus4_8,
+		},
+		System: anthropic.String("coordinator-system-v1"),
+		Multiagent: anthropic.BetaManagedAgentsMultiagentParams{
+			Type: anthropic.BetaManagedAgentsMultiagentParamsTypeCoordinator,
+			Agents: []anthropic.BetaManagedAgentsMultiagentRosterEntryParamsUnion{
+				{
+					OfBetaManagedAgentsAgents: &anthropic.BetaManagedAgentsAgentParams{
+						ID: peer.ID, Type: anthropic.BetaManagedAgentsAgentParamsTypeAgent,
+						Version: anthropic.Int(1),
+					},
+				},
+				selfEntry,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create coordinator: %v", err)
+	}
+	environmentID := mustEnv(t, server.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent: anthropic.BetaSessionNewParamsAgentUnion{
+			OfBetaManagedAgentsAgentWithOverridess: &anthropic.BetaManagedAgentsAgentWithOverridesParams{
+				ID:     coordinator.ID,
+				Type:   anthropic.BetaManagedAgentsAgentWithOverridesParamsTypeAgentWithOverrides,
+				System: anthropic.String("session-coordinator-system"),
+			},
+		},
+		EnvironmentID: environmentID,
+	})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	if len(session.Agent.Multiagent.Agents) != 2 {
+		t.Fatalf("resolved roster = %s", session.Agent.Multiagent.RawJSON())
+	}
+	resolvedPeer := session.Agent.Multiagent.Agents[0].AsAgent()
+	if resolvedPeer.ID != peer.ID || resolvedPeer.Version != 1 ||
+		resolvedPeer.Name != "Reviewer" || resolvedPeer.System != "review-system-v1" ||
+		resolvedPeer.Description != "Reviews changes before merge." {
+		t.Fatalf("resolved peer = %s", resolvedPeer.RawJSON())
+	}
+	resolvedSelf := session.Agent.Multiagent.Agents[1].AsAgent()
+	if resolvedSelf.ID != coordinator.ID || resolvedSelf.Version != 1 ||
+		resolvedSelf.System != "session-coordinator-system" {
+		t.Fatalf("resolved self = %s", resolvedSelf.RawJSON())
+	}
+
+	if _, err := client.Beta.Agents.Update(ctx, peer.ID, anthropic.BetaAgentUpdateParams{
+		System:  anthropic.String("review-system-v2"),
+		Version: anthropic.Int(1),
+	}); err != nil {
+		t.Fatalf("update peer: %v", err)
+	}
+	reloaded, err := client.Beta.Sessions.Get(ctx, session.ID, anthropic.BetaSessionGetParams{})
+	if err != nil {
+		t.Fatalf("reload Session: %v", err)
+	}
+	frozenPeer := reloaded.Agent.Multiagent.Agents[0].AsAgent()
+	if frozenPeer.Version != 1 || frozenPeer.System != "review-system-v1" {
+		t.Fatalf("Session roster drifted after Agent update: %s", frozenPeer.RawJSON())
+	}
+}
+
 func TestSDK_AgentInferenceGeoRoundTripsAndClearsOnModelReplacement(t *testing.T) {
 	client, _ := sdkClientAndServer(t)
 	ctx := context.Background()

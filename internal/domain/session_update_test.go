@@ -217,3 +217,71 @@ func TestSessionUpdatedPayload_CarriesOnlyChangedFields(t *testing.T) {
 		t.Fatalf("cleared metadata payload = %#v, want no fields", clearedPayload)
 	}
 }
+
+func TestResolvedAgentSnapshotJSON_ExpandsImmutableSessionRoster(t *testing.T) {
+	session := updatableSession()
+	session.AgentSnapshot.Multiagent = &Multiagent{
+		Type:   "coordinator",
+		Agents: []AgentReference{{Type: "agent", ID: "agent_peer", Version: 3}},
+	}
+	session.MultiagentRoster = []Agent{{
+		ID: "agent_peer", Version: 3, Name: "Reviewer",
+		Model:      NormalizeModel(Model{ID: "claude-peer"}),
+		Multiagent: &Multiagent{Type: "coordinator"},
+	}}
+
+	resolved := session.ResolvedAgentSnapshotJSON()
+	topology, ok := resolved["multiagent"].(map[string]any)
+	if !ok || topology["type"] != "coordinator" {
+		t.Fatalf("resolved topology = %#v", resolved["multiagent"])
+	}
+	members, ok := topology["agents"].([]any)
+	if !ok || len(members) != 1 {
+		t.Fatalf("resolved members = %#v", topology["agents"])
+	}
+	member, ok := members[0].(map[string]any)
+	if !ok || member["id"] != "agent_peer" || member["version"] != 3 ||
+		member["name"] != "Reviewer" {
+		t.Fatalf("resolved member = %#v", members[0])
+	}
+	if _, nested := member["multiagent"]; nested {
+		t.Fatal("resolved roster member retained a nested multiagent topology")
+	}
+}
+
+func TestSessionUpdate_AppliesAgentConfigurationToSelfRosterOnly(t *testing.T) {
+	session := updatableSession()
+	session.AgentSnapshot.Multiagent = &Multiagent{Type: "coordinator", Agents: []AgentReference{
+		{Type: "agent", ID: session.AgentID, Version: session.AgentVersion},
+		{Type: "agent", ID: "agent_external", Version: 2},
+	}}
+	session.MultiagentRoster = []Agent{
+		{
+			ID: session.AgentID, Version: session.AgentVersion, Name: "Self",
+			Tools: []any{map[string]any{"type": "custom", "name": "old"}},
+		},
+		{
+			ID: "agent_external", Version: 2, Name: "External",
+			Tools: []any{map[string]any{"type": "custom", "name": "external"}},
+		},
+	}
+	tools := []any{map[string]any{
+		"type": "custom", "name": "new", "description": "new",
+		"input_schema": map[string]any{"type": "object"},
+	}}
+
+	updated, change, err := session.ApplyUpdate(SessionUpdate{AgentTools: &tools})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !change.Agent || !reflect.DeepEqual(updated.AgentSnapshot.Tools, tools) ||
+		!reflect.DeepEqual(updated.MultiagentRoster[0].Tools, tools) {
+		t.Fatalf("updated self configuration = %+v", updated.MultiagentRoster)
+	}
+	if !reflect.DeepEqual(
+		updated.MultiagentRoster[1].Tools,
+		session.MultiagentRoster[1].Tools,
+	) {
+		t.Fatalf("external roster member changed: %+v", updated.MultiagentRoster[1])
+	}
+}

@@ -137,9 +137,11 @@ Remaining work is:
 ## M2: multi-agent
 
 Official coordinator roster resolution and immutable Agent Version pinning are
-implemented, as is the independent Thread execution projection. The remaining
-M2 work is child-thread creation, delegation/message execution, cross-posted
-confirmation, context compaction, and targeted interrupt events.
+implemented. Session creation now also freezes the full resolved roster
+definitions, including Session overrides on `self`, and the independent Thread
+execution projection is in place. The remaining M2 work is child-thread
+creation, delegation/message execution, cross-posted confirmation, context
+compaction, and targeted interrupt events.
 Advisor consultation Threads and shared Session budget enforcement follow the
 ordinary child runtime because both depend on correct per-Thread usage and
 Session-level aggregation, but retain their distinct public behavior.

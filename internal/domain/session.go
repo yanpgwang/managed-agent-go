@@ -47,9 +47,16 @@ type Session struct {
 	// the immutable public projection returned as the session's `agent` field.
 	// Later updates or archival of the underlying agent must never mutate it.
 	AgentSnapshot Agent
-	Usage         TokenUsage
-	Outcomes      []OutcomeEvaluation
-	Resources     []SessionResource
+	// MultiagentRoster contains the full, immutable Agent snapshots resolved for
+	// the coordinator at Session creation time. Agent resources store only
+	// version pins in AgentSnapshot.Multiagent; the Session contract expands
+	// those pins so child Threads never need to reinterpret "latest" or observe
+	// a later Agent mutation. A self entry is copied from AgentSnapshot after
+	// Session overrides have been applied.
+	MultiagentRoster []Agent
+	Usage            TokenUsage
+	Outcomes         []OutcomeEvaluation
+	Resources        []SessionResource
 	// VaultIDs is the immutable, ordered Vault selection captured when the
 	// Session is created. Runtime credential resolution preserves this order.
 	VaultIDs []string
@@ -160,6 +167,18 @@ func (s Session) ApplyUpdate(u SessionUpdate) (Session, SessionChange, error) {
 		}
 		if !reflect.DeepEqual(s.AgentSnapshot, snapshot) {
 			next.AgentSnapshot = snapshot
+			if len(s.MultiagentRoster) > 0 {
+				next.MultiagentRoster = append([]Agent(nil), s.MultiagentRoster...)
+				for index := range next.MultiagentRoster {
+					if next.MultiagentRoster[index].ID != s.AgentID {
+						continue
+					}
+					// Direct owner references are forbidden on Agent admission, so
+					// the owner ID in a resolved Session roster can only be self.
+					next.MultiagentRoster[index].Tools = snapshot.Tools
+					next.MultiagentRoster[index].MCPServers = snapshot.MCPServers
+				}
+			}
 			change.Agent = true
 		}
 	}
@@ -187,7 +206,7 @@ func metadataEqual(current, next map[string]any) bool {
 func SessionUpdatedPayload(s Session, change SessionChange) map[string]any {
 	payload := map[string]any{}
 	if change.Agent {
-		payload["agent"] = s.AgentSnapshot.SessionSnapshotJSON()
+		payload["agent"] = s.ResolvedAgentSnapshotJSON()
 	}
 	if change.Metadata && len(s.Metadata) > 0 {
 		metadata := make(map[string]any, len(s.Metadata))
@@ -200,6 +219,35 @@ func SessionUpdatedPayload(s Session, change SessionChange) map[string]any {
 		payload["title"] = s.Title
 	}
 	return payload
+}
+
+// ResolvedAgentSnapshotJSON returns the public Session Agent projection. Agent
+// resources expose a coordinator roster as version references, while Sessions
+// expose the full definitions captured in MultiagentRoster. Thread snapshots
+// omit multiagent entirely because roster ownership belongs to the coordinator
+// Session rather than any child execution.
+func (s Session) ResolvedAgentSnapshotJSON() map[string]any {
+	out := s.AgentSnapshot.SessionSnapshotJSON()
+	if s.AgentSnapshot.Multiagent == nil {
+		out["multiagent"] = nil
+		return out
+	}
+	// Sessions written before resolved rosters were introduced retain their
+	// pinned reference projection if a legacy configuration could not be safely
+	// backfilled. New executable coordinators always have a non-empty roster.
+	if len(s.MultiagentRoster) == 0 {
+		return out
+	}
+	agents := make([]any, 0, len(s.MultiagentRoster))
+	for _, agent := range s.MultiagentRoster {
+		snapshot := agent.SessionSnapshotJSON()
+		delete(snapshot, "multiagent")
+		agents = append(agents, snapshot)
+	}
+	out["multiagent"] = map[string]any{
+		"type": "coordinator", "agents": agents,
+	}
+	return out
 }
 
 // OutcomeEvaluation is the Session-level projection for one define_outcome
