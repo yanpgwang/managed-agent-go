@@ -11,18 +11,20 @@ import (
 func (s storeSource) GetMCPDiscoverySnapshot(
 	ctx context.Context,
 	sessionID string,
+	threadID string,
 	server domain.MCPServer,
 ) ([]mcpclient.Tool, bool, error) {
-	return s.store.GetMCPDiscoverySnapshot(ctx, sessionID, server)
+	return s.store.GetMCPDiscoverySnapshot(ctx, sessionID, threadID, server)
 }
 
 func (s storeSource) PutMCPDiscoverySnapshot(
 	ctx context.Context,
 	sessionID string,
+	threadID string,
 	server domain.MCPServer,
 	tools []mcpclient.Tool,
 ) ([]mcpclient.Tool, error) {
-	return s.store.PutMCPDiscoverySnapshot(ctx, sessionID, server, tools)
+	return s.store.PutMCPDiscoverySnapshot(ctx, sessionID, threadID, server, tools)
 }
 
 // storeSource adapts *pg.Store to the EventSource interface the Activities

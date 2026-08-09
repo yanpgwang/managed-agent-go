@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -451,6 +452,24 @@ func (s *Store) UpdateSession(
 			return err
 		}
 		if change.Agent {
+			if !reflect.DeepEqual(
+				session.AgentSnapshot.MCPServers,
+				next.AgentSnapshot.MCPServers,
+			) {
+				threadID, err := q.GetPrimarySessionThreadID(ctx, sessionID)
+				if err != nil {
+					return err
+				}
+				if err := q.DeleteMCPDiscoverySnapshotsForThread(
+					ctx,
+					pgstore.DeleteMCPDiscoverySnapshotsForThreadParams{
+						SessionID: sessionID,
+						ThreadID:  threadID,
+					},
+				); err != nil {
+					return err
+				}
+			}
 			if err := s.putPrimarySessionThreadProjection(ctx, q, next); err != nil {
 				return err
 			}

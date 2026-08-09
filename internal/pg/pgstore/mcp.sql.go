@@ -11,22 +11,50 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const deleteMCPDiscoverySnapshotsForThread = `-- name: DeleteMCPDiscoverySnapshotsForThread :exec
+DELETE FROM mcp_discovery_snapshots
+WHERE session_id = $1 AND thread_id = $2
+`
+
+type DeleteMCPDiscoverySnapshotsForThreadParams struct {
+	SessionID string
+	ThreadID  string
+}
+
+func (q *Queries) DeleteMCPDiscoverySnapshotsForThread(ctx context.Context, arg DeleteMCPDiscoverySnapshotsForThreadParams) error {
+	_, err := q.db.Exec(ctx, deleteMCPDiscoverySnapshotsForThread, arg.SessionID, arg.ThreadID)
+	return err
+}
+
 const getMCPDiscoverySnapshot = `-- name: GetMCPDiscoverySnapshot :one
-SELECT session_id, server_name, server_url, tools, created_at
+SELECT session_id, thread_id, server_name, server_url, tools, created_at
 FROM mcp_discovery_snapshots
-WHERE session_id = $1 AND server_name = $2
+WHERE session_id = $1
+  AND thread_id = $2
+  AND server_name = $3
 `
 
 type GetMCPDiscoverySnapshotParams struct {
 	SessionID  string
+	ThreadID   string
 	ServerName string
 }
 
-func (q *Queries) GetMCPDiscoverySnapshot(ctx context.Context, arg GetMCPDiscoverySnapshotParams) (McpDiscoverySnapshot, error) {
-	row := q.db.QueryRow(ctx, getMCPDiscoverySnapshot, arg.SessionID, arg.ServerName)
-	var i McpDiscoverySnapshot
+type GetMCPDiscoverySnapshotRow struct {
+	SessionID  string
+	ThreadID   string
+	ServerName string
+	ServerUrl  string
+	Tools      []byte
+	CreatedAt  pgtype.Timestamptz
+}
+
+func (q *Queries) GetMCPDiscoverySnapshot(ctx context.Context, arg GetMCPDiscoverySnapshotParams) (GetMCPDiscoverySnapshotRow, error) {
+	row := q.db.QueryRow(ctx, getMCPDiscoverySnapshot, arg.SessionID, arg.ThreadID, arg.ServerName)
+	var i GetMCPDiscoverySnapshotRow
 	err := row.Scan(
 		&i.SessionID,
+		&i.ThreadID,
 		&i.ServerName,
 		&i.ServerUrl,
 		&i.Tools,
@@ -37,16 +65,17 @@ func (q *Queries) GetMCPDiscoverySnapshot(ctx context.Context, arg GetMCPDiscove
 
 const insertMCPDiscoverySnapshot = `-- name: InsertMCPDiscoverySnapshot :exec
 INSERT INTO mcp_discovery_snapshots (
-    session_id, server_name, server_url, tools, created_at
+    session_id, thread_id, server_name, server_url, tools, created_at
 )
 VALUES (
-    $1, $2, $3, $4, $5
+    $1, $2, $3, $4, $5, $6
 )
-ON CONFLICT (session_id, server_name) DO NOTHING
+ON CONFLICT (session_id, thread_id, server_name) DO NOTHING
 `
 
 type InsertMCPDiscoverySnapshotParams struct {
 	SessionID  string
+	ThreadID   string
 	ServerName string
 	ServerUrl  string
 	Tools      []byte
@@ -56,6 +85,7 @@ type InsertMCPDiscoverySnapshotParams struct {
 func (q *Queries) InsertMCPDiscoverySnapshot(ctx context.Context, arg InsertMCPDiscoverySnapshotParams) error {
 	_, err := q.db.Exec(ctx, insertMCPDiscoverySnapshot,
 		arg.SessionID,
+		arg.ThreadID,
 		arg.ServerName,
 		arg.ServerUrl,
 		arg.Tools,
