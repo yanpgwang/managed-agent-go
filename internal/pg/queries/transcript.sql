@@ -23,15 +23,11 @@ VALUES (
 ON CONFLICT (session_id, trigger_event_id) DO NOTHING;
 
 -- name: ListProviderTranscriptTurns :many
-SELECT
-    session_id,
-    trigger_event_id,
-    turn_ordinal,
-    committed_through_seq,
-    represented_event_ids,
-    messages,
-    tool_use_mappings,
-    created_at
-FROM provider_transcript_turns
-WHERE session_id = @session_id
-ORDER BY turn_ordinal;
+SELECT transcript.*
+FROM provider_transcript_turns AS transcript
+JOIN events AS trigger
+  ON trigger.session_id = transcript.session_id
+ AND trigger.id = transcript.trigger_event_id
+WHERE transcript.session_id = @session_id
+  AND trigger.thread_id = @thread_id
+ORDER BY transcript.turn_ordinal;

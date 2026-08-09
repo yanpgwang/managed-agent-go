@@ -29,5 +29,5 @@ Not yet claimed:
 - lifecycle transitions beyond the durable `session.thread_created` parent event;
 - `agent.thread_message_*` events;
 - cross-posted tool/custom events and targeted interrupts;
-- child-Thread context compaction and per-Thread provider transcripts;
+- child workflow use of the Thread-owned provider transcript and context compaction;
 - advisor consultation Threads and Session-wide list-cost budget enforcement.

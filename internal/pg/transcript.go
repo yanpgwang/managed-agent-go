@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
 )
 
 // LoadProviderTranscript returns the immutable committed turn deltas in model
@@ -15,7 +16,28 @@ func (s *Store) LoadProviderTranscript(
 	ctx context.Context,
 	sessionID string,
 ) (domain.ProviderTranscript, error) {
-	rows, err := s.q.ListProviderTranscriptTurns(ctx, sessionID)
+	threadID, err := s.q.GetPrimarySessionThreadID(ctx, sessionID)
+	if err != nil {
+		return domain.ProviderTranscript{}, err
+	}
+	return s.LoadThreadProviderTranscript(ctx, sessionID, threadID)
+}
+
+// LoadThreadProviderTranscript returns only the provider-native continuation
+// history owned by one Thread. Public Session ordering never participates in
+// private model context reconstruction.
+func (s *Store) LoadThreadProviderTranscript(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) (domain.ProviderTranscript, error) {
+	rows, err := s.q.ListProviderTranscriptTurns(
+		ctx,
+		pgstore.ListProviderTranscriptTurnsParams{
+			SessionID: sessionID,
+			ThreadID:  threadID,
+		},
+	)
 	if err != nil {
 		return domain.ProviderTranscript{}, err
 	}

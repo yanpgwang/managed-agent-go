@@ -60,22 +60,23 @@ func (q *Queries) InsertProviderTranscriptTurn(ctx context.Context, arg InsertPr
 }
 
 const listProviderTranscriptTurns = `-- name: ListProviderTranscriptTurns :many
-SELECT
-    session_id,
-    trigger_event_id,
-    turn_ordinal,
-    committed_through_seq,
-    represented_event_ids,
-    messages,
-    tool_use_mappings,
-    created_at
-FROM provider_transcript_turns
-WHERE session_id = $1
-ORDER BY turn_ordinal
+SELECT transcript.session_id, transcript.trigger_event_id, transcript.turn_ordinal, transcript.committed_through_seq, transcript.represented_event_ids, transcript.messages, transcript.tool_use_mappings, transcript.created_at
+FROM provider_transcript_turns AS transcript
+JOIN events AS trigger
+  ON trigger.session_id = transcript.session_id
+ AND trigger.id = transcript.trigger_event_id
+WHERE transcript.session_id = $1
+  AND trigger.thread_id = $2
+ORDER BY transcript.turn_ordinal
 `
 
-func (q *Queries) ListProviderTranscriptTurns(ctx context.Context, sessionID string) ([]ProviderTranscriptTurn, error) {
-	rows, err := q.db.Query(ctx, listProviderTranscriptTurns, sessionID)
+type ListProviderTranscriptTurnsParams struct {
+	SessionID string
+	ThreadID  string
+}
+
+func (q *Queries) ListProviderTranscriptTurns(ctx context.Context, arg ListProviderTranscriptTurnsParams) ([]ProviderTranscriptTurn, error) {
+	rows, err := q.db.Query(ctx, listProviderTranscriptTurns, arg.SessionID, arg.ThreadID)
 	if err != nil {
 		return nil, err
 	}
