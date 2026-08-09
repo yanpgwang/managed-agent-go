@@ -4,12 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
-func TestSessionPrimaryThreadIsDurableAndMirrorsSessionProjection(t *testing.T) {
+func TestSessionPrimaryThreadIsDurableAndOwnsIndependentProjection(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
 	session := newSession("sesn_primary_thread")
@@ -50,6 +51,31 @@ func TestSessionPrimaryThreadIsDurableAndMirrorsSessionProjection(t *testing.T) 
 	if _, err := store.GetSessionThread(ctx, "sesn_other", primary.ID); err == nil {
 		t.Fatal("cross-session thread lookup succeeded")
 	}
+
+	// Session is an aggregate, not the storage backing for the primary Thread.
+	// A future child-only aggregate change must not rewrite primary state on read.
+	aggregateOnly := session
+	aggregateOnly.Status = domain.StatusIdle
+	aggregateOnly.AgentSnapshot.Name = "aggregate-only"
+	aggregateOnly.Usage.InputTokens = 99
+	aggregateBody, err := json.Marshal(aggregateOnly)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+UPDATE sessions SET status = $2, body = $3 WHERE id = $1`,
+		session.ID, aggregateOnly.Status, aggregateBody,
+	); err != nil {
+		t.Fatal(err)
+	}
+	independent, err := store.GetSessionThread(ctx, session.ID, primary.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if independent.Status != domain.StatusRunning || independent.Agent.Name != "Coordinator" ||
+		independent.Usage.InputTokens != 11 {
+		t.Fatalf("primary Thread leaked Session aggregate changes: %+v", independent)
+	}
 }
 
 func TestPrimaryThreadArchiveAndSessionDeleteShareLifecycle(t *testing.T) {
@@ -82,18 +108,71 @@ func TestPrimaryThreadArchiveAndSessionDeleteShareLifecycle(t *testing.T) {
 	}
 }
 
+func TestSessionThreadRowsDecodeIndependentChildProjection(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_child_projection")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := store.ListSessionThreads(ctx, session.ID, app.SessionThreadListQuery{Limit: 10})
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("primary Threads = %+v, err=%v", threads, err)
+	}
+	primary := threads[0]
+	parentID := primary.ID
+	child := domain.SessionThread{
+		ID: "sthr_child_projection", SessionID: session.ID, ParentThreadID: &parentID,
+		Agent: domain.Agent{
+			ID: "agent_child", Version: 4, Name: "reviewer",
+			Model: domain.NormalizeModel(domain.Model{ID: "claude-sonnet-4-5"}),
+		},
+		Status: domain.StatusIdle, Usage: domain.TokenUsage{InputTokens: 7},
+		CreatedAt: session.CreatedAt.Add(time.Second), UpdatedAt: session.CreatedAt.Add(time.Second),
+	}
+	body, err := json.Marshal(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO session_threads (
+    id, session_id, parent_thread_id, kind, status, body, created_at, updated_at
+) VALUES ($1, $2, $3, 'child', $4, $5, $6, $7)`,
+		child.ID, child.SessionID, child.ParentThreadID, child.Status, body,
+		child.CreatedAt, child.UpdatedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := store.GetSessionThread(ctx, session.ID, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Agent.ID != "agent_child" || got.Agent.Version != 4 ||
+		got.Usage.InputTokens != 7 || got.ParentThreadID == nil || *got.ParentThreadID != primary.ID {
+		t.Fatalf("child projection = %+v", got)
+	}
+	threads, err = store.ListSessionThreads(ctx, session.ID, app.SessionThreadListQuery{Limit: 10})
+	if err != nil || len(threads) != 2 || threads[0].ID != primary.ID || threads[1].ID != child.ID {
+		t.Fatalf("ordered Threads = %+v, err=%v", threads, err)
+	}
+}
+
 func TestSessionThreadMigrationBackfillsExistingSessions(t *testing.T) {
 	store := testStoreAtMigration(t, 20)
 	ctx := context.Background()
 	session := newSession("sesn_thread_backfill")
+	archivedAt := session.CreatedAt.Add(time.Minute)
+	session.ArchivedAt = &archivedAt
+	session.UpdatedAt = archivedAt
 	body, err := json.Marshal(session)
 	if err != nil {
 		t.Fatalf("marshal session: %v", err)
 	}
 	if _, err := store.pool.Exec(ctx, `
-INSERT INTO sessions (id, status, body, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5)`,
-		session.ID, session.Status, body, session.CreatedAt, session.UpdatedAt,
+INSERT INTO sessions (id, status, body, created_at, updated_at, archived_at)
+VALUES ($1, $2, $3, $4, $5, $6)`,
+		session.ID, session.Status, body, session.CreatedAt, session.UpdatedAt, session.ArchivedAt,
 	); err != nil {
 		t.Fatalf("insert pre-thread session: %v", err)
 	}
@@ -101,7 +180,10 @@ VALUES ($1, $2, $3, $4, $5)`,
 		t.Fatalf("migrate to Session Threads: %v", err)
 	}
 	threads, err := store.ListSessionThreads(ctx, session.ID, app.SessionThreadListQuery{Limit: 10})
-	if err != nil || len(threads) != 1 || threads[0].ID != "sthr_40501844f5ff033680ff228a" {
+	if err != nil || len(threads) != 1 || threads[0].ID != "sthr_40501844f5ff033680ff228a" ||
+		threads[0].Agent.ID != session.AgentSnapshot.ID || threads[0].Status != domain.StatusTerminated ||
+		threads[0].ArchivedAt == nil || !threads[0].ArchivedAt.Equal(archivedAt) ||
+		threads[0].TerminatedAt == nil || !threads[0].TerminatedAt.Equal(archivedAt) {
 		t.Fatalf("backfilled threads = %+v, err=%v", threads, err)
 	}
 }

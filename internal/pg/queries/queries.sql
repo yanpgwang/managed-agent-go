@@ -32,6 +32,21 @@ UPDATE sessions
 SET status = @status, body = @body, updated_at = @updated_at
 WHERE id = @id;
 
+-- The primary Thread has an independent projection even while the current
+-- single-thread runtime updates it alongside the Session aggregate.
+-- name: GetPrimarySessionThreadProjection :one
+SELECT body
+FROM session_threads
+WHERE session_id = @session_id AND kind = 'primary';
+
+-- name: UpdatePrimarySessionThreadProjection :exec
+UPDATE session_threads
+SET status = @status,
+    body = @body,
+    updated_at = @updated_at,
+    archived_at = @archived_at
+WHERE session_id = @session_id AND kind = 'primary';
+
 -- MaxEventSeq returns the current highest receipt sequence for a session, or 0
 -- when the session has no events yet. Called while holding the admission lock.
 -- name: MaxEventSeq :one

@@ -5,9 +5,10 @@ slug: /api/session-threads
 
 # Session Threads
 
-Every Session has a durable primary thread. The primary thread is not a copy of
-the Session runtime: it is the same execution exposed through the official
-Thread resource and Thread Event routes.
+Every Session has a durable primary Thread. In the current single-Agent runtime,
+the primary Thread and Session describe the same execution. They are persisted
+as separate projections so future child Threads can own execution state while
+the Session remains the aggregate resource.
 
 ```text
 GET  /v1/sessions/{session_id}/threads
@@ -17,17 +18,24 @@ GET  /v1/sessions/{session_id}/threads/{thread_id}/events
 GET  /v1/sessions/{session_id}/threads/{thread_id}/stream
 ```
 
-The primary identity is inserted in the same PostgreSQL transaction as the
-Session, its immutable Skill and Vault pins, initial events, and orchestration
-outbox. Existing databases receive deterministic primary identities during
-migration. Deleting a Session cascades to its Thread identity.
+The primary identity and its initial execution projection are inserted in the
+same PostgreSQL transaction as the Session, its immutable Skill and Vault pins,
+initial events, and orchestration outbox. Existing databases receive
+deterministic primary identities and backfilled projections during migration.
+Deleting a Session cascades to its Threads.
 
 ## Projection model
 
-The primary Thread reads its immutable Agent snapshot, status, cumulative
-usage, and timing from the Session projection. `parent_thread_id` is null. The
-Thread's Agent omits `multiagent`; the resolved coordinator roster remains on
-`Session.agent`, matching the upstream response boundary.
+Each Thread owns an independent PostgreSQL projection of its immutable Agent
+snapshot, status, cumulative usage, and timing. The primary Thread has a null
+`parent_thread_id`. Its Agent omits `multiagent`; the resolved coordinator
+roster remains on `Session.agent`, matching the upstream response boundary.
+
+The current runtime updates the primary Thread projection transactionally with
+execution changes to the Session aggregate. Session-only title, metadata, and
+resource changes do not mutate the Thread. When child execution is added, each
+child will update its own projection before the Session aggregate is
+recomputed; Thread reads will not need a new storage model.
 
 Thread Event list and stream are views over the same durable Session event
 ledger and NATS live channel. Pagination uses forward-only opaque cursors bound
@@ -40,10 +48,11 @@ its duration is frozen.
 
 ## Current multi-agent boundary
 
-The five HTTP operations are implemented, but the runtime does not yet spawn
-child threads. It also does not resolve coordinator rosters, delegate work,
-cross-post child permission events, compact child context, or route targeted
-interrupts. Those capabilities will extend the same Thread identity and event
-ledger model rather than introduce a parallel runtime.
+The five HTTP operations and coordinator roster resolution are implemented,
+but the runtime does not yet spawn or execute child Threads. Child archival and
+event routes explicitly return `422` until independent child execution and
+event visibility exist; they never fall through to the primary Session ledger.
+Delegation, cross-thread messages, cross-posted child events, child context
+compaction, and targeted interrupts remain future slices of the same runtime.
 
 See the [Session Threads conformance matrix](session-threads-conformance.md).

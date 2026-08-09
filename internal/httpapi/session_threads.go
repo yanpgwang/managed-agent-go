@@ -138,8 +138,15 @@ func (s *Server) listSessionThreadEvents(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	sessionID, threadID := r.PathValue("id"), r.PathValue("thread_id")
-	if _, err := s.deps.Threads.Get(r.Context(), sessionID, threadID); err != nil {
+	thread, err := s.deps.Threads.Get(r.Context(), sessionID, threadID)
+	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if thread.ParentThreadID != nil {
+		writeError(w, domain.Unsupported(
+			"child session-thread event history is unavailable before child execution",
+		))
 		return
 	}
 	limit := defaultEventLimit
@@ -221,8 +228,15 @@ func (s *Server) streamSessionThreadEvents(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer cancel()
-	if _, err := s.deps.Threads.Get(r.Context(), sessionID, threadID); err != nil {
+	thread, err := s.deps.Threads.Get(r.Context(), sessionID, threadID)
+	if err != nil {
 		writeError(w, err)
+		return
+	}
+	if thread.ParentThreadID != nil {
+		writeError(w, domain.Unsupported(
+			"child session-thread event streaming is unavailable before child execution",
+		))
 		return
 	}
 	writeEventStream(w, r, frames)

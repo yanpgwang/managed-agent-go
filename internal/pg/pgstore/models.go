@@ -244,6 +244,20 @@ type SessionSkillVersion struct {
 	SkillVersion string
 }
 
+type SessionThread struct {
+	ID             string
+	SessionID      string
+	ParentThreadID *string
+	Kind           string
+	CreatedAt      pgtype.Timestamptz
+	// Independent Thread archive time; primary archive currently follows Session archive
+	ArchivedAt pgtype.Timestamptz
+	Status     string
+	// Authoritative per-Thread agent, usage, and timing projection
+	Body      []byte
+	UpdatedAt pgtype.Timestamptz
+}
+
 type SessionVault struct {
 	SessionID string
 	Position  int32

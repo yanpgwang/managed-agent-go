@@ -12,6 +12,7 @@ erDiagram
   AGENT ||--o{ AGENT_VERSION : has
   AGENT_VERSION ||--o{ SESSION : snapshots
   ENVIRONMENT ||--o{ SESSION : hosts
+  SESSION ||--|{ SESSION_THREAD : contains
   SESSION ||--o{ EVENT : records
   SESSION ||--o{ SESSION_RUN : schedules
   SESSION_RUN }o--o{ EVENT : triggered_by
@@ -69,6 +70,24 @@ Temporal may retry infrastructure-failed Activities internally without changing
 the public status. Retryable provider responses instead use the public
 `running -> rescheduling -> running` lifecycle. Exhausting that bounded budget
 returns the Session to `idle`; permanent failures project to `terminated`.
+
+## Session Thread
+
+A Session is the aggregate container; each Session Thread owns an independent
+execution projection containing its resolved Agent snapshot, status, usage, and
+timing. The primary Thread has no parent. A child Thread identifies its parent
+within the same Session and will own a separate provider context when child
+execution is enabled.
+
+The current single-Agent runtime writes execution changes to the primary Thread
+and Session aggregate in one PostgreSQL transaction. Session-only metadata and
+resource changes do not mutate the Thread. Child execution will update a child
+projection first and recompute the Session aggregate separately, preserving the
+same Thread read model instead of projecting every Thread from Session state.
+
+Primary Thread events currently reuse the authoritative Session event ledger.
+Child event origin and cross-post visibility are intentionally not inferred
+from that ledger until the multi-agent event rules are implemented.
 
 ## Event
 

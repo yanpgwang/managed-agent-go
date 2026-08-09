@@ -5,6 +5,7 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -28,6 +29,11 @@ func TestCompleteTurn_Idempotent(t *testing.T) {
 		t.Fatalf("admit: %v", err)
 	}
 	trigger := adm.Events[0]
+	threads, err := store.ListSessionThreads(ctx, sess.ID, app.SessionThreadListQuery{Limit: 1})
+	if err != nil || len(threads) != 1 || threads[0].Status != domain.StatusRunning {
+		t.Fatalf("running primary Thread = %+v, err=%v", threads, err)
+	}
+	primaryID := threads[0].ID
 
 	output := []domain.EventDraft{
 		{Type: domain.EvAgentMessage, Payload: map[string]any{"content": "reply"}},
@@ -83,6 +89,13 @@ func TestCompleteTurn_Idempotent(t *testing.T) {
 	}
 	if final.Status != domain.StatusIdle {
 		t.Fatalf("expected idle, got %s", final.Status)
+	}
+	primary, err := store.GetSessionThread(ctx, sess.ID, primaryID)
+	if err != nil {
+		t.Fatalf("get primary Thread: %v", err)
+	}
+	if primary.Status != domain.StatusIdle || !primary.UpdatedAt.Equal(final.UpdatedAt) {
+		t.Fatalf("completed primary Thread = %+v; session = %+v", primary, final)
 	}
 }
 

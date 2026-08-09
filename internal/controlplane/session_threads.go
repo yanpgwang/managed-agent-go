@@ -8,8 +8,8 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
 )
 
-// SessionThreadService exposes the durable primary execution identity. Child
-// thread creation and delegation remain a separate multi-agent runtime slice.
+// SessionThreadService exposes independently persisted execution projections.
+// Child creation and execution remain a separate multi-agent runtime slice.
 type SessionThreadService struct {
 	store *pg.Store
 }
@@ -34,16 +34,22 @@ func (s *SessionThreadService) List(
 	return s.store.ListSessionThreads(ctx, sessionID, query)
 }
 
-// Archive maps the primary thread lifecycle to the Session lifecycle. This is
-// the complete behavior for today's single-thread runtime and preserves the
-// same idle-only admission fence as Archive Session.
+// Archive maps only the primary Thread lifecycle to the Session lifecycle. A
+// child must never archive the aggregate Session; independent child archival
+// is enabled together with child execution.
 func (s *SessionThreadService) Archive(
 	ctx context.Context,
 	sessionID string,
 	threadID string,
 ) (domain.SessionThread, error) {
-	if _, err := s.store.GetSessionThread(ctx, sessionID, threadID); err != nil {
+	thread, err := s.store.GetSessionThread(ctx, sessionID, threadID)
+	if err != nil {
 		return domain.SessionThread{}, err
+	}
+	if thread.ParentThreadID != nil {
+		return domain.SessionThread{}, domain.Unsupported(
+			"child session-thread archival is unavailable before child execution",
+		)
 	}
 	if _, err := s.store.ArchiveSession(ctx, sessionID); err != nil {
 		return domain.SessionThread{}, err
