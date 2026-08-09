@@ -100,9 +100,11 @@ issuance and tenant-scoped authorization remain platform hardening work.
 
 The Session Threads slice now implements all five public read/archive/event
 operations. Each Session gets one durable primary-thread identity in the same
-creation transaction. Its event history and live stream are views of the
-existing Session ledger and NATS channel, so the HTTP surface does not create a
-second source of truth. The child-thread runtime remains an M2 capability.
+creation transaction. Every Thread now owns an independent Agent, status,
+usage, and timing projection; the current single-Agent runtime synchronizes the
+primary projection and Session aggregate transactionally. Primary event history
+and live streaming remain views of the existing Session ledger and NATS channel.
+The child-thread runtime remains an M2 capability.
 
 Skills and Memory are not deferred to multi-agent work. They provide reusable
 capabilities and continuity to one Agent today, and later become foundations
@@ -124,9 +126,9 @@ Remaining work is:
 ## M2: multi-agent
 
 Official coordinator roster resolution and immutable Agent Version pinning are
-implemented. The remaining M2 work is independent Thread projection,
-child-thread creation, delegation/message execution, cross-posted confirmation,
-context-compaction, and targeted interrupt events.
+implemented, as is the independent Thread execution projection. The remaining
+M2 work is child-thread creation, delegation/message execution, cross-posted
+confirmation, context compaction, and targeted interrupt events.
 The primary Thread HTTP surface, single-agent event ledger, pending-action
 barrier, private provider transcript, Skills, Memory, and Temporal turn loop
 are intended to be reused rather than replaced.

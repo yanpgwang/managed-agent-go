@@ -450,6 +450,11 @@ func (s *Store) UpdateSession(
 		if err := s.updateAPIProjection(ctx, q, next); err != nil {
 			return err
 		}
+		if change.Agent {
+			if err := s.putPrimarySessionThreadProjection(ctx, q, next); err != nil {
+				return err
+			}
+		}
 		result = next
 		return nil
 	})
@@ -484,6 +489,9 @@ func (s *Store) ArchiveSession(ctx context.Context, sessionID string) (domain.Se
 			session.ArchivedAt = &now
 			session.UpdatedAt = now
 			if err := s.updateAPIProjection(ctx, q, session); err != nil {
+				return err
+			}
+			if err := s.putPrimarySessionThreadProjection(ctx, q, session); err != nil {
 				return err
 			}
 		}

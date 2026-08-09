@@ -74,10 +74,10 @@ verification where applicable.
   — filters, pagination envelope, and per-event shapes.
 - [Multiagent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration)
   and [Session Threads API](https://platform.claude.com/docs/en/api/beta/sessions/threads)
-  — the primary-thread identity, thread ordering, per-thread event views, five
-  HTTP operations, and the boundary between the Session stream and child
-  activity. Verified 2026-08-09 against the current documentation and
-  Anthropic Go SDK `v1.61.0` types and methods.
+  — the primary-thread identity, per-Thread execution fields, thread ordering,
+  per-thread event views, five HTTP operations, and the boundary between the
+  Session stream and child activity. Verified 2026-08-09 against the current
+  documentation and Anthropic Go SDK `v1.61.0` types and methods.
 - [Files API](https://platform.claude.com/docs/en/api/beta/files) and
   [Files guide](https://platform.claude.com/docs/en/build-with-claude/files) —
   the five operations, `files-api-2025-04-14` beta header, multipart upload,
@@ -226,10 +226,10 @@ forwarding upstream frames.
   optional Docker provider supplies container isolation.
 - Multiagent coordinator rosters are strictly validated and resolve ID,
   versioned, and `self` inputs to immutable concrete Agent Version references.
-  Every Session has a durable primary-thread identity and all five Thread
-  read/archive/event operations are implemented. Child threads, delegation,
-  cross-thread messaging/event projection, and orchestration are not yet
-  implemented.
+  Every Session has a durable primary Thread with an independent execution
+  projection, and all five Thread read/archive/event operations are
+  implemented. Child execution, delegation, cross-thread messaging/event
+  projection, and orchestration are not yet implemented.
 - The Files API and File-backed Session Resources have separate conditional
   conformance matrices. They are not part of the frozen Managed Agents core
   claim.

@@ -204,6 +204,21 @@ func (q *Queries) GetOutbox(ctx context.Context, sessionID string) (Orchestratio
 	return i, err
 }
 
+const getPrimarySessionThreadProjection = `-- name: GetPrimarySessionThreadProjection :one
+SELECT body
+FROM session_threads
+WHERE session_id = $1 AND kind = 'primary'
+`
+
+// The primary Thread has an independent projection even while the current
+// single-thread runtime updates it alongside the Session aggregate.
+func (q *Queries) GetPrimarySessionThreadProjection(ctx context.Context, sessionID string) ([]byte, error) {
+	row := q.db.QueryRow(ctx, getPrimarySessionThreadProjection, sessionID)
+	var body []byte
+	err := row.Scan(&body)
+	return body, err
+}
+
 const getSession = `-- name: GetSession :one
 SELECT id, status, body, created_at, updated_at
 FROM sessions
@@ -570,6 +585,34 @@ func (q *Queries) PriorProcessedModelTriggers(ctx context.Context, arg PriorProc
 		return nil, err
 	}
 	return items, nil
+}
+
+const updatePrimarySessionThreadProjection = `-- name: UpdatePrimarySessionThreadProjection :exec
+UPDATE session_threads
+SET status = $1,
+    body = $2,
+    updated_at = $3,
+    archived_at = $4
+WHERE session_id = $5 AND kind = 'primary'
+`
+
+type UpdatePrimarySessionThreadProjectionParams struct {
+	Status     string
+	Body       []byte
+	UpdatedAt  pgtype.Timestamptz
+	ArchivedAt pgtype.Timestamptz
+	SessionID  string
+}
+
+func (q *Queries) UpdatePrimarySessionThreadProjection(ctx context.Context, arg UpdatePrimarySessionThreadProjectionParams) error {
+	_, err := q.db.Exec(ctx, updatePrimarySessionThreadProjection,
+		arg.Status,
+		arg.Body,
+		arg.UpdatedAt,
+		arg.ArchivedAt,
+		arg.SessionID,
+	)
+	return err
 }
 
 const updateSessionStatus = `-- name: UpdateSessionStatus :exec

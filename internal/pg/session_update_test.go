@@ -28,6 +28,11 @@ func TestPostgresUpdateSessionCommitsPatchAndEventTogether(t *testing.T) {
 	if _, err := store.CreateSession(ctx, session, nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	threads, err := store.ListSessionThreads(ctx, session.ID, app.SessionThreadListQuery{Limit: 1})
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("list primary Thread = %+v, err=%v", threads, err)
+	}
+	primaryID := threads[0].ID
 
 	title := "after"
 	updated, err := store.UpdateSession(ctx, session.ID, domain.SessionUpdate{
@@ -50,6 +55,13 @@ func TestPostgresUpdateSessionCommitsPatchAndEventTogether(t *testing.T) {
 	if _, present := reloaded.Metadata["drop"]; present {
 		t.Fatalf("null did not delete the key: %#v", reloaded.Metadata)
 	}
+	primary, err := store.GetSessionThread(ctx, session.ID, primaryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(primary.Agent.Tools) != 1 {
+		t.Fatalf("Session-only update changed primary Agent: %#v", primary.Agent.Tools)
+	}
 
 	// A tools replacement is session-local and reaches the durable projection
 	// the turn loop reads.
@@ -68,6 +80,13 @@ func TestPostgresUpdateSessionCommitsPatchAndEventTogether(t *testing.T) {
 	}
 	if reloaded.AgentSnapshot.ID != "agent_1" || reloaded.AgentSnapshot.Version != 1 {
 		t.Fatalf("session update renumbered the snapshot: %#v", reloaded.AgentSnapshot)
+	}
+	primary, err = store.GetSessionThread(ctx, session.ID, primaryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(primary.Agent.Tools) != 0 || primary.Agent.ID != "agent_1" || primary.Agent.Version != 1 {
+		t.Fatalf("primary Agent projection did not follow Agent update: %#v", primary.Agent)
 	}
 
 	// A request that changes nothing emits no event.

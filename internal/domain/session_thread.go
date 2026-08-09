@@ -2,10 +2,10 @@ package domain
 
 import "time"
 
-// SessionThread is the durable execution identity exposed below a Session.
-// The primary thread reuses the Session's agent, status, timing, and usage
-// projections; child threads will add independent projections when the
-// multi-agent runtime is implemented.
+// SessionThread is a durable execution identity exposed below a Session. Every
+// Thread owns its Agent snapshot, status, timing, and usage projection. A
+// Session aggregates those projections; it is not the storage backing for the
+// primary Thread.
 type SessionThread struct {
 	ID             string
 	SessionID      string
@@ -20,6 +20,36 @@ type SessionThread struct {
 	CreatedAt      time.Time
 	UpdatedAt      time.Time
 	ArchivedAt     *time.Time
+}
+
+// NewPrimarySessionThread captures the execution fields of a newly created
+// Session in its primary Thread. Identity and creation time remain stable after
+// this point even as the Session aggregate changes.
+func NewPrimarySessionThread(id string, session Session) SessionThread {
+	thread := SessionThread{
+		ID: id, SessionID: session.ID, CreatedAt: session.CreatedAt.UTC(),
+	}
+	thread.ApplyPrimarySessionProjection(session)
+	return thread
+}
+
+// ApplyPrimarySessionProjection synchronizes the existing single-Thread
+// runtime into its independent primary projection. Once child execution is
+// enabled, child writers update their own Thread first and the Session layer
+// recomputes its aggregate separately; Thread reads remain unchanged.
+func (t *SessionThread) ApplyPrimarySessionProjection(session Session) {
+	t.Agent = session.AgentSnapshot
+	t.Status = session.Status
+	t.Usage = session.Usage
+	t.ActiveSeconds = session.ActiveSeconds
+	t.RunningSince = utcTimePtr(session.RunningSince)
+	t.TerminatedAt = utcTimePtr(session.TerminatedAt)
+	t.UpdatedAt = session.UpdatedAt.UTC()
+	t.ArchivedAt = utcTimePtr(session.ArchivedAt)
+	if t.ArchivedAt != nil {
+		t.Status = StatusTerminated
+		t.TerminatedAt = utcTimePtr(t.ArchivedAt)
+	}
 }
 
 // ObservableStats returns the live timing projection for a thread. Duration
@@ -37,4 +67,12 @@ func (t SessionThread) ObservableStats(now time.Time) (activeSeconds, durationSe
 		end = *t.ArchivedAt
 	}
 	return activeSeconds, max(0, end.Sub(t.CreatedAt).Seconds())
+}
+
+func utcTimePtr(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	utc := value.UTC()
+	return &utc
 }

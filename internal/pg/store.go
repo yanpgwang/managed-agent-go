@@ -234,13 +234,26 @@ func (s *Store) insertPrimarySessionThread(
 	tx pgx.Tx,
 	session domain.Session,
 ) error {
-	_, err := tx.Exec(ctx, `
-INSERT INTO session_threads (
-	id, session_id, parent_thread_id, kind, created_at
-) VALUES ($1, $2, NULL, 'primary', $3)`,
+	thread := domain.NewPrimarySessionThread(
 		s.ids.NewID(domain.PrefixSessionThread),
-		session.ID,
-		session.CreatedAt,
+		session,
+	)
+	body, err := json.Marshal(thread)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+INSERT INTO session_threads (
+	id, session_id, parent_thread_id, kind, status, body,
+	created_at, updated_at, archived_at
+) VALUES ($1, $2, NULL, 'primary', $3, $4, $5, $6, $7)`,
+		thread.ID,
+		thread.SessionID,
+		thread.Status,
+		body,
+		thread.CreatedAt,
+		thread.UpdatedAt,
+		thread.ArchivedAt,
 	)
 	return err
 }
@@ -701,12 +714,15 @@ func (s *Store) putProjection(ctx context.Context, q *pgstore.Queries, session d
 	if err != nil {
 		return err
 	}
-	return q.UpdateSessionStatus(ctx, pgstore.UpdateSessionStatusParams{
+	if err := q.UpdateSessionStatus(ctx, pgstore.UpdateSessionStatusParams{
 		Status:    string(session.Status),
 		Body:      body,
 		UpdatedAt: tsUTC(session.UpdatedAt),
 		ID:        session.ID,
-	})
+	}); err != nil {
+		return err
+	}
+	return s.putPrimarySessionThreadProjection(ctx, q, session)
 }
 
 // EventsAfter returns the session's public events with sequence strictly greater

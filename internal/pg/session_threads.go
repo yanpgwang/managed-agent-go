@@ -10,46 +10,50 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
 )
 
-// GetSessionThread returns a thread only when both path identifiers name the
-// same resource. Today every thread is the primary thread and therefore reads
-// its mutable execution projection directly from the parent Session.
+// GetSessionThread returns a Thread only when both path identifiers name the
+// same resource. The Thread row is the execution projection source of truth;
+// the parent Session is not decoded on this read path.
 func (s *Store) GetSessionThread(
 	ctx context.Context,
 	sessionID string,
 	threadID string,
 ) (domain.SessionThread, error) {
 	var (
-		body          []byte
-		storedCreated time.Time
-		kind          string
-		parentID      *string
+		id, storedSessionID string
+		parentID            *string
+		status              string
+		body                []byte
+		createdAt           time.Time
+		updatedAt           time.Time
+		archivedAt          *time.Time
 	)
 	err := s.pool.QueryRow(ctx, `
-SELECT session.body, thread.created_at, thread.kind, thread.parent_thread_id
-FROM session_threads AS thread
-JOIN sessions AS session ON session.id = thread.session_id
-WHERE thread.session_id = $1 AND thread.id = $2`,
+SELECT id, session_id, parent_thread_id, status, body,
+       created_at, updated_at, archived_at
+FROM session_threads
+WHERE session_id = $1 AND id = $2`,
 		sessionID, threadID,
-	).Scan(&body, &storedCreated, &kind, &parentID)
+	).Scan(
+		&id, &storedSessionID, &parentID, &status, &body,
+		&createdAt, &updatedAt, &archivedAt,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.SessionThread{}, domain.NotFound("session thread not found")
 	}
 	if err != nil {
 		return domain.SessionThread{}, err
 	}
-	if kind != "primary" {
-		return domain.SessionThread{}, domain.Unsupported(
-			"child session-thread runtime is not implemented",
-		)
-	}
-	return primaryThreadFromBody(threadID, storedCreated, parentID, body)
+	return sessionThreadFromRow(
+		id, storedSessionID, parentID, domain.Status(status), body,
+		createdAt, updatedAt, archivedAt,
+	)
 }
 
 // ListSessionThreads returns threads in the documented order: primary first,
-// then children in spawn order. The current runtime creates exactly one primary
-// row, but the keyset and ordering contract is already safe for later children.
+// then children in spawn order. Each result is decoded from its own projection.
 func (s *Store) ListSessionThreads(
 	ctx context.Context,
 	sessionID string,
@@ -58,10 +62,10 @@ func (s *Store) ListSessionThreads(
 	if query.Limit <= 0 {
 		query.Limit = app.DefaultSessionThreadListLimit
 	}
-	var sessionBody []byte
+	var exists int
 	if err := s.pool.QueryRow(ctx,
-		`SELECT body FROM sessions WHERE id = $1`, sessionID,
-	).Scan(&sessionBody); errors.Is(err, pgx.ErrNoRows) {
+		`SELECT 1 FROM sessions WHERE id = $1`, sessionID,
+	).Scan(&exists); errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.NotFound("session not found")
 	} else if err != nil {
 		return nil, err
@@ -78,7 +82,9 @@ func (s *Store) ListSessionThreads(
 	}
 	args = append(args, query.Limit)
 	rows, err := s.pool.Query(ctx, `
-SELECT thread.id, thread.created_at, thread.kind, thread.parent_thread_id
+SELECT thread.id, thread.session_id, thread.parent_thread_id,
+       thread.status, thread.body, thread.created_at,
+       thread.updated_at, thread.archived_at
 FROM session_threads AS thread
 WHERE thread.session_id = $1`+boundary+`
 ORDER BY CASE WHEN thread.kind = 'primary' THEN 0 ELSE 1 END,
@@ -92,17 +98,24 @@ LIMIT $`+fmt.Sprint(len(args)), args...)
 	result := make([]domain.SessionThread, 0, query.Limit)
 	for rows.Next() {
 		var (
-			id, kind  string
-			createdAt time.Time
-			parentID  *string
+			id, storedSessionID string
+			parentID            *string
+			status              string
+			body                []byte
+			createdAt           time.Time
+			updatedAt           time.Time
+			archivedAt          *time.Time
 		)
-		if err := rows.Scan(&id, &createdAt, &kind, &parentID); err != nil {
+		if err := rows.Scan(
+			&id, &storedSessionID, &parentID, &status, &body,
+			&createdAt, &updatedAt, &archivedAt,
+		); err != nil {
 			return nil, err
 		}
-		if kind != "primary" {
-			return nil, domain.Unsupported("child session-thread runtime is not implemented")
-		}
-		thread, err := primaryThreadFromBody(id, createdAt, parentID, sessionBody)
+		thread, err := sessionThreadFromRow(
+			id, storedSessionID, parentID, domain.Status(status), body,
+			createdAt, updatedAt, archivedAt,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -111,32 +124,61 @@ LIMIT $`+fmt.Sprint(len(args)), args...)
 	return result, rows.Err()
 }
 
-func primaryThreadFromBody(
+func sessionThreadFromRow(
 	threadID string,
-	createdAt time.Time,
+	sessionID string,
 	parentID *string,
+	status domain.Status,
 	body []byte,
+	createdAt time.Time,
+	updatedAt time.Time,
+	archivedAt *time.Time,
 ) (domain.SessionThread, error) {
-	var session domain.Session
-	if err := json.Unmarshal(body, &session); err != nil {
+	var thread domain.SessionThread
+	if err := json.Unmarshal(body, &thread); err != nil {
 		return domain.SessionThread{}, fmt.Errorf("pg: decode session thread projection: %w", err)
 	}
-	archivedAt := session.ArchivedAt
-	status := session.Status
-	terminatedAt := session.TerminatedAt
-	updatedAt := session.UpdatedAt
-	if archivedAt != nil {
-		status = domain.StatusTerminated
-		terminatedAt = archivedAt
-		if updatedAt.Before(*archivedAt) {
-			updatedAt = *archivedAt
-		}
+	thread.ID = threadID
+	thread.SessionID = sessionID
+	thread.ParentThreadID = parentID
+	thread.Status = status
+	thread.CreatedAt = createdAt.UTC()
+	thread.UpdatedAt = updatedAt.UTC()
+	thread.ArchivedAt = utcTimePtr(archivedAt)
+	return thread, nil
+}
+
+// putPrimarySessionThreadProjection synchronizes the current single-Thread
+// execution into the independent primary projection. Callers already hold the
+// Session row lock, which is the serialization fence for every Thread mutation
+// in that Session.
+func (s *Store) putPrimarySessionThreadProjection(
+	ctx context.Context,
+	q *pgstore.Queries,
+	session domain.Session,
+) error {
+	body, err := q.GetPrimarySessionThreadProjection(ctx, session.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return fmt.Errorf("pg: primary session thread is missing for %s", session.ID)
 	}
-	return domain.SessionThread{
-		ID: threadID, SessionID: session.ID, ParentThreadID: parentID,
-		Agent: session.AgentSnapshot, Status: status, Usage: session.Usage,
-		ActiveSeconds: session.ActiveSeconds, RunningSince: session.RunningSince,
-		TerminatedAt: terminatedAt, CreatedAt: createdAt.UTC(),
-		UpdatedAt: updatedAt.UTC(), ArchivedAt: archivedAt,
-	}, nil
+	if err != nil {
+		return err
+	}
+	var thread domain.SessionThread
+	if err := json.Unmarshal(body, &thread); err != nil {
+		return fmt.Errorf("pg: decode primary session thread projection: %w", err)
+	}
+	thread.ApplyPrimarySessionProjection(session)
+	body, err = json.Marshal(thread)
+	if err != nil {
+		return err
+	}
+	return q.UpdatePrimarySessionThreadProjection(
+		ctx,
+		pgstore.UpdatePrimarySessionThreadProjectionParams{
+			Status: string(thread.Status), Body: body,
+			UpdatedAt: tsUTC(thread.UpdatedAt), ArchivedAt: tsPtr(thread.ArchivedAt),
+			SessionID: session.ID,
+		},
+	)
 }

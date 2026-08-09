@@ -84,6 +84,13 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	if err != nil || len(nextPage.Data) != 1 || nextPage.Data[0].ID != service.next.ID {
 		t.Fatalf("List next Session Threads page = %+v, err=%v", nextPage, err)
 	}
+	if _, err := client.Beta.Sessions.Threads.Events.List(ctx, service.next.ID,
+		anthropic.BetaSessionThreadEventListParams{SessionID: service.thread.SessionID},
+	); err == nil {
+		t.Fatal("child Thread read leaked the primary event ledger")
+	} else {
+		assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+	}
 
 	events, err := client.Beta.Sessions.Threads.Events.List(ctx, service.thread.ID,
 		anthropic.BetaSessionThreadEventListParams{
