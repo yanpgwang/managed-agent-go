@@ -42,7 +42,13 @@ func (s *AgentService) Create(ctx context.Context, a domain.Agent) (domain.Agent
 	a.Version = 1
 	a.CreatedAt = now
 	a.UpdatedAt = now
-	resolvedMultiagent, err := s.resolveMultiagent(ctx, a.ID, a.Version, a.Multiagent)
+	resolvedMultiagent, err := s.resolveMultiagent(
+		ctx,
+		a.ID,
+		a.Version,
+		a.Model,
+		a.Multiagent,
+	)
 	if err != nil {
 		return domain.Agent{}, err
 	}
@@ -74,31 +80,45 @@ func (s *AgentService) Versions(
 
 func (s *AgentService) Update(ctx context.Context, id string, patch domain.AgentPatch) (domain.Agent, error) {
 	effectivePatch := patch
+	var current *domain.Agent
+	if (patch.Multiagent != nil && patch.Multiagent.Value != nil) || patch.Skills != nil {
+		loaded, err := s.repo.Latest(ctx, id)
+		if err != nil {
+			return domain.Agent{}, err
+		}
+		if loaded.ArchivedAt != nil {
+			return domain.Agent{}, domain.Validation("archived agent is read-only")
+		}
+		if patch.ExpectedVersion != nil && *patch.ExpectedVersion != loaded.Version {
+			return domain.Agent{}, domain.Conflict("agent version mismatch")
+		}
+		current = &loaded
+	}
 	if patch.Multiagent != nil && patch.Multiagent.Value != nil {
 		// External references can be resolved before the repository opens its
 		// serialization transaction. A self reference is temporarily bound to
-		// version 1 and rebound to the locked coordinator version below.
-		resolved, err := s.resolveMultiagent(ctx, id, 1, patch.Multiagent.Value)
+		// version 1 and rebound to the locked coordinator version below. Pin the
+		// owner version implicitly when the client omitted one: roster admission
+		// depends on the coordinator model and must not race a concurrent update.
+		ownerModel := current.Model
+		if patch.Model != nil {
+			ownerModel = domain.NormalizeModel(*patch.Model)
+		}
+		resolved, err := s.resolveMultiagent(ctx, id, 1, ownerModel, patch.Multiagent.Value)
 		if err != nil {
 			return domain.Agent{}, err
 		}
 		effectivePatch.Multiagent = &domain.NullableMultiagent{Value: resolved}
+		if effectivePatch.ExpectedVersion == nil {
+			version := current.Version
+			effectivePatch.ExpectedVersion = &version
+		}
 	}
 	if patch.Skills != nil {
 		// Resolve before UpdateVersion opens its serialization transaction. A
 		// production resolver may use the same connection pool as the Agent
 		// repository; calling it from the mutation callback can exhaust that pool
 		// while every transaction is holding an Agent row lock.
-		current, err := s.repo.Latest(ctx, id)
-		if err != nil {
-			return domain.Agent{}, err
-		}
-		if current.ArchivedAt != nil {
-			return domain.Agent{}, domain.Validation("archived agent is read-only")
-		}
-		if patch.ExpectedVersion != nil && *patch.ExpectedVersion != current.Version {
-			return domain.Agent{}, domain.Conflict("agent version mismatch")
-		}
 		resolved, err := ResolveAgentSkillReferences(ctx, s.skillRef, *patch.Skills)
 		if err != nil {
 			return domain.Agent{}, err
@@ -123,6 +143,13 @@ func (s *AgentService) Update(ctx context.Context, id string, patch domain.Agent
 			// A self entry names the Agent Version being created, not the previous
 			// version used to perform semantic no-op detection.
 			next.Multiagent = next.Multiagent.RebindAgentVersion(cur.ID, cur.Version+1)
+		}
+		if patch.Model != nil && patch.Multiagent == nil &&
+			next.Model.InferenceGeo != cur.Model.InferenceGeo &&
+			cur.Multiagent.HasExternalAgent(cur.ID) {
+			return domain.Agent{}, false, domain.Validation(
+				"model.inference_geo must match every independently referenced multiagent roster member",
+			)
 		}
 		if changed && next.Multiagent != nil && !next.Multiagent.IsResolved() {
 			return domain.Agent{}, false, domain.Validation(
@@ -203,6 +230,7 @@ func (s *AgentService) resolveMultiagent(
 	ctx context.Context,
 	ownerID string,
 	ownerVersion int,
+	ownerModel domain.Model,
 	topology *domain.Multiagent,
 ) (*domain.Multiagent, error) {
 	if topology == nil {
@@ -224,7 +252,7 @@ func (s *AgentService) resolveMultiagent(
 				return nil, domain.Validation("multiagent.agents may contain at most one self entry")
 			}
 			seenSelf = true
-			target = domain.Agent{ID: ownerID, Version: ownerVersion}
+			target = domain.Agent{ID: ownerID, Version: ownerVersion, Model: ownerModel}
 		} else {
 			if reference.ID == ownerID {
 				return nil, domain.Validation("multiagent must use a self entry to reference its coordinator")
@@ -248,6 +276,11 @@ func (s *AgentService) resolveMultiagent(
 			if target.Multiagent != nil {
 				return nil, domain.Validation("multiagent references are limited to one coordinator level")
 			}
+		}
+		if target.Model.InferenceGeo != ownerModel.InferenceGeo {
+			return nil, domain.Validation(
+				"model.inference_geo must match every multiagent roster member",
+			)
 		}
 		if _, duplicate := seen[target.ID]; duplicate {
 			return nil, domain.Validation("multiagent.agents must reference distinct agents")

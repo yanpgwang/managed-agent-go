@@ -4,7 +4,7 @@ go 1.26.5
 
 require (
 	github.com/alibaba/OpenSandbox/sdks/sandbox/go v1.0.5
-	github.com/anthropics/anthropic-sdk-go v1.61.0
+	github.com/anthropics/anthropic-sdk-go v1.62.0
 	github.com/aws/aws-sdk-go-v2 v1.41.6
 	github.com/aws/aws-sdk-go-v2/config v1.32.10
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.15

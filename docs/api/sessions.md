@@ -49,8 +49,11 @@ Session-local overrides:
 
 Overrides replace model, system, tools, MCP servers, or skills for this session
 only. They do not mutate or renumber the agent. A model override may change the
-model ID or speed; effort remains an Agent-level setting and a session override
-does not replace it.
+model ID, speed, or inference geography; effort remains an Agent-level setting
+and a session override does not replace it. Overrides also apply to `self`
+copies in a coordinator roster. Independently referenced Agents are unaffected,
+so a geography override that would make the coordinator disagree with one of
+those pinned Agents is rejected.
 
 The effective custom Skill list is revalidated when the Session is created.
 Every omitted or `latest` value is replaced by a concrete immutable Version in
@@ -74,7 +77,9 @@ Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.
 The optional `title`, `metadata`, `initial_events`, `resources`, and `vault_ids`
 fields must use their documented non-null shapes when present; omission supplies
-the empty/default value.
+the empty/default value. `budget: null` explicitly selects no spend ceiling.
+A non-null budget currently returns `422`: the API does not claim enforcement
+until provider list cost can be aggregated durably across all Session Threads.
 `resources` accepts File inputs and up to eight Memory Store inputs when the
 corresponding Docker sandbox capability is configured:
 
@@ -105,7 +110,7 @@ GET /v1/sessions/{id}
 POST /v1/sessions/{id}
 ```
 
-The update body accepts `agent`, `metadata`, and `title`:
+The update body accepts `agent`, `metadata`, `title`, and `budget`:
 
 ```json
 {
@@ -136,6 +141,8 @@ The update body accepts `agent`, `metadata`, and `title`:
   a turn is in flight returns `409`; send an untargeted `user.interrupt` first.
   `title` and `metadata` carry no such precondition.
 - `vault_ids` is rejected on update, matching the official Update Session API.
+- `budget: null` is accepted as a no-op because this release has no configured
+  spend ceiling. A non-null limit returns `422` rather than being ignored.
 
 Changed fields and their `session.updated` event commit together. The event
 carries only the fields the request actually changed; a request that changes
@@ -191,12 +198,16 @@ Delete removes the session and persisted history, sends a final
 
 ## Response notes
 
-The response embeds the resolved agent snapshot and includes `resources`,
-`vault_ids`, `outcome_evaluations`, `stats`, `usage`, and `deployment_id`.
+The response embeds the resolved agent snapshot and includes nullable `budget`,
+`resources`, `vault_ids`, `outcome_evaluations`, `stats`, `usage`, and
+`deployment_id`.
 `stats` and `usage` are cumulative live projections, and
 `outcome_evaluations` reflects each admitted outcome. `resources` embeds active
 File and Memory Store Resource objects. Ordered `vault_ids` are resolved at
 creation; update-time vault replacement is rejected, matching the official API.
+Until cost accounting is implemented, `budget`, `usage.list_cost`, and
+`usage.server_tool_use` are explicit null values; `usage.active_seconds` is the
+duration currently priced by the upstream contract.
 `deployment_id` is null for direct Session creation and contains the parent
 Deployment ID for Deployment-created Sessions.
 See [Claude API coverage](../compatibility.md).

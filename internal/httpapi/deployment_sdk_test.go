@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
@@ -60,6 +62,7 @@ func TestOfficialGoSDKDeploymentSurface(t *testing.T) {
 			Type:       anthropic.BetaManagedAgentsScheduleParamsTypeCron,
 			Expression: "0 * * * *", Timezone: "UTC",
 		},
+		Budget: param.NullStruct[anthropic.BetaManagedAgentsBudgetLimitParam](),
 	})
 	if err != nil {
 		t.Fatalf("create Deployment through SDK: %v", err)
@@ -68,6 +71,30 @@ func TestOfficialGoSDKDeploymentSurface(t *testing.T) {
 		created.Schedule.Expression != "0 * * * *" {
 		t.Fatalf("created Deployment = %+v", created)
 	}
+	if created.JSON.Budget.Raw() != "null" {
+		t.Fatalf("created Deployment budget = %q, want null", created.JSON.Budget.Raw())
+	}
+	limit := anthropic.BetaManagedAgentsBudgetLimitParam{
+		Type: anthropic.BetaManagedAgentsBudgetLimitTypeLimit,
+		MaxListCost: anthropic.BetaMonetaryAmountParam{
+			Amount: "2500", Currency: anthropic.BetaCurrencyUsd,
+		},
+	}
+	_, err = client.Beta.Deployments.New(context.Background(), anthropic.BetaDeploymentNewParams{
+		Agent:         anthropic.BetaDeploymentNewParamsAgentUnion{OfString: anthropic.String("agent_sdk")},
+		EnvironmentID: "env_sdk", Name: "Budgeted deployment", Budget: limit,
+		InitialEvents: []anthropic.BetaManagedAgentsDeploymentInitialEventParamsUnion{{
+			OfUserMessage: &anthropic.BetaManagedAgentsUserMessageEventParams{
+				Type: anthropic.BetaManagedAgentsUserMessageEventParamsTypeUserMessage,
+				Content: []anthropic.BetaManagedAgentsUserMessageEventParamsContentUnion{{
+					OfText: &anthropic.BetaManagedAgentsTextBlockParam{
+						Type: anthropic.BetaManagedAgentsTextBlockTypeText, Text: "Run",
+					},
+				}},
+			},
+		}},
+	})
+	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
 
 	if _, err := client.Beta.Deployments.Get(
 		context.Background(), service.item.ID, anthropic.BetaDeploymentGetParams{},
@@ -81,6 +108,17 @@ func TestOfficialGoSDKDeploymentSurface(t *testing.T) {
 	); err != nil {
 		t.Fatalf("update Deployment through SDK: %v", err)
 	}
+	if _, err := client.Beta.Deployments.Update(
+		context.Background(), service.item.ID, anthropic.BetaDeploymentUpdateParams{
+			Budget: param.NullStruct[anthropic.BetaManagedAgentsBudgetLimitParam](),
+		},
+	); err != nil {
+		t.Fatalf("null Deployment budget update through SDK: %v", err)
+	}
+	_, err = client.Beta.Deployments.Update(
+		context.Background(), service.item.ID, anthropic.BetaDeploymentUpdateParams{Budget: limit},
+	)
+	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
 	listed, err := client.Beta.Deployments.List(
 		context.Background(), anthropic.BetaDeploymentListParams{Limit: anthropic.Int(20)},
 	)

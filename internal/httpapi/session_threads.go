@@ -28,13 +28,16 @@ func sessionThreadToJSON(thread domain.SessionThread) map[string]any {
 			"startup_seconds": thread.StartupSeconds,
 		},
 		"usage": map[string]any{
+			"active_seconds": activeSeconds,
 			"cache_creation": map[string]any{
 				"ephemeral_1h_input_tokens": thread.Usage.CacheCreation.Ephemeral1hInputTokens,
 				"ephemeral_5m_input_tokens": thread.Usage.CacheCreation.Ephemeral5mInputTokens,
 			},
 			"cache_read_input_tokens": thread.Usage.CacheReadInputTokens,
 			"input_tokens":            thread.Usage.InputTokens,
+			"list_cost":               nil,
 			"output_tokens":           thread.Usage.OutputTokens,
+			"server_tool_use":         nil,
 		},
 	}
 	if thread.ArchivedAt == nil {

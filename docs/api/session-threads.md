@@ -54,5 +54,9 @@ event routes explicitly return `422` until independent child execution and
 event visibility exist; they never fall through to the primary Session ledger.
 Delegation, cross-thread messages, cross-posted child events, child context
 compaction, and targeted interrupts remain future slices of the same runtime.
+The v1.62 `advisor` Thread is not represented as an ordinary child placeholder;
+it remains unsupported until its reserved, automatically terminating
+consultation lifecycle can be implemented end to end. Session budgets are also
+deferred until list cost is aggregated across all independently running Threads.
 
 See the [Session Threads conformance matrix](session-threads-conformance.md).

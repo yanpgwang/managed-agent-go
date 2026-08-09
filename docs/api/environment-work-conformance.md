@@ -5,7 +5,7 @@ slug: /api/environment-work-conformance
 
 # Environment Work conformance matrix
 
-Baseline: `managed-agents-2026-04-01`, Anthropic Go SDK `v1.61.0`.
+Baseline: `managed-agents-2026-04-01`, Anthropic Go SDK `v1.62.0`.
 
 | Operation | Route | HTTP | Official Go SDK | Durable semantics | Known limitation |
 | --- | --- | --- | --- | --- | --- |

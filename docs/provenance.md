@@ -12,11 +12,11 @@ internal design, is secondary and cannot establish a compatibility claim.
 ## Official Go SDK (test dependency)
 
 - [github.com/anthropics/anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go)
-- Test and reference version: [v1.61.0](https://github.com/anthropics/anthropic-sdk-go/tree/v1.61.0),
-  tag commit `0303a8539676836e0cb351f3489fc2d347bbacde` (verified
-  2026-08-01).
+- Test and reference version: [v1.62.0](https://github.com/anthropics/anthropic-sdk-go/tree/v1.62.0),
+  tag commit `0239529cb2a929c9e52b68f36fa7e413392c00fd` (verified
+  2026-08-09).
 - Module checksum recorded in `go.sum`:
-  `h1:JRTnm1tPqn5xo1xd1zfrcFDlcoWXVMvV1K68YmhpZKw=`.
+  `h1:nKkyMPJnFF7PfrWlKw77mCY5ZiEswPPq8nK4sz9is78=`.
 - Used only as a black-box compatibility client in tests (base URL pointed at an
   in-process `httptest` server through an explicit per-test client). No
   package-global SDK base-URL hook is used, and no SDK request/response types are
@@ -41,19 +41,19 @@ verification where applicable.
 - [List Agents](https://platform.claude.com/docs/en/api/beta/agents/list) —
   `created_at[gte]`, `created_at[lte]`, `include_archived`, `limit`, and `page`;
   the documented Agent limit default of 20 and maximum of 100. Verified
-  2026-08-03 against the API reference and official Go SDK v1.61.0 types.
+  2026-08-09 against the API reference and official Go SDK v1.62.0 types.
 - [List Agent Versions](https://platform.claude.com/docs/en/api/beta/agents/versions/list) —
   `limit`, `page`, the nullable `next_page` response cursor, and the documented
   default of 20 and maximum of 100. Verified 2026-08-03 against the API
-  reference and official Go SDK v1.61.0 types.
+  reference and official Go SDK v1.62.0 types.
 - [List Environments](https://platform.claude.com/docs/en/api/beta/environments/list) —
   `include_archived`, `limit`, and `page`, with a forward cursor response and no
   documented created-at filters or limit bounds. Verified 2026-08-03 against
-  the API reference and official Go SDK v1.61.0 types.
+  the API reference and official Go SDK v1.62.0 types.
 - [Environments](https://platform.claude.com/docs/en/api/beta/environments) —
   required resource fields, resolved default cloud configuration, lifecycle
   methods, and the `environment_deleted` response. Verified 2026-08-03 against
-  the API reference and official Go SDK v1.61.0 types.
+  the API reference and official Go SDK v1.62.0 types.
 - [Start a session](https://platform.claude.com/docs/en/managed-agents/sessions)
   — agent reference forms, initial events, and resolved snapshot.
 - [Create Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/create)
@@ -63,8 +63,12 @@ verification where applicable.
   agent configuration update: `tools`/`mcp_servers` only, full replacement,
   session-local, and only while the session is `idle`.
 - [Update Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/update)
-  — the four body fields (`agent`, `metadata`, `title`, `vault_ids`), the
-  per-key metadata patch, and the documented rejection of `vault_ids`.
+  — the five body fields (`agent`, `budget`, `metadata`, `title`, `vault_ids`),
+  the per-key metadata patch, and the documented rejection of `vault_ids`.
+- [Session budgets](https://platform.claude.com/docs/en/managed-agents/session-budgets)
+  — the shared cross-Thread list-cost ceiling, nullable response projection,
+  usage fields, and budget-reached lifecycle. The current implementation
+  exposes the nullable projection but explicitly rejects non-null limits.
 - [Events and streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming)
   — event unions, content blocks, processing, and reconnect behavior.
 - [Events API Reference](https://platform.claude.com/docs/en/api/beta/sessions/events)
@@ -77,19 +81,21 @@ verification where applicable.
   — the primary-thread identity, per-Thread execution fields, thread ordering,
   per-thread event views, five HTTP operations, and the boundary between the
   Session stream and child activity. Verified 2026-08-09 against the current
-  documentation and Anthropic Go SDK `v1.61.0` types and methods.
+  documentation and Anthropic Go SDK `v1.62.0` types and methods. This focused
+  verification also covered `model.inference_geo`, roster-wide geography
+  consistency, the advisor variant, and shared Session budgets.
 - [Files API](https://platform.claude.com/docs/en/api/beta/files) and
   [Files guide](https://platform.claude.com/docs/en/build-with-claude/files) —
   the five operations, `files-api-2025-04-14` beta header, multipart upload,
   500 MB limit, ID-based bidirectional pagination, filename restrictions,
   scope, and downloadable semantics. Verified 2026-08-04 against the API
-  reference and official Go SDK v1.61.0 types and methods.
+  reference and official Go SDK v1.62.0 types and methods.
 - [Session Resources API](https://platform.claude.com/docs/en/api/beta/sessions/resources)
   and [Managed Agents Files](https://platform.claude.com/docs/en/managed-agents/files) —
   the five operations, File-only runtime Add request, required response fields,
   cursor semantics, absolute/default mount paths, read-only attachment copies,
   runtime add/delete behavior, and the 500-resource Session limit. Verified
-  2026-08-04 against the current documentation and official Go SDK v1.61.0.
+  2026-08-09 against the current documentation and official Go SDK v1.62.0.
 - [Managed Agents Skills](https://platform.claude.com/docs/en/managed-agents/skills),
   [Using Agent Skills with the API](https://platform.claude.com/docs/en/build-with-claude/skills-guide),
   [Agent Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview),
@@ -99,7 +105,7 @@ verification where applicable.
   immutable Version lifecycle, cursor pages, archive download, delete ordering,
   the custom/Anthropic reference union, omitted/`latest` Version resolution,
   and the 500-Skill Session limit. Verified 2026-08-04 against the current
-  documentation and official Go SDK v1.61.0.
+  documentation and official Go SDK v1.62.0.
 - [Managed Agents Memory](https://platform.claude.com/docs/en/managed-agents/memory)
   and [Memory Stores API](https://platform.claude.com/docs/en/api/beta/memory-stores) —
   the fourteen Store, Memory, and immutable Version operations,
@@ -107,13 +113,13 @@ verification where applicable.
   projection, SHA-256 preconditions, actor attribution, archive and redaction
   semantics, create-time Session attachment, eight-Store limit, access modes,
   instructions, and `/mnt/memory/<store-slug>` filesystem behavior. Verified
-  2026-08-05 against the current documentation and official Go SDK v1.61.0.
+  2026-08-09 against the current documentation and official Go SDK v1.62.0.
 - [Vaults API](https://platform.claude.com/docs/en/api/beta/vaults) and
   [Go Credential API](https://platform.claude.com/docs/en/api/go/beta/vaults/credentials) —
   Vault and Credential lifecycle routes, tagged authentication inputs,
   write-only sensitive fields, list bounds, MCP OAuth validation, automatic
   expiry refresh, and refresh-failure classification. Verified 2026-08-08
-  against Anthropic Go SDK `v1.61.0` and the current Vault runtime guide.
+  against Anthropic Go SDK `v1.62.0` and the current Vault runtime guide.
 - [Scheduled deployments](https://platform.claude.com/docs/en/managed-agents/scheduled-deployments),
   [Deployments API](https://platform.claude.com/docs/en/api/beta/deployments),
   and [Deployment Runs API](https://platform.claude.com/docs/en/api/beta/deployment-runs) —
@@ -121,7 +127,7 @@ verification where applicable.
   five-field cron schedules and IANA timezones, pause/unpause/archive behavior,
   manual execution while paused, forward pagination and filters, Run failure
   records, and scheduled error auto-pause behavior. Verified 2026-08-09 against
-  the current documentation and Anthropic Go SDK `v1.61.0` types and methods.
+  the current documentation and Anthropic Go SDK `v1.62.0` types and methods.
 - [Claude Code Skill content lifecycle](https://code.claude.com/docs/en/slash-commands#skill-content-lifecycle)
   — on-demand main-instruction loading, supporting-file access, persistence
   after invocation, and the documented 5,000-token per-Skill / 25,000-token
@@ -169,7 +175,7 @@ declaration, the custom/permission handoff, and the tool-block event wire.
   Sessions sharing an Environment. Verified 2026-08-03.
 - [Self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
   — the control-plane/worker boundary and session-scoped sandbox guidance.
-  Verified 2026-08-09 together with the official Go SDK v1.61.0
+  Verified 2026-08-09 together with the official Go SDK v1.62.0
   `BetaEnvironmentWorkService`, `lib/environments.WorkPoller`, and
   `lib/environments.EnvironmentWorker`: the eight Work routes, queue/Ack state
   transition, conditional heartbeat, reclaim parameters, worker identity,

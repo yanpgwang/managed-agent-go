@@ -2645,6 +2645,9 @@ components:
           maxItems: 50
           uniqueItems: true
           items: {type: string, pattern: '^vlt_'}
+        budget:
+          $ref: '#/components/schemas/NullableSessionBudget'
+          description: Explicit null is accepted; non-null limits currently return 422.
     DeploymentUpdateRequest:
       type: object
       additionalProperties: false
@@ -2682,6 +2685,9 @@ components:
               uniqueItems: true
               items: {type: string, pattern: '^vlt_'}
             - type: 'null'
+        budget:
+          $ref: '#/components/schemas/NullableSessionBudget'
+          description: Explicit null is accepted; non-null limits currently return 422.
     DeploymentPausedReason:
       type: object
       additionalProperties: false
@@ -2716,12 +2722,13 @@ components:
     Deployment:
       type: object
       additionalProperties: false
-      required: [id, type, agent, archived_at, created_at, description, environment_id, initial_events, metadata, name, paused_reason, resources, schedule, status, updated_at, vault_ids]
+      required: [id, type, agent, archived_at, budget, created_at, description, environment_id, initial_events, metadata, name, paused_reason, resources, schedule, status, updated_at, vault_ids]
       properties:
         id: {type: string, pattern: '^depl_'}
         type: {type: string, const: deployment}
         agent: {$ref: '#/components/schemas/AgentReference'}
         archived_at: {$ref: '#/components/schemas/NullableTimestamp'}
+        budget: {$ref: '#/components/schemas/NullableSessionBudget'}
         created_at: {type: string, format: date-time}
         description: {type: string}
         environment_id: {type: string}
@@ -3414,6 +3421,10 @@ components:
             speed:
               type: string
               enum: [standard, fast]
+            inference_geo:
+              type: string
+              minLength: 1
+              description: Geographic region pinned for every inference request made by this Agent.
     ModelEffortLevel:
       type: string
       enum: [low, medium, high, xhigh, max]
@@ -3436,6 +3447,36 @@ components:
         speed:
           type: string
           enum: [standard, fast]
+        inference_geo:
+          type: string
+          minLength: 1
+
+    MonetaryAmount:
+      type: object
+      additionalProperties: false
+      required: [amount, currency]
+      properties:
+        amount:
+          type: string
+          pattern: '^(0|[1-9][0-9]*)$'
+          description: Integer minor currency units represented without floating-point rounding.
+        currency:
+          type: string
+          const: USD
+    SessionBudgetLimit:
+      type: object
+      additionalProperties: false
+      required: [type, max_list_cost]
+      properties:
+        type:
+          type: string
+          const: limit
+        max_list_cost:
+          $ref: '#/components/schemas/MonetaryAmount'
+    NullableSessionBudget:
+      anyOf:
+        - $ref: '#/components/schemas/SessionBudgetLimit'
+        - type: 'null'
 
     PermissionPolicy:
       type: object
@@ -4490,6 +4531,11 @@ components:
           description: Ordered Vault references used to resolve runtime credentials. The first Vault with a matching credential wins.
           items:
             type: string
+        budget:
+          $ref: '#/components/schemas/NullableSessionBudget'
+          description: >-
+            Explicit null means no ceiling. Non-null limits are currently rejected
+            with 422 until list-cost accounting is available across all Session Threads.
     SessionAgentUpdate:
       type: object
       additionalProperties: false
@@ -4523,6 +4569,11 @@ components:
           type: array
           items:
             type: string
+        budget:
+          $ref: '#/components/schemas/NullableSessionBudget'
+          description: >-
+            Explicit null is accepted as a no-op. Non-null limits are currently
+            rejected with 422 until cross-Thread list-cost accounting is available.
     SessionStatus:
       type: string
       enum: [idle, running, rescheduling, terminated]
@@ -4664,8 +4715,18 @@ components:
     SessionUsage:
       type: object
       additionalProperties: false
-      required: [cache_creation, cache_read_input_tokens, input_tokens, output_tokens]
+      required:
+        - active_seconds
+        - cache_creation
+        - cache_read_input_tokens
+        - input_tokens
+        - list_cost
+        - output_tokens
+        - server_tool_use
       properties:
+        active_seconds:
+          type: number
+          minimum: 0
         cache_creation:
           type: object
           additionalProperties: false
@@ -4683,9 +4744,21 @@ components:
         input_tokens:
           type: integer
           minimum: 0
+        list_cost:
+          anyOf:
+            - $ref: '#/components/schemas/MonetaryAmount'
+            - type: 'null'
         output_tokens:
           type: integer
           minimum: 0
+        server_tool_use:
+          anyOf:
+            - type: object
+              additionalProperties: false
+              properties:
+                web_fetch_requests: {type: integer, minimum: 0}
+                web_search_requests: {type: integer, minimum: 0}
+            - type: 'null'
     OutcomeEvaluation:
       type: object
       additionalProperties: false
@@ -4715,6 +4788,7 @@ components:
         - type
         - status
         - agent
+        - budget
         - environment_id
         - title
         - metadata
@@ -4737,6 +4811,8 @@ components:
           $ref: '#/components/schemas/SessionStatus'
         agent:
           $ref: '#/components/schemas/AgentSnapshot'
+        budget:
+          $ref: '#/components/schemas/NullableSessionBudget'
         environment_id:
           type: string
         title:

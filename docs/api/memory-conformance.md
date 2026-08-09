@@ -20,7 +20,7 @@ creation continues to use `managed-agents-2026-04-01`.
 | Session attachment | create-time `memory_store` resource | Official Go SDK union decoding; real PostgreSQL snapshot and deletion lifecycle; real Docker read/write and read-only mount tests |
 | Runtime persistence | ordinary file tools | Real Docker plus PostgreSQL round trip; atomic multi-file update/create/delete; concurrent stale-write rollback; final deletion-time writeback |
 
-The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.61.0`.
+The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.62.0`.
 Opt-in integration tests use real PostgreSQL and Docker.
 
 ## Implemented contract

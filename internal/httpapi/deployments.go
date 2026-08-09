@@ -19,6 +19,7 @@ type deploymentScheduleRequest struct {
 
 type deploymentCreateRequest struct {
 	Agent         json.RawMessage                              `json:"agent"`
+	Budget        optionalJSONField[json.RawMessage]           `json:"budget"`
 	EnvironmentID string                                       `json:"environment_id"`
 	InitialEvents []map[string]any                             `json:"initial_events"`
 	Name          string                                       `json:"name"`
@@ -31,6 +32,7 @@ type deploymentCreateRequest struct {
 
 type deploymentUpdateRequest struct {
 	Agent         optionalJSONField[json.RawMessage]           `json:"agent"`
+	Budget        optionalJSONField[json.RawMessage]           `json:"budget"`
 	EnvironmentID optionalJSONField[string]                    `json:"environment_id"`
 	InitialEvents optionalJSONField[[]map[string]any]          `json:"initial_events"`
 	Name          optionalJSONField[string]                    `json:"name"`
@@ -56,6 +58,10 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 	var body deploymentCreateRequest
 	if err := decodeJSONBody(r, &body); err != nil {
 		writeError(w, err)
+		return
+	}
+	if body.Budget.Present && !body.Budget.Null {
+		writeError(w, domain.Unsupported(sessionBudgetUnsupportedMessage))
 		return
 	}
 	ref, err := parseDeploymentAgent(body.Agent)
@@ -125,6 +131,10 @@ func (s *Server) updateDeployment(w http.ResponseWriter, r *http.Request) {
 	var body deploymentUpdateRequest
 	if err := decodeJSONBody(r, &body); err != nil {
 		writeError(w, err)
+		return
+	}
+	if body.Budget.Present && !body.Budget.Null {
+		writeError(w, domain.Unsupported(sessionBudgetUnsupportedMessage))
 		return
 	}
 	patch := domain.DeploymentPatch{}
@@ -442,6 +452,7 @@ func deploymentToJSON(item domain.Deployment) map[string]any {
 	}
 	out := map[string]any{
 		"id": item.ID, "type": "deployment",
+		"budget": nil,
 		"agent": map[string]any{
 			"type": "agent", "id": item.AgentID, "version": item.AgentVersion,
 		},

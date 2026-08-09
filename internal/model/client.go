@@ -20,13 +20,14 @@ type ToolSchema struct {
 }
 
 type Request struct {
-	Model     string
-	Effort    string
-	Speed     string
-	System    string
-	Messages  []domain.Message
-	MaxTokens int
-	Tools     []ToolSchema
+	Model        string
+	Effort       string
+	Speed        string
+	InferenceGeo string
+	System       string
+	Messages     []domain.Message
+	MaxTokens    int
+	Tools        []ToolSchema
 }
 
 type Response struct {

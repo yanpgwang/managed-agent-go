@@ -107,6 +107,7 @@ type wireTool struct {
 type wireRequest struct {
 	Model        string            `json:"model"`
 	Speed        string            `json:"speed,omitempty"`
+	InferenceGeo string            `json:"inference_geo,omitempty"`
 	OutputConfig *wireOutputConfig `json:"output_config,omitempty"`
 	System       string            `json:"system,omitempty"`
 	MaxTokens    int               `json:"max_tokens"`
@@ -147,7 +148,7 @@ func (a *Anthropic) buildWireRequest(req Request, stream bool) (wireRequest, err
 		maxTokens = defaultMaxTokens
 	}
 	body := wireRequest{
-		Model: model, System: req.System,
+		Model: model, InferenceGeo: req.InferenceGeo, System: req.System,
 		MaxTokens: maxTokens, Stream: stream,
 	}
 	// high and standard are the Managed Agents and Messages defaults. Omitting

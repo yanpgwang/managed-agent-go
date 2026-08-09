@@ -24,7 +24,7 @@ requests use `anthropic-beta: skills-2025-10-02`; they do not expand the core
 | `DELETE /v1/skills/{skill_id}/versions/{version}` | Deleted response decoding | Metadata is hidden before archive deletion; restart reconciliation completes interrupted work |
 | `GET /v1/skills/{skill_id}/versions/{version}/content` | Binary response download | Byte-complete canonical zip read from S3-compatible storage |
 
-The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.61.0`.
+The black-box client is `github.com/anthropics/anthropic-sdk-go` `v1.62.0`.
 Service tests run the HTTP lifecycle against PostgreSQL and MinIO.
 
 ## Reference evidence
