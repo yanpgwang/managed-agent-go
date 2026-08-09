@@ -577,3 +577,16 @@ func TestProjectMessages_SelfHostedToolResultPairing(t *testing.T) {
 		t.Fatalf("self-hosted pair = %#v", got)
 	}
 }
+
+func TestProjectMessages_ThreadMessageReceivedIsModelInput(t *testing.T) {
+	messages := ProjectMessages([]Event{{
+		Type: EvAgentThreadMessageReceived,
+		Payload: map[string]any{"content": []any{map[string]any{
+			"type": "text", "text": "subagent report",
+		}}},
+	}})
+	if len(messages) != 1 || messages[0].Role != RoleUser ||
+		len(messages[0].Content) != 1 || messages[0].Content[0].Text != "subagent report" {
+		t.Fatalf("projected Thread message = %#v", messages)
+	}
+}

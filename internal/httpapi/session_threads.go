@@ -219,7 +219,16 @@ func (s *Server) streamSessionThreadEvents(w http.ResponseWriter, r *http.Reques
 	sessionID, threadID := r.PathValue("id"), r.PathValue("thread_id")
 	// Subscribe first, then validate identity, matching the Session stream's
 	// open-before-read deletion race guarantee.
-	frames, cancel, err := s.deps.Stream.SubscribeContext(r.Context(), sessionID, optIn)
+	stream, ok := s.deps.Stream.(ThreadEventSubscriber)
+	if !ok {
+		writeError(w, domain.Unsupported(
+			"Session Thread event streaming is not configured",
+		))
+		return
+	}
+	frames, cancel, err := stream.SubscribeThreadContext(
+		r.Context(), sessionID, threadID, optIn,
+	)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -230,12 +239,7 @@ func (s *Server) streamSessionThreadEvents(w http.ResponseWriter, r *http.Reques
 		writeError(w, err)
 		return
 	}
-	if thread.ParentThreadID != nil {
-		writeError(w, domain.Unsupported(
-			"child session-thread event streaming is unavailable before child execution",
-		))
-		return
-	}
+	_ = thread
 	writeEventStream(w, r, frames)
 }
 

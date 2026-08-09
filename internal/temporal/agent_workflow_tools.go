@@ -35,6 +35,7 @@ type workflowTurnState struct {
 	sessionID                      string
 	triggerEventID                 string
 	threadID                       string
+	isChild                        bool
 	skillRuntimeRoot               string
 	resolutionEventIDs             []string
 	output                         []domain.EventDraft
@@ -132,6 +133,8 @@ func (t *workflowTurnState) recordModelRetry(
 		ActivityRecordModelRetry,
 		RecordModelRetryInput{
 			SessionID:      t.sessionID,
+			ThreadID:       t.threadID,
+			IsChild:        t.isChild,
 			TriggerEventID: t.triggerEventID,
 			ErrorEventID:   errorEventID,
 			StatusEventID:  statusEventID,
@@ -146,6 +149,8 @@ func (t *workflowTurnState) resumeModelRetry(statusEventID string) error {
 		ActivityResumeModelRetry,
 		ResumeModelRetryInput{
 			SessionID:      t.sessionID,
+			ThreadID:       t.threadID,
+			IsChild:        t.isChild,
 			TriggerEventID: t.triggerEventID,
 			StatusEventID:  statusEventID,
 		},
@@ -484,9 +489,14 @@ func (t *workflowTurnState) complete(
 			"event_ids": pendingActionEventIDs,
 		}
 	}
+	statusType := domain.EvSessionStatusIdle
+	statusPayload := map[string]any{"stop_reason": stopReason}
+	if t.isChild {
+		statusType = domain.EvSessionThreadStatusIdle
+		statusPayload["session_thread_id"] = t.threadID
+	}
 	output := append(t.output, domain.EventDraft{
-		Type:    domain.EvSessionStatusIdle,
-		Payload: map[string]any{"stop_reason": stopReason},
+		Type: statusType, Payload: statusPayload,
 	})
 	if t.activeOutcomeEvaluationStartID != "" {
 		output[len(output)-1].Payload[domain.InternalOutcomeEvaluationStart] =
@@ -496,6 +506,8 @@ func (t *workflowTurnState) complete(
 	}
 	input := CompleteWorkflowTurnInput{
 		SessionID:             t.sessionID,
+		ThreadID:              t.threadID,
+		IsChild:               t.isChild,
 		TriggerEventID:        t.triggerEventID,
 		Output:                output,
 		Status:                domain.StatusIdle,
@@ -539,6 +551,8 @@ func (t *workflowTurnState) exhaustModelRetries(
 	)
 	input := CompleteWorkflowTurnInput{
 		SessionID:          t.sessionID,
+		ThreadID:           t.threadID,
+		IsChild:            t.isChild,
 		TriggerEventID:     t.triggerEventID,
 		Output:             output,
 		Status:             domain.StatusIdle,
@@ -595,6 +609,8 @@ func (t *workflowTurnState) terminateTyped(
 	)
 	input := CompleteWorkflowTurnInput{
 		SessionID:          t.sessionID,
+		ThreadID:           t.threadID,
+		IsChild:            t.isChild,
 		TriggerEventID:     t.triggerEventID,
 		Output:             output,
 		Status:             domain.StatusTerminated,
@@ -889,6 +905,16 @@ func planToolBatch(
 	for _, use := range toolUses {
 		definition := toolsByName[use.ToolName]
 		planned := stepsByProviderID[use.ToolUseID]
+		if definition.Kind == TurnToolCoordinator {
+			// Coordinator primitives are private model tools. Their durable public
+			// projection is the official Thread lifecycle/message event set, never
+			// a generic agent.tool_use / agent.tool_result pair.
+			plan.executable = append(plan.executable, plannedToolUse{
+				use: use, publicEventID: planned.ToolUseEventID,
+				stepID: planned.ToolStepID, definition: definition,
+			})
+			continue
+		}
 		draft := domain.EventDraft{
 			ID: planned.ToolUseEventID,
 			Payload: map[string]any{
@@ -1052,12 +1078,14 @@ func executeToolBatch(
 			), nil
 		}
 		execution.resultDrafts = append(execution.resultDrafts, executed.Events...)
-		execution.resultDrafts = append(execution.resultDrafts, toolResultDraft(
-			planned.useEventType,
-			planned.publicEventID,
-			executed.Result.Content,
-			executed.Result.IsError,
-		))
+		if planned.definition.Kind != TurnToolCoordinator {
+			execution.resultDrafts = append(execution.resultDrafts, toolResultDraft(
+				planned.useEventType,
+				planned.publicEventID,
+				executed.Result.Content,
+				executed.Result.IsError,
+			))
+		}
 		execution.resultBlocks = append(execution.resultBlocks, domain.ContentBlock{
 			Type:          "tool_result",
 			ToolResultFor: planned.use.ToolUseID,

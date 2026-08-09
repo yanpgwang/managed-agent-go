@@ -27,6 +27,10 @@ const (
 	// public session ID, so starting the same session twice is idempotent.
 	SessionWorkflowType = "SessionWorkflow"
 
+	// SessionThreadWorkflowType is the independent durable loop for one child
+	// Thread. Its Workflow ID is derived solely from the public Thread id.
+	SessionThreadWorkflowType = "SessionThreadWorkflow"
+
 	// SandboxCleanupWorkflowType is a short durable teardown workflow started
 	// after the long-lived SessionWorkflow has been stopped for public deletion.
 	SandboxCleanupWorkflowType = "SandboxCleanupWorkflow"
@@ -47,6 +51,12 @@ type WakeupSignal struct {
 // forward so a new history run does not reprocess consumed events.
 type SessionWorkflowInput struct {
 	SessionID   string `json:"session_id"`
+	StartCursor int64  `json:"start_cursor"`
+}
+
+type SessionThreadWorkflowInput struct {
+	SessionID   string `json:"session_id"`
+	ThreadID    string `json:"thread_id"`
 	StartCursor int64  `json:"start_cursor"`
 }
 
@@ -81,6 +91,7 @@ const (
 	TurnToolMCP          TurnToolKind = "mcp"
 	TurnToolSelfHosted   TurnToolKind = "self_hosted"
 	TurnToolRuntimeSkill TurnToolKind = "runtime_skill"
+	TurnToolCoordinator  TurnToolKind = "coordinator"
 )
 
 // TurnTool is the immutable, Workflow-facing classification of an offered tool.
@@ -108,6 +119,7 @@ type PrepareTurnResult struct {
 	FatalError       string         `json:"fatal_error,omitempty"`
 	AttemptID        string         `json:"attempt_id,omitempty"`
 	ThreadID         string         `json:"thread_id,omitempty"`
+	IsChild          bool           `json:"is_child,omitempty"`
 	SkillRuntimeRoot string         `json:"skill_runtime_root,omitempty"`
 	Request          model.Request  `json:"request"`
 	Tools            []TurnTool     `json:"tools,omitempty"`
@@ -195,6 +207,7 @@ type AppendWorkflowEventsInput struct {
 // completed response is recorded independently in Workflow history.
 type CallModelInput struct {
 	SessionID           string `json:"session_id"`
+	ThreadID            string `json:"thread_id,omitempty"`
 	ModelRequestStartID string `json:"model_request_start_id,omitempty"`
 	ModelRequestEndID   string `json:"model_request_end_id,omitempty"`
 	// HandleRetryableErrors opts new Workflow histories into the public retry
@@ -240,6 +253,8 @@ type CallModelResult struct {
 
 type RecordModelRetryInput struct {
 	SessionID      string          `json:"session_id"`
+	ThreadID       string          `json:"thread_id,omitempty"`
+	IsChild        bool            `json:"is_child,omitempty"`
 	TriggerEventID string          `json:"trigger_event_id"`
 	ErrorEventID   string          `json:"error_event_id"`
 	StatusEventID  string          `json:"status_event_id"`
@@ -248,6 +263,8 @@ type RecordModelRetryInput struct {
 
 type ResumeModelRetryInput struct {
 	SessionID      string `json:"session_id"`
+	ThreadID       string `json:"thread_id,omitempty"`
+	IsChild        bool   `json:"is_child,omitempty"`
 	TriggerEventID string `json:"trigger_event_id"`
 	StatusEventID  string `json:"status_event_id"`
 }
@@ -285,6 +302,8 @@ type ExecuteToolResult struct {
 // commits the public turn output in PostgreSQL.
 type CompleteWorkflowTurnInput struct {
 	SessionID      string                 `json:"session_id"`
+	ThreadID       string                 `json:"thread_id,omitempty"`
+	IsChild        bool                   `json:"is_child,omitempty"`
 	TriggerEventID string                 `json:"trigger_event_id"`
 	Output         []domain.EventDraft    `json:"output"`
 	Status         domain.Status          `json:"status"`
@@ -307,6 +326,7 @@ type CompleteWorkflowTurnInput struct {
 // LoadEventsInput requests the ordered public events after a cursor.
 type LoadEventsInput struct {
 	SessionID string `json:"session_id"`
+	ThreadID  string `json:"thread_id,omitempty"`
 	Cursor    int64  `json:"cursor"`
 	Limit     int    `json:"limit"`
 }

@@ -1,0 +1,141 @@
+package temporal
+
+import (
+	"context"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/model"
+)
+
+func TestSessionThreadWorkflowOwnsIndependentCursorAndTurn(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	const (
+		sessionID = "sesn_child_workflow"
+		threadID  = "sthr_child_workflow"
+	)
+	events := []EventRef{{
+		ID: "sevt_child_message", Seq: 7,
+		Type: domain.EvAgentThreadMessageReceived,
+	}}
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in LoadEventsInput) (LoadEventsResult, error) {
+			require.Equal(t, sessionID, in.SessionID)
+			require.Equal(t, threadID, in.ThreadID)
+			var loaded []EventRef
+			for _, event := range events {
+				if event.Seq > in.Cursor {
+					loaded = append(loaded, event)
+				}
+			}
+			return LoadEventsResult{Events: loaded}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+	var prepareMu sync.Mutex
+	var prepared []PrepareTurnInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+			prepareMu.Lock()
+			prepared = append(prepared, in)
+			prepareMu.Unlock()
+			return PrepareTurnResult{
+				ThreadID: threadID, IsChild: true,
+				Request: model.Request{Model: "fake"},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, StartModelRequestInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityStartModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, AppendWorkflowEventsInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityAppendWorkflowEvents},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			require.Equal(t, threadID, in.ThreadID)
+			return CallModelResult{
+				Response:            model.Response{StopReason: "end_turn"},
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			require.Equal(t, sessionID, in.SessionID)
+			require.Equal(t, threadID, in.ThreadID)
+			require.True(t, in.IsChild)
+			require.Equal(t, events[0].ID, in.TriggerEventID)
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 7})
+	}, time.Millisecond)
+
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(
+		sessionThreadWorkflow,
+		SessionThreadWorkflowInput{SessionID: sessionID, ThreadID: threadID},
+		1,
+	)
+
+	var canErr *workflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &canErr)
+	require.Equal(t, SessionThreadWorkflowType, canErr.WorkflowType.Name)
+	prepareMu.Lock()
+	defer prepareMu.Unlock()
+	require.Equal(t, []PrepareTurnInput{{
+		SessionID: sessionID, TriggerEventID: events[0].ID,
+	}}, prepared)
+}
+
+func TestSessionThreadWorkflowStopsAfterTerminalChildTurn(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	events := []EventRef{
+		{ID: "sevt_child_first", Seq: 1, Type: domain.EvAgentThreadMessageReceived},
+		{ID: "sevt_child_second", Seq: 2, Type: domain.EvAgentThreadMessageReceived},
+	}
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in LoadEventsInput) (LoadEventsResult, error) {
+			return LoadEventsResult{Events: events}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+	var prepared []string
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+			prepared = append(prepared, in.TriggerEventID)
+			return PrepareTurnResult{
+				ThreadID: "sthr_child", IsChild: true,
+				AlreadyCompleted: true, Terminated: true,
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 2})
+	}, time.Millisecond)
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(SessionThreadWorkflow, SessionThreadWorkflowInput{
+		SessionID: "sesn_child", ThreadID: "sthr_child",
+	})
+
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, []string{events[0].ID}, prepared)
+}

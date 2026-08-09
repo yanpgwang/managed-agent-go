@@ -52,6 +52,18 @@ SELECT id
 FROM session_threads
 WHERE session_id = @session_id AND kind = 'primary';
 
+-- HasActiveChildThreads lets primary completion preserve the aggregate Session
+-- running state while one or more independently executing children are active.
+-- name: HasActiveChildThreads :one
+SELECT EXISTS(
+    SELECT 1
+    FROM session_threads
+    WHERE session_id = @session_id
+      AND kind = 'child'
+      AND archived_at IS NULL
+      AND status IN ('running', 'rescheduling')
+) AS active;
+
 -- MaxEventSeq returns the current highest receipt sequence for a session, or 0
 -- when the session has no events yet. Called while holding the admission lock.
 -- name: MaxEventSeq :one
@@ -132,7 +144,7 @@ WHERE event.session_id = @session_id
   AND event.seq < @before_seq
 ORDER BY event.seq;
 
--- CountUnprocessedUserMessages counts user.message events still awaiting a turn,
+-- CountUnprocessedUserMessages counts primary model triggers still awaiting a turn,
 -- excluding one id (the trigger just processed in the same transaction). It lets
 -- CompleteTurn decide whether this turn is the last: only then does the session
 -- go idle; otherwise it stays running with no intermediate idle event.
@@ -144,7 +156,7 @@ WHERE event.session_id = @session_id
       SELECT thread.id FROM session_threads AS thread
       WHERE thread.session_id = @session_id AND thread.kind = 'primary'
   )
-  AND event.type = 'user.message'
+  AND event.type IN ('user.message', 'agent.thread_message_received')
   AND event.processed_at IS NULL
   AND event.id <> @exclude_id;
 
@@ -169,7 +181,7 @@ WITH queued AS (
           SELECT thread.id FROM session_threads AS thread
           WHERE thread.session_id = @session_id AND thread.kind = 'primary'
       )
-      AND queued_event.type = 'user.message'
+      AND queued_event.type IN ('user.message', 'agent.thread_message_received')
       AND queued_event.processed_at IS NULL
       AND queued_event.id <> @exclude_id
 ), flushed_ids AS (
@@ -191,6 +203,20 @@ VALUES (@session_id, @max_event_seq, @enqueued_at)
 ON CONFLICT (session_id) DO UPDATE
 SET max_event_seq = GREATEST(orchestration_outbox.max_event_seq, EXCLUDED.max_event_seq),
     enqueued_at   = EXCLUDED.enqueued_at;
+
+-- UpsertThreadOutbox is the independent coalescible wakeup for one child
+-- Thread Workflow. Session-wide sequence numbers still preserve causal order.
+-- name: UpsertThreadOutbox :exec
+INSERT INTO thread_orchestration_outbox (
+    session_id, thread_id, max_event_seq, enqueued_at
+)
+VALUES (@session_id, @thread_id, @max_event_seq, @enqueued_at)
+ON CONFLICT (session_id, thread_id) DO UPDATE
+SET max_event_seq = GREATEST(
+        thread_orchestration_outbox.max_event_seq,
+        EXCLUDED.max_event_seq
+    ),
+    enqueued_at = EXCLUDED.enqueued_at;
 
 -- EnqueueEnvironmentWork writes the self-hosted worker activation in the same
 -- transaction as event admission and the Temporal wakeup. The partial unique
@@ -220,6 +246,17 @@ FROM orchestration_outbox
 ORDER BY enqueued_at
 LIMIT @row_limit;
 
+-- ListOrchestrationWakeups merges primary and child delivery queues without
+-- changing either queue's idempotency key.
+-- name: ListOrchestrationWakeups :many
+SELECT session_id, ''::text AS thread_id, max_event_seq, enqueued_at, attempts
+FROM orchestration_outbox
+UNION ALL
+SELECT session_id, thread_id, max_event_seq, enqueued_at, attempts
+FROM thread_orchestration_outbox
+ORDER BY enqueued_at
+LIMIT @row_limit;
+
 -- DeleteOutboxIfSeq removes a delivered wakeup, but only if no later admission
 -- raised its sequence since it was read. A mismatch means new work coalesced
 -- into the row after the relay signaled, so the row is left for the next cycle
@@ -228,9 +265,22 @@ LIMIT @row_limit;
 DELETE FROM orchestration_outbox
 WHERE session_id = @session_id AND max_event_seq = @max_event_seq;
 
+-- name: DeleteThreadOutboxIfSeq :execrows
+DELETE FROM thread_orchestration_outbox
+WHERE session_id = @session_id
+  AND thread_id = @thread_id
+  AND max_event_seq = @max_event_seq;
+
 -- MarkOutboxAttempt records a failed delivery attempt for backoff and
 -- observability without removing the wakeup.
 -- name: MarkOutboxAttempt :exec
 UPDATE orchestration_outbox
 SET attempts = attempts + 1, last_attempt_at = @last_attempt_at, last_error = @last_error
 WHERE session_id = @session_id;
+
+-- name: MarkThreadOutboxAttempt :exec
+UPDATE thread_orchestration_outbox
+SET attempts = attempts + 1,
+    last_attempt_at = @last_attempt_at,
+    last_error = @last_error
+WHERE session_id = @session_id AND thread_id = @thread_id;

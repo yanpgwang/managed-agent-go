@@ -751,6 +751,19 @@ WHERE thread.session_id = $1 AND thread.kind = 'primary'`,
 	return sequence, err
 }
 
+func (s *Store) LatestThreadEventSequence(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) (int64, error) {
+	var sequence int64
+	err := s.pool.QueryRow(ctx, `
+SELECT COALESCE(MAX(seq), 0)::bigint
+FROM events
+WHERE session_id = $1 AND thread_id = $2`, sessionID, threadID).Scan(&sequence)
+	return sequence, err
+}
+
 // SessionExists reports whether the projection remains present. It lets the
 // polling stream distinguish a quiet session from a concurrently deleted one.
 func (s *Store) SessionExists(ctx context.Context, sessionID string) (bool, error) {

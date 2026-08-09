@@ -54,6 +54,33 @@ func (s *Signaler) Wake(ctx context.Context, sessionID string, maxEventSeq int64
 	return err
 }
 
+// WakeThread starts-or-signals the independent Workflow for a child Session
+// Thread. The stable Workflow ID makes relay redelivery and operation retries
+// harmless; authoritative work is still loaded from PostgreSQL by sequence.
+func (s *Signaler) WakeThread(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	maxEventSeq int64,
+) error {
+	workflowID := sessionThreadWorkflowID(threadID)
+	opts := client.StartWorkflowOptions{
+		ID: workflowID, TaskQueue: s.taskQueue,
+	}
+	_, err := s.client.SignalWithStartWorkflow(
+		ctx,
+		workflowID,
+		WakeupSignalName,
+		WakeupSignal{MaxEventSeq: maxEventSeq},
+		opts,
+		SessionThreadWorkflow,
+		SessionThreadWorkflowInput{
+			SessionID: sessionID, ThreadID: threadID, StartCursor: 0,
+		},
+	)
+	return err
+}
+
 // TerminateSession stops the live Workflow execution for a session before its
 // PostgreSQL projection is physically deleted. A session that never started a
 // Workflow is already stopped, so Temporal NotFound is idempotent success.

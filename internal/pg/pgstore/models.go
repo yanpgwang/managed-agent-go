@@ -295,6 +295,16 @@ type SkillVersion struct {
 	UncompressedSizeBytes int64
 }
 
+type ThreadOrchestrationOutbox struct {
+	SessionID     string
+	ThreadID      string
+	MaxEventSeq   int64
+	EnqueuedAt    pgtype.Timestamptz
+	Attempts      int32
+	LastAttemptAt pgtype.Timestamptz
+	LastError     *string
+}
+
 type ToolStep struct {
 	ID             string
 	AttemptID      string

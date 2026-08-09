@@ -85,6 +85,68 @@ type fakeDeliverer struct {
 	calls     int
 }
 
+type fakeThreadOutbox struct {
+	*fakeOutbox
+	thread pg.OutboxWakeup
+}
+
+func (f *fakeThreadOutbox) ListWakeupsForDelivery(
+	_ context.Context,
+	_ int,
+) ([]pg.OutboxWakeup, error) {
+	if f.thread.ThreadID == "" {
+		return nil, nil
+	}
+	return []pg.OutboxWakeup{f.thread}, nil
+}
+
+func (f *fakeThreadOutbox) DeleteThreadWakeupIfUnchanged(
+	_ context.Context,
+	sessionID string,
+	threadID string,
+	maxSeq int64,
+) (bool, error) {
+	if f.thread.SessionID != sessionID || f.thread.ThreadID != threadID ||
+		f.thread.MaxEventSeq != maxSeq {
+		return false, nil
+	}
+	f.thread = pg.OutboxWakeup{}
+	return true, nil
+}
+
+func (f *fakeThreadOutbox) RecordThreadAttempt(
+	_ context.Context,
+	sessionID string,
+	threadID string,
+	_ string,
+) error {
+	f.attempts[sessionID+"/"+threadID]++
+	return nil
+}
+
+type fakeThreadDeliverer struct {
+	fakeDeliverer
+	threadIDs []string
+}
+
+func (d *fakeThreadDeliverer) WakeThread(
+	_ context.Context,
+	sessionID string,
+	threadID string,
+	maxSeq int64,
+) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	if d.calls <= d.failUntil {
+		return errors.New("temporal unavailable")
+	}
+	d.delivered = append(d.delivered, WakeupSignal{MaxEventSeq: maxSeq})
+	d.sessions = append(d.sessions, sessionID)
+	d.threadIDs = append(d.threadIDs, threadID)
+	return nil
+}
+
 func (d *fakeDeliverer) Wake(_ context.Context, sessionID string, maxSeq int64) error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -123,6 +185,33 @@ func TestRelay_DeliversAndRemoves(t *testing.T) {
 	}
 	if _, ok := outbox.pending("sess_a"); ok {
 		t.Fatal("wakeup should have been removed")
+	}
+}
+
+func TestRelay_DeliversChildWakeupToIndependentWorkflow(t *testing.T) {
+	outbox := &fakeThreadOutbox{
+		fakeOutbox: newFakeOutbox(),
+		thread: pg.OutboxWakeup{
+			SessionID: "sess_child", ThreadID: "sthr_child", MaxEventSeq: 11,
+		},
+	}
+	deliverer := &fakeThreadDeliverer{}
+	relay := NewRelay(outbox, deliverer, RelayConfig{})
+
+	removed, err := relay.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if removed != 1 || outbox.thread.ThreadID != "" {
+		t.Fatalf("child wakeup removed=%d row=%+v", removed, outbox.thread)
+	}
+	if deliverer.count() != 1 || len(deliverer.threadIDs) != 1 ||
+		deliverer.threadIDs[0] != "sthr_child" ||
+		deliverer.delivered[0].MaxEventSeq != 11 {
+		t.Fatalf(
+			"child deliveries sessions=%v threads=%v signals=%v",
+			deliverer.sessions, deliverer.threadIDs, deliverer.delivered,
+		)
 	}
 }
 

@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
@@ -15,12 +16,27 @@ type WakeupDeliverer interface {
 	Wake(ctx context.Context, sessionID string, maxEventSeq int64) error
 }
 
+type ThreadWakeupDeliverer interface {
+	WakeThread(
+		ctx context.Context, sessionID string, threadID string, maxEventSeq int64,
+	) error
+}
+
 // OutboxStore is the relay's view of the PostgreSQL outbox. *pg.Store implements
 // it; the narrow interface keeps the relay testable.
 type OutboxStore interface {
 	ListWakeupsForDelivery(ctx context.Context, limit int) ([]pg.OutboxWakeup, error)
 	DeleteWakeupIfUnchanged(ctx context.Context, sessionID string, maxSeq int64) (bool, error)
 	RecordAttempt(ctx context.Context, sessionID string, cause string) error
+}
+
+type ThreadOutboxStore interface {
+	DeleteThreadWakeupIfUnchanged(
+		ctx context.Context, sessionID string, threadID string, maxSeq int64,
+	) (bool, error)
+	RecordThreadAttempt(
+		ctx context.Context, sessionID string, threadID string, cause string,
+	) error
 }
 
 // RelayConfig tunes the relay loop.
@@ -107,12 +123,34 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 	}
 	removed := 0
 	for _, w := range wakeups {
-		if err := r.deliverer.Wake(ctx, w.SessionID, w.MaxEventSeq); err != nil {
+		var deliveryErr error
+		if w.ThreadID == "" {
+			deliveryErr = r.deliverer.Wake(ctx, w.SessionID, w.MaxEventSeq)
+		} else {
+			if deliverer, ok := r.deliverer.(ThreadWakeupDeliverer); ok {
+				deliveryErr = deliverer.WakeThread(
+					ctx, w.SessionID, w.ThreadID, w.MaxEventSeq,
+				)
+			} else {
+				deliveryErr = fmt.Errorf("thread wakeup delivery is unavailable")
+			}
+		}
+		if deliveryErr != nil {
 			// Worker/Temporal unavailable or a transient service error: record the
 			// attempt and leave the wakeup for the next cycle. This is exactly the
 			// property that lets the control plane accept input while execution
 			// workers are down.
-			if recErr := r.store.RecordAttempt(ctx, w.SessionID, err.Error()); recErr != nil {
+			var recErr error
+			if w.ThreadID == "" {
+				recErr = r.store.RecordAttempt(ctx, w.SessionID, deliveryErr.Error())
+			} else {
+				if store, ok := r.store.(ThreadOutboxStore); ok {
+					recErr = store.RecordThreadAttempt(
+						ctx, w.SessionID, w.ThreadID, deliveryErr.Error(),
+					)
+				}
+			}
+			if recErr != nil {
 				log.Printf("relay: record attempt failed session_id=%s: %v", w.SessionID, recErr)
 			}
 			continue
@@ -120,7 +158,22 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 		// The signal was durably accepted. Delete the wakeup only if no later
 		// admission coalesced a higher sequence into the row after we read it; a
 		// mismatch leaves the row so the newer sequence is delivered next cycle.
-		ok, err := r.store.DeleteWakeupIfUnchanged(ctx, w.SessionID, w.MaxEventSeq)
+		var ok bool
+		var err error
+		if w.ThreadID == "" {
+			ok, err = r.store.DeleteWakeupIfUnchanged(
+				ctx, w.SessionID, w.MaxEventSeq,
+			)
+		} else {
+			store, supported := r.store.(ThreadOutboxStore)
+			if !supported {
+				err = fmt.Errorf("thread outbox reconciliation is unavailable")
+			} else {
+				ok, err = store.DeleteThreadWakeupIfUnchanged(
+					ctx, w.SessionID, w.ThreadID, w.MaxEventSeq,
+				)
+			}
+		}
 		if err != nil {
 			log.Printf("relay: delete wakeup failed session_id=%s: %v", w.SessionID, err)
 			continue

@@ -62,6 +62,12 @@ type EventSubscriber interface {
 	SubscribeContext(context.Context, string, map[string]bool) (<-chan app.Frame, func(), error)
 }
 
+type ThreadEventSubscriber interface {
+	SubscribeThreadContext(
+		context.Context, string, string, map[string]bool,
+	) (<-chan app.Frame, func(), error)
+}
+
 type SessionThreadService interface {
 	Get(context.Context, string, string) (domain.SessionThread, error)
 	List(context.Context, string, app.SessionThreadListQuery) ([]domain.SessionThread, error)

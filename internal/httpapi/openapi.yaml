@@ -5116,6 +5116,13 @@ components:
         - session.error
         - session.updated
         - session.deleted
+        - session.thread_created
+        - session.thread_status_idle
+        - session.thread_status_running
+        - session.thread_status_rescheduled
+        - session.thread_status_terminated
+        - agent.thread_message_received
+        - agent.thread_message_sent
         - span.outcome_evaluation_start
         - span.outcome_evaluation_ongoing
         - span.outcome_evaluation_end
@@ -5298,6 +5305,83 @@ components:
               type: array
               items: {$ref: '#/components/schemas/ResultContentInput'}
             is_error: {type: boolean}
+      unevaluatedProperties: false
+    SessionThreadCreatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, session_thread_id, agent_name]
+          properties:
+            type: {type: string, const: session.thread_created}
+            session_thread_id: {type: string, pattern: '^sthr_'}
+            agent_name: {type: string}
+      unevaluatedProperties: false
+    SessionThreadStatusIdleEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, session_thread_id, agent_name, stop_reason]
+          properties:
+            type: {type: string, const: session.thread_status_idle}
+            session_thread_id: {type: string, pattern: '^sthr_'}
+            agent_name: {type: string}
+            stop_reason: {$ref: '#/components/schemas/SessionStopReason'}
+      unevaluatedProperties: false
+    SessionThreadStatusRunningEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, session_thread_id, agent_name]
+          properties:
+            type: {type: string, const: session.thread_status_running}
+            session_thread_id: {type: string, pattern: '^sthr_'}
+            agent_name: {type: string}
+      unevaluatedProperties: false
+    SessionThreadStatusRescheduledEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, session_thread_id, agent_name]
+          properties:
+            type: {type: string, const: session.thread_status_rescheduled}
+            session_thread_id: {type: string, pattern: '^sthr_'}
+            agent_name: {type: string}
+      unevaluatedProperties: false
+    SessionThreadStatusTerminatedEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, session_thread_id, agent_name]
+          properties:
+            type: {type: string, const: session.thread_status_terminated}
+            session_thread_id: {type: string, pattern: '^sthr_'}
+            agent_name: {type: string}
+      unevaluatedProperties: false
+    AgentThreadMessageReceivedEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, from_session_thread_id, from_agent_name, content]
+          properties:
+            type: {type: string, const: agent.thread_message_received}
+            from_session_thread_id: {type: string, pattern: '^sthr_'}
+            from_agent_name: {type: string}
+            content:
+              type: array
+              items: {$ref: '#/components/schemas/MessageContentInput'}
+      unevaluatedProperties: false
+    AgentThreadMessageSentEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, to_session_thread_id, to_agent_name, content]
+          properties:
+            type: {type: string, const: agent.thread_message_sent}
+            to_session_thread_id: {type: string, pattern: '^sthr_'}
+            to_agent_name: {type: string}
+            content:
+              type: array
+              items: {$ref: '#/components/schemas/MessageContentInput'}
       unevaluatedProperties: false
 
     SessionEndTurn:
@@ -5531,6 +5615,13 @@ components:
         - $ref: '#/components/schemas/SessionErrorEvent'
         - $ref: '#/components/schemas/SessionUpdatedEvent'
         - $ref: '#/components/schemas/SessionDeletedEvent'
+        - $ref: '#/components/schemas/SessionThreadCreatedEvent'
+        - $ref: '#/components/schemas/SessionThreadStatusIdleEvent'
+        - $ref: '#/components/schemas/SessionThreadStatusRunningEvent'
+        - $ref: '#/components/schemas/SessionThreadStatusRescheduledEvent'
+        - $ref: '#/components/schemas/SessionThreadStatusTerminatedEvent'
+        - $ref: '#/components/schemas/AgentThreadMessageReceivedEvent'
+        - $ref: '#/components/schemas/AgentThreadMessageSentEvent'
         - $ref: '#/components/schemas/SpanOutcomeEvaluationStartEvent'
         - $ref: '#/components/schemas/SpanOutcomeEvaluationOngoingEvent'
         - $ref: '#/components/schemas/SpanOutcomeEvaluationEndEvent'
