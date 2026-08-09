@@ -57,6 +57,7 @@ func eventFromRow(row pgstore.Event) (domain.Event, error) {
 	return domain.Event{
 		ID:          row.ID,
 		SessionID:   row.SessionID,
+		ThreadID:    row.ThreadID,
 		Sequence:    row.Seq,
 		Type:        row.Type,
 		Payload:     payload,

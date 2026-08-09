@@ -39,6 +39,15 @@ const (
 	EvSessionUpdated            = "session.updated"
 	EvSessionDeleted            = "session.deleted"
 
+	EvSessionThreadCreated           = "session.thread_created"
+	EvSessionThreadStatusIdle        = "session.thread_status_idle"
+	EvSessionThreadStatusRunning     = "session.thread_status_running"
+	EvSessionThreadStatusTerminated  = "session.thread_status_terminated"
+	EvSessionThreadStatusRescheduled = "session.thread_status_rescheduled"
+	EvAgentThreadMessageReceived     = "agent.thread_message_received"
+	EvAgentThreadMessageSent         = "agent.thread_message_sent"
+	EvAgentThreadContextCompacted    = "agent.thread_context_compacted"
+
 	EvSpanOutcomeEvaluationStart   = "span.outcome_evaluation_start"
 	EvSpanOutcomeEvaluationOngoing = "span.outcome_evaluation_ongoing"
 	EvSpanOutcomeEvaluationEnd     = "span.outcome_evaluation_end"
@@ -76,8 +85,11 @@ type EventDraft struct {
 // Event is the internal representation of a persisted session event. Sequence
 // is an internal ordering key and must never appear on the compatibility wire.
 type Event struct {
-	ID          string
-	SessionID   string
+	ID        string
+	SessionID string
+	// ThreadID is the ledger that owns this event. Sequence remains Session-wide
+	// so aggregate ordering and cross-post causality have one durable cursor.
+	ThreadID    string
 	Sequence    int64
 	Type        string
 	Payload     map[string]any

@@ -16,6 +16,13 @@ func TestQueryEventsOrdersAndPagesByProcessedAt(t *testing.T) {
 	if _, err := store.CreateSession(ctx, session, nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	var primaryThreadID string
+	if err := store.pool.QueryRow(ctx, `
+SELECT id FROM session_threads WHERE session_id = $1 AND kind = 'primary'`,
+		session.ID,
+	).Scan(&primaryThreadID); err != nil {
+		t.Fatalf("get primary Thread: %v", err)
+	}
 
 	early := time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC)
 	late := early.Add(time.Minute)
@@ -34,10 +41,13 @@ func TestQueryEventsOrdersAndPagesByProcessedAt(t *testing.T) {
 	}
 	for _, event := range events {
 		if _, err := store.pool.Exec(ctx, `
-INSERT INTO events (id, session_id, seq, type, payload, created_at, processed_at)
-VALUES ($1, $2, $3, $4, '{}'::jsonb, $5, $6)`,
+INSERT INTO events (
+    id, session_id, thread_id, seq, type, payload, created_at, processed_at
+)
+VALUES ($1, $2, $3, $4, $5, '{}'::jsonb, $6, $7)`,
 			event.id,
 			session.ID,
+			primaryThreadID,
 			event.sequence,
 			event.eventType,
 			created.Add(time.Duration(event.sequence)*time.Second),

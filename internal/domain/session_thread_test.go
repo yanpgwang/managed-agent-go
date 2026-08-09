@@ -34,3 +34,21 @@ func TestPrimarySessionThreadOwnsIndependentProjection(t *testing.T) {
 		t.Fatalf("archived primary projection = %#v", thread)
 	}
 }
+
+func TestNewChildSessionThreadCapturesIndependentAgentSnapshot(t *testing.T) {
+	now := time.Date(2026, 8, 9, 10, 0, 0, 123456789, time.UTC)
+	parent := "sthr_primary"
+	child := NewChildSessionThread(
+		"sthr_child", "sesn_child", parent,
+		Agent{
+			ID: "agent_reviewer", Version: 3, Name: "reviewer",
+			Multiagent: &Multiagent{Type: "coordinator"},
+		},
+		now,
+	)
+	if child.ParentThreadID == nil || *child.ParentThreadID != parent ||
+		child.Status != StatusIdle || child.Agent.ID != "agent_reviewer" ||
+		child.Agent.Multiagent != nil || child.CreatedAt.Nanosecond() != 123456000 {
+		t.Fatalf("child Thread = %+v", child)
+	}
+}

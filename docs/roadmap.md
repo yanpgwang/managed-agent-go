@@ -100,11 +100,13 @@ issuance and tenant-scoped authorization remain platform hardening work.
 
 The Session Threads slice now implements all five public read/archive/event
 operations. Each Session gets one durable primary-thread identity in the same
-creation transaction. Every Thread now owns an independent Agent, status,
-usage, and timing projection; the current single-Agent runtime synchronizes the
-primary projection and Session aggregate transactionally. Primary event history
-and live streaming remain views of the existing Session ledger and NATS channel.
-The child-thread runtime remains an M2 capability.
+creation transaction. Every Thread owns an independent Agent, status, usage,
+timing projection, and event ledger. Events retain one Session-wide sequence
+for total ordering, while Session reads and the current workflow consume only
+the primary ledger. The durable child-creation boundary captures an immutable
+Agent from the Session-owned roster and commits the child projection with its
+parent `session.thread_created` event atomically. Model-triggered creation,
+child execution, and child live streaming remain M2 capabilities.
 
 The living SDK baseline is now v1.62. Agent inference geography is persisted,
 forwarded to every model request, and validated across coordinator rosters and
@@ -137,11 +139,13 @@ Remaining work is:
 ## M2: multi-agent
 
 Official coordinator roster resolution and immutable Agent Version pinning are
-implemented. Session creation now also freezes the full resolved roster
-definitions, including Session overrides on `self`, and the independent Thread
-execution projection is in place. The remaining M2 work is child-thread
-creation, delegation/message execution, cross-posted confirmation, context
-compaction, and targeted interrupt events.
+implemented. Session creation freezes the full resolved roster definitions,
+including Session overrides on `self`. Independent Thread projections,
+per-Thread event ownership, migration backfill, and atomic child creation from
+that frozen roster are in place. The remaining M2 work is connecting the
+coordinator runtime to child creation, independent child transcripts and
+execution, delegation/message delivery, cross-posted lifecycle and
+confirmation events, context compaction, and targeted interrupts.
 Advisor consultation Threads and shared Session budget enforcement follow the
 ordinary child runtime because both depend on correct per-Thread usage and
 Session-level aggregation, but retain their distinct public behavior.

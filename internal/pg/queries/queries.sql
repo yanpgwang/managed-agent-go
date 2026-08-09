@@ -47,6 +47,11 @@ SET status = @status,
     archived_at = @archived_at
 WHERE session_id = @session_id AND kind = 'primary';
 
+-- name: GetPrimarySessionThreadID :one
+SELECT id
+FROM session_threads
+WHERE session_id = @session_id AND kind = 'primary';
+
 -- MaxEventSeq returns the current highest receipt sequence for a session, or 0
 -- when the session has no events yet. Called while holding the admission lock.
 -- name: MaxEventSeq :one
@@ -55,30 +60,41 @@ FROM events
 WHERE session_id = @session_id;
 
 -- name: InsertEvent :exec
-INSERT INTO events (id, session_id, seq, type, payload, turn_event_id, created_at, processed_at)
-VALUES (@id, @session_id, @seq, @type, @payload, @turn_event_id, @created_at, @processed_at);
+INSERT INTO events (
+    id, session_id, thread_id, seq, type, payload,
+    turn_event_id, created_at, processed_at
+)
+VALUES (
+    @id, @session_id, @thread_id, @seq, @type, @payload,
+    @turn_event_id, @created_at, @processed_at
+);
 
 -- ListEventsAfter returns events with seq strictly greater than a cursor, in
 -- ascending receipt order. This is how the SessionWorkflow consumes the ledger
 -- after its durable cursor; the limit bounds one wakeup's batch.
 -- name: ListEventsAfter :many
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
-FROM events
-WHERE session_id = @session_id AND seq > @after_seq
-ORDER BY seq
+SELECT event.*
+FROM events AS event
+WHERE event.session_id = @session_id
+  AND event.thread_id = (
+      SELECT thread.id FROM session_threads AS thread
+      WHERE thread.session_id = @session_id AND thread.kind = 'primary'
+  )
+  AND event.seq > @after_seq
+ORDER BY event.seq
 LIMIT @row_limit;
 
 -- ListEventsByTurn returns the output events a completed turn committed,
 -- identified by the trigger event id that caused them, in receipt order. The
 -- idempotent completion path replays these when a turn is already processed.
 -- name: ListEventsByTurn :many
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+SELECT events.*
 FROM events
 WHERE session_id = @session_id AND turn_event_id = @turn_event_id
 ORDER BY seq;
 
 -- name: GetEvent :one
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+SELECT events.*
 FROM events
 WHERE session_id = @session_id AND id = @id;
 
@@ -86,13 +102,17 @@ WHERE session_id = @session_id AND id = @id;
 -- race the named turn. The caller holds the session row lock, so an empty result
 -- means turn completion linearized before any later interrupt admission.
 -- name: FirstUnprocessedInterruptAfter :one
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
-FROM events
-WHERE session_id = @session_id
-  AND seq > @after_seq
-  AND type = 'user.interrupt'
-  AND processed_at IS NULL
-ORDER BY seq
+SELECT event.*
+FROM events AS event
+WHERE event.session_id = @session_id
+  AND event.thread_id = (
+      SELECT thread.id FROM session_threads AS thread
+      WHERE thread.session_id = @session_id AND thread.kind = 'primary'
+  )
+  AND event.seq > @after_seq
+  AND event.type = 'user.interrupt'
+  AND event.processed_at IS NULL
+ORDER BY event.seq
 LIMIT 1;
 
 -- PriorProcessedModelTriggers returns processed events that can drive a model
@@ -100,13 +120,17 @@ LIMIT 1;
 -- because a completed custom-tool/confirmation resume may itself have committed
 -- model output that later turns must replay.
 -- name: PriorProcessedModelTriggers :many
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
-FROM events
-WHERE session_id = @session_id
-  AND type IN ('user.message', 'user.custom_tool_result', 'user.tool_confirmation')
-  AND processed_at IS NOT NULL
-  AND seq < @before_seq
-ORDER BY seq;
+SELECT event.*
+FROM events AS event
+WHERE event.session_id = @session_id
+  AND event.thread_id = (
+      SELECT thread.id FROM session_threads AS thread
+      WHERE thread.session_id = @session_id AND thread.kind = 'primary'
+  )
+  AND event.type IN ('user.message', 'user.custom_tool_result', 'user.tool_confirmation')
+  AND event.processed_at IS NOT NULL
+  AND event.seq < @before_seq
+ORDER BY event.seq;
 
 -- CountUnprocessedUserMessages counts user.message events still awaiting a turn,
 -- excluding one id (the trigger just processed in the same transaction). It lets
@@ -114,11 +138,15 @@ ORDER BY seq;
 -- go idle; otherwise it stays running with no intermediate idle event.
 -- name: CountUnprocessedUserMessages :one
 SELECT COUNT(*)::int AS n
-FROM events
-WHERE session_id = @session_id
-  AND type = 'user.message'
-  AND processed_at IS NULL
-  AND id <> @exclude_id;
+FROM events AS event
+WHERE event.session_id = @session_id
+  AND event.thread_id = (
+      SELECT thread.id FROM session_threads AS thread
+      WHERE thread.session_id = @session_id AND thread.kind = 'primary'
+  )
+  AND event.type = 'user.message'
+  AND event.processed_at IS NULL
+  AND event.id <> @exclude_id;
 
 -- MarkEventProcessed stamps a trigger event processed, but only once
 -- (COALESCE keeps the first timestamp). Returns the row so the caller can tell a
@@ -137,6 +165,10 @@ WITH queued AS (
            queued_event.payload->>'__companion_system_event_id' AS companion_id
     FROM events AS queued_event
     WHERE queued_event.session_id = @session_id
+      AND queued_event.thread_id = (
+          SELECT thread.id FROM session_threads AS thread
+          WHERE thread.session_id = @session_id AND thread.kind = 'primary'
+      )
       AND queued_event.type = 'user.message'
       AND queued_event.processed_at IS NULL
       AND queued_event.id <> @exclude_id

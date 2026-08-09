@@ -629,6 +629,14 @@ func (s *Store) QueryEvents(
 		args = append(args, value)
 		clauses = append(clauses, fmt.Sprintf(clause, len(args)))
 	}
+	if query.ThreadID == "" {
+		clauses = append(clauses, `thread_id = (
+            SELECT id FROM session_threads
+            WHERE session_id = $1 AND kind = 'primary'
+        )`)
+	} else {
+		add(`thread_id = $%d`, query.ThreadID)
+	}
 	if len(query.Types) > 0 {
 		add(`type = ANY($%d::text[])`, query.Types)
 	}
@@ -676,7 +684,7 @@ func (s *Store) QueryEvents(
 		nulls = "NULLS FIRST"
 	}
 	args = append(args, query.Limit)
-	statement := `SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+	statement := `SELECT id, session_id, thread_id, seq, type, payload, turn_event_id, created_at, processed_at
 FROM events
 WHERE ` + strings.Join(clauses, ` AND `) +
 		fmt.Sprintf(` ORDER BY processed_at %s %s, seq %s LIMIT $%d`, order, nulls, order, len(args))
@@ -691,6 +699,7 @@ WHERE ` + strings.Join(clauses, ` AND `) +
 		if err := rows.Scan(
 			&row.ID,
 			&row.SessionID,
+			&row.ThreadID,
 			&row.Seq,
 			&row.Type,
 			&row.Payload,
@@ -713,7 +722,11 @@ func (s *Store) LatestEventSequence(ctx context.Context, sessionID string) (int6
 	var sequence int64
 	err := s.pool.QueryRow(
 		ctx,
-		`SELECT COALESCE(MAX(seq), 0)::bigint FROM events WHERE session_id = $1`,
+		`SELECT COALESCE(MAX(event.seq), 0)::bigint
+FROM session_threads AS thread
+LEFT JOIN events AS event
+  ON event.session_id = thread.session_id AND event.thread_id = thread.id
+WHERE thread.session_id = $1 AND thread.kind = 'primary'`,
 		sessionID,
 	).Scan(&sequence)
 	return sequence, err

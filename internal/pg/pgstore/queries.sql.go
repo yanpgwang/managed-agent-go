@@ -13,11 +13,15 @@ import (
 
 const countUnprocessedUserMessages = `-- name: CountUnprocessedUserMessages :one
 SELECT COUNT(*)::int AS n
-FROM events
-WHERE session_id = $1
-  AND type = 'user.message'
-  AND processed_at IS NULL
-  AND id <> $2
+FROM events AS event
+WHERE event.session_id = $1
+  AND event.thread_id = (
+      SELECT thread.id FROM session_threads AS thread
+      WHERE thread.session_id = $1 AND thread.kind = 'primary'
+  )
+  AND event.type = 'user.message'
+  AND event.processed_at IS NULL
+  AND event.id <> $2
 `
 
 type CountUnprocessedUserMessagesParams struct {
@@ -89,13 +93,17 @@ func (q *Queries) EnqueueEnvironmentWork(ctx context.Context, arg EnqueueEnviron
 }
 
 const firstUnprocessedInterruptAfter = `-- name: FirstUnprocessedInterruptAfter :one
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
-FROM events
-WHERE session_id = $1
-  AND seq > $2
-  AND type = 'user.interrupt'
-  AND processed_at IS NULL
-ORDER BY seq
+SELECT event.id, event.session_id, event.seq, event.type, event.payload, event.turn_event_id, event.created_at, event.processed_at, event.thread_id
+FROM events AS event
+WHERE event.session_id = $1
+  AND event.thread_id = (
+      SELECT thread.id FROM session_threads AS thread
+      WHERE thread.session_id = $1 AND thread.kind = 'primary'
+  )
+  AND event.seq > $2
+  AND event.type = 'user.interrupt'
+  AND event.processed_at IS NULL
+ORDER BY event.seq
 LIMIT 1
 `
 
@@ -119,6 +127,7 @@ func (q *Queries) FirstUnprocessedInterruptAfter(ctx context.Context, arg FirstU
 		&i.TurnEventID,
 		&i.CreatedAt,
 		&i.ProcessedAt,
+		&i.ThreadID,
 	)
 	return i, err
 }
@@ -129,6 +138,10 @@ WITH queued AS (
            queued_event.payload->>'__companion_system_event_id' AS companion_id
     FROM events AS queued_event
     WHERE queued_event.session_id = $2
+      AND queued_event.thread_id = (
+          SELECT thread.id FROM session_threads AS thread
+          WHERE thread.session_id = $2 AND thread.kind = 'primary'
+      )
       AND queued_event.type = 'user.message'
       AND queued_event.processed_at IS NULL
       AND queued_event.id <> $3
@@ -158,7 +171,7 @@ func (q *Queries) FlushQueuedUserMessages(ctx context.Context, arg FlushQueuedUs
 }
 
 const getEvent = `-- name: GetEvent :one
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+SELECT events.id, events.session_id, events.seq, events.type, events.payload, events.turn_event_id, events.created_at, events.processed_at, events.thread_id
 FROM events
 WHERE session_id = $1 AND id = $2
 `
@@ -180,6 +193,7 @@ func (q *Queries) GetEvent(ctx context.Context, arg GetEventParams) (Event, erro
 		&i.TurnEventID,
 		&i.CreatedAt,
 		&i.ProcessedAt,
+		&i.ThreadID,
 	)
 	return i, err
 }
@@ -202,6 +216,19 @@ func (q *Queries) GetOutbox(ctx context.Context, sessionID string) (Orchestratio
 		&i.LastError,
 	)
 	return i, err
+}
+
+const getPrimarySessionThreadID = `-- name: GetPrimarySessionThreadID :one
+SELECT id
+FROM session_threads
+WHERE session_id = $1 AND kind = 'primary'
+`
+
+func (q *Queries) GetPrimarySessionThreadID(ctx context.Context, sessionID string) (string, error) {
+	row := q.db.QueryRow(ctx, getPrimarySessionThreadID, sessionID)
+	var id string
+	err := row.Scan(&id)
+	return id, err
 }
 
 const getPrimarySessionThreadProjection = `-- name: GetPrimarySessionThreadProjection :one
@@ -247,13 +274,20 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, err
 }
 
 const insertEvent = `-- name: InsertEvent :exec
-INSERT INTO events (id, session_id, seq, type, payload, turn_event_id, created_at, processed_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO events (
+    id, session_id, thread_id, seq, type, payload,
+    turn_event_id, created_at, processed_at
+)
+VALUES (
+    $1, $2, $3, $4, $5, $6,
+    $7, $8, $9
+)
 `
 
 type InsertEventParams struct {
 	ID          string
 	SessionID   string
+	ThreadID    string
 	Seq         int64
 	Type        string
 	Payload     []byte
@@ -266,6 +300,7 @@ func (q *Queries) InsertEvent(ctx context.Context, arg InsertEventParams) error 
 	_, err := q.db.Exec(ctx, insertEvent,
 		arg.ID,
 		arg.SessionID,
+		arg.ThreadID,
 		arg.Seq,
 		arg.Type,
 		arg.Payload,
@@ -322,10 +357,15 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 }
 
 const listEventsAfter = `-- name: ListEventsAfter :many
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
-FROM events
-WHERE session_id = $1 AND seq > $2
-ORDER BY seq
+SELECT event.id, event.session_id, event.seq, event.type, event.payload, event.turn_event_id, event.created_at, event.processed_at, event.thread_id
+FROM events AS event
+WHERE event.session_id = $1
+  AND event.thread_id = (
+      SELECT thread.id FROM session_threads AS thread
+      WHERE thread.session_id = $1 AND thread.kind = 'primary'
+  )
+  AND event.seq > $2
+ORDER BY event.seq
 LIMIT $3
 `
 
@@ -356,6 +396,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 			&i.TurnEventID,
 			&i.CreatedAt,
 			&i.ProcessedAt,
+			&i.ThreadID,
 		); err != nil {
 			return nil, err
 		}
@@ -368,7 +409,7 @@ func (q *Queries) ListEventsAfter(ctx context.Context, arg ListEventsAfterParams
 }
 
 const listEventsByTurn = `-- name: ListEventsByTurn :many
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
+SELECT events.id, events.session_id, events.seq, events.type, events.payload, events.turn_event_id, events.created_at, events.processed_at, events.thread_id
 FROM events
 WHERE session_id = $1 AND turn_event_id = $2
 ORDER BY seq
@@ -400,6 +441,7 @@ func (q *Queries) ListEventsByTurn(ctx context.Context, arg ListEventsByTurnPara
 			&i.TurnEventID,
 			&i.CreatedAt,
 			&i.ProcessedAt,
+			&i.ThreadID,
 		); err != nil {
 			return nil, err
 		}
@@ -540,13 +582,17 @@ func (q *Queries) MaxEventSeq(ctx context.Context, sessionID string) (int64, err
 }
 
 const priorProcessedModelTriggers = `-- name: PriorProcessedModelTriggers :many
-SELECT id, session_id, seq, type, payload, turn_event_id, created_at, processed_at
-FROM events
-WHERE session_id = $1
-  AND type IN ('user.message', 'user.custom_tool_result', 'user.tool_confirmation')
-  AND processed_at IS NOT NULL
-  AND seq < $2
-ORDER BY seq
+SELECT event.id, event.session_id, event.seq, event.type, event.payload, event.turn_event_id, event.created_at, event.processed_at, event.thread_id
+FROM events AS event
+WHERE event.session_id = $1
+  AND event.thread_id = (
+      SELECT thread.id FROM session_threads AS thread
+      WHERE thread.session_id = $1 AND thread.kind = 'primary'
+  )
+  AND event.type IN ('user.message', 'user.custom_tool_result', 'user.tool_confirmation')
+  AND event.processed_at IS NOT NULL
+  AND event.seq < $2
+ORDER BY event.seq
 `
 
 type PriorProcessedModelTriggersParams struct {
@@ -576,6 +622,7 @@ func (q *Queries) PriorProcessedModelTriggers(ctx context.Context, arg PriorProc
 			&i.TurnEventID,
 			&i.CreatedAt,
 			&i.ProcessedAt,
+			&i.ThreadID,
 		); err != nil {
 			return nil, err
 		}

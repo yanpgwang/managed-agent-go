@@ -40,7 +40,11 @@ flowchart LR
 
 The event log is the source of truth for public session history. It is not the
 lossless provider transcript and must not be used to reconstruct provider-native
-context. Two different public orderings are read from the event ledger:
+context. Every event belongs to exactly one Session Thread. A Session-wide
+sequence preserves total order across child activity and explicit primary
+cross-posts, while Session history and the primary workflow read only the
+primary Thread ledger. Two different public orderings are read from the event
+ledger:
 
 - **Public event history** (`GET .../events`, list, and the live SSE stream) is
   the immutable receipt/commit sequence. It never reorders or hides events.

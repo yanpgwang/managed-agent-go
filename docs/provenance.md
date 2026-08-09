@@ -84,7 +84,9 @@ verification where applicable.
   documentation and Anthropic Go SDK `v1.62.0` types and methods. This focused
   verification also covered `model.inference_geo`, roster-wide geography
   consistency, full Session-resolved roster definitions, `self` override
-  propagation, the advisor variant, and shared Session budgets.
+  propagation, parent-stream `session.thread_created`, isolated Thread event
+  views, multiple child instances of one callable Agent, the advisor variant,
+  and shared Session budgets.
 - [Files API](https://platform.claude.com/docs/en/api/beta/files) and
   [Files guide](https://platform.claude.com/docs/en/build-with-claude/files) —
   the five operations, `files-api-2025-04-14` beta header, multipart upload,

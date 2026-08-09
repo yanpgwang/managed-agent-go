@@ -14,6 +14,9 @@ type EventPageBoundary struct {
 // these filters created_at for compatibility, but the Managed Agents contract
 // applies them, ordering, and pagination to the event processed_at value.
 type EventQuery struct {
+	// ThreadID selects one Thread ledger. Empty means the primary Thread, which
+	// is the public Session event surface.
+	ThreadID       string
 	Boundary       *EventPageBoundary
 	Limit          int
 	Desc           bool

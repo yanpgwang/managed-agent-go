@@ -124,6 +124,188 @@ LIMIT $`+fmt.Sprint(len(args)), args...)
 	return result, rows.Err()
 }
 
+// CreateChildSessionThread atomically captures a callable Agent from the
+// Session-owned resolved roster, inserts its independent Thread projection,
+// and appends session.thread_created to the parent ledger. It deliberately does
+// not start execution; the child workflow transition owns status_running.
+func (s *Store) CreateChildSessionThread(
+	ctx context.Context,
+	sessionID string,
+	parentThreadID string,
+	agentName string,
+) (domain.SessionThread, domain.Event, error) {
+	if parentThreadID == "" || agentName == "" {
+		return domain.SessionThread{}, domain.Event{}, domain.Validation(
+			"parent session thread and agent name are required",
+		)
+	}
+	var (
+		created domain.SessionThread
+		event   domain.Event
+	)
+	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+		row, err := q.LockSession(ctx, sessionID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("session not found")
+		}
+		if err != nil {
+			return err
+		}
+		if row.DeletingAt.Valid {
+			return domain.Conflict("session deletion is in progress")
+		}
+		session, err := sessionFromLockRow(row)
+		if err != nil {
+			return err
+		}
+		if session.ArchivedAt != nil || session.Status == domain.StatusTerminated {
+			return domain.Conflict("cannot create a child Thread in a terminated Session")
+		}
+		if session.AgentSnapshot.Multiagent == nil || len(session.MultiagentRoster) == 0 {
+			return domain.Conflict("Session Agent is not a multiagent coordinator")
+		}
+
+		var parentKind string
+		if err := tx.QueryRow(ctx, `
+SELECT kind
+FROM session_threads
+WHERE session_id = $1 AND id = $2
+FOR UPDATE`, sessionID, parentThreadID).Scan(&parentKind); errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("parent session thread not found")
+		} else if err != nil {
+			return err
+		}
+		if parentKind != "primary" {
+			return domain.Conflict("child Threads cannot spawn nested Threads")
+		}
+
+		var member *domain.Agent
+		for index := range session.MultiagentRoster {
+			if session.MultiagentRoster[index].Name != agentName {
+				continue
+			}
+			if member != nil {
+				return domain.Conflict("agent name does not uniquely identify a Session roster member")
+			}
+			candidate := session.MultiagentRoster[index]
+			member = &candidate
+		}
+		if member == nil {
+			return domain.Validation("agent name is not present in the Session roster")
+		}
+
+		created = domain.NewChildSessionThread(
+			s.ids.NewID(domain.PrefixSessionThread), sessionID,
+			parentThreadID, *member, s.clock.Now(),
+		)
+		body, err := json.Marshal(created)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+INSERT INTO session_threads (
+    id, session_id, parent_thread_id, kind, status, body,
+    created_at, updated_at, archived_at
+) VALUES ($1, $2, $3, 'child', $4, $5, $6, $7, NULL)`,
+			created.ID, created.SessionID, created.ParentThreadID,
+			created.Status, body, created.CreatedAt, created.UpdatedAt,
+		); err != nil {
+			return err
+		}
+		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		committed, _, err := s.appendThreadDrafts(
+			ctx, q, sessionID, parentThreadID,
+			[]domain.EventDraft{{
+				Type: domain.EvSessionThreadCreated,
+				Payload: map[string]any{
+					"agent_name":        agentName,
+					"session_thread_id": created.ID,
+				},
+			}},
+			maxSeq, nil,
+		)
+		if err != nil {
+			return err
+		}
+		event = committed[0]
+		return nil
+	})
+	if err != nil {
+		return domain.SessionThread{}, domain.Event{}, err
+	}
+	s.notifySession(ctx, sessionID)
+	return created, event, nil
+}
+
+// AppendThreadEvents appends server-owned events to one Thread ledger under the
+// Session serialization fence. Projection transitions and child workflow
+// wakeups are intentionally separate operations.
+func (s *Store) AppendThreadEvents(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	drafts []domain.EventDraft,
+) ([]domain.Event, error) {
+	if threadID == "" || len(drafts) == 0 {
+		return nil, domain.Validation("session Thread and events are required")
+	}
+	for _, draft := range drafts {
+		if domain.IsClientSubmittable(draft.Type) || isSessionProjectionEvent(draft.Type) {
+			return nil, domain.Validation("Thread ledger append accepts server events only")
+		}
+	}
+	var committed []domain.Event
+	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+		row, err := q.LockSession(ctx, sessionID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("session not found")
+		}
+		if err != nil {
+			return err
+		}
+		if row.DeletingAt.Valid {
+			return domain.Conflict("session deletion is in progress")
+		}
+		session, err := sessionFromLockRow(row)
+		if err != nil {
+			return err
+		}
+		if session.ArchivedAt != nil || session.Status == domain.StatusTerminated {
+			return domain.Conflict("cannot append events to a terminated Session")
+		}
+		var status string
+		var archivedAt *time.Time
+		if err := tx.QueryRow(ctx, `
+SELECT status, archived_at
+FROM session_threads
+WHERE session_id = $1 AND id = $2
+FOR UPDATE`, sessionID, threadID).Scan(&status, &archivedAt); errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("session thread not found")
+		} else if err != nil {
+			return err
+		}
+		if archivedAt != nil || domain.Status(status) == domain.StatusTerminated {
+			return domain.Conflict("cannot append events to a terminated Session Thread")
+		}
+		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		committed, _, err = s.appendThreadDrafts(
+			ctx, q, sessionID, threadID, drafts, maxSeq, nil,
+		)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	s.notifySession(ctx, sessionID)
+	return committed, nil
+}
+
 func sessionThreadFromRow(
 	threadID string,
 	sessionID string,

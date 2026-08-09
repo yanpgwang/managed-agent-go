@@ -146,12 +146,6 @@ func (s *Server) listSessionThreadEvents(w http.ResponseWriter, r *http.Request)
 		writeError(w, err)
 		return
 	}
-	if thread.ParentThreadID != nil {
-		writeError(w, domain.Unsupported(
-			"child session-thread event history is unavailable before child execution",
-		))
-		return
-	}
 	limit := defaultEventLimit
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
@@ -165,7 +159,7 @@ func (s *Server) listSessionThreadEvents(w http.ResponseWriter, r *http.Request)
 		}
 		limit = parsed
 	}
-	query := app.EventQuery{Limit: limit + 1}
+	query := app.EventQuery{ThreadID: thread.ID, Limit: limit + 1}
 	fingerprint := eventCursorFilter{}.fingerprint()
 	if token := r.URL.Query().Get("page"); token != "" {
 		cursor, ok := decodeEventCursor(token)
