@@ -141,11 +141,12 @@ Remaining work is:
 Official coordinator roster resolution and immutable Agent Version pinning are
 implemented. Session creation freezes the full resolved roster definitions,
 including Session overrides on `self`. Independent Thread projections,
-per-Thread event ownership, migration backfill, and atomic child creation from
-that frozen roster are in place. The remaining M2 work is connecting the
-coordinator runtime to child creation, independent child transcripts and
-execution, delegation/message delivery, cross-posted lifecycle and
-confirmation events, context compaction, and targeted interrupts.
+per-Thread public event and private provider-transcript ownership, migration
+backfill, and atomic child creation from that frozen roster are in place. The
+remaining M2 work is connecting the coordinator runtime to child creation and
+the Thread-owned transcript, independent child execution, delegation/message
+delivery, cross-posted lifecycle and confirmation events, context compaction,
+and targeted interrupts.
 Advisor consultation Threads and shared Session budget enforcement follow the
 ordinary child runtime because both depend on correct per-Thread usage and
 Session-level aggregation, but retain their distinct public behavior.

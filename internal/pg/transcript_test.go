@@ -6,7 +6,9 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
 )
 
 func TestCompleteWorkflowTurn_CommitsLosslessTranscriptAtomically(t *testing.T) {
@@ -100,6 +102,83 @@ func equivalentJSON(left, right []byte) bool {
 		return false
 	}
 	return reflect.DeepEqual(leftValue, rightValue)
+}
+
+func TestProviderTranscriptContextIsIsolatedByThread(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_thread_transcript")
+	session.AgentSnapshot = domain.Agent{
+		ID: session.AgentID, Version: session.AgentVersion, Name: "coordinator",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{
+			Type: "agent", ID: "agent_peer", Version: 2,
+		}}},
+	}
+	session.MultiagentRoster = []domain.Agent{{
+		ID: "agent_peer", Version: 2, Name: "reviewer",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+	}}
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := store.ListSessionThreads(ctx, session.ID, app.SessionThreadListQuery{Limit: 1})
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("primary Thread = %+v, err=%v", threads, err)
+	}
+	primary := threads[0]
+	child, createdEvent, err := store.CreateChildSessionThread(
+		ctx, session.ID, primary.ID, "reviewer",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childTriggers, err := store.AppendThreadEvents(ctx, session.ID, child.ID, []domain.EventDraft{{
+		Type: domain.EvAgentThreadMessageReceived,
+		Payload: map[string]any{
+			"from_session_thread_id": primary.ID,
+			"from_agent_name":        nil,
+			"content":                []any{map[string]any{"type": "text", "text": "review this"}},
+		},
+	}})
+	if err != nil || len(childTriggers) != 1 {
+		t.Fatalf("child trigger = %+v, err=%v", childTriggers, err)
+	}
+	childTrigger := childTriggers[0]
+	primaryMessages, _ := json.Marshal([]domain.Message{{
+		Role:    domain.RoleAssistant,
+		Content: []domain.ContentBlock{{Type: "text", Text: "delegated"}},
+	}})
+	childMessages, _ := json.Marshal([]domain.Message{{
+		Role:    domain.RoleUser,
+		Content: []domain.ContentBlock{{Type: "text", Text: "review this"}},
+	}})
+	insert := func(trigger domain.Event, messages []byte) error {
+		represented, _ := json.Marshal([]string{trigger.ID})
+		return store.q.InsertProviderTranscriptTurn(ctx, pgstore.InsertProviderTranscriptTurnParams{
+			SessionID: session.ID, TriggerEventID: trigger.ID,
+			CommittedThroughSeq: trigger.Sequence, RepresentedEventIds: represented,
+			Messages: messages, ToolUseMappings: []byte("[]"),
+			CreatedAt: tsUTC(trigger.CreatedAt),
+		})
+	}
+	if err := insert(createdEvent, primaryMessages); err != nil {
+		t.Fatal(err)
+	}
+	if err := insert(childTrigger, childMessages); err != nil {
+		t.Fatal(err)
+	}
+
+	primaryTranscript, err := store.LoadProviderTranscript(ctx, session.ID)
+	if err != nil || len(primaryTranscript.Messages) != 1 ||
+		primaryTranscript.Messages[0].Content[0].Text != "delegated" {
+		t.Fatalf("primary transcript = %+v, err=%v", primaryTranscript, err)
+	}
+	childTranscript, err := store.LoadThreadProviderTranscript(ctx, session.ID, child.ID)
+	if err != nil || len(childTranscript.Messages) != 1 ||
+		childTranscript.Messages[0].Content[0].Text != "review this" {
+		t.Fatalf("child transcript = %+v, err=%v", childTranscript, err)
+	}
 }
 
 func TestCloseInterruptedProviderTranscript_PairsDanglingTools(t *testing.T) {

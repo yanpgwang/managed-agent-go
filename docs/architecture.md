@@ -54,11 +54,14 @@ ledger:
   the current trigger. A turn never sees a later message queued while it was
   still running.
 
-New Sessions continue model conversations from a lossless Provider Transcript;
-the causal public-event projection remains only as a compatibility fallback for
-Sessions created before transcript support. Immutable Context Snapshots remain
-follow-up work. This separation is required for native server-tool blocks,
-citations, compaction, and large results. See
+Each Thread continues model conversations from its own lossless Provider
+Transcript. Every transcript row has a database foreign key to its public
+trigger event, and Thread ownership is derived from that event rather than
+duplicated, so private context cannot drift between Threads. The causal
+public-event projection remains only as a compatibility fallback for histories
+created before transcript support. Immutable Context Snapshots remain follow-up
+work. This separation is required for native server-tool blocks, citations,
+compaction, and large results. See
 [Storage, context, and connected tools](architecture/storage-context-and-tools.md).
 The model endpoint performs inference; it does not own session state.
 
