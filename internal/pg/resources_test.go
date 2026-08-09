@@ -131,6 +131,57 @@ SELECT vault_id FROM session_vaults WHERE session_id = $1`, session.ID,
 	}
 }
 
+func TestPostgresAgentMultiagentRosterRoundTrip(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	agents := app.NewAgentService(NewAgentRepository(store), &seqIDGen{}, fixedClock{})
+	peer, err := agents.Create(ctx, domain.Agent{Name: "peer", Model: domain.Model{ID: "claude-test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerName := "peer v2"
+	peer, err = agents.Update(ctx, peer.ID, domain.AgentPatch{Name: &peerName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := agents.Create(ctx, domain.Agent{
+		Name: "coordinator", Model: domain.Model{ID: "claude-test"},
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{
+			{Type: "agent", ID: peer.ID}, {Type: "self"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := agents.Get(ctx, coordinator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.Multiagent.Agents[0]; got.ID != peer.ID || got.Version != peer.Version {
+		t.Fatalf("persisted peer pin = %#v", got)
+	}
+	if got := reloaded.Multiagent.Agents[1]; got.ID != coordinator.ID || got.Version != 1 {
+		t.Fatalf("persisted self pin = %#v", got)
+	}
+
+	name := "coordinator v2"
+	updated, err := agents.Update(ctx, coordinator.ID, domain.AgentPatch{Name: &name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Multiagent.Agents[1].Version != 2 {
+		t.Fatalf("updated self pin = %#v", updated.Multiagent.Agents[1])
+	}
+	versions, err := agents.Versions(ctx, coordinator.ID, app.AgentVersionListQuery{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(versions.Versions) != 2 || versions.Versions[0].Multiagent.Agents[1].Version != 1 ||
+		versions.Versions[1].Multiagent.Agents[1].Version != 2 {
+		t.Fatalf("coordinator history did not retain version-local self pins: %#v", versions.Versions)
+	}
+}
+
 func TestPostgresSessionLifecyclePaginationAndEventQuery(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

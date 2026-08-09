@@ -123,9 +123,10 @@ Remaining work is:
 
 ## M2: multi-agent
 
-After the single-agent capability layers above are stable, implement official
-roster resolution, child-thread creation, delegation/message execution,
-cross-posted confirmation, context-compaction, and targeted interrupt events.
+Official coordinator roster resolution and immutable Agent Version pinning are
+implemented. The remaining M2 work is independent Thread projection,
+child-thread creation, delegation/message execution, cross-posted confirmation,
+context-compaction, and targeted interrupt events.
 The primary Thread HTTP surface, single-agent event ledger, pending-action
 barrier, private provider transcript, Skills, Memory, and Temporal turn loop
 are intended to be reused rather than replaced.

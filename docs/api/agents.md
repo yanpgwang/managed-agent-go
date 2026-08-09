@@ -32,10 +32,36 @@ Required fields:
 The object model form also preserves supported `effort` and `speed` values.
 `effort` accepts either a level string such as `"high"` or the tagged object
 `{"type":"high"}`; responses use the tagged object form.
-`multiagent` may be an object, but the server currently stores it opaquely and
-does not resolve or execute its topology.
 Optional collection and metadata fields may be omitted or supplied with their
 documented array/object shape; explicit `null` is not a create-time default.
+
+Coordinators declare a roster with the documented `multiagent` topology:
+
+```json
+{
+  "type": "coordinator",
+  "agents": [
+    "agent_latest",
+    {"type": "agent", "id": "agent_pinned", "version": 3},
+    {"type": "self"}
+  ]
+}
+```
+
+The roster contains 1–20 distinct Agents. An ID string and an Agent object
+without `version` resolve to the latest active Version at write time; an object
+with `version` selects that exact Version. `self` resolves to the coordinator
+Version being written and may appear at most once. Responses and stored Agent
+history contain only concrete `{"type":"agent","id","version"}` references,
+so later updates to a referenced Agent do not change an existing coordinator.
+Archived, missing, duplicate, and nested coordinator references are rejected.
+Runtime delegation and child Session Threads remain a separate compatibility
+milestone.
+
+Agents written by releases that accepted opaque `multiagent` objects remain
+readable without inventing historical version pins. An unresolved legacy
+topology is read-only: replace or clear `multiagent` before changing the Agent
+or creating a new Session.
 
 Custom Skills use the documented tagged reference:
 
@@ -104,7 +130,8 @@ Field behavior:
 - `system` and `description` accept `null` to clear;
 - `tools`, `mcp_servers`, and `skills` replace the whole list and accept
   `null` to clear;
-- `multiagent` replaces the object and accepts `null` to clear;
+- `multiagent` replaces and re-resolves the complete roster, and accepts `null`
+  to clear;
 - metadata keys patch the map, and a `null` value removes a key;
 - `name`, `version`, and the `metadata` object itself cannot be `null`;
 - `model` may be replaced but cannot be `null`.

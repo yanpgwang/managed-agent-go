@@ -243,8 +243,22 @@ func TestAgents_LegacySkillResponsePreservesOpaqueValues(t *testing.T) {
 
 func TestAgents_MultiagentObjectPersistsAndReplaces(t *testing.T) {
 	srv := newTestServer(t)
+	createPeer := func(name string) string {
+		t.Helper()
+		rec := do(srv, "POST", "/v1/agents", `{"name":"`+name+`","model":"claude-opus-4-8"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("create peer status %d: %s", rec.Code, rec.Body)
+		}
+		var peer map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &peer); err != nil {
+			t.Fatal(err)
+		}
+		return peer["id"].(string)
+	}
+	firstID := createPeer("First")
+	secondID := createPeer("Second")
 	rec := do(srv, "POST", "/v1/agents",
-		`{"name":"Coordinator","model":"claude-opus-4-8","multiagent":{"type":"coordinator","agents":["agent_one"]}}`)
+		`{"name":"Coordinator","model":"claude-opus-4-8","multiagent":{"type":"coordinator","agents":["`+firstID+`"]}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("create status %d: %s", rec.Code, rec.Body)
 	}
@@ -255,9 +269,13 @@ func TestAgents_MultiagentObjectPersistsAndReplaces(t *testing.T) {
 	if !ok || multiagent["type"] != "coordinator" {
 		t.Fatalf("create response lost multiagent: %#v", created["multiagent"])
 	}
+	createdEntry := multiagent["agents"].([]any)[0].(map[string]any)
+	if createdEntry["type"] != "agent" || createdEntry["id"] != firstID || createdEntry["version"] != float64(1) {
+		t.Fatalf("create response did not resolve roster: %#v", multiagent)
+	}
 
 	rec = do(srv, "POST", "/v1/agents/"+id,
-		`{"multiagent":{"type":"coordinator","agents":["agent_two"]}}`)
+		`{"multiagent":{"type":"coordinator","agents":["`+secondID+`"]}}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("update status %d: %s", rec.Code, rec.Body)
 	}
@@ -265,7 +283,11 @@ func TestAgents_MultiagentObjectPersistsAndReplaces(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &updated)
 	updatedMultiagent := updated["multiagent"].(map[string]any)
 	agents := updatedMultiagent["agents"].([]any)
-	if len(agents) != 1 || agents[0] != "agent_two" {
+	if len(agents) != 1 {
+		t.Fatalf("multiagent was not replaced: %#v", updatedMultiagent)
+	}
+	entry := agents[0].(map[string]any)
+	if entry["id"] != secondID || entry["version"] != float64(1) {
 		t.Fatalf("multiagent was not replaced: %#v", updatedMultiagent)
 	}
 
@@ -277,7 +299,11 @@ func TestAgents_MultiagentObjectPersistsAndReplaces(t *testing.T) {
 	var got map[string]any
 	json.Unmarshal(rec.Body.Bytes(), &got)
 	gotAgents := got["multiagent"].(map[string]any)["agents"].([]any)
-	if len(gotAgents) != 1 || gotAgents[0] != "agent_two" {
+	if len(gotAgents) != 1 {
+		t.Fatalf("omitted multiagent did not preserve stored value: %#v", got["multiagent"])
+	}
+	gotEntry := gotAgents[0].(map[string]any)
+	if gotEntry["id"] != secondID || gotEntry["version"] != float64(1) {
 		t.Fatalf("omitted multiagent did not preserve stored value: %#v", got["multiagent"])
 	}
 
@@ -298,7 +324,17 @@ func TestAgents_MultiagentObjectPersistsAndReplaces(t *testing.T) {
 }
 
 func TestAgents_MultiagentNullAndInvalidShapes(t *testing.T) {
-	for _, invalid := range []string{`[]`, `"coordinator"`, "1", "true"} {
+	for _, invalid := range []string{
+		`[]`, `"coordinator"`, "1", "true", `{}`,
+		`{"type":"worker","agents":[{"type":"self"}]}`,
+		`{"type":"coordinator","agents":[]}`,
+		`{"type":"coordinator","agents":[null]}`,
+		`{"type":"coordinator","agents":[{"type":"agent","id":""}]}`,
+		`{"type":"coordinator","agents":[{"type":"agent","id":"agent_x","version":0}]}`,
+		`{"type":"coordinator","agents":[{"type":"self","version":1}]}`,
+		`{"type":"coordinator","agents":[{"type":"other"}]}`,
+		`{"type":"coordinator","agents":[{"type":"self"}],"extension":true}`,
+	} {
 		t.Run(invalid, func(t *testing.T) {
 			srv := newTestServer(t)
 			body := `{"name":"Agent","model":"claude-opus-4-8","multiagent":` + invalid + `}`

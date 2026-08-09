@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -131,37 +133,49 @@ func TestAgentService_ArchiveIdempotent(t *testing.T) {
 func TestAgentService_MultiagentReplacementPersists(t *testing.T) {
 	s := newAgentService(t)
 	ctx := context.Background()
+	first, err := s.Create(ctx, domain.Agent{Name: "first", Model: domain.Model{ID: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.Create(ctx, domain.Agent{Name: "second", Model: domain.Model{ID: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	a, err := s.Create(ctx, domain.Agent{
-		Name:       "coordinator",
-		Model:      domain.Model{ID: "m"},
-		Multiagent: map[string]any{"type": "coordinator", "agents": []any{"agent_one"}},
+		Name:  "coordinator",
+		Model: domain.Model{ID: "m"},
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{
+			{Type: "agent", ID: first.ID},
+		}},
 	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
-	if a.Multiagent["type"] != "coordinator" {
+	if a.Multiagent == nil || a.Multiagent.Type != "coordinator" ||
+		a.Multiagent.Agents[0].Version != first.Version {
 		t.Fatalf("create lost multiagent: %#v", a.Multiagent)
 	}
 
-	replacement := map[string]any{"type": "coordinator", "agents": []any{"agent_two"}}
-	updated, err := s.Update(ctx, a.ID, domain.AgentPatch{Multiagent: &replacement})
+	replacement := &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{
+		{Type: "agent", ID: second.ID},
+	}}
+	updated, err := s.Update(ctx, a.ID, domain.AgentPatch{Multiagent: &domain.NullableMultiagent{Value: replacement}})
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	agents, ok := updated.Multiagent["agents"].([]any)
-	if !ok || len(agents) != 1 || agents[0] != "agent_two" {
+	if len(updated.Multiagent.Agents) != 1 || updated.Multiagent.Agents[0].ID != second.ID ||
+		updated.Multiagent.Agents[0].Version != second.Version {
 		t.Fatalf("replacement was not persisted: %#v", updated.Multiagent)
 	}
 	got, err := s.Get(ctx, a.ID)
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Multiagent["type"] != "coordinator" {
+	if got.Multiagent == nil || got.Multiagent.Type != "coordinator" {
 		t.Fatalf("stored multiagent missing: %#v", got.Multiagent)
 	}
 
-	var cleared map[string]any
-	updated, err = s.Update(ctx, a.ID, domain.AgentPatch{Multiagent: &cleared})
+	updated, err = s.Update(ctx, a.ID, domain.AgentPatch{Multiagent: &domain.NullableMultiagent{}})
 	if err != nil {
 		t.Fatalf("clear: %v", err)
 	}
@@ -174,6 +188,155 @@ func TestAgentService_MultiagentReplacementPersists(t *testing.T) {
 	}
 	if got.Multiagent != nil {
 		t.Fatalf("stored multiagent was not cleared: %#v", got.Multiagent)
+	}
+}
+
+func TestAgentService_MultiagentPinsLatestAndRebindsSelf(t *testing.T) {
+	s := newAgentService(t)
+	ctx := context.Background()
+	peer, err := s.Create(ctx, domain.Agent{Name: "peer", Model: domain.Model{ID: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	peerName := "peer v2"
+	peer, err = s.Update(ctx, peer.ID, domain.AgentPatch{Name: &peerName})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	coordinator, err := s.Create(ctx, domain.Agent{
+		Name: "coordinator", Model: domain.Model{ID: "m"},
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{
+			{Type: "agent", ID: peer.ID},
+			{Type: "self"},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := coordinator.Multiagent.Agents[0]; got.ID != peer.ID || got.Version != 2 {
+		t.Fatalf("latest reference = %#v, want peer v2", got)
+	}
+	if got := coordinator.Multiagent.Agents[1]; got.ID != coordinator.ID || got.Version != 1 || got.Type != "agent" {
+		t.Fatalf("self reference = %#v, want concrete coordinator v1", got)
+	}
+
+	peerName = "peer v3"
+	if _, err := s.Update(ctx, peer.ID, domain.AgentPatch{Name: &peerName}); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := s.Get(ctx, coordinator.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Multiagent.Agents[0].Version != 2 {
+		t.Fatalf("coordinator roster drifted to peer v%d", stored.Multiagent.Agents[0].Version)
+	}
+
+	coordinatorName := "coordinator v2"
+	updated, err := s.Update(ctx, coordinator.ID, domain.AgentPatch{Name: &coordinatorName})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Version != 2 || updated.Multiagent.Agents[1].Version != 2 {
+		t.Fatalf("updated coordinator/self versions = %d/%d, want 2/2", updated.Version, updated.Multiagent.Agents[1].Version)
+	}
+
+	selfOnly := &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{Type: "self"}}}
+	selfCoordinator, err := s.Create(ctx, domain.Agent{
+		Name: "recursive", Model: domain.Model{ID: "m"}, Multiagent: selfOnly,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	noOp, err := s.Update(ctx, selfCoordinator.ID, domain.AgentPatch{
+		Multiagent: &domain.NullableMultiagent{Value: selfOnly},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if noOp.Version != 1 || noOp.Multiagent.Agents[0].Version != 1 {
+		t.Fatalf("semantic self no-op created version: %#v", noOp)
+	}
+}
+
+func TestAgentService_MultiagentRejectsInvalidReferences(t *testing.T) {
+	s := newAgentService(t)
+	ctx := context.Background()
+	ordinary, err := s.Create(ctx, domain.Agent{Name: "ordinary", Model: domain.Model{ID: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := s.Create(ctx, domain.Agent{
+		Name: "coordinator", Model: domain.Model{ID: "m"},
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{Type: "self"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	archived, err := s.Create(ctx, domain.Agent{Name: "archived", Model: domain.Model{ID: "m"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Archive(ctx, archived.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name    string
+		entries []domain.AgentReference
+	}{
+		{name: "missing", entries: []domain.AgentReference{{Type: "agent", ID: "agent_missing"}}},
+		{name: "archived", entries: []domain.AgentReference{{Type: "agent", ID: archived.ID}}},
+		{name: "nested", entries: []domain.AgentReference{{Type: "agent", ID: coordinator.ID}}},
+		{name: "duplicate", entries: []domain.AgentReference{
+			{Type: "agent", ID: ordinary.ID}, {Type: "agent", ID: ordinary.ID, Version: 1},
+		}},
+		{name: "duplicate-self", entries: []domain.AgentReference{{Type: "self"}, {Type: "self"}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := s.Create(ctx, domain.Agent{
+				Name: tc.name, Model: domain.Model{ID: "m"},
+				Multiagent: &domain.Multiagent{Type: "coordinator", Agents: tc.entries},
+			})
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+			var domainErr *domain.DomainError
+			if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindValidation {
+				t.Fatalf("error = %v, want validation", err)
+			}
+		})
+	}
+}
+
+func TestAgentService_LegacyMultiagentMustBeReplacedBeforeUpdate(t *testing.T) {
+	repo := newMemoryAgentRepository()
+	s := NewAgentService(repo, domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1, 0).UTC()})
+	var legacy domain.Multiagent
+	if err := json.Unmarshal([]byte(`{"extension":true,"agents":[1]}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	agent := domain.Agent{
+		ID: "agent_legacy", Version: 1, Name: "legacy", Model: domain.NormalizeModel(domain.Model{ID: "m"}),
+		Multiagent: &legacy, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(),
+	}
+	if err := repo.PutVersion(context.Background(), agent); err != nil {
+		t.Fatal(err)
+	}
+	name := "changed"
+	if _, err := s.Update(context.Background(), agent.ID, domain.AgentPatch{Name: &name}); err == nil {
+		t.Fatal("legacy roster was carried into a new Agent Version")
+	}
+	cleared, err := s.Update(context.Background(), agent.ID, domain.AgentPatch{
+		Multiagent: &domain.NullableMultiagent{},
+	})
+	if err != nil {
+		t.Fatalf("clear legacy roster: %v", err)
+	}
+	if cleared.Version != 2 || cleared.Multiagent != nil {
+		t.Fatalf("cleared legacy roster = %#v", cleared)
 	}
 }
 

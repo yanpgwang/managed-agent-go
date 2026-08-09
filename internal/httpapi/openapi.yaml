@@ -3621,10 +3621,91 @@ components:
       oneOf:
         - $ref: '#/components/schemas/ResolvedSkillReference'
         - $ref: '#/components/schemas/LegacySkillReference'
-    Multiagent:
+    MultiagentAgentReferenceInput:
+      type: object
+      additionalProperties: false
+      required: [type, id]
+      properties:
+        type:
+          type: string
+          const: agent
+        id:
+          type: string
+          minLength: 1
+        version:
+          type: integer
+          minimum: 1
+    MultiagentSelfReferenceInput:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          const: self
+    MultiagentRosterEntryInput:
+      oneOf:
+        - type: string
+          minLength: 1
+        - $ref: '#/components/schemas/MultiagentAgentReferenceInput'
+        - $ref: '#/components/schemas/MultiagentSelfReferenceInput'
+    MultiagentInput:
       type: [object, 'null']
-      description: Stored opaquely; multi-agent execution is outside the supported core.
+      additionalProperties: false
+      required: [type, agents]
+      properties:
+        type:
+          type: string
+          const: coordinator
+        agents:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/MultiagentRosterEntryInput'
+    ResolvedAgentReference:
+      type: object
+      additionalProperties: false
+      required: [type, id, version]
+      properties:
+        type:
+          type: string
+          const: agent
+        id:
+          type: string
+          minLength: 1
+        version:
+          type: integer
+          minimum: 1
+    ResolvedMultiagent:
+      type: object
+      additionalProperties: false
+      required: [type, agents]
+      properties:
+        type:
+          type: string
+          const: coordinator
+        agents:
+          type: array
+          minItems: 1
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/ResolvedAgentReference'
+    LegacyMultiagent:
+      type: object
+      description: >-
+        Read-only opaque topology preserved from an Agent written before roster
+        resolution was enforced. It must be replaced before update or Session
+        creation.
       additionalProperties: true
+    Multiagent:
+      description: >-
+        A resolved coordinator topology with an immutable concrete Agent
+        Version roster, a read-only pre-upgrade value, or null.
+      anyOf:
+        - $ref: '#/components/schemas/ResolvedMultiagent'
+        - $ref: '#/components/schemas/LegacyMultiagent'
+        - type: 'null'
 
     AgentCreateRequest:
       type: object
@@ -3656,7 +3737,7 @@ components:
           items:
             $ref: '#/components/schemas/SkillReferenceInput'
         multiagent:
-          $ref: '#/components/schemas/Multiagent'
+          $ref: '#/components/schemas/MultiagentInput'
         metadata:
           $ref: '#/components/schemas/Metadata'
     AgentUpdateRequest:
@@ -3697,7 +3778,7 @@ components:
                 $ref: '#/components/schemas/SkillReferenceInput'
             - type: 'null'
         multiagent:
-          $ref: '#/components/schemas/Multiagent'
+          $ref: '#/components/schemas/MultiagentInput'
         metadata:
           $ref: '#/components/schemas/MetadataPatch'
     Agent:

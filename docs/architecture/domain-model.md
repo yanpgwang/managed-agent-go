@@ -22,6 +22,13 @@ erDiagram
 An agent defines model configuration, system prompt, tools, MCP server
 references, skills, metadata, and optional multiagent configuration.
 
+A multiagent coordinator Version owns a resolved roster of concrete Agent
+Version references. Resolution happens when the coordinator is created or
+updated; runtime Session creation never follows `latest` again. A `self` entry
+is represented by a concrete reference to the same coordinator Version. This
+keeps the roster part of the immutable Agent snapshot rather than introducing
+a mutable runtime lookup.
+
 The logical identity is the agent `id`; each material update produces a new
 integer `version`. A conditional update may send the expected `version` to
 detect concurrent changes. Archiving is idempotent, creates no new version, and

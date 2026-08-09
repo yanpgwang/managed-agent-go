@@ -135,6 +135,11 @@ func (s *SessionService) Create(
 	if agent.ArchivedAt != nil {
 		return domain.Session{}, domain.Validation("agent is archived")
 	}
+	if agent.Multiagent != nil && !agent.Multiagent.IsResolved() {
+		return domain.Session{}, domain.Validation(
+			"legacy multiagent configuration must be replaced before creating a Session",
+		)
+	}
 	environment, err := s.environments.Get(ctx, input.EnvironmentID)
 	if err != nil {
 		return domain.Session{}, domain.Validation("environment not found")

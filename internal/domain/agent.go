@@ -1,6 +1,8 @@
 package domain
 
 import (
+	"bytes"
+	"encoding/json"
 	"reflect"
 	"time"
 )
@@ -63,7 +65,7 @@ type Agent struct {
 	Tools       []any
 	MCPServers  []any
 	Skills      []SkillReference
-	Multiagent  map[string]any
+	Multiagent  *Multiagent
 	Metadata    map[string]any
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
@@ -83,9 +85,181 @@ type AgentPatch struct {
 	Tools           *[]any
 	MCPServers      *[]any
 	Skills          *[]SkillReference
-	Multiagent      *map[string]any
+	Multiagent      *NullableMultiagent
 	Metadata        map[string]any
 	ExpectedVersion *int
+}
+
+// Multiagent is the immutable, version-pinned coordinator roster stored on an
+// Agent Version. New writes contain only concrete agent references. The custom
+// roster-entry decoder keeps Agents written by older Mango releases readable;
+// application admission never treats those unresolved legacy entries as an
+// executable roster.
+type Multiagent struct {
+	Type      string           `json:"type"`
+	Agents    []AgentReference `json:"agents"`
+	legacyRaw json.RawMessage
+}
+
+// AgentReference accepts the three documented input forms while giving the
+// application service one type to resolve. A new persisted reference is always
+// the object form with Type=agent and a positive Version. StringForm preserves
+// the string union variant until resolution and across legacy storage reads.
+type AgentReference struct {
+	Type       string `json:"type"`
+	ID         string `json:"id,omitempty"`
+	Version    int    `json:"version,omitempty"`
+	StringForm bool   `json:"-"`
+}
+
+func (r AgentReference) MarshalJSON() ([]byte, error) {
+	if r.StringForm {
+		return json.Marshal(r.ID)
+	}
+	type wire AgentReference
+	return json.Marshal(wire(r))
+}
+
+func (r *AgentReference) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		if err := json.Unmarshal(trimmed, &r.ID); err != nil {
+			return err
+		}
+		r.Type = "agent"
+		r.StringForm = true
+		return nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &object); err != nil || object == nil {
+		return Validation("invalid multiagent roster entry")
+	}
+	var entryType string
+	if value, ok := object["type"]; !ok || json.Unmarshal(value, &entryType) != nil {
+		return Validation("invalid multiagent roster entry type")
+	}
+	for field := range object {
+		if field != "type" && field != "id" && field != "version" {
+			return Validation("invalid multiagent roster entry field")
+		}
+	}
+	if entryType == "self" {
+		if len(object) != 1 {
+			return Validation("invalid multiagent self entry")
+		}
+		*r = AgentReference{Type: "self"}
+		return nil
+	}
+	if entryType != "agent" {
+		return Validation("invalid multiagent roster entry type")
+	}
+	var id string
+	if value, ok := object["id"]; !ok || json.Unmarshal(value, &id) != nil || id == "" {
+		return Validation("invalid multiagent agent ID")
+	}
+	decoded := AgentReference{Type: "agent", ID: id}
+	if value, ok := object["version"]; ok {
+		if err := json.Unmarshal(value, &decoded.Version); err != nil || decoded.Version < 1 {
+			return Validation("invalid multiagent agent version")
+		}
+	}
+	*r = decoded
+	return nil
+}
+
+func (m Multiagent) MarshalJSON() ([]byte, error) {
+	if len(m.legacyRaw) > 0 {
+		return append([]byte(nil), m.legacyRaw...), nil
+	}
+	type wire struct {
+		Type   string           `json:"type"`
+		Agents []AgentReference `json:"agents"`
+	}
+	return json.Marshal(wire{Type: m.Type, Agents: m.Agents})
+}
+
+func (m *Multiagent) UnmarshalJSON(data []byte) error {
+	trimmed := bytes.TrimSpace(data)
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &object); err != nil || object == nil {
+		return Validation("invalid stored multiagent configuration")
+	}
+	for field := range object {
+		if field != "type" && field != "agents" {
+			m.legacyRaw = append([]byte(nil), trimmed...)
+			return nil
+		}
+	}
+	var topologyType string
+	if value, ok := object["type"]; !ok || json.Unmarshal(value, &topologyType) != nil ||
+		topologyType != "coordinator" {
+		m.legacyRaw = append([]byte(nil), trimmed...)
+		return nil
+	}
+	var agents []AgentReference
+	if value, ok := object["agents"]; !ok || json.Unmarshal(value, &agents) != nil ||
+		len(agents) < 1 || len(agents) > 20 {
+		m.legacyRaw = append([]byte(nil), trimmed...)
+		return nil
+	}
+	m.Type = topologyType
+	m.Agents = agents
+	return nil
+}
+
+func (m *Multiagent) IsLegacy() bool {
+	return m != nil && len(m.legacyRaw) > 0
+}
+
+func (m *Multiagent) IsResolved() bool {
+	if m == nil {
+		return true
+	}
+	if m.IsLegacy() || m.Type != "coordinator" || len(m.Agents) < 1 || len(m.Agents) > 20 {
+		return false
+	}
+	seen := make(map[string]struct{}, len(m.Agents))
+	for _, reference := range m.Agents {
+		if reference.Type != "agent" || reference.ID == "" || reference.Version < 1 || reference.StringForm {
+			return false
+		}
+		if _, duplicate := seen[reference.ID]; duplicate {
+			return false
+		}
+		seen[reference.ID] = struct{}{}
+	}
+	return true
+}
+
+func (m *Multiagent) Clone() *Multiagent {
+	if m == nil {
+		return nil
+	}
+	clone := &Multiagent{Type: m.Type}
+	clone.Agents = append([]AgentReference(nil), m.Agents...)
+	clone.legacyRaw = append(json.RawMessage(nil), m.legacyRaw...)
+	return clone
+}
+
+// RebindAgentVersion returns a copy whose reference to the owning coordinator
+// points at version. Direct references to the owner are rejected during roster
+// resolution, so an owner-ID entry can only have originated from {"type":"self"}.
+func (m *Multiagent) RebindAgentVersion(ownerID string, version int) *Multiagent {
+	clone := m.Clone()
+	for i := range clone.Agents {
+		if clone.Agents[i].ID == ownerID {
+			clone.Agents[i].Type = "agent"
+			clone.Agents[i].Version = version
+			clone.Agents[i].StringForm = false
+		}
+	}
+	return clone
+}
+
+// NullableMultiagent preserves the update tri-state: an omitted patch leaves
+// the roster unchanged, Value=nil clears it, and a non-nil Value replaces it.
+type NullableMultiagent struct {
+	Value *Multiagent
 }
 
 func (a Agent) Apply(p AgentPatch) (Agent, bool, error) {
@@ -93,6 +267,7 @@ func (a Agent) Apply(p AgentPatch) (Agent, bool, error) {
 		return a, false, Conflict("agent version mismatch")
 	}
 	next := a
+	next.Multiagent = a.Multiagent.Clone()
 	// deep-copy source metadata only if present
 	if a.Metadata != nil {
 		next.Metadata = make(map[string]any, len(a.Metadata))
@@ -131,7 +306,7 @@ func (a Agent) Apply(p AgentPatch) (Agent, bool, error) {
 		next.Skills = *p.Skills
 	}
 	if p.Multiagent != nil {
-		next.Multiagent = *p.Multiagent
+		next.Multiagent = p.Multiagent.Value.Clone()
 	}
 	// apply metadata patch (allocate lazily if source was nil)
 	for k, v := range p.Metadata {

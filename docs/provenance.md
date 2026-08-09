@@ -224,11 +224,12 @@ forwarding upstream frames.
   resources, and prompts are not supported.
 - The default local sandbox is a guardrail, not a security boundary; the
   optional Docker provider supplies container isolation.
-- Opaque multiagent configuration persists with tested replace/null-clear
-  behavior. Every Session has a durable primary-thread identity and all five
-  Thread read/archive/event operations are implemented. Resolved rosters,
-  child threads, reference validation, and multiagent execution/orchestration
-  are not implemented.
+- Multiagent coordinator rosters are strictly validated and resolve ID,
+  versioned, and `self` inputs to immutable concrete Agent Version references.
+  Every Session has a durable primary-thread identity and all five Thread
+  read/archive/event operations are implemented. Child threads, delegation,
+  cross-thread messaging/event projection, and orchestration are not yet
+  implemented.
 - The Files API and File-backed Session Resources have separate conditional
   conformance matrices. They are not part of the frozen Managed Agents core
   claim.
