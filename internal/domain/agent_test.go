@@ -1,6 +1,10 @@
 package domain
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+)
 
 func TestAgentApply_MetadataMergeAndNoop(t *testing.T) {
 	base := Agent{Version: 1, Name: "a", Metadata: map[string]any{"k1": "v1", "k2": "v2"}}
@@ -107,6 +111,39 @@ func TestValidateModel_RejectsUnknownEnums(t *testing.T) {
 		if err := ValidateModel(model); err == nil {
 			t.Fatalf("ValidateModel(%#v) unexpectedly succeeded", model)
 		}
+	}
+}
+
+func TestAgentReference_PreservesLegacyStringDuringStorageRoundTrip(t *testing.T) {
+	var agent Agent
+	if err := json.Unmarshal([]byte(`{"Multiagent":{"type":"coordinator","agents":["agent_legacy",{"type":"agent","id":"agent_unpinned"}]}}`), &agent); err != nil {
+		t.Fatal(err)
+	}
+	if agent.Multiagent == nil || !agent.Multiagent.Agents[0].StringForm ||
+		agent.Multiagent.Agents[0].ID != "agent_legacy" {
+		t.Fatalf("decoded legacy roster = %#v", agent.Multiagent)
+	}
+	encoded, err := json.Marshal(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"agents":["agent_legacy",{"type":"agent","id":"agent_unpinned"}]`) {
+		t.Fatalf("legacy roster changed during storage round trip: %s", encoded)
+	}
+
+	var opaque Agent
+	if err := json.Unmarshal([]byte(`{"Multiagent":{"extension":true,"agents":[1]}}`), &opaque); err != nil {
+		t.Fatal(err)
+	}
+	if opaque.Multiagent == nil || !opaque.Multiagent.IsLegacy() {
+		t.Fatalf("opaque pre-feature roster was not retained: %#v", opaque.Multiagent)
+	}
+	encoded, err = json.Marshal(opaque)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"Multiagent":{"extension":true,"agents":[1]}`) {
+		t.Fatalf("opaque pre-feature roster changed during storage round trip: %s", encoded)
 	}
 }
 

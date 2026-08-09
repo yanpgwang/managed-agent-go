@@ -77,7 +77,7 @@ func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {
 		a.Metadata = *metadata
 	}
 	if multiagent != nil {
-		a.Multiagent = *multiagent
+		a.Multiagent = multiagent.Value
 	}
 	created, err := s.deps.Agents.Create(r.Context(), a)
 	if err != nil {
@@ -335,24 +335,94 @@ func (s *Server) archiveAgent(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, agentToJSON(a))
 }
 
-// parseMultiagent preserves the beta API's optional object as opaque JSON.
-// Absence means "leave unset/preserve", an object replaces the current
-// topology, and explicit null is represented by a pointer to a nil map so an
-// update can clear it. Arrays and scalars are invalid.
-func parseMultiagent(raw json.RawMessage) (*map[string]any, error) {
+// parseMultiagent decodes the documented coordinator roster without resolving
+// references. Resolution and immutable version pinning belong to AgentService,
+// where repository state and Agent identity are available. Absence means
+// preserve, while explicit null clears the roster on update.
+func parseMultiagent(raw json.RawMessage) (*domain.NullableMultiagent, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 {
 		return nil, nil
 	}
 	if bytes.Equal(trimmed, []byte("null")) {
-		var cleared map[string]any
-		return &cleared, nil
+		return &domain.NullableMultiagent{}, nil
 	}
-	var object map[string]any
+	var object map[string]json.RawMessage
 	if err := json.Unmarshal(trimmed, &object); err != nil || object == nil {
 		return nil, domain.Validation("multiagent must be an object")
 	}
-	return &object, nil
+	for field := range object {
+		if field != "type" && field != "agents" {
+			return nil, domain.Validation("multiagent contains an unknown field: " + field)
+		}
+	}
+	var topologyType string
+	if value, ok := object["type"]; !ok || json.Unmarshal(value, &topologyType) != nil ||
+		topologyType != "coordinator" {
+		return nil, domain.Validation("multiagent.type must be coordinator")
+	}
+	var rawAgents []json.RawMessage
+	if value, ok := object["agents"]; !ok || json.Unmarshal(value, &rawAgents) != nil || rawAgents == nil {
+		return nil, domain.Validation("multiagent.agents must be an array")
+	}
+	if len(rawAgents) < 1 || len(rawAgents) > 20 {
+		return nil, domain.Validation("multiagent.agents must contain between 1 and 20 entries")
+	}
+
+	topology := &domain.Multiagent{Type: topologyType, Agents: make([]domain.AgentReference, 0, len(rawAgents))}
+	for _, rawAgent := range rawAgents {
+		entry, err := parseMultiagentRosterEntry(rawAgent)
+		if err != nil {
+			return nil, err
+		}
+		topology.Agents = append(topology.Agents, entry)
+	}
+	return &domain.NullableMultiagent{Value: topology}, nil
+}
+
+func parseMultiagentRosterEntry(raw json.RawMessage) (domain.AgentReference, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) > 0 && trimmed[0] == '"' {
+		var id string
+		if err := json.Unmarshal(trimmed, &id); err != nil || id == "" {
+			return domain.AgentReference{}, domain.Validation("multiagent agent ID must be non-empty")
+		}
+		return domain.AgentReference{Type: "agent", ID: id, StringForm: true}, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &object); err != nil || object == nil {
+		return domain.AgentReference{}, domain.Validation("multiagent roster entry must be an agent ID or object")
+	}
+	var entryType string
+	if value, ok := object["type"]; !ok || json.Unmarshal(value, &entryType) != nil {
+		return domain.AgentReference{}, domain.Validation("multiagent roster entry requires type")
+	}
+	switch entryType {
+	case "self":
+		if len(object) != 1 {
+			return domain.AgentReference{}, domain.Validation("multiagent self entry only accepts type")
+		}
+		return domain.AgentReference{Type: "self"}, nil
+	case "agent":
+		for field := range object {
+			if field != "type" && field != "id" && field != "version" {
+				return domain.AgentReference{}, domain.Validation("multiagent agent entry contains an unknown field: " + field)
+			}
+		}
+		var id string
+		if value, ok := object["id"]; !ok || json.Unmarshal(value, &id) != nil || id == "" {
+			return domain.AgentReference{}, domain.Validation("multiagent agent entry requires a non-empty id")
+		}
+		entry := domain.AgentReference{Type: "agent", ID: id}
+		if value, ok := object["version"]; ok {
+			if err := json.Unmarshal(value, &entry.Version); err != nil || entry.Version < 1 {
+				return domain.AgentReference{}, domain.Validation("multiagent agent version must be at least 1")
+			}
+		}
+		return entry, nil
+	default:
+		return domain.AgentReference{}, domain.Validation("multiagent roster entry type must be agent or self")
+	}
 }
 
 // parseOptionalArray preserves the update tri-state: omitted means preserve,

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
@@ -41,9 +42,11 @@ func (s *AgentService) Create(ctx context.Context, a domain.Agent) (domain.Agent
 	a.Version = 1
 	a.CreatedAt = now
 	a.UpdatedAt = now
-	if a.Metadata == nil {
-		a.Metadata = map[string]any{}
+	resolvedMultiagent, err := s.resolveMultiagent(ctx, a.ID, a.Version, a.Multiagent)
+	if err != nil {
+		return domain.Agent{}, err
 	}
+	a.Multiagent = resolvedMultiagent
 	return a, s.repo.PutVersion(ctx, a)
 }
 
@@ -71,6 +74,16 @@ func (s *AgentService) Versions(
 
 func (s *AgentService) Update(ctx context.Context, id string, patch domain.AgentPatch) (domain.Agent, error) {
 	effectivePatch := patch
+	if patch.Multiagent != nil && patch.Multiagent.Value != nil {
+		// External references can be resolved before the repository opens its
+		// serialization transaction. A self reference is temporarily bound to
+		// version 1 and rebound to the locked coordinator version below.
+		resolved, err := s.resolveMultiagent(ctx, id, 1, patch.Multiagent.Value)
+		if err != nil {
+			return domain.Agent{}, err
+		}
+		effectivePatch.Multiagent = &domain.NullableMultiagent{Value: resolved}
+	}
 	if patch.Skills != nil {
 		// Resolve before UpdateVersion opens its serialization transaction. A
 		// production resolver may use the same connection pool as the Agent
@@ -96,9 +109,25 @@ func (s *AgentService) Update(ctx context.Context, id string, patch domain.Agent
 		if cur.ArchivedAt != nil {
 			return domain.Agent{}, false, domain.Validation("archived agent is read-only")
 		}
-		next, changed, err := cur.Apply(effectivePatch)
+		transactionPatch := effectivePatch
+		if effectivePatch.Multiagent != nil && effectivePatch.Multiagent.Value != nil {
+			transactionPatch.Multiagent = &domain.NullableMultiagent{
+				Value: effectivePatch.Multiagent.Value.RebindAgentVersion(cur.ID, cur.Version),
+			}
+		}
+		next, changed, err := cur.Apply(transactionPatch)
 		if err != nil {
 			return domain.Agent{}, false, err
+		}
+		if changed && next.Multiagent != nil {
+			// A self entry names the Agent Version being created, not the previous
+			// version used to perform semantic no-op detection.
+			next.Multiagent = next.Multiagent.RebindAgentVersion(cur.ID, cur.Version+1)
+		}
+		if changed && next.Multiagent != nil && !next.Multiagent.IsResolved() {
+			return domain.Agent{}, false, domain.Validation(
+				"legacy multiagent configuration must be replaced before updating the Agent",
+			)
 		}
 		if err := validateAgent(next); err != nil {
 			return domain.Agent{}, false, err
@@ -127,7 +156,108 @@ func validateAgent(a domain.Agent) error {
 	if err := domain.ValidateSkillToolConfiguration(a.Tools, hasRuntimeSkills(a.Skills)); err != nil {
 		return domain.Validation("invalid Skill tool configuration: " + err.Error())
 	}
+	if err := validateMultiagentShape(a.Multiagent); err != nil {
+		return err
+	}
 	return validateMetadata(a.Metadata)
+}
+
+func validateMultiagentShape(topology *domain.Multiagent) error {
+	if topology == nil {
+		return nil
+	}
+	if topology.IsLegacy() {
+		return nil
+	}
+	if topology.Type != "coordinator" {
+		return domain.Validation("multiagent.type must be coordinator")
+	}
+	if len(topology.Agents) < 1 || len(topology.Agents) > 20 {
+		return domain.Validation("multiagent.agents must contain between 1 and 20 entries")
+	}
+	for _, reference := range topology.Agents {
+		switch reference.Type {
+		case "self":
+			if reference.ID != "" || reference.Version != 0 {
+				return domain.Validation("multiagent self entry only accepts type")
+			}
+		case "agent":
+			if reference.ID == "" {
+				return domain.Validation("multiagent agent entry requires a non-empty id")
+			}
+			if reference.Version < 0 {
+				return domain.Validation("multiagent agent version must be at least 1")
+			}
+		default:
+			return domain.Validation("multiagent roster entry type must be agent or self")
+		}
+	}
+	return nil
+}
+
+// resolveMultiagent turns every documented roster input form into an immutable
+// concrete Agent Version reference. This is deliberately an application-layer
+// operation: the HTTP layer does not own resource lookup, and the runtime must
+// never resolve "latest" again after the coordinator version has been stored.
+func (s *AgentService) resolveMultiagent(
+	ctx context.Context,
+	ownerID string,
+	ownerVersion int,
+	topology *domain.Multiagent,
+) (*domain.Multiagent, error) {
+	if topology == nil {
+		return nil, nil
+	}
+	if topology.IsLegacy() {
+		return nil, domain.Validation("legacy multiagent configuration must be replaced before use")
+	}
+	if err := validateMultiagentShape(topology); err != nil {
+		return nil, err
+	}
+	resolved := &domain.Multiagent{Type: "coordinator", Agents: make([]domain.AgentReference, 0, len(topology.Agents))}
+	seen := make(map[string]struct{}, len(topology.Agents))
+	seenSelf := false
+	for _, reference := range topology.Agents {
+		var target domain.Agent
+		if reference.Type == "self" {
+			if seenSelf {
+				return nil, domain.Validation("multiagent.agents may contain at most one self entry")
+			}
+			seenSelf = true
+			target = domain.Agent{ID: ownerID, Version: ownerVersion}
+		} else {
+			if reference.ID == ownerID {
+				return nil, domain.Validation("multiagent must use a self entry to reference its coordinator")
+			}
+			var err error
+			if reference.Version == 0 {
+				target, err = s.repo.Latest(ctx, reference.ID)
+			} else {
+				target, err = s.repo.GetVersion(ctx, reference.ID, reference.Version)
+			}
+			if err != nil {
+				var domainErr *domain.DomainError
+				if errors.As(err, &domainErr) && domainErr.Kind == domain.KindNotFound {
+					return nil, domain.Validation("multiagent references an agent that does not exist")
+				}
+				return nil, err
+			}
+			if target.ArchivedAt != nil {
+				return nil, domain.Validation("multiagent references an archived agent")
+			}
+			if target.Multiagent != nil {
+				return nil, domain.Validation("multiagent references are limited to one coordinator level")
+			}
+		}
+		if _, duplicate := seen[target.ID]; duplicate {
+			return nil, domain.Validation("multiagent.agents must reference distinct agents")
+		}
+		seen[target.ID] = struct{}{}
+		resolved.Agents = append(resolved.Agents, domain.AgentReference{
+			Type: "agent", ID: target.ID, Version: target.Version,
+		})
+	}
+	return resolved, nil
 }
 
 func hasRuntimeSkills(skills []domain.SkillReference) bool {

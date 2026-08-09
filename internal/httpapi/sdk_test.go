@@ -345,6 +345,14 @@ func TestSDK_ThinkingAndBillingEvents(t *testing.T) {
 func TestSDK_AgentLifecycle(t *testing.T) {
 	client, _ := sdkClientAndServer(t)
 	ctx := context.Background()
+	peer := mustAgent(t, client, "peer", "peer")
+	peerV2 := mustAgent(t, client, "peer-v2", "peer-v2")
+	peerV2, err := client.Beta.Agents.Update(ctx, peerV2.ID, anthropic.BetaAgentUpdateParams{
+		Name: anthropic.String("Peer v2"),
+	})
+	if err != nil {
+		t.Fatalf("prepare versioned peer: %v", err)
+	}
 
 	// Create.
 	agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
@@ -369,7 +377,7 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 			Type: anthropic.BetaManagedAgentsMultiagentParamsTypeCoordinator,
 			Agents: []anthropic.BetaManagedAgentsMultiagentRosterEntryParamsUnion{{
 				OfBetaManagedAgentsAgents: &anthropic.BetaManagedAgentsAgentParams{
-					ID:      "agent_peer",
+					ID:      peer.ID,
 					Type:    anthropic.BetaManagedAgentsAgentParamsTypeAgent,
 					Version: anthropic.Int(1),
 				},
@@ -405,7 +413,7 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 	}
 	if agent.Multiagent.Type != anthropic.BetaManagedAgentsMultiagentTypeCoordinator ||
 		len(agent.Multiagent.Agents) != 1 ||
-		agent.Multiagent.Agents[0].ID != "agent_peer" ||
+		agent.Multiagent.Agents[0].ID != peer.ID ||
 		agent.Multiagent.Agents[0].Version != 1 {
 		t.Fatalf("multiagent response = %#v", agent.Multiagent)
 	}
@@ -431,7 +439,7 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 			Type: anthropic.BetaManagedAgentsMultiagentParamsTypeCoordinator,
 			Agents: []anthropic.BetaManagedAgentsMultiagentRosterEntryParamsUnion{{
 				OfBetaManagedAgentsAgents: &anthropic.BetaManagedAgentsAgentParams{
-					ID:      "agent_peer_v2",
+					ID:      peerV2.ID,
 					Type:    anthropic.BetaManagedAgentsAgentParamsTypeAgent,
 					Version: anthropic.Int(2),
 				},
@@ -448,7 +456,7 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 		t.Fatalf("updated name = %q", updated.Name)
 	}
 	if len(updated.Multiagent.Agents) != 1 ||
-		updated.Multiagent.Agents[0].ID != "agent_peer_v2" ||
+		updated.Multiagent.Agents[0].ID != peerV2.ID ||
 		updated.Multiagent.Agents[0].Version != 2 {
 		t.Fatalf("updated multiagent = %#v", updated.Multiagent)
 	}
@@ -468,11 +476,20 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list agents: %v", err)
 	}
-	if len(list.Data) != 1 {
-		t.Fatalf("list returned %d agents, want 1", len(list.Data))
+	if len(list.Data) != 3 {
+		t.Fatalf("list returned %d agents, want coordinator and two peers", len(list.Data))
 	}
-	if list.Data[0].Version != 2 {
-		t.Fatalf("listed agent version = %d, want latest 2", list.Data[0].Version)
+	listedCoordinator := false
+	for _, listed := range list.Data {
+		if listed.ID == agent.ID {
+			listedCoordinator = true
+			if listed.Version != 2 {
+				t.Fatalf("listed coordinator version = %d, want latest 2", listed.Version)
+			}
+		}
+	}
+	if !listedCoordinator {
+		t.Fatal("list omitted coordinator")
 	}
 
 	// Archive.
@@ -493,6 +510,39 @@ func TestSDK_AgentLifecycle(t *testing.T) {
 		t.Fatal("expected archived agent update to fail")
 	}
 	assertAPIStatus(t, err, 400)
+}
+
+func TestSDK_AgentMultiagentSelfResolvesAndTracksCoordinatorVersion(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	selfEntry := anthropic.BetaManagedAgentsMultiagentRosterEntryParamsOfBetaManagedAgentsMultiagentSelfs(
+		anthropic.BetaManagedAgentsMultiagentSelfParamsTypeSelf,
+	)
+	agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name:  "Recursive coordinator",
+		Model: anthropic.BetaManagedAgentsModelConfigParams{ID: anthropic.BetaManagedAgentsModelClaudeOpus4_8},
+		Multiagent: anthropic.BetaManagedAgentsMultiagentParams{
+			Type: anthropic.BetaManagedAgentsMultiagentParamsTypeCoordinator, Agents: []anthropic.BetaManagedAgentsMultiagentRosterEntryParamsUnion{selfEntry},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create self coordinator: %v", err)
+	}
+	if len(agent.Multiagent.Agents) != 1 || agent.Multiagent.Agents[0].ID != agent.ID ||
+		agent.Multiagent.Agents[0].Version != 1 || agent.Multiagent.Agents[0].Type != "agent" {
+		t.Fatalf("resolved self roster = %s", agent.Multiagent.RawJSON())
+	}
+
+	updated, err := client.Beta.Agents.Update(ctx, agent.ID, anthropic.BetaAgentUpdateParams{
+		Name: anthropic.String("Recursive coordinator v2"),
+	})
+	if err != nil {
+		t.Fatalf("update self coordinator: %v", err)
+	}
+	if updated.Version != 2 || updated.Multiagent.Agents[0].ID != agent.ID ||
+		updated.Multiagent.Agents[0].Version != 2 {
+		t.Fatalf("updated self roster = %s", updated.Multiagent.RawJSON())
+	}
 }
 
 func TestSDK_SkillReferencesPinAcrossAgentAndSessionSnapshots(t *testing.T) {
