@@ -86,6 +86,27 @@ type threadConfiguredTranscriptFakeSource struct {
 	runtime domain.SkillRuntime
 }
 
+type threadPendingFakeSource struct {
+	*fakeSource
+	thread domain.SessionThread
+}
+
+func (s *threadPendingFakeSource) GetSessionThread(
+	context.Context,
+	string,
+	string,
+) (domain.SessionThread, error) {
+	return s.thread, nil
+}
+
+func (s *threadPendingFakeSource) UnresolvedThreadPendingActions(
+	ctx context.Context,
+	sessionID string,
+	_ string,
+) ([]domain.PendingAction, error) {
+	return s.UnresolvedPendingActions(ctx, sessionID)
+}
+
 func (s *threadConfiguredTranscriptFakeSource) GetSessionThread(
 	context.Context,
 	string,
@@ -354,25 +375,29 @@ func TestPrepareTurn_ReattachesInvokedSkillFromTranscriptAfterWorkerRestart(t *t
 func TestPrepareTurn_ProcessedOnReceiptCustomResultStillResumesPendingBarrier(t *testing.T) {
 	processedAt := time.Now().UTC()
 	resolutionID := "sevt_custom_result"
-	source := newFakeSource([]domain.Event{
+	const threadID = "sthr_child"
+	base := newFakeSource([]domain.Event{
 		{
-			ID: "sevt_user", Sequence: 1, Type: domain.EvUserMessage,
+			ID: "sevt_user", ThreadID: threadID,
+			Sequence: 1, Type: domain.EvUserMessage,
 			Payload: map[string]any{
 				"content": []any{map[string]any{"type": "text", "text": "inspect"}},
 			},
 		},
 		{
-			ID: "sevt_custom", Sequence: 2, Type: domain.EvAgentCustomToolUse,
+			ID: "sevt_custom", ThreadID: threadID,
+			Sequence: 2, Type: domain.EvAgentCustomToolUse,
 			Payload: map[string]any{
 				"name":  "ask_client",
 				"input": map[string]any{"question": "continue?"},
 			},
 		},
 		{
-			ID: "sevt_custom_result", Sequence: 3,
+			ID: "sevt_custom_result", ThreadID: threadID, Sequence: 3,
 			Type: domain.EvUserCustomToolResult,
 			Payload: map[string]any{
-				"custom_tool_use_id": "sevt_custom",
+				"custom_tool_use_id": "sevt_custom_crosspost",
+				"session_thread_id":  threadID,
 				"content": []any{
 					map[string]any{"type": "text", "text": "yes"},
 				},
@@ -380,17 +405,23 @@ func TestPrepareTurn_ProcessedOnReceiptCustomResultStillResumesPendingBarrier(t 
 			ProcessedAt: &processedAt,
 		},
 	})
-	source.pendingActions = []domain.PendingAction{{
-		ID:               "pact_1",
-		SessionID:        "sess_resume",
-		ActionEventID:    "sevt_custom",
-		Kind:             domain.PendingCustomToolResult,
-		ResolvingEventID: &resolutionID,
+	base.pendingActions = []domain.PendingAction{{
+		ID: "pact_1", SessionID: "sess_resume", ThreadID: threadID,
+		ActionEventID: "sevt_custom", ClientActionEventID: "sevt_custom_crosspost",
+		Kind: domain.PendingCustomToolResult, ResolvingEventID: &resolutionID,
 	}}
+	primaryID := "sthr_primary"
+	source := &threadPendingFakeSource{
+		fakeSource: base,
+		thread: domain.SessionThread{
+			ID: threadID, SessionID: "sess_resume", ParentThreadID: &primaryID,
+			Status: domain.StatusRunning,
+		},
+	}
 	activities := NewActivities(nil, source, nil, nil, &testIDGen{})
 
 	selector, err := activities.LoadPendingActions(context.Background(), LoadPendingActionsInput{
-		SessionID: "sess_resume",
+		SessionID: "sess_resume", ThreadID: threadID,
 	})
 	require.NoError(t, err)
 	require.Equal(t, []PendingActionRef{{
@@ -409,6 +440,8 @@ func TestPrepareTurn_ProcessedOnReceiptCustomResultStillResumesPendingBarrier(t 
 	require.NoError(t, err)
 	require.False(t, prepared.AlreadyCompleted)
 	require.Empty(t, prepared.FatalError)
+	require.Equal(t, threadID, prepared.ThreadID)
+	require.True(t, prepared.IsChild)
 	require.Equal(t, []domain.Message{{
 		Role: domain.RoleUser,
 		Content: []domain.ContentBlock{{

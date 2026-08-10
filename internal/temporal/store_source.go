@@ -144,6 +144,14 @@ func (s storeSource) UnresolvedPendingActions(
 	return s.store.UnresolvedPendingActions(ctx, sessionID)
 }
 
+func (s storeSource) UnresolvedThreadPendingActions(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) ([]domain.PendingAction, error) {
+	return s.store.UnresolvedThreadPendingActions(ctx, sessionID, threadID)
+}
+
 func (s storeSource) AppendWorkflowEvents(
 	ctx context.Context,
 	sessionID string,

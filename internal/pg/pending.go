@@ -10,41 +10,139 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
 )
 
+type routedClientDraft struct {
+	Draft    domain.EventDraft
+	ThreadID string
+}
+
+// routeClientDraftsLocked resolves client-action references before persistence.
+// The client normally answers the cross-posted primary event id; PostgreSQL
+// maps it back to the owning Thread and enriches the persisted result with the
+// documented session_thread_id when the caller omitted the redundant hint.
+func (s *Store) routeClientDraftsLocked(
+	ctx context.Context,
+	q *pgstore.Queries,
+	sessionID string,
+	primaryThreadID string,
+	drafts []domain.EventDraft,
+) ([]routedClientDraft, map[string]struct{}, error) {
+	routed := make([]routedClientDraft, 0, len(drafts))
+	resolutionThreads := make(map[string]struct{})
+	companionThreadID := ""
+	companionEventID := ""
+	for _, draft := range drafts {
+		targetThreadID := primaryThreadID
+		if draft.Type == domain.EvSystemMessage && draft.ID != "" &&
+			draft.ID == companionEventID {
+			targetThreadID = companionThreadID
+		}
+
+		if referencedID, kind, ok := domain.ResolutionReference(
+			draft.Type, draft.Payload,
+		); ok {
+			row, err := q.GetPendingActionForUpdate(
+				ctx,
+				pgstore.GetPendingActionForUpdateParams{
+					SessionID: sessionID, ReferencedEventID: referencedID,
+				},
+			)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil, nil, domain.Validation(
+					"resolution references unknown pending action",
+				)
+			}
+			if err != nil {
+				return nil, nil, err
+			}
+			if domain.PendingActionKind(row.Kind) != kind {
+				return nil, nil, domain.Validation(
+					"resolution kind does not match the pending action",
+				)
+			}
+			if hinted, _ := draft.Payload["session_thread_id"].(string); hinted != "" &&
+				hinted != row.ThreadID {
+				return nil, nil, domain.Validation(
+					"session_thread_id does not match the pending action",
+				)
+			}
+			targetThreadID = row.ThreadID
+			payload := make(map[string]any, len(draft.Payload)+1)
+			for key, value := range draft.Payload {
+				payload[key] = value
+			}
+			if targetThreadID != primaryThreadID {
+				payload["session_thread_id"] = targetThreadID
+			}
+			draft.Payload = payload
+			resolutionThreads[targetThreadID] = struct{}{}
+		}
+
+		if companionID, _ := draft.Payload[domain.InternalCompanionSystemEventID].(string); companionID != "" {
+			companionEventID = companionID
+			companionThreadID = targetThreadID
+		}
+		routed = append(routed, routedClientDraft{
+			Draft: draft, ThreadID: targetThreadID,
+		})
+	}
+	return routed, resolutionThreads, nil
+}
+
 // UnresolvedPendingActions returns every client action that still gates the
-// session, including an action whose matching resolution has been admitted but
-// whose resume turn has not completed. PostgreSQL is the source of truth for
-// this wait state; Temporal wakeups carry only event-sequence metadata.
+// primary Thread, including an action whose matching resolution has been
+// admitted but whose resume turn has not completed. PostgreSQL is the source of
+// truth for this wait state; Temporal wakeups carry only event-sequence
+// metadata.
 func (s *Store) UnresolvedPendingActions(
 	ctx context.Context,
 	sessionID string,
 ) ([]domain.PendingAction, error) {
-	rows, err := s.q.ListUnresolvedPendingActions(ctx, sessionID)
+	threadID, err := s.q.GetPrimarySessionThreadID(ctx, sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, domain.NotFound("primary session Thread not found")
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.UnresolvedThreadPendingActions(ctx, sessionID, threadID)
+}
+
+// UnresolvedThreadPendingActions returns the independent requires-action
+// barrier owned by one Thread. A child waiting for client input must not gate
+// the primary or any sibling Thread.
+func (s *Store) UnresolvedThreadPendingActions(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) ([]domain.PendingAction, error) {
+	rows, err := s.q.ListUnresolvedPendingActions(
+		ctx,
+		pgstore.ListUnresolvedPendingActionsParams{
+			SessionID: sessionID,
+			ThreadID:  threadID,
+		},
+	)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]domain.PendingAction, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, pendingActionFromRow(row))
+		out = append(out, domain.PendingAction{
+			ID: row.ID, SessionID: row.SessionID, ThreadID: row.ThreadID,
+			ActionEventID:       row.ActionEventID,
+			ClientActionEventID: row.ClientActionEventID,
+			Kind:                domain.PendingActionKind(row.Kind),
+			ResolvingEventID:    row.ResolvingEventID,
+			CreatedAt:           row.CreatedAt.Time.UTC(), ResolvedAt: timePtr(row.ResolvedAt),
+		})
 	}
 	return out, nil
-}
-
-func pendingActionFromRow(row pgstore.PendingAction) domain.PendingAction {
-	return domain.PendingAction{
-		ID:               row.ID,
-		SessionID:        row.SessionID,
-		ActionEventID:    row.ActionEventID,
-		Kind:             domain.PendingActionKind(row.Kind),
-		ResolvingEventID: row.ResolvingEventID,
-		CreatedAt:        row.CreatedAt.Time.UTC(),
-		ResolvedAt:       timePtr(row.ResolvedAt),
-	}
 }
 
 // validatePendingCompletion requires the internal completion contract to match
 // the public requires_action boundary. The pending ids are never accepted as an
 // independent caller assertion: they must exactly match the ids in the
-// session.status_idle draft committed by the same transaction.
+// owning Thread's status_idle draft committed by the same transaction.
 func validatePendingCompletion(
 	status domain.Status,
 	drafts []domain.EventDraft,
@@ -70,7 +168,8 @@ func validatePendingCompletion(
 
 	var required []string
 	for _, draft := range drafts {
-		if draft.Type != domain.EvSessionStatusIdle {
+		if draft.Type != domain.EvSessionStatusIdle &&
+			draft.Type != domain.EvSessionThreadStatusIdle {
 			continue
 		}
 		stopReason, _ := draft.Payload["stop_reason"].(map[string]any)
@@ -85,7 +184,7 @@ func validatePendingCompletion(
 		break
 	}
 	if required == nil {
-		return domain.Validation("pending actions require session.status_idle with requires_action")
+		return domain.Validation("pending actions require a status_idle event with requires_action")
 	}
 	if len(required) != len(expected) {
 		return domain.Validation("requires_action event_ids must match pending action ids")
@@ -130,8 +229,10 @@ func (s *Store) insertPendingActionsLocked(
 	ctx context.Context,
 	q *pgstore.Queries,
 	sessionID string,
+	threadID string,
 	pendingActionEventIDs []string,
 	allowed map[string]domain.Event,
+	clientActionEventIDs map[string]string,
 ) error {
 	for _, actionEventID := range pendingActionEventIDs {
 		event, ok := allowed[actionEventID]
@@ -144,12 +245,15 @@ func (s *Store) insertPendingActionsLocked(
 		if !ok {
 			return domain.Validation("event cannot park a pending action")
 		}
+		clientActionEventID := actionEventID
+		if projected := clientActionEventIDs[actionEventID]; projected != "" {
+			clientActionEventID = projected
+		}
 		if err := q.InsertPendingAction(ctx, pgstore.InsertPendingActionParams{
-			ID:            s.ids.NewID(domain.PrefixPendingAction),
-			SessionID:     sessionID,
-			ActionEventID: actionEventID,
-			Kind:          string(kind),
-			CreatedAt:     tsUTC(s.clock.Now().UTC()),
+			ID: s.ids.NewID(domain.PrefixPendingAction), SessionID: sessionID,
+			ThreadID: threadID, ActionEventID: actionEventID,
+			ClientActionEventID: clientActionEventID, Kind: string(kind),
+			CreatedAt: tsUTC(s.clock.Now().UTC()),
 		}); err != nil {
 			return err
 		}
@@ -180,8 +284,7 @@ func (s *Store) claimPendingResolutionsLocked(
 		}
 
 		row, err := q.GetPendingActionForUpdate(ctx, pgstore.GetPendingActionForUpdateParams{
-			SessionID:     sessionID,
-			ActionEventID: actionEventID,
+			SessionID: sessionID, ReferencedEventID: actionEventID,
 		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, domain.Validation("resolution references unknown pending action")
@@ -192,6 +295,13 @@ func (s *Store) claimPendingResolutionsLocked(
 		if domain.PendingActionKind(row.Kind) != kind {
 			return false, domain.Validation("resolution kind does not match the pending action")
 		}
+		if event.ThreadID != row.ThreadID {
+			return false, domain.Validation("resolution was routed to the wrong session Thread")
+		}
+		if routed, _ := event.Payload["session_thread_id"].(string); routed != "" &&
+			routed != row.ThreadID {
+			return false, domain.Validation("session_thread_id does not match the pending action")
+		}
 		if row.ResolvedAt.Valid {
 			return false, domain.Conflict("pending action is already resolved")
 		}
@@ -201,7 +311,7 @@ func (s *Store) claimPendingResolutionsLocked(
 		affected, err := q.ClaimPendingAction(ctx, pgstore.ClaimPendingActionParams{
 			ResolvingEventID: &event.ID,
 			SessionID:        sessionID,
-			ActionEventID:    actionEventID,
+			ID:               row.ID,
 		})
 		if err != nil {
 			return false, err
@@ -225,6 +335,7 @@ func (s *Store) resolvePendingBarrierLocked(
 	ctx context.Context,
 	q *pgstore.Queries,
 	sessionID string,
+	threadID string,
 	triggerEventID string,
 	resolutionEventIDs []string,
 ) (bool, error) {
@@ -254,7 +365,12 @@ func (s *Store) resolvePendingBarrierLocked(
 		return false, domain.Validation("resume trigger must be part of the resolution barrier")
 	}
 
-	rows, err := q.ListUnresolvedPendingActions(ctx, sessionID)
+	rows, err := q.ListUnresolvedPendingActions(
+		ctx,
+		pgstore.ListUnresolvedPendingActionsParams{
+			SessionID: sessionID, ThreadID: threadID,
+		},
+	)
 	if err != nil {
 		return false, err
 	}
@@ -281,6 +397,7 @@ func (s *Store) resolvePendingBarrierLocked(
 		pgstore.ResolvePendingActionsForEventsParams{
 			ResolvedAt:        tsUTC(s.clock.Now().UTC()),
 			SessionID:         sessionID,
+			ThreadID:          threadID,
 			ResolvingEventIds: resolutionEventIDs,
 		},
 	)

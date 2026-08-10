@@ -216,10 +216,13 @@ func (s *Store) createSession(
 		if err := insertPreparedSessionResources(ctx, tx, session.ID, resources); err != nil {
 			return err
 		}
-		var innerErr error
-		admission, innerErr = s.admitLocked(ctx, q, session, drafts)
-		if innerErr != nil {
-			return innerErr
+		admission = Admission{Session: session}
+		if len(drafts) > 0 {
+			var innerErr error
+			admission, innerErr = s.admitLocked(ctx, tx, q, session, drafts)
+			if innerErr != nil {
+				return innerErr
+			}
 		}
 		if deploymentRun != nil {
 			return insertDeploymentRun(ctx, tx, *deploymentRun)
@@ -484,7 +487,7 @@ func (s *Store) AdmitEvents(
 		return Admission{}, domain.Validation("no events to admit")
 	}
 	var admission Admission
-	err := s.withTx(ctx, func(q *pgstore.Queries) error {
+	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		row, err := q.LockSession(ctx, sessionID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("session not found")
@@ -506,7 +509,7 @@ func (s *Store) AdmitEvents(
 			return domain.Conflict("cannot send events to a terminated session")
 		}
 		var innerErr error
-		admission, innerErr = s.admitLocked(ctx, q, session, drafts)
+		admission, innerErr = s.admitLocked(ctx, tx, q, session, drafts)
 		return innerErr
 	})
 	if err != nil {
@@ -522,6 +525,7 @@ func (s *Store) AdmitEvents(
 // coalescible wakeup.
 func (s *Store) admitLocked(
 	ctx context.Context,
+	tx pgx.Tx,
 	q *pgstore.Queries,
 	session domain.Session,
 	drafts []domain.EventDraft,
@@ -570,10 +574,30 @@ func (s *Store) admitLocked(
 	if err != nil {
 		return Admission{}, err
 	}
-
-	events, maxSeq, err := s.appendDrafts(ctx, q, session.ID, drafts, maxSeq, nil)
+	primaryThreadID, err := q.GetPrimarySessionThreadID(ctx, session.ID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Admission{}, fmt.Errorf("pg: primary session thread is missing for %s", session.ID)
+	}
 	if err != nil {
 		return Admission{}, err
+	}
+	routed, resolutionThreads, err := s.routeClientDraftsLocked(
+		ctx, q, session.ID, primaryThreadID, drafts,
+	)
+	if err != nil {
+		return Admission{}, err
+	}
+	events := make([]domain.Event, 0, len(routed))
+	for _, item := range routed {
+		committed, nextSeq, appendErr := s.appendThreadDrafts(
+			ctx, q, session.ID, item.ThreadID,
+			[]domain.EventDraft{item.Draft}, maxSeq, nil,
+		)
+		if appendErr != nil {
+			return Admission{}, appendErr
+		}
+		maxSeq = nextSeq
+		events = append(events, committed...)
 	}
 
 	// Claim matching client-action resolutions in the same transaction that
@@ -611,7 +635,12 @@ func (s *Store) admitLocked(
 	// exception: it always wakes the Workflow so an active Activity can be
 	// canceled, but it never opens a pending-action gate or by itself projects an
 	// idle session as running.
-	gated, err := q.HasUnresolvedPendingActions(ctx, session.ID)
+	gated, err := q.HasUnresolvedPendingActions(
+		ctx,
+		pgstore.HasUnresolvedPendingActionsParams{
+			SessionID: session.ID, ThreadID: primaryThreadID,
+		},
+	)
 	if err != nil {
 		return Admission{}, err
 	}
@@ -624,24 +653,110 @@ func (s *Store) admitLocked(
 	}
 	hasUnclaimed := false
 	if gated {
-		hasUnclaimed, err = q.HasUnclaimedPendingActions(ctx, session.ID)
+		hasUnclaimed, err = q.HasUnclaimedPendingActions(
+			ctx,
+			pgstore.HasUnclaimedPendingActionsParams{
+				SessionID: session.ID, ThreadID: primaryThreadID,
+			},
+		)
 		if err != nil {
 			return Admission{}, err
 		}
 	}
-	resolutionBarrierReady := admittedResolution && gated && !hasUnclaimed
-	hasRunnableWork := hasMessage || hasOutcome || resolutionBarrierReady
+	_, primaryResolutionAdmitted := resolutionThreads[primaryThreadID]
+	resolutionBarrierReady := admittedResolution && primaryResolutionAdmitted &&
+		gated && !hasUnclaimed
+
+	// A fully claimed child barrier wakes only that child. Its status transition,
+	// child/primary lifecycle projections, and Thread outbox write share this
+	// admission transaction with the client result.
+	candidateChildThreads := make([]string, 0, len(resolutionThreads))
+	for threadID := range resolutionThreads {
+		if threadID != primaryThreadID {
+			candidateChildThreads = append(candidateChildThreads, threadID)
+		}
+	}
+	sort.Strings(candidateChildThreads)
+	childWakeThreads := make([]string, 0, len(candidateChildThreads))
+	for _, threadID := range candidateChildThreads {
+		childGated, err := q.HasUnresolvedPendingActions(
+			ctx,
+			pgstore.HasUnresolvedPendingActionsParams{
+				SessionID: session.ID, ThreadID: threadID,
+			},
+		)
+		if err != nil {
+			return Admission{}, err
+		}
+		if !childGated {
+			continue
+		}
+		childUnclaimed, err := q.HasUnclaimedPendingActions(
+			ctx,
+			pgstore.HasUnclaimedPendingActionsParams{
+				SessionID: session.ID, ThreadID: threadID,
+			},
+		)
+		if err != nil {
+			return Admission{}, err
+		}
+		if childUnclaimed {
+			continue
+		}
+		thread, err := loadSessionThreadForUpdate(ctx, tx, session.ID, threadID)
+		if err != nil {
+			return Admission{}, err
+		}
+		if thread.ParentThreadID == nil {
+			return Admission{}, domain.Conflict(
+				"child resolution cannot target the primary Thread",
+			)
+		}
+		if thread.ArchivedAt != nil || thread.Status == domain.StatusTerminated {
+			return Admission{}, domain.Conflict(
+				"cannot resolve an action for a terminated child Thread",
+			)
+		}
+		if thread.Status != domain.StatusRunning {
+			thread.TransitionStatus(domain.StatusRunning, s.clock.Now().UTC())
+			if err := putSessionThreadTx(ctx, tx, thread); err != nil {
+				return Admission{}, err
+			}
+			lifecycle := domain.EventDraft{
+				Type: domain.EvSessionThreadStatusRunning,
+				Payload: map[string]any{
+					"session_thread_id": thread.ID,
+					"agent_name":        thread.Agent.Name,
+				},
+			}
+			childEvents, nextSeq, err := s.appendThreadDrafts(
+				ctx, q, session.ID, thread.ID,
+				[]domain.EventDraft{lifecycle}, maxSeq, nil,
+			)
+			if err != nil {
+				return Admission{}, err
+			}
+			maxSeq = nextSeq
+			primaryEvents, nextSeq, err := s.appendThreadDrafts(
+				ctx, q, session.ID, primaryThreadID,
+				[]domain.EventDraft{lifecycle}, maxSeq, nil,
+			)
+			if err != nil {
+				return Admission{}, err
+			}
+			maxSeq = nextSeq
+			events = append(events, childEvents...)
+			events = append(events, primaryEvents...)
+		}
+		childWakeThreads = append(childWakeThreads, threadID)
+	}
+
+	primaryHasRunnableWork := hasMessage || hasOutcome || resolutionBarrierReady
+	primaryWorkRunnable := primaryHasRunnableWork && (!gated || resolutionBarrierReady)
+	hasRunnableWork := primaryWorkRunnable || len(childWakeThreads) > 0
 
 	admission := Admission{Session: session, Events: events, MaxSeq: maxSeq}
 	if !hasRunnableWork && !hasInterrupt {
-		if err := putRuntimeProjection(); err != nil {
-			return Admission{}, err
-		}
-		return admission, nil
-	}
-
-	workRunnable := hasRunnableWork && (!gated || resolutionBarrierReady)
-	if !workRunnable && !hasInterrupt {
 		if err := putRuntimeProjection(); err != nil {
 			return Admission{}, err
 		}
@@ -653,13 +768,13 @@ func (s *Store) admitLocked(
 	// publish status_running before the retry actually resumes. An interrupt-only
 	// admission is a control wakeup, not new work, so it deliberately emits no
 	// synthetic running transition while idle.
-	if workRunnable {
+	if primaryWorkRunnable {
 		session.MarkActiveOutcomeRunning()
 		if primaryThread != nil && primaryThread.Status != domain.StatusRunning {
 			primaryThread.TransitionStatus(domain.StatusRunning, s.clock.Now().UTC())
 		}
 	}
-	if workRunnable && session.Status == domain.StatusIdle {
+	if hasRunnableWork && session.Status == domain.StatusIdle {
 		session.TransitionStatus(domain.StatusRunning, s.clock.Now().UTC())
 		statusEvents, newMax, err := s.appendDrafts(ctx, q, session.ID,
 			[]domain.EventDraft{{Type: domain.EvSessionStatusRunning, Payload: map[string]any{}}},
@@ -680,14 +795,24 @@ func (s *Store) admitLocked(
 	// The coalescible orchestration wakeup. One pending row per session; a burst
 	// of admissions coalesces and raises max_event_seq to the newest receipt
 	// sequence. This is the durable signal the relay delivers to Temporal.
-	if err := q.UpsertOutbox(ctx, pgstore.UpsertOutboxParams{
-		SessionID:   session.ID,
-		MaxEventSeq: maxSeq,
-		EnqueuedAt:  tsUTC(s.clock.Now().UTC()),
-	}); err != nil {
-		return Admission{}, err
+	if primaryWorkRunnable || hasInterrupt {
+		if err := q.UpsertOutbox(ctx, pgstore.UpsertOutboxParams{
+			SessionID:   session.ID,
+			MaxEventSeq: maxSeq,
+			EnqueuedAt:  tsUTC(s.clock.Now().UTC()),
+		}); err != nil {
+			return Admission{}, err
+		}
 	}
-	if workRunnable && session.EnvironmentType == "self_hosted" {
+	for _, threadID := range childWakeThreads {
+		if err := q.UpsertThreadOutbox(ctx, pgstore.UpsertThreadOutboxParams{
+			SessionID: session.ID, ThreadID: threadID,
+			MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(s.clock.Now().UTC()),
+		}); err != nil {
+			return Admission{}, err
+		}
+	}
+	if hasRunnableWork && session.EnvironmentType == "self_hosted" {
 		if err := q.EnqueueEnvironmentWork(ctx, pgstore.EnqueueEnvironmentWorkParams{
 			ID:            s.ids.NewID(domain.PrefixEnvironmentWork),
 			EnvironmentID: session.EnvironmentID,
@@ -698,7 +823,10 @@ func (s *Store) admitLocked(
 			return Admission{}, err
 		}
 	}
-	admission.Enqueued = true
+	admission.Session = session
+	admission.Events = events
+	admission.MaxSeq = maxSeq
+	admission.Enqueued = primaryWorkRunnable || hasInterrupt || len(childWakeThreads) > 0
 	return admission, nil
 }
 
@@ -1752,6 +1880,7 @@ func (s *Store) completeTurn(
 				ctx,
 				pgstore.IsUnresolvedPendingResolutionParams{
 					SessionID:        sessionID,
+					ThreadID:         trigger.ThreadID,
 					ResolvingEventID: &triggerEventID,
 				},
 			)
@@ -1893,13 +2022,19 @@ func (s *Store) completeTurn(
 			ctx,
 			q,
 			sessionID,
+			trigger.ThreadID,
 			triggerEventID,
 			resolutionEventIDs,
 		)
 		if err != nil {
 			return err
 		}
-		hasUnresolved, err := q.HasUnresolvedPendingActions(ctx, sessionID)
+		hasUnresolved, err := q.HasUnresolvedPendingActions(
+			ctx,
+			pgstore.HasUnresolvedPendingActionsParams{
+				SessionID: sessionID, ThreadID: trigger.ThreadID,
+			},
+		)
 		if err != nil {
 			return err
 		}
@@ -1970,6 +2105,26 @@ func (s *Store) completeTurn(
 				drafts = withoutTerminalIdle(drafts)
 			}
 		}
+		if effectiveStatus == domain.StatusIdle {
+			sessionPendingIDs, err := q.SessionPendingClientActionEventIDs(
+				ctx, sessionID,
+			)
+			if err != nil {
+				return err
+			}
+			sessionPendingIDs = appendUniqueStrings(
+				sessionPendingIDs, pendingActionEventIDs...,
+			)
+			if len(sessionPendingIDs) > 0 {
+				drafts = rewriteTerminalSessionIdleStopReason(
+					drafts,
+					map[string]any{
+						"type":      "requires_action",
+						"event_ids": sessionPendingIDs,
+					},
+				)
+			}
+		}
 
 		events, finalMaxSeq, err := s.appendDrafts(
 			ctx,
@@ -1990,8 +2145,10 @@ func (s *Store) completeTurn(
 			ctx,
 			q,
 			sessionID,
+			trigger.ThreadID,
 			pendingActionEventIDs,
 			allowedActions,
+			nil,
 		); err != nil {
 			return err
 		}
@@ -2172,6 +2329,39 @@ func withoutTerminalIdle(drafts []domain.EventDraft) []domain.EventDraft {
 	return out
 }
 
+func rewriteTerminalSessionIdleStopReason(
+	drafts []domain.EventDraft,
+	stopReason map[string]any,
+) []domain.EventDraft {
+	out := append([]domain.EventDraft(nil), drafts...)
+	for index := len(out) - 1; index >= 0; index-- {
+		if out[index].Type != domain.EvSessionStatusIdle {
+			continue
+		}
+		payload := cloneEventPayload(out[index].Payload)
+		payload["stop_reason"] = stopReason
+		out[index].Payload = payload
+		break
+	}
+	return out
+}
+
+func appendUniqueStrings(values []string, additions ...string) []string {
+	seen := make(map[string]struct{}, len(values)+len(additions))
+	out := make([]string, 0, len(values)+len(additions))
+	for _, value := range append(append([]string(nil), values...), additions...) {
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 // interruptedTurnDrafts preserves work that definitely completed before an
 // interrupt while removing every competing terminal projection. The interrupt
 // completion transaction appends the one authoritative idle/end_turn after
@@ -2246,7 +2436,8 @@ func interruptedTurnDrafts(drafts []domain.EventDraft) ([]domain.EventDraft, int
 
 func turnEventsParked(events []domain.Event) bool {
 	for _, event := range events {
-		if event.Type != domain.EvSessionStatusIdle {
+		if event.Type != domain.EvSessionStatusIdle &&
+			event.Type != domain.EvSessionThreadStatusIdle {
 			continue
 		}
 		stopReason, _ := event.Payload["stop_reason"].(map[string]any)

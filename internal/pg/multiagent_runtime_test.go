@@ -385,6 +385,301 @@ WHERE session_id = $1 AND thread_id = $2`, session.ID, child.ID).Scan(&childWake
 	}
 }
 
+func TestChildPendingActionCrossPostsAndRoutesResolution(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_child_pending_route")
+	session.AgentSnapshot = domain.Agent{
+		ID: session.AgentID, Version: session.AgentVersion, Name: "coordinator",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{
+			Type: "agent", ID: "agent_reviewer", Version: 1,
+		}}},
+	}
+	session.MultiagentRoster = []domain.Agent{{
+		ID: "agent_reviewer", Version: 1, Name: "reviewer",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-reviewer"}),
+		Tools: []any{map[string]any{"type": "agent_toolset", "configs": []any{
+			map[string]any{"name": "bash", "permission": "always_ask"},
+		}}},
+	}}
+	created, err := store.CreateSession(ctx, session, []domain.EventDraft{{
+		Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{map[string]any{
+			"type": "text", "text": "delegate",
+		}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger := eventOfType(t, created.Events, domain.EvUserMessage)
+	threads, err := store.ListSessionThreads(
+		ctx, session.ID, app.SessionThreadListQuery{Limit: 10},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := threads[0]
+	if _, err := store.EnsureAttempt(ctx, session.ID, trigger.ID, "ratm_pending_delegate"); err != nil {
+		t.Fatal(err)
+	}
+	delegateInput := map[string]any{
+		"agent_name": "reviewer", "message": "Run the gated check.",
+	}
+	if _, err := store.EnsureToolStep(
+		ctx, "ratm_pending_delegate", "tstep_pending_delegate", 0,
+		"sevt_private_pending_delegate", agentruntime.SendToAgentToolName,
+		delegateInput,
+	); err != nil {
+		t.Fatal(err)
+	}
+	delegated, err := store.ExecuteCoordinatorToolStep(
+		ctx, session.ID, primary.ID, trigger.ID, "tstep_pending_delegate",
+		agentruntime.SendToAgentToolName, delegateInput,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := store.GetSessionThread(
+		ctx, session.ID, delegated.WakeThreadID,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childEvents, err := store.ThreadEventsAfter(ctx, session.ID, child.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childTrigger := eventOfType(t, childEvents, domain.EvAgentThreadMessageReceived)
+
+	// The coordinator can yield while the child remains active; the aggregate
+	// Session stays running until the child parks.
+	if _, err := store.CompleteWorkflowTurn(
+		ctx, session.ID, trigger.ID,
+		[]domain.EventDraft{{
+			Type:    domain.EvSessionStatusIdle,
+			Payload: map[string]any{"stop_reason": map[string]any{"type": "end_turn"}},
+		}},
+		domain.StatusIdle, "ratm_pending_delegate", domain.RunAttemptCompleted,
+		nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnsureAttempt(
+		ctx, session.ID, childTrigger.ID, "ratm_child_pending",
+	); err != nil {
+		t.Fatal(err)
+	}
+	actionID := "sevt_child_ask"
+	customActionID := "sevt_child_custom"
+	childPendingDrafts := []domain.EventDraft{
+		{
+			ID: actionID, Type: domain.EvAgentToolUse,
+			Payload: map[string]any{
+				"name": "bash", "input": map[string]any{"command": "pwd"},
+				"evaluated_permission": "ask",
+			},
+		},
+		{
+			ID: customActionID, Type: domain.EvAgentCustomToolUse,
+			Payload: map[string]any{
+				"name": "request_note", "input": map[string]any{"prompt": "note"},
+			},
+		},
+		{
+			Type: domain.EvSessionThreadStatusIdle,
+			Payload: map[string]any{"stop_reason": map[string]any{
+				"type": "requires_action", "event_ids": []string{actionID, customActionID},
+			}},
+		},
+	}
+	parked, err := store.CompleteThreadWorkflowTurn(
+		ctx, session.ID, child.ID, childTrigger.ID,
+		childPendingDrafts,
+		domain.StatusIdle, "ratm_child_pending", domain.RunAttemptCompleted,
+		nil, []string{actionID, customActionID}, nil, nil, nil, domain.TokenUsage{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !parked.Parked || parked.Session.Status != domain.StatusIdle {
+		t.Fatalf("parked child completion = %+v", parked)
+	}
+	replayed, err := store.CompleteThreadWorkflowTurn(
+		ctx, session.ID, child.ID, childTrigger.ID,
+		childPendingDrafts,
+		domain.StatusIdle, "ratm_child_pending", domain.RunAttemptCompleted,
+		nil, []string{actionID, customActionID}, nil, nil, nil, domain.TokenUsage{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Applied || !replayed.Parked {
+		t.Fatalf("replayed child completion = %+v", replayed)
+	}
+
+	childEvents, err = store.ThreadEventsAfter(ctx, session.ID, child.ID, 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childAction := eventOfType(t, childEvents, domain.EvAgentToolUse)
+	if childAction.ID != actionID || childAction.Payload["session_thread_id"] != nil {
+		t.Fatalf("child-local action = %+v", childAction)
+	}
+	childCustomAction := eventOfType(t, childEvents, domain.EvAgentCustomToolUse)
+	if childCustomAction.ID != customActionID ||
+		childCustomAction.Payload["session_thread_id"] != nil {
+		t.Fatalf("child-local custom action = %+v", childCustomAction)
+	}
+	childIdle := eventOfType(t, childEvents, domain.EvSessionThreadStatusIdle)
+	childStop, _ := childIdle.Payload["stop_reason"].(map[string]any)
+	childIDs, _ := stringList(childStop["event_ids"])
+	if len(childIDs) != 2 || childIDs[0] != actionID || childIDs[1] != customActionID {
+		t.Fatalf("child requires_action ids = %+v", childIDs)
+	}
+
+	primaryEvents, err := store.QueryEvents(
+		ctx, session.ID, app.EventQuery{Limit: 100},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientAction := eventOfType(t, primaryEvents, domain.EvAgentToolUse)
+	if clientAction.ID == actionID || clientAction.Payload["session_thread_id"] != child.ID {
+		t.Fatalf("primary cross-posted action = %+v", clientAction)
+	}
+	clientCustomAction := eventOfType(t, primaryEvents, domain.EvAgentCustomToolUse)
+	if clientCustomAction.ID == customActionID ||
+		clientCustomAction.Payload["session_thread_id"] != child.ID {
+		t.Fatalf("primary cross-posted custom action = %+v", clientCustomAction)
+	}
+	threadIdle := eventOfType(t, primaryEvents, domain.EvSessionThreadStatusIdle)
+	threadStop, _ := threadIdle.Payload["stop_reason"].(map[string]any)
+	threadIDs, _ := stringList(threadStop["event_ids"])
+	if len(threadIDs) != 2 || threadIDs[0] != clientAction.ID ||
+		threadIDs[1] != clientCustomAction.ID {
+		t.Fatalf("cross-posted Thread stop ids = %+v", threadIDs)
+	}
+	sessionIdle := eventOfType(t, primaryEvents, domain.EvSessionStatusIdle)
+	sessionStop, _ := sessionIdle.Payload["stop_reason"].(map[string]any)
+	sessionIDs, _ := stringList(sessionStop["event_ids"])
+	if len(sessionIDs) != 2 || sessionIDs[0] != clientAction.ID ||
+		sessionIDs[1] != clientCustomAction.ID {
+		t.Fatalf("aggregate stop ids = %+v", sessionIDs)
+	}
+	primaryPending, err := store.UnresolvedPendingActions(ctx, session.ID)
+	if err != nil || len(primaryPending) != 0 {
+		t.Fatalf("primary pending actions = %+v, err=%v", primaryPending, err)
+	}
+	childPending, err := store.UnresolvedThreadPendingActions(
+		ctx, session.ID, child.ID,
+	)
+	if err != nil || len(childPending) != 2 ||
+		childPending[0].ActionEventID != actionID ||
+		childPending[0].ClientActionEventID != clientAction.ID ||
+		childPending[1].ActionEventID != customActionID ||
+		childPending[1].ClientActionEventID != clientCustomAction.ID {
+		t.Fatalf("child pending actions = %+v, err=%v", childPending, err)
+	}
+
+	if _, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserToolConfirmation,
+		Payload: map[string]any{
+			"tool_use_id": clientAction.ID, "result": "allow",
+			"session_thread_id": "sthr_wrong",
+		},
+	}}); err == nil {
+		t.Fatal("expected mismatched session_thread_id to be rejected")
+	}
+	partial, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserToolConfirmation,
+		Payload: map[string]any{
+			"tool_use_id": clientAction.ID, "result": "allow",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmation := eventOfType(t, partial.Events, domain.EvUserToolConfirmation)
+	if confirmation.ThreadID != child.ID ||
+		confirmation.Payload["session_thread_id"] != child.ID {
+		t.Fatalf("routed confirmation = %+v", confirmation)
+	}
+	child, err = store.GetSessionThread(ctx, session.ID, child.ID)
+	if err != nil || child.Status != domain.StatusIdle || partial.Enqueued ||
+		partial.Session.Status != domain.StatusIdle {
+		t.Fatalf("partial child barrier = %+v/%+v, err=%v", child, partial, err)
+	}
+	admitted, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{
+		{
+			Type: domain.EvUserCustomToolResult,
+			Payload: map[string]any{
+				"custom_tool_use_id": clientCustomAction.ID,
+				"content": []any{
+					map[string]any{"type": "text", "text": "noted"},
+				},
+			},
+		},
+		{
+			Type: domain.EvSystemMessage,
+			Payload: map[string]any{
+				"content": []any{map[string]any{"type": "text", "text": "use UTC"}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	customResult := eventOfType(t, admitted.Events, domain.EvUserCustomToolResult)
+	if customResult.ThreadID != child.ID ||
+		customResult.Payload["session_thread_id"] != child.ID {
+		t.Fatalf("routed custom result = %+v", customResult)
+	}
+	companion := eventOfType(t, admitted.Events, domain.EvSystemMessage)
+	if companion.ThreadID != child.ID {
+		t.Fatalf("routed companion system message = %+v", companion)
+	}
+	child, err = store.GetSessionThread(ctx, session.ID, child.ID)
+	if err != nil || child.Status != domain.StatusRunning ||
+		admitted.Session.Status != domain.StatusRunning {
+		t.Fatalf("resumed child/session = %+v/%+v, err=%v", child, admitted.Session, err)
+	}
+
+	report := []any{map[string]any{"type": "text", "text": "Approved check complete."}}
+	resumed, err := store.CompleteThreadWorkflowTurn(
+		ctx, session.ID, child.ID, confirmation.ID,
+		[]domain.EventDraft{
+			{Type: domain.EvAgentToolResult, Payload: map[string]any{
+				"tool_use_id": actionID,
+				"content":     []any{map[string]any{"type": "text", "text": "/workspace"}},
+				"is_error":    false,
+			}},
+			{Type: domain.EvAgentMessage, Payload: map[string]any{"content": report}},
+			{Type: domain.EvSessionThreadStatusIdle, Payload: map[string]any{
+				"stop_reason": map[string]any{"type": "end_turn"},
+			}},
+		},
+		domain.StatusIdle, "", "", nil, nil,
+		[]string{confirmation.ID, customResult.ID}, nil, nil, domain.TokenUsage{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed.Parked || resumed.Session.Status != domain.StatusRunning {
+		t.Fatalf("resumed completion = %+v", resumed)
+	}
+	companion, err = store.GetEvent(ctx, session.ID, companion.ID)
+	if err != nil || companion.ProcessedAt == nil {
+		t.Fatalf("processed companion system message = %+v, err=%v", companion, err)
+	}
+	childPending, err = store.UnresolvedThreadPendingActions(
+		ctx, session.ID, child.ID,
+	)
+	if err != nil || len(childPending) != 0 {
+		t.Fatalf("resolved child pending actions = %+v, err=%v", childPending, err)
+	}
+}
+
 func hasEventType(events []domain.Event, eventType string) bool {
 	for _, event := range events {
 		if event.Type == eventType {

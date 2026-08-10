@@ -192,10 +192,10 @@ The strongest current risks are semantic rather than structural:
    materialization, and unauthenticated MCP tools are implemented. Context
    Snapshots, provider-round records, deployment-managed MCP authentication, and
    reference-only Temporal payloads remain open.
-5. Ordinary coordinator delegation and persistent child execution are wired.
-   Cross-posted pending-action response routing, targeted/global multi-Thread
-   interrupts, and explicit termination of waiting child Workflows during
-   archive or Session deletion remain open before M2 is complete.
+5. Ordinary coordinator delegation, persistent child execution, and
+   cross-posted pending-action response routing are wired. Targeted/global
+   multi-Thread interrupts and explicit termination of waiting child Workflows
+   during archive or Session deletion remain open before M2 is complete.
 
 Current API support is tracked in the [compatibility matrix](compatibility.md);
 planned capability work is kept in the [roadmap](roadmap.md).

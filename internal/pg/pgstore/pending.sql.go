@@ -15,7 +15,7 @@ const claimPendingAction = `-- name: ClaimPendingAction :execrows
 UPDATE pending_actions
 SET resolving_event_id = $1
 WHERE session_id = $2
-  AND action_event_id = $3
+  AND id = $3
   AND resolving_event_id IS NULL
   AND resolved_at IS NULL
 `
@@ -23,11 +23,11 @@ WHERE session_id = $2
 type ClaimPendingActionParams struct {
 	ResolvingEventID *string
 	SessionID        string
-	ActionEventID    string
+	ID               string
 }
 
 func (q *Queries) ClaimPendingAction(ctx context.Context, arg ClaimPendingActionParams) (int64, error) {
-	result, err := q.db.Exec(ctx, claimPendingAction, arg.ResolvingEventID, arg.SessionID, arg.ActionEventID)
+	result, err := q.db.Exec(ctx, claimPendingAction, arg.ResolvingEventID, arg.SessionID, arg.ID)
 	if err != nil {
 		return 0, err
 	}
@@ -35,24 +35,43 @@ func (q *Queries) ClaimPendingAction(ctx context.Context, arg ClaimPendingAction
 }
 
 const getPendingActionForUpdate = `-- name: GetPendingActionForUpdate :one
-SELECT id, session_id, action_event_id, kind, resolving_event_id, created_at, resolved_at
+SELECT id, session_id, thread_id, action_event_id, client_action_event_id,
+       kind, resolving_event_id, created_at, resolved_at
 FROM pending_actions
-WHERE session_id = $1 AND action_event_id = $2
+WHERE session_id = $1
+  AND (
+      action_event_id = $2
+      OR client_action_event_id = $2
+  )
 FOR UPDATE
 `
 
 type GetPendingActionForUpdateParams struct {
-	SessionID     string
-	ActionEventID string
+	SessionID         string
+	ReferencedEventID string
 }
 
-func (q *Queries) GetPendingActionForUpdate(ctx context.Context, arg GetPendingActionForUpdateParams) (PendingAction, error) {
-	row := q.db.QueryRow(ctx, getPendingActionForUpdate, arg.SessionID, arg.ActionEventID)
-	var i PendingAction
+type GetPendingActionForUpdateRow struct {
+	ID                  string
+	SessionID           string
+	ThreadID            string
+	ActionEventID       string
+	ClientActionEventID string
+	Kind                string
+	ResolvingEventID    *string
+	CreatedAt           pgtype.Timestamptz
+	ResolvedAt          pgtype.Timestamptz
+}
+
+func (q *Queries) GetPendingActionForUpdate(ctx context.Context, arg GetPendingActionForUpdateParams) (GetPendingActionForUpdateRow, error) {
+	row := q.db.QueryRow(ctx, getPendingActionForUpdate, arg.SessionID, arg.ReferencedEventID)
+	var i GetPendingActionForUpdateRow
 	err := row.Scan(
 		&i.ID,
 		&i.SessionID,
+		&i.ThreadID,
 		&i.ActionEventID,
+		&i.ClientActionEventID,
 		&i.Kind,
 		&i.ResolvingEventID,
 		&i.CreatedAt,
@@ -66,13 +85,19 @@ SELECT EXISTS(
     SELECT 1
     FROM pending_actions
     WHERE session_id = $1
+      AND thread_id = $2
       AND resolved_at IS NULL
       AND resolving_event_id IS NULL
 ) AS unclaimed
 `
 
-func (q *Queries) HasUnclaimedPendingActions(ctx context.Context, sessionID string) (bool, error) {
-	row := q.db.QueryRow(ctx, hasUnclaimedPendingActions, sessionID)
+type HasUnclaimedPendingActionsParams struct {
+	SessionID string
+	ThreadID  string
+}
+
+func (q *Queries) HasUnclaimedPendingActions(ctx context.Context, arg HasUnclaimedPendingActionsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnclaimedPendingActions, arg.SessionID, arg.ThreadID)
 	var unclaimed bool
 	err := row.Scan(&unclaimed)
 	return unclaimed, err
@@ -82,12 +107,19 @@ const hasUnresolvedPendingActions = `-- name: HasUnresolvedPendingActions :one
 SELECT EXISTS(
     SELECT 1
     FROM pending_actions
-    WHERE session_id = $1 AND resolved_at IS NULL
+    WHERE session_id = $1
+      AND thread_id = $2
+      AND resolved_at IS NULL
 ) AS unresolved
 `
 
-func (q *Queries) HasUnresolvedPendingActions(ctx context.Context, sessionID string) (bool, error) {
-	row := q.db.QueryRow(ctx, hasUnresolvedPendingActions, sessionID)
+type HasUnresolvedPendingActionsParams struct {
+	SessionID string
+	ThreadID  string
+}
+
+func (q *Queries) HasUnresolvedPendingActions(ctx context.Context, arg HasUnresolvedPendingActionsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasUnresolvedPendingActions, arg.SessionID, arg.ThreadID)
 	var unresolved bool
 	err := row.Scan(&unresolved)
 	return unresolved, err
@@ -96,19 +128,23 @@ func (q *Queries) HasUnresolvedPendingActions(ctx context.Context, sessionID str
 const insertPendingAction = `-- name: InsertPendingAction :exec
 
 INSERT INTO pending_actions (
-    id, session_id, action_event_id, kind, resolving_event_id, created_at, resolved_at
+    id, session_id, thread_id, action_event_id, client_action_event_id,
+    kind, resolving_event_id, created_at, resolved_at
 )
 VALUES (
-    $1, $2, $3, $4, NULL, $5, NULL
+    $1, $2, $3, $4, $5,
+    $6, NULL, $7, NULL
 )
 `
 
 type InsertPendingActionParams struct {
-	ID            string
-	SessionID     string
-	ActionEventID string
-	Kind          string
-	CreatedAt     pgtype.Timestamptz
+	ID                  string
+	SessionID           string
+	ThreadID            string
+	ActionEventID       string
+	ClientActionEventID string
+	Kind                string
+	CreatedAt           pgtype.Timestamptz
 }
 
 // Typed queries for durable client-action gates on the Temporal/PostgreSQL
@@ -118,7 +154,9 @@ func (q *Queries) InsertPendingAction(ctx context.Context, arg InsertPendingActi
 	_, err := q.db.Exec(ctx, insertPendingAction,
 		arg.ID,
 		arg.SessionID,
+		arg.ThreadID,
 		arg.ActionEventID,
+		arg.ClientActionEventID,
 		arg.Kind,
 		arg.CreatedAt,
 	)
@@ -130,13 +168,15 @@ SELECT EXISTS(
     SELECT 1
     FROM pending_actions
     WHERE session_id = $1
-      AND resolving_event_id = $2
+      AND thread_id = $2
+      AND resolving_event_id = $3
       AND resolved_at IS NULL
 ) AS pending_resume
 `
 
 type IsUnresolvedPendingResolutionParams struct {
 	SessionID        string
+	ThreadID         string
 	ResolvingEventID *string
 }
 
@@ -145,32 +185,54 @@ type IsUnresolvedPendingResolutionParams struct {
 // trigger. user.custom_tool_result carries processed_at at admission by public
 // contract, so processed_at alone cannot be the turn-completion idempotency key.
 func (q *Queries) IsUnresolvedPendingResolution(ctx context.Context, arg IsUnresolvedPendingResolutionParams) (bool, error) {
-	row := q.db.QueryRow(ctx, isUnresolvedPendingResolution, arg.SessionID, arg.ResolvingEventID)
+	row := q.db.QueryRow(ctx, isUnresolvedPendingResolution, arg.SessionID, arg.ThreadID, arg.ResolvingEventID)
 	var pending_resume bool
 	err := row.Scan(&pending_resume)
 	return pending_resume, err
 }
 
 const listUnresolvedPendingActions = `-- name: ListUnresolvedPendingActions :many
-SELECT id, session_id, action_event_id, kind, resolving_event_id, created_at, resolved_at
+SELECT id, session_id, thread_id, action_event_id, client_action_event_id,
+       kind, resolving_event_id, created_at, resolved_at
 FROM pending_actions
-WHERE session_id = $1 AND resolved_at IS NULL
+WHERE session_id = $1
+  AND thread_id = $2
+  AND resolved_at IS NULL
 ORDER BY created_at, id
 `
 
-func (q *Queries) ListUnresolvedPendingActions(ctx context.Context, sessionID string) ([]PendingAction, error) {
-	rows, err := q.db.Query(ctx, listUnresolvedPendingActions, sessionID)
+type ListUnresolvedPendingActionsParams struct {
+	SessionID string
+	ThreadID  string
+}
+
+type ListUnresolvedPendingActionsRow struct {
+	ID                  string
+	SessionID           string
+	ThreadID            string
+	ActionEventID       string
+	ClientActionEventID string
+	Kind                string
+	ResolvingEventID    *string
+	CreatedAt           pgtype.Timestamptz
+	ResolvedAt          pgtype.Timestamptz
+}
+
+func (q *Queries) ListUnresolvedPendingActions(ctx context.Context, arg ListUnresolvedPendingActionsParams) ([]ListUnresolvedPendingActionsRow, error) {
+	rows, err := q.db.Query(ctx, listUnresolvedPendingActions, arg.SessionID, arg.ThreadID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []PendingAction{}
+	items := []ListUnresolvedPendingActionsRow{}
 	for rows.Next() {
-		var i PendingAction
+		var i ListUnresolvedPendingActionsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.SessionID,
+			&i.ThreadID,
 			&i.ActionEventID,
+			&i.ClientActionEventID,
 			&i.Kind,
 			&i.ResolvingEventID,
 			&i.CreatedAt,
@@ -190,13 +252,15 @@ const resolvePendingActionsForEvents = `-- name: ResolvePendingActionsForEvents 
 UPDATE pending_actions
 SET resolved_at = $1
 WHERE session_id = $2
-  AND resolving_event_id = ANY($3::text[])
+  AND thread_id = $3
+  AND resolving_event_id = ANY($4::text[])
   AND resolved_at IS NULL
 `
 
 type ResolvePendingActionsForEventsParams struct {
 	ResolvedAt        pgtype.Timestamptz
 	SessionID         string
+	ThreadID          string
 	ResolvingEventIds []string
 }
 
@@ -204,7 +268,12 @@ type ResolvePendingActionsForEventsParams struct {
 // The caller validates that the supplied ids exactly match every unresolved
 // row before executing this update under the session lock.
 func (q *Queries) ResolvePendingActionsForEvents(ctx context.Context, arg ResolvePendingActionsForEventsParams) (int64, error) {
-	result, err := q.db.Exec(ctx, resolvePendingActionsForEvents, arg.ResolvedAt, arg.SessionID, arg.ResolvingEventIds)
+	result, err := q.db.Exec(ctx, resolvePendingActionsForEvents,
+		arg.ResolvedAt,
+		arg.SessionID,
+		arg.ThreadID,
+		arg.ResolvingEventIds,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -231,4 +300,34 @@ func (q *Queries) ResolvePendingActionsForTrigger(ctx context.Context, arg Resol
 		return 0, err
 	}
 	return result.RowsAffected(), nil
+}
+
+const sessionPendingClientActionEventIDs = `-- name: SessionPendingClientActionEventIDs :many
+SELECT client_action_event_id
+FROM pending_actions
+WHERE session_id = $1 AND resolved_at IS NULL
+ORDER BY created_at, id
+`
+
+// SessionPendingClientActionEventIDs projects the unresolved action ids a
+// client can answer from the primary stream. Child rows expose their cross-post
+// ids; primary rows use the same id for both columns.
+func (q *Queries) SessionPendingClientActionEventIDs(ctx context.Context, sessionID string) ([]string, error) {
+	rows, err := q.db.Query(ctx, sessionPendingClientActionEventIDs, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []string{}
+	for rows.Next() {
+		var client_action_event_id string
+		if err := rows.Scan(&client_action_event_id); err != nil {
+			return nil, err
+		}
+		items = append(items, client_action_event_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }

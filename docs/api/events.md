@@ -36,8 +36,12 @@ The PostgreSQL/Temporal control plane currently accepts:
 | `system.message` | Text-only companion context; must be the final event immediately after a message or tool result |
 
 `user.tool_result` is rejected unless it resolves a pending self-hosted
-`agent.tool_use`. Targeted multi-agent interrupt shapes return
-`422 unsupported_error`.
+`agent.tool_use`. A tool confirmation or result may include
+`session_thread_id` when answering a child action cross-posted onto the primary
+stream. The event reference is authoritative for routing; the hint is optional
+and a conflicting value is rejected. The persisted response and any companion
+`system.message` belong to the child Thread. Targeted multi-agent interrupt
+shapes return `422 unsupported_error`.
 
 Content blocks are validated as closed tagged unions. Images accept `base64`
 and `url` sources; documents accept `base64`, `text`, and `url` sources, with

@@ -76,18 +76,20 @@ returns the Session to `idle`; permanent failures project to `terminated`.
 A Session is the aggregate container; each Session Thread owns an independent
 execution projection containing its resolved Agent snapshot, status, usage, and
 timing. The primary Thread has no parent. A child Thread identifies its parent
-within the same Session and will own a separate provider context when child
-execution is enabled.
+within the same Session and owns a separate provider context, event view,
+retry lifecycle, and pending-action barrier.
 
-The current single-Agent runtime writes execution changes to the primary Thread
-and Session aggregate in one PostgreSQL transaction. Session-only metadata and
-resource changes do not mutate the Thread. Child execution will update a child
-projection first and recompute the Session aggregate separately, preserving the
-same Thread read model instead of projecting every Thread from Session state.
+The runtime writes primary execution changes to the primary Thread and Session
+aggregate in one PostgreSQL transaction. Child execution updates the owning
+child projection first and recomputes Session status and usage in the same
+transaction. Session-only metadata and resource changes do not mutate a Thread.
 
-Primary Thread events currently reuse the authoritative Session event ledger.
-Child event origin and cross-post visibility are intentionally not inferred
-from that ledger until the multi-agent event rules are implemented.
+Events carry an owning Thread ID in the Session-wide sequence space. A child
+ledger retains its canonical model/tool events; selected lifecycle, message,
+report, and client-action events are projected separately onto the primary
+view. Cross-posted client actions use distinct public IDs so client responses
+can be routed back to the canonical child barrier without confusing the two
+conversation histories.
 
 ## Event
 

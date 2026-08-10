@@ -29,10 +29,10 @@ func (s *Store) CompleteThreadWorkflowTurn(
 	toolUseMappings []domain.ProviderToolUseMapping,
 	usage domain.TokenUsage,
 ) (TurnCompletion, error) {
-	if len(pendingActionEventIDs) != 0 || len(resolutionEventIDs) != 0 {
-		return TurnCompletion{}, domain.Unsupported(
-			"child Thread client-action routing is not available in this runtime slice",
-		)
+	if err := validatePendingCompletion(
+		status, outputDrafts, pendingActionEventIDs,
+	); err != nil {
+		return TurnCompletion{}, err
 	}
 	var result TurnCompletion
 	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
@@ -69,7 +69,20 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		if trigger.ThreadID != threadID {
 			return domain.Conflict("trigger event belongs to another Thread")
 		}
+		pendingResume := false
 		if trigger.ProcessedAt.Valid {
+			pendingResume, err = q.IsUnresolvedPendingResolution(
+				ctx,
+				pgstore.IsUnresolvedPendingResolutionParams{
+					SessionID: sessionID, ThreadID: threadID,
+					ResolvingEventID: &triggerEventID,
+				},
+			)
+			if err != nil {
+				return err
+			}
+		}
+		if trigger.ProcessedAt.Valid && !pendingResume {
 			rows, err := q.ListEventsByTurn(ctx, pgstore.ListEventsByTurnParams{
 				SessionID: sessionID, TurnEventID: &triggerEventID,
 			})
@@ -82,6 +95,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 			}
 			result = TurnCompletion{
 				Session: session, Events: events, Applied: false,
+				Parked: turnEventsParked(events),
 			}
 			return nil
 		}
@@ -96,11 +110,17 @@ func (s *Store) CompleteThreadWorkflowTurn(
 				return err
 			}
 		}
+		resolvedPending, err := s.resolvePendingBarrierLocked(
+			ctx, q, sessionID, threadID, triggerEventID, resolutionEventIDs,
+		)
+		if err != nil {
+			return err
+		}
 
 		now := s.clock.Now().UTC()
 		primaryID := *thread.ParentThreadID
 		report := []any(nil)
-		if status == domain.StatusIdle {
+		if status == domain.StatusIdle && len(pendingActionEventIDs) == 0 {
 			report = lastAgentMessageContent(outputDrafts)
 		}
 		drafts := childThreadDrafts(
@@ -118,6 +138,47 @@ func (s *Store) CompleteThreadWorkflowTurn(
 			return err
 		}
 		allEvents := append([]domain.Event(nil), childEvents...)
+		allowedActions := make(map[string]domain.Event, len(childEvents))
+		for _, event := range childEvents {
+			allowedActions[event.ID] = event
+		}
+		clientActionEventIDs := make(map[string]string, len(pendingActionEventIDs))
+		clientActionDrafts := make([]domain.EventDraft, 0, len(pendingActionEventIDs))
+		for _, actionEventID := range pendingActionEventIDs {
+			action, ok := allowedActions[actionEventID]
+			if !ok {
+				return domain.Validation(
+					"pending action must reference an action event committed by this turn",
+				)
+			}
+			if _, ok := domain.PendingActionKindForEvent(action.Type, action.Payload); !ok {
+				return domain.Validation("event cannot park a pending action")
+			}
+			payload := cloneEventPayload(action.Payload)
+			payload["session_thread_id"] = threadID
+			clientID := s.ids.NewID(domain.PrefixEvent)
+			clientActionEventIDs[actionEventID] = clientID
+			clientActionDrafts = append(clientActionDrafts, domain.EventDraft{
+				ID: clientID, Type: action.Type, Payload: payload,
+			})
+		}
+		if len(clientActionDrafts) > 0 {
+			projected, next, err := s.appendThreadDrafts(
+				ctx, q, sessionID, primaryID,
+				clientActionDrafts, maxSeq, &triggerEventID,
+			)
+			if err != nil {
+				return err
+			}
+			maxSeq = next
+			allEvents = append(allEvents, projected...)
+		}
+		if err := s.insertPendingActionsLocked(
+			ctx, q, sessionID, threadID, pendingActionEventIDs,
+			allowedActions, clientActionEventIDs,
+		); err != nil {
+			return err
+		}
 
 		if len(report) > 0 {
 			received, next, err := s.appendThreadDrafts(
@@ -142,6 +203,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 			if !isThreadLifecycleEvent(draft.Type) {
 				continue
 			}
+			draft = projectChildLifecycleDraft(draft, clientActionEventIDs)
 			crossPosted, next, err := s.appendThreadDrafts(
 				ctx, q, sessionID, primaryID,
 				[]domain.EventDraft{draft}, maxSeq, &triggerEventID,
@@ -154,7 +216,11 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		}
 
 		if transcriptDelta != nil {
-			representedJSON, err := json.Marshal([]string{triggerEventID})
+			representedEventIDs := resolutionEventIDs
+			if len(representedEventIDs) == 0 {
+				representedEventIDs = []string{triggerEventID}
+			}
+			representedJSON, err := json.Marshal(representedEventIDs)
 			if err != nil {
 				return err
 			}
@@ -178,10 +244,31 @@ func (s *Store) CompleteThreadWorkflowTurn(
 				return err
 			}
 		}
-		if err := q.MarkEventProcessed(ctx, pgstore.MarkEventProcessedParams{
-			ProcessedAt: tsUTC(now), SessionID: sessionID, ID: triggerEventID,
-		}); err != nil {
-			return err
+		processedEventIDs := resolutionEventIDs
+		if len(processedEventIDs) == 0 {
+			processedEventIDs = []string{triggerEventID}
+		}
+		for _, resolutionEventID := range resolutionEventIDs {
+			row, err := q.GetEvent(ctx, pgstore.GetEventParams{
+				SessionID: sessionID, ID: resolutionEventID,
+			})
+			if err != nil {
+				return err
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(row.Payload, &payload); err != nil {
+				return err
+			}
+			if companionID, _ := payload[domain.InternalCompanionSystemEventID].(string); companionID != "" {
+				processedEventIDs = appendUniqueStrings(processedEventIDs, companionID)
+			}
+		}
+		for _, eventID := range processedEventIDs {
+			if err := q.MarkEventProcessed(ctx, pgstore.MarkEventProcessedParams{
+				ProcessedAt: tsUTC(now), SessionID: sessionID, ID: eventID,
+			}); err != nil {
+				return err
+			}
 		}
 
 		thread.Usage.Add(usage)
@@ -219,7 +306,15 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		if err := putSessionOnlyTx(ctx, tx, session); err != nil {
 			return err
 		}
-		if oldSessionStatus != aggregated {
+		pendingClientEventIDs, err := q.SessionPendingClientActionEventIDs(
+			ctx, sessionID,
+		)
+		if err != nil {
+			return err
+		}
+		pendingBoundaryChanged := len(pendingActionEventIDs) > 0 || resolvedPending
+		if oldSessionStatus != aggregated ||
+			(aggregated == domain.StatusIdle && pendingBoundaryChanged) {
 			var statusDraft *domain.EventDraft
 			switch aggregated {
 			case domain.StatusRunning:
@@ -227,11 +322,16 @@ func (s *Store) CompleteThreadWorkflowTurn(
 					Type: domain.EvSessionStatusRunning, Payload: map[string]any{},
 				}
 			case domain.StatusIdle:
+				stopReason := map[string]any{"type": "end_turn"}
+				if len(pendingClientEventIDs) > 0 {
+					stopReason = map[string]any{
+						"type":      "requires_action",
+						"event_ids": pendingClientEventIDs,
+					}
+				}
 				statusDraft = &domain.EventDraft{
-					Type: domain.EvSessionStatusIdle,
-					Payload: map[string]any{
-						"stop_reason": map[string]any{"type": "end_turn"},
-					},
+					Type:    domain.EvSessionStatusIdle,
+					Payload: map[string]any{"stop_reason": stopReason},
 				}
 			case domain.StatusRescheduling:
 				statusDraft = &domain.EventDraft{
@@ -252,6 +352,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		}
 		result = TurnCompletion{
 			Session: session, Events: allEvents, Applied: true,
+			Parked: len(pendingActionEventIDs) > 0,
 		}
 		return nil
 	})
@@ -324,6 +425,41 @@ func isThreadLifecycleEvent(eventType string) bool {
 	default:
 		return false
 	}
+}
+
+func cloneEventPayload(payload map[string]any) map[string]any {
+	cloned := make(map[string]any, len(payload))
+	for key, value := range payload {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+// projectChildLifecycleDraft rewrites the requires-action ids on the primary
+// projection to the cross-posted tool-use ids clients can actually observe and
+// answer. The child ledger keeps its own canonical ids for provider context.
+func projectChildLifecycleDraft(
+	draft domain.EventDraft,
+	clientActionEventIDs map[string]string,
+) domain.EventDraft {
+	payload := cloneEventPayload(draft.Payload)
+	stopReason, _ := payload["stop_reason"].(map[string]any)
+	if stopReason == nil || stopReason["type"] != "requires_action" {
+		draft.Payload = payload
+		return draft
+	}
+	projectedStop := cloneEventPayload(stopReason)
+	if eventIDs, ok := stringList(stopReason["event_ids"]); ok {
+		for index, eventID := range eventIDs {
+			if projectedID := clientActionEventIDs[eventID]; projectedID != "" {
+				eventIDs[index] = projectedID
+			}
+		}
+		projectedStop["event_ids"] = eventIDs
+	}
+	payload["stop_reason"] = projectedStop
+	draft.Payload = payload
+	return draft
 }
 
 func lastAgentMessageContent(drafts []domain.EventDraft) []any {
