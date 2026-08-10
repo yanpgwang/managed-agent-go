@@ -34,9 +34,9 @@ func (s *SessionThreadService) List(
 	return s.store.ListSessionThreads(ctx, sessionID, query)
 }
 
-// Archive maps only the primary Thread lifecycle to the Session lifecycle. A
-// child must never archive the aggregate Session; independent child archival
-// is enabled together with child execution.
+// Archive maps the primary Thread lifecycle to the Session lifecycle and gives
+// a child its independent PostgreSQL/Temporal shutdown path. A child must never
+// archive the aggregate Session.
 func (s *SessionThreadService) Archive(
 	ctx context.Context,
 	sessionID string,
@@ -47,9 +47,7 @@ func (s *SessionThreadService) Archive(
 		return domain.SessionThread{}, err
 	}
 	if thread.ParentThreadID != nil {
-		return domain.SessionThread{}, domain.Unsupported(
-			"child session-thread archival is unavailable before child execution",
-		)
+		return s.store.ArchiveSessionThread(ctx, sessionID, threadID)
 	}
 	if _, err := s.store.ArchiveSession(ctx, sessionID); err != nil {
 		return domain.SessionThread{}, err

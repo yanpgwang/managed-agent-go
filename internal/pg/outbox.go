@@ -9,10 +9,17 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
 )
 
-// OutboxWakeup is one coalescible orchestration wakeup: the session to wake and
-// the highest known receipt sequence at enqueue time. It is not an executable
-// job — the SessionWorkflow loads authoritative events from PostgreSQL after its
-// own durable cursor and ignores sequences it has already observed.
+type OrchestrationIntent string
+
+const (
+	OrchestrationWake      OrchestrationIntent = "wake"
+	OrchestrationTerminate OrchestrationIntent = "terminate"
+)
+
+// OutboxWakeup is one coalescible orchestration instruction. Primary rows only
+// wake their SessionWorkflow. Child rows may instead terminate a Workflow after
+// the owning Thread lifecycle fence commits; termination permanently dominates
+// any stale wake for the same coalescing key.
 type OutboxWakeup struct {
 	SessionID string
 	// ThreadID is empty for the primary SessionWorkflow and names an
@@ -21,6 +28,7 @@ type OutboxWakeup struct {
 	MaxEventSeq int64
 	EnqueuedAt  time.Time
 	Attempts    int
+	Intent      OrchestrationIntent
 }
 
 // ListWakeupsForDelivery reads up to limit pending wakeups, oldest first. It is
@@ -44,7 +52,7 @@ func (s *Store) ListWakeupsForDelivery(ctx context.Context, limit int) ([]Outbox
 		out = append(out, OutboxWakeup{
 			SessionID: row.SessionID, ThreadID: row.ThreadID,
 			MaxEventSeq: row.MaxEventSeq, EnqueuedAt: row.EnqueuedAt.Time.UTC(),
-			Attempts: int(row.Attempts),
+			Attempts: int(row.Attempts), Intent: OrchestrationIntent(row.Intent),
 		})
 	}
 	return out, nil
@@ -75,11 +83,13 @@ func (s *Store) DeleteThreadWakeupIfUnchanged(
 	sessionID string,
 	threadID string,
 	maxSeq int64,
+	intent OrchestrationIntent,
 ) (bool, error) {
-	affected, err := s.q.DeleteThreadOutboxIfSeq(
+	affected, err := s.q.DeleteThreadOutboxIfUnchanged(
 		ctx,
-		pgstore.DeleteThreadOutboxIfSeqParams{
+		pgstore.DeleteThreadOutboxIfUnchangedParams{
 			SessionID: sessionID, ThreadID: threadID, MaxEventSeq: maxSeq,
+			Intent: string(intent),
 		},
 	)
 	if err != nil {

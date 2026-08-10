@@ -124,6 +124,258 @@ LIMIT $`+fmt.Sprint(len(args)), args...)
 	return result, rows.Err()
 }
 
+// ListChildSessionThreadIDs returns every child orchestration identity,
+// including already archived Threads. Session deletion uses the complete set:
+// Temporal termination is idempotent, and an archived row may still have a
+// shutdown instruction waiting in the relay after a prior process crash.
+func (s *Store) ListChildSessionThreadIDs(
+	ctx context.Context,
+	sessionID string,
+) ([]string, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id
+FROM session_threads
+WHERE session_id = $1 AND kind = 'child'
+ORDER BY created_at, id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]string, 0)
+	for rows.Next() {
+		var threadID string
+		if err := rows.Scan(&threadID); err != nil {
+			return nil, err
+		}
+		result = append(result, threadID)
+	}
+	return result, rows.Err()
+}
+
+// ArchiveSessionThread durably ends one idle or rescheduling child without
+// changing the primary Thread lifecycle. The Thread projection, queued-input
+// flush, pending-action closure, lifecycle events, Session aggregate, and
+// terminate outbox instruction share the Session serialization transaction.
+func (s *Store) ArchiveSessionThread(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) (domain.SessionThread, error) {
+	if sessionID == "" || threadID == "" {
+		return domain.SessionThread{}, domain.Validation(
+			"session and session Thread are required",
+		)
+	}
+	var result domain.SessionThread
+	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+		row, err := q.LockSession(ctx, sessionID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return domain.NotFound("session not found")
+		}
+		if err != nil {
+			return err
+		}
+		if row.DeletingAt.Valid {
+			return domain.Conflict("session deletion is in progress")
+		}
+		session, err := sessionFromLockRow(row)
+		if err != nil {
+			return err
+		}
+		thread, err := loadSessionThreadForUpdate(ctx, tx, sessionID, threadID)
+		if err != nil {
+			return err
+		}
+		if thread.ParentThreadID == nil {
+			return domain.Conflict("primary Thread archival follows the Session lifecycle")
+		}
+
+		now := s.clock.Now().UTC()
+		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		if thread.ArchivedAt != nil {
+			if err := q.UpsertThreadTermination(
+				ctx,
+				pgstore.UpsertThreadTerminationParams{
+					SessionID: sessionID, ThreadID: threadID,
+					MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
+				},
+			); err != nil {
+				return err
+			}
+			result = thread
+			return nil
+		}
+		if thread.Status == domain.StatusRunning {
+			return domain.Conflict(
+				"cannot archive a running session Thread; interrupt first",
+			)
+		}
+
+		pendingResult, err := tx.Exec(ctx, `
+DELETE FROM pending_actions
+WHERE session_id = $1 AND thread_id = $2 AND resolved_at IS NULL`,
+			sessionID, threadID,
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+UPDATE events
+SET processed_at = COALESCE(processed_at, $3)
+WHERE session_id = $1 AND thread_id = $2 AND processed_at IS NULL`,
+			sessionID, threadID, now,
+		); err != nil {
+			return err
+		}
+
+		wasTerminated := thread.Status == domain.StatusTerminated
+		thread.TransitionStatus(domain.StatusTerminated, now)
+		archivedAt := now
+		thread.ArchivedAt = &archivedAt
+		if err := putSessionThreadTx(ctx, tx, thread); err != nil {
+			return err
+		}
+		if !wasTerminated {
+			lifecycle := domain.EventDraft{
+				Type:    domain.EvSessionThreadStatusTerminated,
+				Payload: threadLifecyclePayload(thread),
+			}
+			_, next, err := s.appendThreadDrafts(
+				ctx, q, sessionID, threadID,
+				[]domain.EventDraft{lifecycle}, maxSeq, nil,
+			)
+			if err != nil {
+				return err
+			}
+			maxSeq = next
+			_, next, err = s.appendThreadDrafts(
+				ctx, q, sessionID, *thread.ParentThreadID,
+				[]domain.EventDraft{lifecycle}, maxSeq, nil,
+			)
+			if err != nil {
+				return err
+			}
+			maxSeq = next
+		}
+
+		aggregated, err := aggregateSessionThreadStatus(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		oldStatus := session.Status
+		session.TransitionStatus(aggregated, now)
+		if err := putSessionOnlyTx(ctx, tx, session); err != nil {
+			return err
+		}
+		pendingChanged := pendingResult.RowsAffected() > 0
+		if oldStatus != aggregated || (aggregated == domain.StatusIdle && pendingChanged) {
+			var statusDraft *domain.EventDraft
+			switch aggregated {
+			case domain.StatusRunning:
+				statusDraft = &domain.EventDraft{
+					Type: domain.EvSessionStatusRunning, Payload: map[string]any{},
+				}
+			case domain.StatusRescheduling:
+				statusDraft = &domain.EventDraft{
+					Type: domain.EvSessionStatusRescheduling, Payload: map[string]any{},
+				}
+			case domain.StatusIdle:
+				pendingIDs, err := q.SessionPendingClientActionEventIDs(ctx, sessionID)
+				if err != nil {
+					return err
+				}
+				stopReason := map[string]any{"type": "end_turn"}
+				if len(pendingIDs) > 0 {
+					stopReason = map[string]any{
+						"type": "requires_action", "event_ids": pendingIDs,
+					}
+				}
+				statusDraft = &domain.EventDraft{
+					Type:    domain.EvSessionStatusIdle,
+					Payload: map[string]any{"stop_reason": stopReason},
+				}
+			case domain.StatusTerminated:
+				statusDraft = &domain.EventDraft{
+					Type: domain.EvSessionStatusTerminated, Payload: map[string]any{},
+				}
+			}
+			if statusDraft != nil {
+				_, next, err := s.appendThreadDrafts(
+					ctx, q, sessionID, *thread.ParentThreadID,
+					[]domain.EventDraft{*statusDraft}, maxSeq, nil,
+				)
+				if err != nil {
+					return err
+				}
+				maxSeq = next
+			}
+		}
+		if err := q.UpsertThreadTermination(
+			ctx,
+			pgstore.UpsertThreadTerminationParams{
+				SessionID: sessionID, ThreadID: threadID,
+				MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
+			},
+		); err != nil {
+			return err
+		}
+		result = thread
+		return nil
+	})
+	if err != nil {
+		return domain.SessionThread{}, err
+	}
+	s.notifySession(ctx, sessionID)
+	return result, nil
+}
+
+func enqueueChildThreadTerminationsLocked(
+	ctx context.Context,
+	tx pgx.Tx,
+	q *pgstore.Queries,
+	sessionID string,
+	maxSeq int64,
+	now time.Time,
+) error {
+	rows, err := tx.Query(ctx, `
+SELECT id
+FROM session_threads
+WHERE session_id = $1 AND kind = 'child'
+ORDER BY created_at, id`, sessionID)
+	if err != nil {
+		return err
+	}
+	threadIDs := make([]string, 0)
+	for rows.Next() {
+		var threadID string
+		if err := rows.Scan(&threadID); err != nil {
+			rows.Close()
+			return err
+		}
+		threadIDs = append(threadIDs, threadID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, threadID := range threadIDs {
+		if err := q.UpsertThreadTermination(
+			ctx,
+			pgstore.UpsertThreadTerminationParams{
+				SessionID: sessionID, ThreadID: threadID,
+				MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
+			},
+		); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CreateChildSessionThread atomically captures a callable Agent from the
 // Session-owned resolved roster, inserts its independent Thread projection,
 // and appends session.thread_created to the parent ledger. It deliberately does

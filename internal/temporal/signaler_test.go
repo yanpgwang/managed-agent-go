@@ -13,9 +13,10 @@ import (
 
 type capturingWorkflowClient struct {
 	client.Client
-	options  client.StartWorkflowOptions
-	workflow interface{}
-	signals  []capturedSignalWithStart
+	options      client.StartWorkflowOptions
+	workflow     interface{}
+	signals      []capturedSignalWithStart
+	terminations []string
 }
 
 type capturedSignalWithStart struct {
@@ -24,13 +25,14 @@ type capturedSignalWithStart struct {
 	args       []interface{}
 }
 
-func (*capturingWorkflowClient) TerminateWorkflow(
-	context.Context,
-	string,
-	string,
-	string,
-	...interface{},
+func (c *capturingWorkflowClient) TerminateWorkflow(
+	_ context.Context,
+	workflowID string,
+	_ string,
+	_ string,
+	_ ...interface{},
 ) error {
+	c.terminations = append(c.terminations, workflowID)
 	return nil
 }
 
@@ -101,6 +103,32 @@ func TestNewSignaler_CleanupUsesDefaultTaskQueue(t *testing.T) {
 	c := &capturingWorkflowClient{}
 	require.NoError(t, NewSignaler(c).TerminateSession(context.Background(), "sesn_default"))
 	require.Equal(t, TaskQueue, c.options.TaskQueue)
+}
+
+func TestTerminateThread_UsesStableChildWorkflowID(t *testing.T) {
+	c := &capturingWorkflowClient{}
+	signaler := NewSignaler(c)
+
+	require.NoError(t, signaler.TerminateThread(
+		context.Background(), "sesn_parent", "sthr_child",
+	))
+	require.Equal(t, []string{"session-thread:sthr_child"}, c.terminations)
+}
+
+func TestTerminateSessionWorkflows_StopsEveryChildBeforePrimaryCleanup(t *testing.T) {
+	c := &capturingWorkflowClient{}
+	signaler := NewSignaler(c)
+
+	require.NoError(t, terminateSessionWorkflows(
+		context.Background(), signaler, "sesn_multi",
+		[]string{"sthr_first", "sthr_second"},
+	))
+	require.Equal(t, []string{
+		"session-thread:sthr_first",
+		"session-thread:sthr_second",
+		"sesn_multi",
+	}, c.terminations)
+	require.Equal(t, "sandbox-cleanup:sesn_multi", c.options.ID)
 }
 
 func TestOrchestratorFastPath_TargetedInterruptWakesOnlyOwningThread(t *testing.T) {

@@ -1219,6 +1219,10 @@ type TurnCompletion struct {
 	Events  []domain.Event
 	Applied bool
 	Parked  bool
+	// ThreadStatus is set by child completions so the independent Workflow
+	// stops when its owner terminates even while the aggregate Session remains
+	// idle or running because of another Thread.
+	ThreadStatus domain.Status
 }
 
 // AppendWorkflowEvents commits a completed, non-terminal prefix of one active

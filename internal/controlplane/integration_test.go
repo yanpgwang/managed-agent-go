@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -308,6 +310,74 @@ func TestPostgresHTTPSessionPrimaryThreadLifecycle(t *testing.T) {
 	}
 	if archived["status"] != string(domain.StatusTerminated) || archived["archived_at"] == nil {
 		t.Fatalf("archived thread = %#v", archived)
+	}
+}
+
+func TestOfficialGoSDKArchivesPostgresChildThread(t *testing.T) {
+	handler, fixture := postgresHandlerWithFixture(t)
+	ctx := context.Background()
+	session := domain.Session{
+		ID: "sesn_child_archive_sdk", AgentID: "agent_coordinator",
+		AgentVersion: 1, EnvironmentID: "env_cloud", Status: domain.StatusIdle,
+		AgentSnapshot: domain.Agent{
+			ID: "agent_coordinator", Version: 1, Name: "coordinator",
+			Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+			Multiagent: &domain.Multiagent{
+				Type: "coordinator",
+				Agents: []domain.AgentReference{{
+					Type: "agent", ID: "agent_reviewer", Version: 2,
+				}},
+			},
+		},
+		MultiagentRoster: []domain.Agent{{
+			ID: "agent_reviewer", Version: 2, Name: "reviewer",
+			Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		}},
+		Metadata: map[string]any{}, CreatedAt: fixture.clock.Now(),
+		UpdatedAt: fixture.clock.Now(),
+	}
+	if _, err := fixture.store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := fixture.store.ListSessionThreads(
+		ctx, session.ID, app.SessionThreadListQuery{Limit: 1},
+	)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("primary Threads = %+v, err=%v", threads, err)
+	}
+	child, _, err := fixture.store.CreateChildSessionThread(
+		ctx, session.ID, threads[0].ID, "reviewer",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	client := anthropic.NewClient(
+		option.WithBaseURL(server.URL+"/"), option.WithAPIKey("test-key"),
+	)
+	archived, err := client.Beta.Sessions.Threads.Archive(
+		ctx,
+		child.ID,
+		anthropic.BetaSessionThreadArchiveParams{SessionID: session.ID},
+	)
+	if err != nil || archived.ID != child.ID || archived.ArchivedAt.IsZero() ||
+		archived.Status != anthropic.BetaManagedAgentsSessionThreadStatusTerminated {
+		t.Fatalf("Archive child Session Thread = %+v, err=%v", archived, err)
+	}
+	wakeups, err := fixture.store.ListWakeupsForDelivery(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var intent pg.OrchestrationIntent
+	for _, wakeup := range wakeups {
+		if wakeup.SessionID == session.ID && wakeup.ThreadID == child.ID {
+			intent = wakeup.Intent
+		}
+	}
+	if intent != pg.OrchestrationTerminate {
+		t.Fatalf("child termination intent = %q", intent)
 	}
 }
 

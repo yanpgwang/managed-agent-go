@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"errors"
 	"log"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
@@ -76,7 +77,34 @@ func (o *Orchestrator) TerminateSession(ctx context.Context, sessionID string) e
 	if o.signaler == nil {
 		return nil
 	}
+	if o.store != nil {
+		threadIDs, err := o.store.ListChildSessionThreadIDs(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		return terminateSessionWorkflows(
+			ctx, o.signaler, sessionID, threadIDs,
+		)
+	}
 	return o.signaler.TerminateSession(ctx, sessionID)
+}
+
+func terminateSessionWorkflows(
+	ctx context.Context,
+	signaler *Signaler,
+	sessionID string,
+	threadIDs []string,
+) error {
+	var terminationErrs []error
+	for _, threadID := range threadIDs {
+		if err := signaler.TerminateThread(ctx, sessionID, threadID); err != nil {
+			terminationErrs = append(terminationErrs, err)
+		}
+	}
+	if err := errors.Join(terminationErrs...); err != nil {
+		return err
+	}
+	return signaler.TerminateSession(ctx, sessionID)
 }
 
 // CreateSession creates a session and admits its initial events, then fast-path
@@ -187,9 +215,10 @@ func NewRuntime(config RuntimeConfig) *Runtime {
 	w := NewWorkerOnTaskQueue(config.TemporalClient, acts, taskQueue)
 	signaler := NewSignalerOnTaskQueue(config.TemporalClient, taskQueue)
 	relay := NewRelay(config.Store, signaler, config.RelayConfig)
+	terminator := NewOrchestrator(config.Store, signaler)
 	lifecycle := NewLifecycleReconciler(
 		config.Store,
-		signaler,
+		terminator,
 		sandboxes,
 		LifecycleReconcilerConfig{},
 		resourceDeletionReconciler(config.Resources),

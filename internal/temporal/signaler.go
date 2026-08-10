@@ -81,6 +81,27 @@ func (s *Signaler) WakeThread(
 	return err
 }
 
+// TerminateThread stops one child Workflow after PostgreSQL has durably ended
+// the owning Thread. Temporal NotFound is idempotent success: an idle child may
+// never have started, or a concurrent relay may already have stopped it.
+func (s *Signaler) TerminateThread(
+	ctx context.Context,
+	_ string,
+	threadID string,
+) error {
+	err := s.client.TerminateWorkflow(
+		ctx,
+		sessionThreadWorkflowID(threadID),
+		"",
+		"session Thread lifecycle ended through the public API",
+	)
+	var notFound *serviceerror.NotFound
+	if err != nil && !errors.As(err, &notFound) {
+		return err
+	}
+	return nil
+}
+
 // TerminateSession stops the live Workflow execution for a session before its
 // PostgreSQL projection is physically deleted. A session that never started a
 // Workflow is already stopped, so Temporal NotFound is idempotent success.

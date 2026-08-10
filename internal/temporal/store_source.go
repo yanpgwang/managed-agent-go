@@ -382,9 +382,13 @@ func (s storeSource) CompleteThreadWorkflowTurn(
 		return TurnCompletionResult{}, err
 	}
 	parked := res.Parked
+	completionStatus := res.Session.Status
+	if res.ThreadStatus != "" {
+		completionStatus = res.ThreadStatus
+	}
 	return TurnCompletionResult{
 		Events: res.Events, Applied: res.Applied,
-		Status: res.Session.Status, Parked: &parked,
+		Status: completionStatus, Parked: &parked,
 	}, nil
 }
 

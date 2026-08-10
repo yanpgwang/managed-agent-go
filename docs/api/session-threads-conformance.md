@@ -11,7 +11,7 @@ Baseline: `managed-agents-2026-04-01`, Anthropic Go SDK `v1.62.0`.
 | --- | --- | --- | --- | --- | --- |
 | Get Thread | `GET /v1/sessions/{session_id}/threads/{thread_id}` | Yes | Yes | Independent PostgreSQL Thread execution projection | Advisor Thread snapshots are not implemented. |
 | List Threads | `GET /v1/sessions/{session_id}/threads` | Yes | Yes | Primary-first forward keyset page of independent projections | Advisor Thread snapshots are not implemented. |
-| Archive Thread | `POST /v1/sessions/{session_id}/threads/{thread_id}/archive` | Yes | Yes | Reuses the idle-only Session archive fence | Archiving the primary archives the single-thread Session. |
+| Archive Thread | `POST /v1/sessions/{session_id}/threads/{thread_id}/archive` | Yes | Yes | Primary uses the Session fence; child archive atomically closes its barriers, emits lifecycle projections, and writes a retryable Workflow-termination intent | Running Threads must be interrupted first. |
 | List Thread Events | `GET /v1/sessions/{session_id}/threads/{thread_id}/events` | Yes | Yes | Forward page over the selected Thread's authoritative ledger | Child actions remain canonical in the child ledger; the primary stream receives separately identified client-visible projections. |
 | Stream Thread Events | `GET /v1/sessions/{session_id}/threads/{thread_id}/stream` | Yes | Yes | Thread-scoped NATS previews plus PostgreSQL repair | The stream intentionally does not replay history. |
 
@@ -28,10 +28,10 @@ Thread-owned action barriers, client-visible cross-post IDs, redundant routing
 hint validation, partial-barrier waiting, automatic child response routing, and
 idempotent child resume. Event tests additionally cover global and targeted
 interrupt routing, independent Workflow wakeups, finish-vs-interrupt ordering,
-idle no-ops, and queued follow-up boundaries.
+idle no-ops, queued follow-up boundaries, child archive idempotency, termination
+outbox dominance, and shutdown of every child before Session deletion cleanup.
 
 Not yet claimed:
 
-- child Workflow shutdown on archive/delete;
 - immutable child context snapshots and explicit context-compaction events;
 - advisor consultation Threads and Session-wide list-cost budget enforcement.

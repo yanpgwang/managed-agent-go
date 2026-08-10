@@ -22,6 +22,10 @@ type ThreadWakeupDeliverer interface {
 	) error
 }
 
+type ThreadTerminationDeliverer interface {
+	TerminateThread(ctx context.Context, sessionID string, threadID string) error
+}
+
 // OutboxStore is the relay's view of the PostgreSQL outbox. *pg.Store implements
 // it; the narrow interface keeps the relay testable.
 type OutboxStore interface {
@@ -33,6 +37,7 @@ type OutboxStore interface {
 type ThreadOutboxStore interface {
 	DeleteThreadWakeupIfUnchanged(
 		ctx context.Context, sessionID string, threadID string, maxSeq int64,
+		intent pg.OrchestrationIntent,
 	) (bool, error)
 	RecordThreadAttempt(
 		ctx context.Context, sessionID string, threadID string, cause string,
@@ -126,6 +131,14 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 		var deliveryErr error
 		if w.ThreadID == "" {
 			deliveryErr = r.deliverer.Wake(ctx, w.SessionID, w.MaxEventSeq)
+		} else if w.Intent == pg.OrchestrationTerminate {
+			if deliverer, ok := r.deliverer.(ThreadTerminationDeliverer); ok {
+				deliveryErr = deliverer.TerminateThread(
+					ctx, w.SessionID, w.ThreadID,
+				)
+			} else {
+				deliveryErr = fmt.Errorf("thread termination delivery is unavailable")
+			}
 		} else {
 			if deliverer, ok := r.deliverer.(ThreadWakeupDeliverer); ok {
 				deliveryErr = deliverer.WakeThread(
@@ -170,7 +183,7 @@ func (r *Relay) RunOnce(ctx context.Context) (int, error) {
 				err = fmt.Errorf("thread outbox reconciliation is unavailable")
 			} else {
 				ok, err = store.DeleteThreadWakeupIfUnchanged(
-					ctx, w.SessionID, w.ThreadID, w.MaxEventSeq,
+					ctx, w.SessionID, w.ThreadID, w.MaxEventSeq, w.Intent,
 				)
 			}
 		}
