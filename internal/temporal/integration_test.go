@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
@@ -179,6 +180,31 @@ func TestVerticalSlice_MultiagentDelegationEndToEnd(t *testing.T) {
 			"model calls coordinator=%d child=%d, want 3/1",
 			probe.coordinatorCount(), probe.childCount(),
 		)
+	}
+	archived, err := store.ArchiveSessionThread(ctx, session.ID, child.ID)
+	if err != nil || archived.Status != domain.StatusTerminated ||
+		archived.ArchivedAt == nil {
+		t.Fatalf("archive child = %+v, err=%v", archived, err)
+	}
+	shutdownDeadline := time.Now().Add(10 * time.Second)
+	for {
+		described, describeErr := c.DescribeWorkflowExecution(
+			ctx, "session-thread:"+child.ID, "",
+		)
+		if describeErr != nil {
+			t.Fatalf("describe archived child Workflow: %v", describeErr)
+		}
+		if described.WorkflowExecutionInfo.Status ==
+			enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED {
+			break
+		}
+		if time.Now().After(shutdownDeadline) {
+			t.Fatalf(
+				"archived child Workflow status = %s, want terminated",
+				described.WorkflowExecutionInfo.Status,
+			)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -491,6 +517,20 @@ func TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd(t *testing.T) {
 		Metadata:      map[string]any{},
 		CreatedAt:     time.Now().UTC(),
 		UpdatedAt:     time.Now().UTC(),
+		AgentSnapshot: domain.Agent{
+			ID: "agent_1", Version: 1, Name: "coordinator",
+			Model: domain.NormalizeModel(domain.Model{ID: "coordinator-model"}),
+			Multiagent: &domain.Multiagent{
+				Type: "coordinator",
+				Agents: []domain.AgentReference{{
+					Type: "agent", ID: "agent_child", Version: 1,
+				}},
+			},
+		},
+		MultiagentRoster: []domain.Agent{{
+			ID: "agent_child", Version: 1, Name: "child",
+			Model: domain.NormalizeModel(domain.Model{ID: "child-model"}),
+		}},
 	}
 	if _, err := store.CreateSession(ctx, session, nil); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -502,6 +542,27 @@ func TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd(t *testing.T) {
 	root := box.Root()
 	if err := box.WriteFile(ctx, "before-crash", []byte("durable")); err != nil {
 		t.Fatalf("write sandbox marker: %v", err)
+	}
+	threads, err := store.ListSessionThreads(
+		ctx, session.ID, app.SessionThreadListQuery{Limit: 1},
+	)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("primary Threads = %+v, err=%v", threads, err)
+	}
+	child, _, err := store.CreateChildSessionThread(
+		ctx, session.ID, threads[0].ID, "child",
+	)
+	if err != nil {
+		t.Fatalf("create child Thread: %v", err)
+	}
+	if err := runtime.Signal.WakeThread(ctx, session.ID, child.ID, 0); err != nil {
+		t.Fatalf("start child Workflow: %v", err)
+	}
+	childWorkflowID := "session-thread:" + child.ID
+	described, err := c.DescribeWorkflowExecution(ctx, childWorkflowID, "")
+	if err != nil || described.WorkflowExecutionInfo.Status !=
+		enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		t.Fatalf("child Workflow before deletion = %+v, err=%v", described, err)
 	}
 	if err := store.PrepareSessionDeletion(ctx, session.ID); err != nil {
 		t.Fatalf("prepare deletion: %v", err)
@@ -524,6 +585,11 @@ func TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd(t *testing.T) {
 	}
 	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("sandbox root survived cleanup or stat failed: %v", err)
+	}
+	described, err = c.DescribeWorkflowExecution(ctx, childWorkflowID, "")
+	if err != nil || described.WorkflowExecutionInfo.Status !=
+		enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED {
+		t.Fatalf("child Workflow after deletion = %+v, err=%v", described, err)
 	}
 }
 

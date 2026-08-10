@@ -85,21 +85,28 @@ func (q *Queries) DeleteOutboxIfSeq(ctx context.Context, arg DeleteOutboxIfSeqPa
 	return result.RowsAffected(), nil
 }
 
-const deleteThreadOutboxIfSeq = `-- name: DeleteThreadOutboxIfSeq :execrows
+const deleteThreadOutboxIfUnchanged = `-- name: DeleteThreadOutboxIfUnchanged :execrows
 DELETE FROM thread_orchestration_outbox
 WHERE session_id = $1
   AND thread_id = $2
   AND max_event_seq = $3
+  AND intent = $4
 `
 
-type DeleteThreadOutboxIfSeqParams struct {
+type DeleteThreadOutboxIfUnchangedParams struct {
 	SessionID   string
 	ThreadID    string
 	MaxEventSeq int64
+	Intent      string
 }
 
-func (q *Queries) DeleteThreadOutboxIfSeq(ctx context.Context, arg DeleteThreadOutboxIfSeqParams) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteThreadOutboxIfSeq, arg.SessionID, arg.ThreadID, arg.MaxEventSeq)
+func (q *Queries) DeleteThreadOutboxIfUnchanged(ctx context.Context, arg DeleteThreadOutboxIfUnchangedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteThreadOutboxIfUnchanged,
+		arg.SessionID,
+		arg.ThreadID,
+		arg.MaxEventSeq,
+		arg.Intent,
+	)
 	if err != nil {
 		return 0, err
 	}
@@ -586,10 +593,11 @@ func (q *Queries) ListEventsByTurn(ctx context.Context, arg ListEventsByTurnPara
 }
 
 const listOrchestrationWakeups = `-- name: ListOrchestrationWakeups :many
-SELECT session_id, ''::text AS thread_id, max_event_seq, enqueued_at, attempts
+SELECT session_id, ''::text AS thread_id, max_event_seq, enqueued_at, attempts,
+       'wake'::text AS intent
 FROM orchestration_outbox
 UNION ALL
-SELECT session_id, thread_id, max_event_seq, enqueued_at, attempts
+SELECT session_id, thread_id, max_event_seq, enqueued_at, attempts, intent
 FROM thread_orchestration_outbox
 ORDER BY enqueued_at
 LIMIT $1
@@ -601,6 +609,7 @@ type ListOrchestrationWakeupsRow struct {
 	MaxEventSeq int64
 	EnqueuedAt  pgtype.Timestamptz
 	Attempts    int32
+	Intent      string
 }
 
 // ListOrchestrationWakeups merges primary and child delivery queues without
@@ -620,6 +629,7 @@ func (q *Queries) ListOrchestrationWakeups(ctx context.Context, rowLimit int32) 
 			&i.MaxEventSeq,
 			&i.EnqueuedAt,
 			&i.Attempts,
+			&i.Intent,
 		); err != nil {
 			return nil, err
 		}
@@ -912,15 +922,19 @@ func (q *Queries) UpsertOutbox(ctx context.Context, arg UpsertOutboxParams) erro
 
 const upsertThreadOutbox = `-- name: UpsertThreadOutbox :exec
 INSERT INTO thread_orchestration_outbox (
-    session_id, thread_id, max_event_seq, enqueued_at
+    session_id, thread_id, max_event_seq, enqueued_at, intent
 )
-VALUES ($1, $2, $3, $4)
+VALUES ($1, $2, $3, $4, 'wake')
 ON CONFLICT (session_id, thread_id) DO UPDATE
 SET max_event_seq = GREATEST(
         thread_orchestration_outbox.max_event_seq,
         EXCLUDED.max_event_seq
     ),
-    enqueued_at = EXCLUDED.enqueued_at
+    enqueued_at = EXCLUDED.enqueued_at,
+    intent = CASE
+        WHEN thread_orchestration_outbox.intent = 'terminate' THEN 'terminate'
+        ELSE EXCLUDED.intent
+    END
 `
 
 type UpsertThreadOutboxParams struct {
@@ -934,6 +948,40 @@ type UpsertThreadOutboxParams struct {
 // Thread Workflow. Session-wide sequence numbers still preserve causal order.
 func (q *Queries) UpsertThreadOutbox(ctx context.Context, arg UpsertThreadOutboxParams) error {
 	_, err := q.db.Exec(ctx, upsertThreadOutbox,
+		arg.SessionID,
+		arg.ThreadID,
+		arg.MaxEventSeq,
+		arg.EnqueuedAt,
+	)
+	return err
+}
+
+const upsertThreadTermination = `-- name: UpsertThreadTermination :exec
+INSERT INTO thread_orchestration_outbox (
+    session_id, thread_id, max_event_seq, enqueued_at, intent
+)
+VALUES ($1, $2, $3, $4, 'terminate')
+ON CONFLICT (session_id, thread_id) DO UPDATE
+SET max_event_seq = GREATEST(
+        thread_orchestration_outbox.max_event_seq,
+        EXCLUDED.max_event_seq
+    ),
+    enqueued_at = EXCLUDED.enqueued_at,
+    intent = 'terminate'
+`
+
+type UpsertThreadTerminationParams struct {
+	SessionID   string
+	ThreadID    string
+	MaxEventSeq int64
+	EnqueuedAt  pgtype.Timestamptz
+}
+
+// UpsertThreadTermination permanently upgrades one child orchestration key to
+// shutdown. A later stale wake may raise the observed sequence but cannot
+// downgrade the intent.
+func (q *Queries) UpsertThreadTermination(ctx context.Context, arg UpsertThreadTerminationParams) error {
+	_, err := q.db.Exec(ctx, upsertThreadTermination,
 		arg.SessionID,
 		arg.ThreadID,
 		arg.MaxEventSeq,

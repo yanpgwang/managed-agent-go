@@ -305,6 +305,7 @@ type ThreadOrchestrationOutbox struct {
 	Attempts      int32
 	LastAttemptAt pgtype.Timestamptz
 	LastError     *string
+	Intent        string
 }
 
 type ToolStep struct {

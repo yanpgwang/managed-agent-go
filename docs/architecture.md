@@ -193,9 +193,11 @@ The strongest current risks are semantic rather than structural:
    Snapshots, provider-round records, deployment-managed MCP authentication, and
    reference-only Temporal payloads remain open.
 5. Ordinary coordinator delegation, persistent child execution, cross-posted
-   pending-action response routing, and targeted/global multi-Thread interrupts
-   are wired. Explicit termination of waiting child Workflows during archive or
-   Session deletion remains open before M2 is complete.
+   pending-action response routing, targeted/global multi-Thread interrupts,
+   and child Workflow shutdown are wired. Archive atomically upgrades the
+   child's coalesced orchestration row from wake to terminate; termination
+   dominates stale wake delivery. Session deletion enumerates and stops every
+   child before primary Workflow and sandbox cleanup.
 
 Current API support is tracked in the [compatibility matrix](compatibility.md);
 planned capability work is kept in the [roadmap](roadmap.md).

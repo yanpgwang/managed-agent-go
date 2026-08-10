@@ -105,9 +105,10 @@ func (f *fakeThreadOutbox) DeleteThreadWakeupIfUnchanged(
 	sessionID string,
 	threadID string,
 	maxSeq int64,
+	intent pg.OrchestrationIntent,
 ) (bool, error) {
 	if f.thread.SessionID != sessionID || f.thread.ThreadID != threadID ||
-		f.thread.MaxEventSeq != maxSeq {
+		f.thread.MaxEventSeq != maxSeq || f.thread.Intent != intent {
 		return false, nil
 	}
 	f.thread = pg.OutboxWakeup{}
@@ -126,7 +127,8 @@ func (f *fakeThreadOutbox) RecordThreadAttempt(
 
 type fakeThreadDeliverer struct {
 	fakeDeliverer
-	threadIDs []string
+	threadIDs     []string
+	terminatedIDs []string
 }
 
 func (d *fakeThreadDeliverer) WakeThread(
@@ -144,6 +146,22 @@ func (d *fakeThreadDeliverer) WakeThread(
 	d.delivered = append(d.delivered, WakeupSignal{MaxEventSeq: maxSeq})
 	d.sessions = append(d.sessions, sessionID)
 	d.threadIDs = append(d.threadIDs, threadID)
+	return nil
+}
+
+func (d *fakeThreadDeliverer) TerminateThread(
+	_ context.Context,
+	sessionID string,
+	threadID string,
+) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.calls++
+	if d.calls <= d.failUntil {
+		return errors.New("temporal unavailable")
+	}
+	d.sessions = append(d.sessions, sessionID)
+	d.terminatedIDs = append(d.terminatedIDs, threadID)
 	return nil
 }
 
@@ -193,6 +211,7 @@ func TestRelay_DeliversChildWakeupToIndependentWorkflow(t *testing.T) {
 		fakeOutbox: newFakeOutbox(),
 		thread: pg.OutboxWakeup{
 			SessionID: "sess_child", ThreadID: "sthr_child", MaxEventSeq: 11,
+			Intent: pg.OrchestrationWake,
 		},
 	}
 	deliverer := &fakeThreadDeliverer{}
@@ -211,6 +230,62 @@ func TestRelay_DeliversChildWakeupToIndependentWorkflow(t *testing.T) {
 		t.Fatalf(
 			"child deliveries sessions=%v threads=%v signals=%v",
 			deliverer.sessions, deliverer.threadIDs, deliverer.delivered,
+		)
+	}
+}
+
+func TestRelay_DeliversChildTerminationWithoutRestartingWorkflow(t *testing.T) {
+	outbox := &fakeThreadOutbox{
+		fakeOutbox: newFakeOutbox(),
+		thread: pg.OutboxWakeup{
+			SessionID: "sess_child", ThreadID: "sthr_child", MaxEventSeq: 19,
+			Intent: pg.OrchestrationTerminate,
+		},
+	}
+	deliverer := &fakeThreadDeliverer{}
+	relay := NewRelay(outbox, deliverer, RelayConfig{})
+
+	removed, err := relay.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("run once: %v", err)
+	}
+	if removed != 1 || outbox.thread.ThreadID != "" {
+		t.Fatalf("child termination removed=%d row=%+v", removed, outbox.thread)
+	}
+	if len(deliverer.threadIDs) != 0 || len(deliverer.terminatedIDs) != 1 ||
+		deliverer.terminatedIDs[0] != "sthr_child" {
+		t.Fatalf(
+			"wake threads=%v terminated threads=%v",
+			deliverer.threadIDs, deliverer.terminatedIDs,
+		)
+	}
+}
+
+func TestRelay_RetriesChildTerminationUntilTemporalAcceptsIt(t *testing.T) {
+	outbox := &fakeThreadOutbox{
+		fakeOutbox: newFakeOutbox(),
+		thread: pg.OutboxWakeup{
+			SessionID: "sess_child", ThreadID: "sthr_child", MaxEventSeq: 21,
+			Intent: pg.OrchestrationTerminate,
+		},
+	}
+	deliverer := &fakeThreadDeliverer{fakeDeliverer: fakeDeliverer{failUntil: 1}}
+	relay := NewRelay(outbox, deliverer, RelayConfig{})
+
+	removed, err := relay.RunOnce(context.Background())
+	if err != nil || removed != 0 || outbox.thread.ThreadID == "" ||
+		outbox.attempts["sess_child/sthr_child"] != 1 {
+		t.Fatalf(
+			"failed termination removed=%d row=%+v attempts=%v err=%v",
+			removed, outbox.thread, outbox.attempts, err,
+		)
+	}
+	removed, err = relay.RunOnce(context.Background())
+	if err != nil || removed != 1 || outbox.thread.ThreadID != "" ||
+		len(deliverer.terminatedIDs) != 1 {
+		t.Fatalf(
+			"retried termination removed=%d row=%+v terminated=%v err=%v",
+			removed, outbox.thread, deliverer.terminatedIDs, err,
 		)
 	}
 }

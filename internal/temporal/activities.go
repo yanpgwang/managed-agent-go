@@ -698,6 +698,16 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			executionThread = &thread
 		}
 	}
+	if executionThread != nil && executionThread.ParentThreadID != nil &&
+		(executionThread.ArchivedAt != nil ||
+			executionThread.Status == domain.StatusTerminated) {
+		return PrepareTurnResult{
+			AlreadyCompleted: true,
+			Terminated:       true,
+			ThreadID:         executionThread.ID,
+			IsChild:          true,
+		}, nil
+	}
 	var pending []domain.PendingAction
 	if len(in.ResolutionEventIDs) > 0 {
 		if executionThread != nil && executionThread.ParentThreadID != nil {

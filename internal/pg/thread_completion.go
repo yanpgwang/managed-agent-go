@@ -70,6 +70,13 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		if trigger.ThreadID != threadID {
 			return domain.Conflict("trigger event belongs to another Thread")
 		}
+		if thread.ArchivedAt != nil || thread.Status == domain.StatusTerminated {
+			result = TurnCompletion{
+				Session: session, Applied: false,
+				ThreadStatus: domain.StatusTerminated,
+			}
+			return nil
+		}
 		pendingResume := false
 		if trigger.ProcessedAt.Valid {
 			pendingResume, err = q.IsUnresolvedPendingResolution(
@@ -96,7 +103,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 			}
 			result = TurnCompletion{
 				Session: session, Events: events, Applied: false,
-				Parked: turnEventsParked(events),
+				Parked: turnEventsParked(events), ThreadStatus: thread.Status,
 			}
 			return nil
 		}
@@ -454,7 +461,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		}
 		result = TurnCompletion{
 			Session: session, Events: allEvents, Applied: true,
-			Parked: len(pendingActionEventIDs) > 0,
+			Parked: len(pendingActionEventIDs) > 0, ThreadStatus: thread.Status,
 		}
 		return nil
 	})

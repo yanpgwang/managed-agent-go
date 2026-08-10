@@ -540,6 +540,15 @@ func (s *Store) PrepareSessionDeletion(ctx context.Context, sessionID string) er
 			return domain.Conflict("cannot delete a running session; interrupt first")
 		}
 		now := s.clock.Now().UTC()
+		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		if err := enqueueChildThreadTerminationsLocked(
+			ctx, tx, q, sessionID, maxSeq, now,
+		); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `
 UPDATE files
 SET state = 'deleting', updated_at = $2

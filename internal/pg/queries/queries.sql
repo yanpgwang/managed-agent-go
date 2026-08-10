@@ -243,15 +243,35 @@ SET max_event_seq = GREATEST(orchestration_outbox.max_event_seq, EXCLUDED.max_ev
 -- Thread Workflow. Session-wide sequence numbers still preserve causal order.
 -- name: UpsertThreadOutbox :exec
 INSERT INTO thread_orchestration_outbox (
-    session_id, thread_id, max_event_seq, enqueued_at
+    session_id, thread_id, max_event_seq, enqueued_at, intent
 )
-VALUES (@session_id, @thread_id, @max_event_seq, @enqueued_at)
+VALUES (@session_id, @thread_id, @max_event_seq, @enqueued_at, 'wake')
 ON CONFLICT (session_id, thread_id) DO UPDATE
 SET max_event_seq = GREATEST(
         thread_orchestration_outbox.max_event_seq,
         EXCLUDED.max_event_seq
     ),
-    enqueued_at = EXCLUDED.enqueued_at;
+    enqueued_at = EXCLUDED.enqueued_at,
+    intent = CASE
+        WHEN thread_orchestration_outbox.intent = 'terminate' THEN 'terminate'
+        ELSE EXCLUDED.intent
+    END;
+
+-- UpsertThreadTermination permanently upgrades one child orchestration key to
+-- shutdown. A later stale wake may raise the observed sequence but cannot
+-- downgrade the intent.
+-- name: UpsertThreadTermination :exec
+INSERT INTO thread_orchestration_outbox (
+    session_id, thread_id, max_event_seq, enqueued_at, intent
+)
+VALUES (@session_id, @thread_id, @max_event_seq, @enqueued_at, 'terminate')
+ON CONFLICT (session_id, thread_id) DO UPDATE
+SET max_event_seq = GREATEST(
+        thread_orchestration_outbox.max_event_seq,
+        EXCLUDED.max_event_seq
+    ),
+    enqueued_at = EXCLUDED.enqueued_at,
+    intent = 'terminate';
 
 -- EnqueueEnvironmentWork writes the self-hosted worker activation in the same
 -- transaction as event admission and the Temporal wakeup. The partial unique
@@ -284,10 +304,11 @@ LIMIT @row_limit;
 -- ListOrchestrationWakeups merges primary and child delivery queues without
 -- changing either queue's idempotency key.
 -- name: ListOrchestrationWakeups :many
-SELECT session_id, ''::text AS thread_id, max_event_seq, enqueued_at, attempts
+SELECT session_id, ''::text AS thread_id, max_event_seq, enqueued_at, attempts,
+       'wake'::text AS intent
 FROM orchestration_outbox
 UNION ALL
-SELECT session_id, thread_id, max_event_seq, enqueued_at, attempts
+SELECT session_id, thread_id, max_event_seq, enqueued_at, attempts, intent
 FROM thread_orchestration_outbox
 ORDER BY enqueued_at
 LIMIT @row_limit;
@@ -300,11 +321,12 @@ LIMIT @row_limit;
 DELETE FROM orchestration_outbox
 WHERE session_id = @session_id AND max_event_seq = @max_event_seq;
 
--- name: DeleteThreadOutboxIfSeq :execrows
+-- name: DeleteThreadOutboxIfUnchanged :execrows
 DELETE FROM thread_orchestration_outbox
 WHERE session_id = @session_id
   AND thread_id = @thread_id
-  AND max_event_seq = @max_event_seq;
+  AND max_event_seq = @max_event_seq
+  AND intent = @intent;
 
 -- MarkOutboxAttempt records a failed delivery attempt for backoff and
 -- observability without removing the wakeup.
