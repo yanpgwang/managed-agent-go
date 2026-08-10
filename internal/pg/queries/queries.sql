@@ -127,6 +127,21 @@ WHERE event.session_id = @session_id
 ORDER BY event.seq
 LIMIT 1;
 
+-- FirstUnprocessedThreadInterruptAfter is the child-Thread counterpart of the
+-- primary query above. Global interrupts are fanned out into each active child
+-- ledger during admission, so every Workflow owns an independently processable
+-- interrupt receipt.
+-- name: FirstUnprocessedThreadInterruptAfter :one
+SELECT event.*
+FROM events AS event
+WHERE event.session_id = @session_id
+  AND event.thread_id = @thread_id
+  AND event.seq > @after_seq
+  AND event.type = 'user.interrupt'
+  AND event.processed_at IS NULL
+ORDER BY event.seq
+LIMIT 1;
+
 -- PriorProcessedModelTriggers returns processed events that can drive a model
 -- turn before a given sequence, in receipt order. Resolution events are included
 -- because a completed custom-tool/confirmation resume may itself have committed
@@ -157,6 +172,15 @@ WHERE event.session_id = @session_id
       WHERE thread.session_id = @session_id AND thread.kind = 'primary'
   )
   AND event.type IN ('user.message', 'agent.thread_message_received')
+  AND event.processed_at IS NULL
+  AND event.id <> @exclude_id;
+
+-- name: CountUnprocessedThreadMessages :one
+SELECT COUNT(*)::int AS n
+FROM events AS event
+WHERE event.session_id = @session_id
+  AND event.thread_id = @thread_id
+  AND event.type = 'agent.thread_message_received'
   AND event.processed_at IS NULL
   AND event.id <> @exclude_id;
 
@@ -193,6 +217,17 @@ UPDATE events AS target
 SET processed_at = COALESCE(target.processed_at, @processed_at)
 WHERE target.session_id = @session_id
   AND target.id IN (SELECT id FROM flushed_ids);
+
+-- FlushQueuedThreadMessages stamps follow-up messages that must not execute
+-- after a child turn exhausts its retry budget.
+-- name: FlushQueuedThreadMessages :exec
+UPDATE events
+SET processed_at = COALESCE(processed_at, @processed_at)
+WHERE session_id = @session_id
+  AND thread_id = @thread_id
+  AND type = 'agent.thread_message_received'
+  AND processed_at IS NULL
+  AND id <> @exclude_id;
 
 -- UpsertOutbox writes or coalesces the pending wakeup for a session. When a
 -- wakeup is already pending, it keeps the newer enqueue time and raises

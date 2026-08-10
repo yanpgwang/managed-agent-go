@@ -74,6 +74,15 @@ type EventSource interface {
 	) (TurnCompletionResult, error)
 }
 
+type ThreadInterruptSource interface {
+	FirstUnprocessedThreadInterruptAfter(
+		ctx context.Context,
+		sessionID string,
+		threadID string,
+		afterSeq int64,
+	) (*domain.Event, error)
+}
+
 type ThreadEventSource interface {
 	ThreadEventsAfter(
 		context.Context, string, string, int64, int,
@@ -463,11 +472,23 @@ func (a *Activities) LoadInterrupt(
 	ctx context.Context,
 	in LoadInterruptInput,
 ) (LoadInterruptResult, error) {
-	event, err := a.source.FirstUnprocessedInterruptAfter(
-		ctx,
-		in.SessionID,
-		in.AfterSeq,
-	)
+	var event *domain.Event
+	var err error
+	if in.ThreadID == "" {
+		event, err = a.source.FirstUnprocessedInterruptAfter(
+			ctx, in.SessionID, in.AfterSeq,
+		)
+	} else {
+		source, ok := a.source.(ThreadInterruptSource)
+		if !ok {
+			return LoadInterruptResult{}, fmt.Errorf(
+				"temporal: event source cannot load child Thread interrupts",
+			)
+		}
+		event, err = source.FirstUnprocessedThreadInterruptAfter(
+			ctx, in.SessionID, in.ThreadID, in.AfterSeq,
+		)
+	}
 	if err != nil {
 		return LoadInterruptResult{}, err
 	}

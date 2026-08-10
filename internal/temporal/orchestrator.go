@@ -26,6 +26,32 @@ func NewOrchestrator(store *pg.Store, signaler *Signaler) *Orchestrator {
 	return &Orchestrator{store: store, signaler: signaler}
 }
 
+func (o *Orchestrator) fastPathWake(
+	ctx context.Context,
+	sessionID string,
+	adm pg.Admission,
+) {
+	if o.signaler == nil {
+		return
+	}
+	if adm.PrimaryEnqueued {
+		if err := o.signaler.Wake(ctx, sessionID, adm.MaxSeq); err != nil {
+			log.Printf(
+				"orchestrator: fast-path signal failed session_id=%s (relay will deliver): %v",
+				sessionID, err,
+			)
+		}
+	}
+	for _, threadID := range adm.WakeThreadIDs {
+		if err := o.signaler.WakeThread(ctx, sessionID, threadID, adm.MaxSeq); err != nil {
+			log.Printf(
+				"orchestrator: fast-path thread signal failed session_id=%s thread_id=%s (relay will deliver): %v",
+				sessionID, threadID, err,
+			)
+		}
+	}
+}
+
 // Admit admits a client event batch into PostgreSQL and returns the committed
 // public events. The admission transaction has already written the coalescible
 // outbox wakeup, so the returned events are durable and will be processed even
@@ -37,16 +63,11 @@ func (o *Orchestrator) Admit(ctx context.Context, sessionID string, drafts []dom
 	if err != nil {
 		return nil, err
 	}
-	if adm.Enqueued && o.signaler != nil {
-		// Best-effort latency optimization. The relay is the source of correctness.
-		if sigErr := o.signaler.Wake(ctx, sessionID, adm.MaxSeq); sigErr != nil {
-			log.Printf("orchestrator: fast-path signal failed session_id=%s (relay will deliver): %v", sessionID, sigErr)
-		}
-	}
+	o.fastPathWake(ctx, sessionID, adm)
 	// Echo only the caller-submitted events; orchestration-generated events are
 	// observed through list and stream endpoints.
-	if len(drafts) < len(adm.Events) {
-		return adm.Events[:len(drafts)], nil
+	if len(adm.SubmittedEvents) > 0 {
+		return adm.SubmittedEvents, nil
 	}
 	return adm.Events, nil
 }
@@ -65,11 +86,7 @@ func (o *Orchestrator) CreateSession(ctx context.Context, session domain.Session
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	if adm.Enqueued && o.signaler != nil {
-		if sigErr := o.signaler.Wake(ctx, session.ID, adm.MaxSeq); sigErr != nil {
-			log.Printf("orchestrator: fast-path signal failed session_id=%s (relay will deliver): %v", session.ID, sigErr)
-		}
-	}
+	o.fastPathWake(ctx, session.ID, adm)
 	return adm.Session, adm.Events, nil
 }
 
@@ -86,15 +103,7 @@ func (o *Orchestrator) CreateAPISession(
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	if adm.Enqueued && o.signaler != nil {
-		if sigErr := o.signaler.Wake(ctx, session.ID, adm.MaxSeq); sigErr != nil {
-			log.Printf(
-				"orchestrator: fast-path signal failed session_id=%s (relay will deliver): %v",
-				session.ID,
-				sigErr,
-			)
-		}
-	}
+	o.fastPathWake(ctx, session.ID, adm)
 	return adm.Session, adm.Events, nil
 }
 
@@ -112,15 +121,7 @@ func (o *Orchestrator) CreateDeploymentSession(
 	if err != nil {
 		return domain.Session{}, nil, err
 	}
-	if adm.Enqueued && o.signaler != nil {
-		if sigErr := o.signaler.Wake(ctx, session.ID, adm.MaxSeq); sigErr != nil {
-			log.Printf(
-				"orchestrator: deployment fast-path signal failed session_id=%s (relay will deliver): %v",
-				session.ID,
-				sigErr,
-			)
-		}
-	}
+	o.fastPathWake(ctx, session.ID, adm)
 	return adm.Session, adm.Events, nil
 }
 

@@ -350,6 +350,7 @@ type LoadEventsResult struct {
 // only; PostgreSQL decides whether an interrupt was durably admitted.
 type LoadInterruptInput struct {
 	SessionID string `json:"session_id"`
+	ThreadID  string `json:"thread_id,omitempty"`
 	AfterSeq  int64  `json:"after_seq"`
 }
 

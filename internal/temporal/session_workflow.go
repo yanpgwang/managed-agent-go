@@ -120,6 +120,7 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 					pendingInterrupt, err := loadInterruptAfter(
 						actx,
 						in.SessionID,
+						"",
 						cursor,
 					)
 					if err != nil {
@@ -131,6 +132,7 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 						if _, err := acknowledgeIdleInterrupt(
 							actx,
 							in.SessionID,
+							"",
 							pendingInterrupt.Interrupt.ID,
 						); err != nil {
 							return false, err
@@ -150,6 +152,7 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 						actx,
 						wakeupCh,
 						in.SessionID,
+						"",
 						trigger.Seq,
 					)
 				}
@@ -206,6 +209,7 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 							actx,
 							wakeupCh,
 							in.SessionID,
+							"",
 							event.Seq,
 						)
 					}
@@ -239,6 +243,7 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 					if _, err := acknowledgeIdleInterrupt(
 						actx,
 						in.SessionID,
+						"",
 						event.ID,
 					); err != nil {
 						return false, err

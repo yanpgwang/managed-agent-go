@@ -26,6 +26,7 @@ func interruptibleActivityHarness(
 		actx,
 		workflow.GetSignalChannel(ctx, WakeupSignalName),
 		"sess_interrupt",
+		"",
 		1,
 	)
 	var ignored string
@@ -129,9 +130,52 @@ func retryWaitHarness(ctx workflow.Context) (bool, error) {
 		actx,
 		workflow.GetSignalChannel(ctx, WakeupSignalName),
 		"sess_retry_wait",
+		"",
 		1,
 	)
 	return watcher.wait(time.Hour)
+}
+
+func childPreflightInterruptHarness(ctx workflow.Context) (bool, error) {
+	actx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: time.Minute,
+		RetryPolicy: &temporalsdk.RetryPolicy{
+			MaximumAttempts: 1,
+		},
+	})
+	watcher := newTurnInterruptWatcher(
+		actx,
+		workflow.GetSignalChannel(ctx, WakeupSignalName),
+		"sesn_child_interrupt",
+		"sthr_child_interrupt",
+		4,
+	)
+	var ignored string
+	outcome, err := watcher.executeActivity("MustNotExecute", struct{}{}, &ignored)
+	return outcome.Interrupted, err
+}
+
+func TestTurnInterruptWatcher_LoadsInterruptFromOwningChildThread(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(childPreflightInterruptHarness)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in LoadInterruptInput) (LoadInterruptResult, error) {
+			require.Equal(t, "sesn_child_interrupt", in.SessionID)
+			require.Equal(t, "sthr_child_interrupt", in.ThreadID)
+			require.EqualValues(t, 4, in.AfterSeq)
+			return LoadInterruptResult{Interrupt: &EventRef{
+				ID: "sevt_child_interrupt", Seq: 5, Type: "user.interrupt",
+			}}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadInterrupt},
+	)
+
+	env.ExecuteWorkflow(childPreflightInterruptHarness)
+	require.NoError(t, env.GetWorkflowError())
+	var interrupted bool
+	require.NoError(t, env.GetWorkflowResult(&interrupted))
+	require.True(t, interrupted)
 }
 
 func TestTurnInterruptWatcher_InterruptsModelRetryDelay(t *testing.T) {

@@ -26,11 +26,12 @@ status/usage/retry aggregation, asynchronous reports, child event/preview
 isolation, cursor scoping, SSE decoding, archive state, cascade deletion,
 Thread-owned action barriers, client-visible cross-post IDs, redundant routing
 hint validation, partial-barrier waiting, automatic child response routing, and
-idempotent child resume.
+idempotent child resume. Event tests additionally cover global and targeted
+interrupt routing, independent Workflow wakeups, finish-vs-interrupt ordering,
+idle no-ops, and queued follow-up boundaries.
 
 Not yet claimed:
 
-- global and targeted interrupts;
 - child Workflow shutdown on archive/delete;
 - immutable child context snapshots and explicit context-compaction events;
 - advisor consultation Threads and Session-wide list-cost budget enforcement.

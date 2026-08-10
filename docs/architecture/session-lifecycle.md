@@ -114,7 +114,8 @@ Session is parked on required client actions. The Workflow treats the Temporal
 Signal as metadata and rereads PostgreSQL before canceling an Activity.
 
 Model and tool Activities heartbeat so Temporal can deliver cancellation.
-PostgreSQL session-row locking defines the finish race:
+PostgreSQL session-row locking defines the finish race for both the primary and
+every child Thread:
 
 - if interrupt admission commits before turn completion, the interrupt wins;
 - if turn completion commits first, the later interrupt is an idle no-op;
@@ -127,8 +128,10 @@ PostgreSQL session-row locking defines the finish race:
 - a message batched after the interrupt starts only after the idle boundary.
 
 An interrupt received while a client-action barrier is parked is acknowledged
-without opening or resolving that barrier. Targeted multi-agent interrupts are
-not supported.
+without opening or resolving that barrier. An omitted `session_thread_id`
+creates independently processable receipts in every active Thread ledger; a
+present ID routes only to that Thread. The caller-visible response still echoes
+one event per submitted input rather than exposing the internal fan-out copies.
 
 ## Failure and delivery semantics
 

@@ -66,10 +66,16 @@ func (s *Store) notifySession(ctx context.Context, sessionID string) {
 // session projection, the highest receipt sequence after the batch, and whether
 // a coalescible orchestration wakeup was written.
 type Admission struct {
-	Session  domain.Session
-	Events   []domain.Event
-	MaxSeq   int64
-	Enqueued bool
+	Session domain.Session
+	Events  []domain.Event
+	// SubmittedEvents contains exactly one committed event for every caller
+	// draft, in request order. Events may additionally contain durable fan-out
+	// copies and synthetic projection events.
+	SubmittedEvents []domain.Event
+	MaxSeq          int64
+	Enqueued        bool
+	PrimaryEnqueued bool
+	WakeThreadIDs   []string
 }
 
 // withTx runs fn inside a transaction bound to a tx-scoped Queries. It commits
@@ -581,13 +587,14 @@ func (s *Store) admitLocked(
 	if err != nil {
 		return Admission{}, err
 	}
-	routed, resolutionThreads, err := s.routeClientDraftsLocked(
-		ctx, q, session.ID, primaryThreadID, drafts,
+	routed, resolutionThreads, interruptTargets, err := s.routeClientDraftsLocked(
+		ctx, tx, q, session.ID, primaryThreadID, drafts,
 	)
 	if err != nil {
 		return Admission{}, err
 	}
 	events := make([]domain.Event, 0, len(routed))
+	submittedEvents := make([]domain.Event, 0, len(drafts))
 	for _, item := range routed {
 		committed, nextSeq, appendErr := s.appendThreadDrafts(
 			ctx, q, session.ID, item.ThreadID,
@@ -598,6 +605,9 @@ func (s *Store) admitLocked(
 		}
 		maxSeq = nextSeq
 		events = append(events, committed...)
+		if item.Submitted {
+			submittedEvents = append(submittedEvents, committed...)
+		}
 	}
 
 	// Claim matching client-action resolutions in the same transaction that
@@ -677,7 +687,7 @@ func (s *Store) admitLocked(
 		}
 	}
 	sort.Strings(candidateChildThreads)
-	childWakeThreads := make([]string, 0, len(candidateChildThreads))
+	childWakeSet := make(map[string]struct{}, len(candidateChildThreads)+len(interruptTargets.Children))
 	for _, threadID := range candidateChildThreads {
 		childGated, err := q.HasUnresolvedPendingActions(
 			ctx,
@@ -748,14 +758,25 @@ func (s *Store) admitLocked(
 			events = append(events, childEvents...)
 			events = append(events, primaryEvents...)
 		}
+		childWakeSet[threadID] = struct{}{}
+	}
+	childHasRunnableWork := len(childWakeSet) > 0
+	for threadID := range interruptTargets.Children {
+		childWakeSet[threadID] = struct{}{}
+	}
+	childWakeThreads := make([]string, 0, len(childWakeSet))
+	for threadID := range childWakeSet {
 		childWakeThreads = append(childWakeThreads, threadID)
 	}
+	sort.Strings(childWakeThreads)
 
 	primaryHasRunnableWork := hasMessage || hasOutcome || resolutionBarrierReady
 	primaryWorkRunnable := primaryHasRunnableWork && (!gated || resolutionBarrierReady)
-	hasRunnableWork := primaryWorkRunnable || len(childWakeThreads) > 0
+	hasRunnableWork := primaryWorkRunnable || childHasRunnableWork
 
-	admission := Admission{Session: session, Events: events, MaxSeq: maxSeq}
+	admission := Admission{
+		Session: session, Events: events, SubmittedEvents: submittedEvents, MaxSeq: maxSeq,
+	}
 	if !hasRunnableWork && !hasInterrupt {
 		if err := putRuntimeProjection(); err != nil {
 			return Admission{}, err
@@ -795,7 +816,8 @@ func (s *Store) admitLocked(
 	// The coalescible orchestration wakeup. One pending row per session; a burst
 	// of admissions coalesces and raises max_event_seq to the newest receipt
 	// sequence. This is the durable signal the relay delivers to Temporal.
-	if primaryWorkRunnable || hasInterrupt {
+	primaryEnqueued := primaryWorkRunnable || interruptTargets.Primary
+	if primaryEnqueued {
 		if err := q.UpsertOutbox(ctx, pgstore.UpsertOutboxParams{
 			SessionID:   session.ID,
 			MaxEventSeq: maxSeq,
@@ -826,7 +848,9 @@ func (s *Store) admitLocked(
 	admission.Session = session
 	admission.Events = events
 	admission.MaxSeq = maxSeq
-	admission.Enqueued = primaryWorkRunnable || hasInterrupt || len(childWakeThreads) > 0
+	admission.PrimaryEnqueued = primaryEnqueued
+	admission.WakeThreadIDs = childWakeThreads
+	admission.Enqueued = primaryEnqueued || len(childWakeThreads) > 0
 	return admission, nil
 }
 
@@ -1017,6 +1041,35 @@ func (s *Store) FirstUnprocessedInterruptAfter(
 		ctx,
 		pgstore.FirstUnprocessedInterruptAfterParams{
 			SessionID: sessionID,
+			AfterSeq:  afterSeq,
+		},
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	event, err := eventFromRow(row)
+	if err != nil {
+		return nil, err
+	}
+	return &event, nil
+}
+
+// FirstUnprocessedThreadInterruptAfter returns the earliest independently
+// processable interrupt in one child Thread ledger after the supplied trigger.
+func (s *Store) FirstUnprocessedThreadInterruptAfter(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	afterSeq int64,
+) (*domain.Event, error) {
+	row, err := s.q.FirstUnprocessedThreadInterruptAfter(
+		ctx,
+		pgstore.FirstUnprocessedThreadInterruptAfterParams{
+			SessionID: sessionID,
+			ThreadID:  threadID,
 			AfterSeq:  afterSeq,
 		},
 	)

@@ -313,7 +313,13 @@ func validateClientEvent(event map[string]any) error {
 	case domain.EvSystemMessage:
 		return validateContent(true, systemContent)
 	case domain.EvUserInterrupt:
-		return optionalString(event, "session_thread_id")
+		if err := optionalString(event, "session_thread_id"); err != nil {
+			return err
+		}
+		if threadID, present := event["session_thread_id"].(string); present && threadID == "" {
+			return domain.Validation("session_thread_id must not be empty")
+		}
+		return nil
 	case domain.EvUserCustomToolResult:
 		if err := requireString("custom_tool_use_id"); err != nil {
 			return err

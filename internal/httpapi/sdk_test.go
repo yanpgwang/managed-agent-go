@@ -1219,6 +1219,40 @@ func TestSDK_EventSendAndList(t *testing.T) {
 	}
 }
 
+func TestSDK_EventSendTargetedInterrupt(t *testing.T) {
+	client, ts := sdkClientAndServer(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "opus", "sys")
+	environment := mustEnv(t, ts.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent: anthropic.BetaSessionNewParamsAgentUnion{
+			OfString: anthropic.String(agent.ID),
+		},
+		EnvironmentID: environment,
+	})
+	if err != nil {
+		t.Fatalf("create Session: %v", err)
+	}
+	const threadID = "sthr_sdk_interrupt_target"
+	sent, err := client.Beta.Sessions.Events.Send(
+		ctx, session.ID, anthropic.BetaSessionEventSendParams{
+			Events: []anthropic.BetaManagedAgentsEventParamsUnion{{
+				OfUserInterrupt: &anthropic.BetaManagedAgentsUserInterruptEventParams{
+					Type:            anthropic.BetaManagedAgentsUserInterruptEventParamsTypeUserInterrupt,
+					SessionThreadID: param.NewOpt(threadID),
+				},
+			}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("send targeted interrupt: %v", err)
+	}
+	if len(sent.Data) != 1 || sent.Data[0].Type != domain.EvUserInterrupt ||
+		sent.Data[0].AsUserInterrupt().SessionThreadID != threadID {
+		t.Fatalf("targeted interrupt response = %+v", sent.Data)
+	}
+}
+
 func TestSDK_EventSendRichContentShapes(t *testing.T) {
 	client, ts := sdkClientAndServer(t)
 	ctx := context.Background()

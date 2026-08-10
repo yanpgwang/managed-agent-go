@@ -11,8 +11,26 @@ import (
 )
 
 type routedClientDraft struct {
-	Draft    domain.EventDraft
-	ThreadID string
+	Draft     domain.EventDraft
+	ThreadID  string
+	Submitted bool
+}
+
+type interruptWakeTargets struct {
+	Primary  bool
+	Children map[string]struct{}
+}
+
+func newInterruptWakeTargets() interruptWakeTargets {
+	return interruptWakeTargets{Children: make(map[string]struct{})}
+}
+
+func (t *interruptWakeTargets) add(thread domain.SessionThread) {
+	if thread.ParentThreadID == nil {
+		t.Primary = true
+		return
+	}
+	t.Children[thread.ID] = struct{}{}
 }
 
 // routeClientDraftsLocked resolves client-action references before persistence.
@@ -21,16 +39,21 @@ type routedClientDraft struct {
 // documented session_thread_id when the caller omitted the redundant hint.
 func (s *Store) routeClientDraftsLocked(
 	ctx context.Context,
+	tx pgx.Tx,
 	q *pgstore.Queries,
 	sessionID string,
 	primaryThreadID string,
 	drafts []domain.EventDraft,
-) ([]routedClientDraft, map[string]struct{}, error) {
+) ([]routedClientDraft, map[string]struct{}, interruptWakeTargets, error) {
 	routed := make([]routedClientDraft, 0, len(drafts))
 	resolutionThreads := make(map[string]struct{})
+	interruptTargets := newInterruptWakeTargets()
+	var globalChildren []string
+	globalChildrenLoaded := false
 	companionThreadID := ""
 	companionEventID := ""
 	for _, draft := range drafts {
+		copies := make([]routedClientDraft, 0)
 		targetThreadID := primaryThreadID
 		if draft.Type == domain.EvSystemMessage && draft.ID != "" &&
 			draft.ID == companionEventID {
@@ -47,21 +70,21 @@ func (s *Store) routeClientDraftsLocked(
 				},
 			)
 			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, nil, domain.Validation(
+				return nil, nil, interruptWakeTargets{}, domain.Validation(
 					"resolution references unknown pending action",
 				)
 			}
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, interruptWakeTargets{}, err
 			}
 			if domain.PendingActionKind(row.Kind) != kind {
-				return nil, nil, domain.Validation(
+				return nil, nil, interruptWakeTargets{}, domain.Validation(
 					"resolution kind does not match the pending action",
 				)
 			}
 			if hinted, _ := draft.Payload["session_thread_id"].(string); hinted != "" &&
 				hinted != row.ThreadID {
-				return nil, nil, domain.Validation(
+				return nil, nil, interruptWakeTargets{}, domain.Validation(
 					"session_thread_id does not match the pending action",
 				)
 			}
@@ -77,15 +100,85 @@ func (s *Store) routeClientDraftsLocked(
 			resolutionThreads[targetThreadID] = struct{}{}
 		}
 
+		if draft.Type == domain.EvUserInterrupt {
+			hinted, targeted := draft.Payload["session_thread_id"]
+			if targeted {
+				threadID, _ := hinted.(string)
+				if threadID == "" {
+					return nil, nil, interruptWakeTargets{}, domain.Validation(
+						"session_thread_id must name a Session Thread",
+					)
+				}
+				thread, err := loadSessionThreadForUpdate(
+					ctx, tx, sessionID, threadID,
+				)
+				if err != nil {
+					var domainErr *domain.DomainError
+					if errors.As(err, &domainErr) && domainErr.Kind == domain.KindNotFound {
+						return nil, nil, interruptWakeTargets{}, domain.Validation(
+							"session_thread_id does not name a Session Thread in this Session",
+						)
+					}
+					return nil, nil, interruptWakeTargets{}, err
+				}
+				if thread.ArchivedAt != nil || thread.Status == domain.StatusTerminated {
+					return nil, nil, interruptWakeTargets{}, domain.Conflict(
+						"cannot interrupt an archived or terminated Session Thread",
+					)
+				}
+				targetThreadID = thread.ID
+				interruptTargets.add(thread)
+			} else {
+				interruptTargets.Primary = true
+				if !globalChildrenLoaded {
+					rows, err := tx.Query(ctx, `
+SELECT id
+FROM session_threads
+WHERE session_id = $1
+  AND kind = 'child'
+  AND archived_at IS NULL
+  AND status <> 'terminated'
+ORDER BY created_at, id`, sessionID)
+					if err != nil {
+						return nil, nil, interruptWakeTargets{}, err
+					}
+					for rows.Next() {
+						var threadID string
+						if err := rows.Scan(&threadID); err != nil {
+							rows.Close()
+							return nil, nil, interruptWakeTargets{}, err
+						}
+						globalChildren = append(globalChildren, threadID)
+					}
+					if err := rows.Err(); err != nil {
+						rows.Close()
+						return nil, nil, interruptWakeTargets{}, err
+					}
+					rows.Close()
+					globalChildrenLoaded = true
+				}
+				for _, threadID := range globalChildren {
+					copyDraft := draft
+					copyDraft.ID = ""
+					copyDraft.Payload = cloneEventPayload(draft.Payload)
+					copies = append(copies, routedClientDraft{
+						Draft: copyDraft, ThreadID: threadID,
+					})
+					interruptTargets.Children[threadID] = struct{}{}
+				}
+			}
+		}
+
 		if companionID, _ := draft.Payload[domain.InternalCompanionSystemEventID].(string); companionID != "" {
 			companionEventID = companionID
 			companionThreadID = targetThreadID
 		}
 		routed = append(routed, routedClientDraft{
-			Draft: draft, ThreadID: targetThreadID,
+			Draft: draft, ThreadID: targetThreadID, Submitted: true,
 		})
+		routed = append(routed, copies...)
 	}
-	return routed, resolutionThreads, nil
+	return routed, resolutionThreads, interruptTargets, nil
 }
 
 // UnresolvedPendingActions returns every client action that still gates the

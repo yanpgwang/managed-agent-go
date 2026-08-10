@@ -16,9 +16,72 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 )
 
+func registerNoThreadInterrupt(env *testsuite.TestWorkflowEnvironment) {
+	env.RegisterActivityWithOptions(
+		func(context.Context, LoadInterruptInput) (LoadInterruptResult, error) {
+			return LoadInterruptResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadInterrupt},
+	)
+}
+
+func TestSessionThreadWorkflow_AcknowledgesIdleInterruptOnOwningThread(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	const (
+		sessionID   = "sesn_child_idle_interrupt"
+		threadID    = "sthr_child_idle_interrupt"
+		interruptID = "sevt_child_idle_interrupt"
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, LoadPendingActionsInput) (LoadPendingActionsResult, error) {
+			return LoadPendingActionsResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in LoadEventsInput) (LoadEventsResult, error) {
+			require.Equal(t, sessionID, in.SessionID)
+			require.Equal(t, threadID, in.ThreadID)
+			if in.Cursor < 1 {
+				return LoadEventsResult{Events: []EventRef{{
+					ID: interruptID, Seq: 1, Type: domain.EvUserInterrupt,
+				}}}, nil
+			}
+			return LoadEventsResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			require.Equal(t, sessionID, in.SessionID)
+			require.Equal(t, threadID, in.ThreadID)
+			require.True(t, in.IsChild)
+			require.Equal(t, interruptID, in.TriggerEventID)
+			require.Equal(t, domain.StatusIdle, in.Status)
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 1})
+	}, time.Millisecond)
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(
+		sessionThreadWorkflow,
+		SessionThreadWorkflowInput{SessionID: sessionID, ThreadID: threadID},
+		0,
+	)
+
+	var canErr *workflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &canErr)
+	require.Equal(t, SessionThreadWorkflowType, canErr.WorkflowType.Name)
+}
+
 func TestSessionThreadWorkflowOwnsIndependentCursorAndTurn(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	registerNoThreadInterrupt(env)
 	const (
 		sessionID = "sesn_child_workflow"
 		threadID  = "sthr_child_workflow"
@@ -116,6 +179,7 @@ func TestSessionThreadWorkflowOwnsIndependentCursorAndTurn(t *testing.T) {
 func TestSessionThreadWorkflowStopsAfterTerminalChildTurn(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	registerNoThreadInterrupt(env)
 	events := []EventRef{
 		{ID: "sevt_child_first", Seq: 1, Type: domain.EvAgentThreadMessageReceived},
 		{ID: "sevt_child_second", Seq: 2, Type: domain.EvAgentThreadMessageReceived},
@@ -158,6 +222,7 @@ func TestSessionThreadWorkflowStopsAfterTerminalChildTurn(t *testing.T) {
 func TestSessionThreadWorkflowResumesBarrierBeforeQueuedMessage(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	registerNoThreadInterrupt(env)
 	const (
 		sessionID    = "sesn_child_barrier"
 		threadID     = "sthr_child_barrier"
@@ -223,6 +288,7 @@ func TestSessionThreadWorkflowResumesBarrierBeforeQueuedMessage(t *testing.T) {
 func TestSessionThreadWorkflowStopsDrainingAfterMessageTurnParks(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	registerNoThreadInterrupt(env)
 	const (
 		sessionID = "sesn_child_new_barrier"
 		threadID  = "sthr_child_new_barrier"
