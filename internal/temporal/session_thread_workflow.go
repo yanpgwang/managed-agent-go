@@ -9,6 +9,11 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
+const (
+	childPendingActionRoutingChangeID = "child-pending-action-routing"
+	childPendingActionRoutingVersion  = 1
+)
+
 // SessionThreadWorkflow is the independent durable loop for one child Agent.
 // PostgreSQL owns its Thread identity and ledger; the Workflow owns only the
 // in-flight cursor and model/tool command sequence.
@@ -35,6 +40,12 @@ func sessionThreadWorkflow(
 	wakeupCh := workflow.GetSignalChannel(ctx, WakeupSignalName)
 	cursor := in.StartCursor
 	turns := 0
+	pendingActionRouting := workflow.GetVersion(
+		ctx,
+		childPendingActionRoutingChangeID,
+		workflow.DefaultVersion,
+		childPendingActionRoutingVersion,
+	) == childPendingActionRoutingVersion
 
 	coalesce := func() bool {
 		saw := false
@@ -48,6 +59,54 @@ func sessionThreadWorkflow(
 	}
 	drain := func() (bool, error) {
 		for {
+			if pendingActionRouting {
+				var pending LoadPendingActionsResult
+				if err := workflow.ExecuteActivity(
+					actx,
+					ActivityLoadPendingActions,
+					LoadPendingActionsInput{
+						SessionID: in.SessionID, ThreadID: in.ThreadID,
+					},
+				).Get(actx, &pending); err != nil {
+					return false, err
+				}
+				if len(pending.Actions) > 0 {
+					trigger := EventRef{}
+					resolutionIDs := make([]string, 0, len(pending.Actions))
+					for _, action := range pending.Actions {
+						if action.ResolutionEventID == "" {
+							// The Thread remains parked until every action in this
+							// model round has a client result.
+							return false, nil
+						}
+						resolutionIDs = append(resolutionIDs, action.ResolutionEventID)
+						if action.ResolutionEventSeq > trigger.Seq ||
+							(action.ResolutionEventSeq == trigger.Seq &&
+								action.ResolutionEventID > trigger.ID) {
+							trigger = EventRef{
+								ID: action.ResolutionEventID, Seq: action.ResolutionEventSeq,
+							}
+						}
+					}
+					completed, err := runWorkflowTurnInternal(
+						actx, in.SessionID, trigger.ID, resolutionIDs, nil,
+					)
+					if err != nil {
+						return false, err
+					}
+					turns++
+					switch completed.Disposition {
+					case TurnTerminated:
+						return true, nil
+					case TurnParked:
+						return false, nil
+					}
+					// Completion may have installed a new barrier. Re-evaluate it
+					// before consuming any queued follow-up message.
+					continue
+				}
+			}
+
 			var loaded LoadEventsResult
 			if err := workflow.ExecuteActivity(
 				actx,

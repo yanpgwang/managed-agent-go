@@ -171,13 +171,15 @@ type OrchestrationOutbox struct {
 }
 
 type PendingAction struct {
-	ID               string
-	SessionID        string
-	ActionEventID    string
-	Kind             string
-	ResolvingEventID *string
-	CreatedAt        pgtype.Timestamptz
-	ResolvedAt       pgtype.Timestamptz
+	ID                  string
+	SessionID           string
+	ActionEventID       string
+	Kind                string
+	ResolvingEventID    *string
+	CreatedAt           pgtype.Timestamptz
+	ResolvedAt          pgtype.Timestamptz
+	ThreadID            string
+	ClientActionEventID string
 }
 
 type ProviderTranscriptTurn struct {

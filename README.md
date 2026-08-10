@@ -93,7 +93,7 @@ make local-down
 | Vaults | Thirteen encrypted Vault and Credential operations plus ordered Session attachment, live OAuth validation, and automatic token refresh; environment-variable egress remains in progress |
 | Deployments | Ten Deployment and Deployment Run operations, pinned Agent versions, manual runs, and PostgreSQL-leased cron scheduling |
 | Environment Work | Eight worker-protocol operations, transactional self-hosted Session activation, lease heartbeats, reclaim, and official Go `WorkPoller` interoperability |
-| Session Threads | Persistent coordinator delegation with independent child context, execution, usage, retries, reports, and isolated event/preview streams; client-action routing and targeted interrupts remain roadmap work |
+| Session Threads | Persistent coordinator delegation with independent child context, execution, usage, retries, reports, isolated event/preview streams, and routed client-action waits; targeted interrupts remain roadmap work |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)

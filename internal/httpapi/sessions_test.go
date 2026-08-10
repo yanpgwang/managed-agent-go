@@ -288,6 +288,32 @@ func TestValidateClientEventAcceptsDocumentAndSearchResultShapes(t *testing.T) {
 	}
 }
 
+func TestValidateClientEventAcceptsThreadRoutingHintsOnActionResults(t *testing.T) {
+	events := []map[string]any{
+		{
+			"type": "user.tool_confirmation", "tool_use_id": "sevt_tool",
+			"result": "allow", "session_thread_id": "sthr_child",
+		},
+		{
+			"type": "user.custom_tool_result", "custom_tool_use_id": "sevt_custom",
+			"content": []any{}, "session_thread_id": "sthr_child",
+		},
+		{
+			"type": "user.tool_result", "tool_use_id": "sevt_tool",
+			"content": []any{}, "session_thread_id": "sthr_child",
+		},
+	}
+	for _, event := range events {
+		if err := validateClientEvent(event); err != nil {
+			t.Errorf("validate %s: %v", event["type"], err)
+		}
+		event["session_thread_id"] = 42
+		if err := validateClientEvent(event); err == nil {
+			t.Errorf("validate %s accepted a non-string session_thread_id", event["type"])
+		}
+	}
+}
+
 func TestValidateClientEventRejectsMalformedNestedObjects(t *testing.T) {
 	message := func(block map[string]any) map[string]any {
 		return map[string]any{"type": "user.message", "content": []any{block}}

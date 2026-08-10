@@ -80,6 +80,12 @@ type ThreadEventSource interface {
 	) ([]domain.Event, error)
 }
 
+type ThreadPendingActionSource interface {
+	UnresolvedThreadPendingActions(
+		context.Context, string, string,
+	) ([]domain.PendingAction, error)
+}
+
 type CoordinatorToolSource interface {
 	ExecuteCoordinatorToolStep(
 		context.Context, string, string, string, string, string, map[string]any,
@@ -481,7 +487,21 @@ func (a *Activities) LoadPendingActions(
 	ctx context.Context,
 	in LoadPendingActionsInput,
 ) (LoadPendingActionsResult, error) {
-	pending, err := a.source.UnresolvedPendingActions(ctx, in.SessionID)
+	var pending []domain.PendingAction
+	var err error
+	if in.ThreadID != "" {
+		source, ok := a.source.(ThreadPendingActionSource)
+		if !ok {
+			return LoadPendingActionsResult{}, fmt.Errorf(
+				"temporal: event source cannot read child Thread pending actions",
+			)
+		}
+		pending, err = source.UnresolvedThreadPendingActions(
+			ctx, in.SessionID, in.ThreadID,
+		)
+	} else {
+		pending, err = a.source.UnresolvedPendingActions(ctx, in.SessionID)
+	}
 	if err != nil {
 		return LoadPendingActionsResult{}, err
 	}
@@ -659,7 +679,19 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	}
 	var pending []domain.PendingAction
 	if len(in.ResolutionEventIDs) > 0 {
-		pending, err = a.source.UnresolvedPendingActions(ctx, in.SessionID)
+		if executionThread != nil && executionThread.ParentThreadID != nil {
+			source, ok := a.source.(ThreadPendingActionSource)
+			if !ok {
+				return PrepareTurnResult{}, fmt.Errorf(
+					"temporal: event source cannot read Thread pending actions",
+				)
+			}
+			pending, err = source.UnresolvedThreadPendingActions(
+				ctx, in.SessionID, trigger.ThreadID,
+			)
+		} else {
+			pending, err = a.source.UnresolvedPendingActions(ctx, in.SessionID)
+		}
 		if err != nil {
 			return PrepareTurnResult{}, err
 		}
@@ -1420,8 +1452,17 @@ func (a *Activities) prepareResumeActions(
 			return nil, err
 		}
 		refID, refKind, ok := domain.ResolutionReference(resolution.Type, resolution.Payload)
-		if !ok || refID != action.ID || refKind != row.Kind {
+		expectedClientID := row.ClientActionEventID
+		if expectedClientID == "" {
+			expectedClientID = action.ID
+		}
+		if !ok || (refID != expectedClientID && refID != action.ID) ||
+			refKind != row.Kind {
 			return nil, domain.Validation("client result does not match its pending action")
+		}
+		if routed, _ := resolution.Payload["session_thread_id"].(string); routed != "" &&
+			routed != row.ThreadID {
+			return nil, domain.Validation("client result names the wrong session Thread")
 		}
 
 		resume := ResumeAction{

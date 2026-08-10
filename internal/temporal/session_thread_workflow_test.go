@@ -27,6 +27,14 @@ func TestSessionThreadWorkflowOwnsIndependentCursorAndTurn(t *testing.T) {
 		Type: domain.EvAgentThreadMessageReceived,
 	}}
 	env.RegisterActivityWithOptions(
+		func(_ context.Context, in LoadPendingActionsInput) (LoadPendingActionsResult, error) {
+			require.Equal(t, sessionID, in.SessionID)
+			require.Equal(t, threadID, in.ThreadID)
+			return LoadPendingActionsResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+	env.RegisterActivityWithOptions(
 		func(_ context.Context, in LoadEventsInput) (LoadEventsResult, error) {
 			require.Equal(t, sessionID, in.SessionID)
 			require.Equal(t, threadID, in.ThreadID)
@@ -112,6 +120,12 @@ func TestSessionThreadWorkflowStopsAfterTerminalChildTurn(t *testing.T) {
 		{ID: "sevt_child_second", Seq: 2, Type: domain.EvAgentThreadMessageReceived},
 	}
 	env.RegisterActivityWithOptions(
+		func(context.Context, LoadPendingActionsInput) (LoadPendingActionsResult, error) {
+			return LoadPendingActionsResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+	env.RegisterActivityWithOptions(
 		func(_ context.Context, in LoadEventsInput) (LoadEventsResult, error) {
 			return LoadEventsResult{Events: events}, nil
 		},
@@ -138,4 +152,69 @@ func TestSessionThreadWorkflowStopsAfterTerminalChildTurn(t *testing.T) {
 
 	require.NoError(t, env.GetWorkflowError())
 	require.Equal(t, []string{events[0].ID}, prepared)
+}
+
+func TestSessionThreadWorkflowResumesBarrierBeforeQueuedMessage(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	const (
+		sessionID    = "sesn_child_barrier"
+		threadID     = "sthr_child_barrier"
+		resolutionID = "sevt_child_confirmation"
+		queuedID     = "sevt_child_followup"
+	)
+	loadPendingCalls := 0
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in LoadPendingActionsInput) (LoadPendingActionsResult, error) {
+			require.Equal(t, threadID, in.ThreadID)
+			loadPendingCalls++
+			if loadPendingCalls == 1 {
+				return LoadPendingActionsResult{Actions: []PendingActionRef{{
+					ActionEventID: "sevt_child_tool", ActionEventSeq: 7,
+					Kind:              domain.PendingToolConfirmation,
+					ResolutionEventID: resolutionID, ResolutionEventSeq: 12,
+				}}}, nil
+			}
+			return LoadPendingActionsResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in LoadEventsInput) (LoadEventsResult, error) {
+			if in.Cursor < 8 {
+				return LoadEventsResult{Events: []EventRef{{
+					ID: queuedID, Seq: 8, Type: domain.EvAgentThreadMessageReceived,
+				}}}, nil
+			}
+			return LoadEventsResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+	var prepared []PrepareTurnInput
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+			prepared = append(prepared, in)
+			return PrepareTurnResult{
+				AlreadyCompleted: true,
+				Terminated:       in.TriggerEventID == queuedID,
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 12})
+	}, time.Millisecond)
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(SessionThreadWorkflow, SessionThreadWorkflowInput{
+		SessionID: sessionID, ThreadID: threadID,
+	})
+
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, []PrepareTurnInput{
+		{
+			SessionID: sessionID, TriggerEventID: resolutionID,
+			ResolutionEventIDs: []string{resolutionID},
+		},
+		{SessionID: sessionID, TriggerEventID: queuedID},
+	}, prepared)
 }

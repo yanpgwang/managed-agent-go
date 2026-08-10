@@ -25,16 +25,18 @@ const (
 
 // PendingAction is a first-class durable record that a run parked awaiting a
 // client response. It is internal-only and never serialized onto the public
-// Managed Agents wire. ResolvedAt is nil while the action still blocks the
-// session's ordinary queued work.
+// Managed Agents wire. ResolvedAt is nil while the action still blocks ordinary
+// queued work on its owning Thread.
 type PendingAction struct {
-	ID               string
-	SessionID        string
-	ActionEventID    string
-	Kind             PendingActionKind
-	ResolvingEventID *string
-	CreatedAt        time.Time
-	ResolvedAt       *time.Time
+	ID                  string
+	SessionID           string
+	ThreadID            string
+	ActionEventID       string
+	ClientActionEventID string
+	Kind                PendingActionKind
+	ResolvingEventID    *string
+	CreatedAt           time.Time
+	ResolvedAt          *time.Time
 }
 
 // PrefixPendingAction is the id prefix for durable pending-action records.

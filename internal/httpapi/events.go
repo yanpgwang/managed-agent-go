@@ -250,9 +250,9 @@ func validateClientEvent(event map[string]any) error {
 		domain.EvUserMessage:          {"type": true, "content": true},
 		domain.EvSystemMessage:        {"type": true, "content": true},
 		domain.EvUserInterrupt:        {"type": true, "session_thread_id": true},
-		domain.EvUserCustomToolResult: {"type": true, "custom_tool_use_id": true, "content": true, "is_error": true},
-		domain.EvUserToolResult:       {"type": true, "tool_use_id": true, "content": true, "is_error": true},
-		domain.EvUserToolConfirmation: {"type": true, "tool_use_id": true, "result": true, "deny_message": true},
+		domain.EvUserCustomToolResult: {"type": true, "custom_tool_use_id": true, "content": true, "is_error": true, "session_thread_id": true},
+		domain.EvUserToolResult:       {"type": true, "tool_use_id": true, "content": true, "is_error": true, "session_thread_id": true},
+		domain.EvUserToolConfirmation: {"type": true, "tool_use_id": true, "result": true, "deny_message": true, "session_thread_id": true},
 		domain.EvUserDefineOutcome:    {"type": true, "description": true, "rubric": true, "max_iterations": true},
 	}
 	for key := range event {
@@ -321,11 +321,17 @@ func validateClientEvent(event map[string]any) error {
 		if err := validateContent(false, resultContent); err != nil {
 			return err
 		}
+		if err := optionalString(event, "session_thread_id"); err != nil {
+			return err
+		}
 	case domain.EvUserToolResult:
 		if err := requireString("tool_use_id"); err != nil {
 			return err
 		}
 		if err := validateContent(false, resultContent); err != nil {
+			return err
+		}
+		if err := optionalString(event, "session_thread_id"); err != nil {
 			return err
 		}
 	case domain.EvUserToolConfirmation:
@@ -343,6 +349,9 @@ func validateClientEvent(event map[string]any) error {
 			if err := optionalString(event, "deny_message"); err != nil {
 				return err
 			}
+		}
+		if err := optionalString(event, "session_thread_id"); err != nil {
+			return err
 		}
 	case domain.EvUserDefineOutcome:
 		if err := requireString("description"); err != nil {

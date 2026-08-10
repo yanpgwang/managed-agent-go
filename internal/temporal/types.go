@@ -362,6 +362,7 @@ type LoadInterruptResult struct {
 // directly by Workflow code, drives the Workflow selector.
 type LoadPendingActionsInput struct {
 	SessionID string `json:"session_id"`
+	ThreadID  string `json:"thread_id,omitempty"`
 }
 
 // PendingActionRef is the minimal deterministic selector projection for one

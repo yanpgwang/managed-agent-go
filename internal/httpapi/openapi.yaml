@@ -5001,6 +5001,10 @@ components:
         deny_message:
           description: Valid only when result is deny.
           type: string
+        session_thread_id:
+          description: Optional redundant routing hint copied from a cross-posted child tool-use event.
+          type: string
+          pattern: '^sthr_'
     UserCustomToolResultEventInput:
       type: object
       additionalProperties: false
@@ -5019,6 +5023,10 @@ components:
             $ref: '#/components/schemas/ResultContentInput'
         is_error:
           type: boolean
+        session_thread_id:
+          description: Optional redundant routing hint copied from a cross-posted child custom-tool-use event.
+          type: string
+          pattern: '^sthr_'
     UserToolResultEventInput:
       type: object
       additionalProperties: false
@@ -5037,6 +5045,10 @@ components:
             $ref: '#/components/schemas/ResultContentInput'
         is_error:
           type: boolean
+        session_thread_id:
+          description: Optional redundant routing hint copied from a cross-posted child tool-use event.
+          type: string
+          pattern: '^sthr_'
     UserDefineOutcomeEventInput:
       type: object
       additionalProperties: false
@@ -5171,6 +5183,7 @@ components:
             tool_use_id: {type: string}
             result: {type: string, enum: [allow, deny]}
             deny_message: {type: string}
+            session_thread_id: {type: string, pattern: '^sthr_'}
       unevaluatedProperties: false
     PersistedUserCustomToolResultEvent:
       allOf:
@@ -5185,6 +5198,7 @@ components:
               maxItems: 1000
               items: {$ref: '#/components/schemas/ResultContentInput'}
             is_error: {type: boolean}
+            session_thread_id: {type: string, pattern: '^sthr_'}
       unevaluatedProperties: false
     PersistedUserToolResultEvent:
       allOf:
@@ -5199,6 +5213,7 @@ components:
               maxItems: 1000
               items: {$ref: '#/components/schemas/ResultContentInput'}
             is_error: {type: boolean}
+            session_thread_id: {type: string, pattern: '^sthr_'}
       unevaluatedProperties: false
     PersistedUserDefineOutcomeEvent:
       allOf:
@@ -5253,6 +5268,7 @@ components:
             type: {type: string, const: agent.custom_tool_use}
             input: {type: object, additionalProperties: true}
             name: {type: string}
+            session_thread_id: {type: string, pattern: '^sthr_'}
       unevaluatedProperties: false
     EvaluatedPermission:
       type: string
@@ -5267,6 +5283,7 @@ components:
             input: {type: object, additionalProperties: true}
             name: {type: string}
             evaluated_permission: {$ref: '#/components/schemas/EvaluatedPermission'}
+            session_thread_id: {type: string, pattern: '^sthr_'}
       unevaluatedProperties: false
     AgentMCPToolUseEvent:
       allOf:
@@ -5279,6 +5296,7 @@ components:
             mcp_server_name: {type: string}
             name: {type: string}
             evaluated_permission: {$ref: '#/components/schemas/EvaluatedPermission'}
+            session_thread_id: {type: string, pattern: '^sthr_'}
       unevaluatedProperties: false
     AgentToolResultEvent:
       allOf:

@@ -56,13 +56,29 @@ that Thread and its provider-native transcript. A completed child answer is
 reported asynchronously to the primary Thread, which is then scheduled for a
 separate synthesis turn.
 
-The remaining multi-agent boundary is cross-posted confirmation/custom-tool
-requests with automatic response routing, global and targeted interrupts,
-Workflow shutdown on archive or Session deletion, and immutable child context
-snapshots. The v1.62 `advisor` Thread is not represented as an ordinary child
-placeholder; it remains unsupported until its reserved, automatically
-terminating consultation lifecycle can be implemented end to end. Session
-budgets are also deferred until list cost is aggregated across all independently
-running Threads.
+## Client-action routing
+
+When a child requires a tool confirmation, custom-tool result, or self-hosted
+tool result, its canonical action and `session.thread_status_idle` boundary are
+written to the child ledger. The server cross-posts a client-visible copy to
+the primary stream with `session_thread_id`, and the aggregate
+`session.status_idle` references those visible event IDs.
+
+Clients answer the cross-posted event ID using the ordinary
+`user.tool_confirmation`, `user.custom_tool_result`, or `user.tool_result`
+shape. They may echo `session_thread_id` as a redundant routing hint. The
+server resolves the event ID to its owning Thread, rejects a conflicting hint,
+persists the result in the child ledger, and wakes only that child after every
+action in the barrier has a result. A companion `system.message` follows the
+same route. A waiting child does not block work on the primary or a sibling,
+and it emits no terminal report until its barrier is resolved.
+
+The remaining multi-agent boundary is global and targeted interrupts, exact
+hosted preview suppression for report-only turns, Workflow shutdown on archive
+or Session deletion, and immutable child context snapshots. The v1.62
+`advisor` Thread is not represented as an ordinary child placeholder; it
+remains unsupported until its reserved, automatically terminating consultation
+lifecycle can be implemented end to end. Session budgets are also deferred
+until list cost is aggregated across all independently running Threads.
 
 See the [Session Threads conformance matrix](session-threads-conformance.md).
