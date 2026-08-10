@@ -26,7 +26,8 @@ not treat the default local sandbox as a security boundary.
 - Server-owned **Agents, Environments, Sessions, and Events** over a `/v1` HTTP
   API, with cursor pagination and SSE streaming.
 - A durable **model-and-tool loop**: multi-round inference, custom-tool and
-  confirmation waits, untargeted interrupts, and outcome evaluation.
+  confirmation waits, single- and multi-Thread interrupts, and outcome
+  evaluation.
 - Tools run in **replaceable sandboxes** — local, Docker, and remote providers —
   with eight built-ins plus provider-native Web Search/Fetch and remote MCP
   tools.

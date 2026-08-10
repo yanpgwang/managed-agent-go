@@ -11,6 +11,29 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countUnprocessedThreadMessages = `-- name: CountUnprocessedThreadMessages :one
+SELECT COUNT(*)::int AS n
+FROM events AS event
+WHERE event.session_id = $1
+  AND event.thread_id = $2
+  AND event.type = 'agent.thread_message_received'
+  AND event.processed_at IS NULL
+  AND event.id <> $3
+`
+
+type CountUnprocessedThreadMessagesParams struct {
+	SessionID string
+	ThreadID  string
+	ExcludeID string
+}
+
+func (q *Queries) CountUnprocessedThreadMessages(ctx context.Context, arg CountUnprocessedThreadMessagesParams) (int32, error) {
+	row := q.db.QueryRow(ctx, countUnprocessedThreadMessages, arg.SessionID, arg.ThreadID, arg.ExcludeID)
+	var n int32
+	err := row.Scan(&n)
+	return n, err
+}
+
 const countUnprocessedUserMessages = `-- name: CountUnprocessedUserMessages :one
 SELECT COUNT(*)::int AS n
 FROM events AS event
@@ -151,6 +174,74 @@ func (q *Queries) FirstUnprocessedInterruptAfter(ctx context.Context, arg FirstU
 		&i.ThreadID,
 	)
 	return i, err
+}
+
+const firstUnprocessedThreadInterruptAfter = `-- name: FirstUnprocessedThreadInterruptAfter :one
+SELECT event.id, event.session_id, event.seq, event.type, event.payload, event.turn_event_id, event.created_at, event.processed_at, event.thread_id
+FROM events AS event
+WHERE event.session_id = $1
+  AND event.thread_id = $2
+  AND event.seq > $3
+  AND event.type = 'user.interrupt'
+  AND event.processed_at IS NULL
+ORDER BY event.seq
+LIMIT 1
+`
+
+type FirstUnprocessedThreadInterruptAfterParams struct {
+	SessionID string
+	ThreadID  string
+	AfterSeq  int64
+}
+
+// FirstUnprocessedThreadInterruptAfter is the child-Thread counterpart of the
+// primary query above. Global interrupts are fanned out into each active child
+// ledger during admission, so every Workflow owns an independently processable
+// interrupt receipt.
+func (q *Queries) FirstUnprocessedThreadInterruptAfter(ctx context.Context, arg FirstUnprocessedThreadInterruptAfterParams) (Event, error) {
+	row := q.db.QueryRow(ctx, firstUnprocessedThreadInterruptAfter, arg.SessionID, arg.ThreadID, arg.AfterSeq)
+	var i Event
+	err := row.Scan(
+		&i.ID,
+		&i.SessionID,
+		&i.Seq,
+		&i.Type,
+		&i.Payload,
+		&i.TurnEventID,
+		&i.CreatedAt,
+		&i.ProcessedAt,
+		&i.ThreadID,
+	)
+	return i, err
+}
+
+const flushQueuedThreadMessages = `-- name: FlushQueuedThreadMessages :exec
+UPDATE events
+SET processed_at = COALESCE(processed_at, $1)
+WHERE session_id = $2
+  AND thread_id = $3
+  AND type = 'agent.thread_message_received'
+  AND processed_at IS NULL
+  AND id <> $4
+`
+
+type FlushQueuedThreadMessagesParams struct {
+	ProcessedAt pgtype.Timestamptz
+	SessionID   string
+	ThreadID    string
+	ExcludeID   string
+}
+
+// FlushQueuedThreadMessages stamps follow-up messages that must not execute
+// after a child turn exhausts its retry budget.
+func (q *Queries) FlushQueuedThreadMessages(ctx context.Context, arg FlushQueuedThreadMessagesParams) error {
+	_, err := q.db.Exec(ctx, flushQueuedThreadMessages,
+		arg.ProcessedAt,
+		arg.SessionID,
+		arg.ThreadID,
+		arg.ExcludeID,
+	)
+	return err
 }
 
 const flushQueuedUserMessages = `-- name: FlushQueuedUserMessages :exec

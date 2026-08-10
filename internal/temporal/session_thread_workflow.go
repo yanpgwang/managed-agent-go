@@ -14,6 +14,8 @@ const (
 	childPendingActionRoutingVersion  = 1
 	childParkedDrainBoundaryChangeID  = "child-message-park-drain-boundary"
 	childParkedDrainBoundaryVersion   = 1
+	childThreadInterruptsChangeID     = "child-thread-interrupts"
+	childThreadInterruptsVersion      = 1
 )
 
 // SessionThreadWorkflow is the independent durable loop for one child Agent.
@@ -54,6 +56,12 @@ func sessionThreadWorkflow(
 		workflow.DefaultVersion,
 		childParkedDrainBoundaryVersion,
 	) == childParkedDrainBoundaryVersion
+	interruptsEnabled := workflow.GetVersion(
+		ctx,
+		childThreadInterruptsChangeID,
+		workflow.DefaultVersion,
+		childThreadInterruptsVersion,
+	) == childThreadInterruptsVersion
 
 	coalesce := func() bool {
 		saw := false
@@ -79,13 +87,13 @@ func sessionThreadWorkflow(
 					return false, err
 				}
 				if len(pending.Actions) > 0 {
+					fullyClaimed := true
 					trigger := EventRef{}
 					resolutionIDs := make([]string, 0, len(pending.Actions))
 					for _, action := range pending.Actions {
 						if action.ResolutionEventID == "" {
-							// The Thread remains parked until every action in this
-							// model round has a client result.
-							return false, nil
+							fullyClaimed = false
+							break
 						}
 						resolutionIDs = append(resolutionIDs, action.ResolutionEventID)
 						if action.ResolutionEventSeq > trigger.Seq ||
@@ -96,8 +104,39 @@ func sessionThreadWorkflow(
 							}
 						}
 					}
+					if interruptsEnabled {
+						pendingInterrupt, err := loadInterruptAfter(
+							actx, in.SessionID, in.ThreadID, cursor,
+						)
+						if err != nil {
+							return false, err
+						}
+						if pendingInterrupt.Interrupt != nil &&
+							(!fullyClaimed || pendingInterrupt.Interrupt.Seq < trigger.Seq) {
+							if _, err := acknowledgeIdleInterrupt(
+								actx, in.SessionID, in.ThreadID,
+								pendingInterrupt.Interrupt.ID,
+							); err != nil {
+								return false, err
+							}
+							// Keep the cursor below the barrier so queued messages that
+							// predate its resolution remain visible after it closes.
+							continue
+						}
+					}
+					if !fullyClaimed {
+						// The Thread remains parked until every action in this model
+						// round has a client result or an interrupt is acknowledged.
+						return false, nil
+					}
+					var interrupts *turnInterruptWatcher
+					if interruptsEnabled {
+						interrupts = newTurnInterruptWatcher(
+							actx, wakeupCh, in.SessionID, in.ThreadID, trigger.Seq,
+						)
+					}
 					completed, err := runWorkflowTurnInternal(
-						actx, in.SessionID, trigger.ID, resolutionIDs, nil,
+						actx, in.SessionID, trigger.ID, resolutionIDs, interrupts,
 					)
 					if err != nil {
 						return false, err
@@ -133,8 +172,14 @@ func sessionThreadWorkflow(
 					continue
 				}
 				if event.Type == domain.EvAgentThreadMessageReceived {
+					var interrupts *turnInterruptWatcher
+					if interruptsEnabled {
+						interrupts = newTurnInterruptWatcher(
+							actx, wakeupCh, in.SessionID, in.ThreadID, event.Seq,
+						)
+					}
 					completed, err := runWorkflowTurnInternal(
-						actx, in.SessionID, event.ID, nil, nil,
+						actx, in.SessionID, event.ID, nil, interrupts,
 					)
 					if err != nil {
 						return false, err
@@ -148,6 +193,13 @@ func sessionThreadWorkflow(
 						completed.Disposition, parkedMessageDrainBoundary,
 					); stop {
 						return terminated, nil
+					}
+				}
+				if event.Type == domain.EvUserInterrupt && interruptsEnabled {
+					if _, err := acknowledgeIdleInterrupt(
+						actx, in.SessionID, in.ThreadID, event.ID,
+					); err != nil {
+						return false, err
 					}
 				}
 				cursor = event.Seq

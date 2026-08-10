@@ -155,19 +155,47 @@ func TestPostgresHTTPResourceSessionAndEventPath(t *testing.T) {
 	if interrupt.Code != http.StatusOK {
 		t.Fatalf("interrupt status = %d, want 200: %s", interrupt.Code, interrupt.Body.String())
 	}
+	threadsResponse := request(
+		t,
+		handler,
+		http.MethodGet,
+		"/v1/sessions/"+sessionID+"/threads",
+		"",
+	)
+	if threadsResponse.Code != http.StatusOK {
+		t.Fatalf("list Threads -> %d: %s", threadsResponse.Code, threadsResponse.Body.String())
+	}
+	var threadEnvelope struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(threadsResponse.Body.Bytes(), &threadEnvelope); err != nil ||
+		len(threadEnvelope.Data) != 1 {
+		t.Fatalf("decode Threads = %+v, err=%v", threadEnvelope, err)
+	}
+	primaryThreadID := threadEnvelope.Data[0].ID
 	targeted := request(
 		t,
 		handler,
 		http.MethodPost,
 		"/v1/sessions/"+sessionID+"/events",
-		`{"events":[{"type":"user.interrupt","session_thread_id":"thread_1"}]}`,
+		`{"events":[{"type":"user.interrupt","session_thread_id":"`+primaryThreadID+`"}]}`,
 	)
-	if targeted.Code != http.StatusUnprocessableEntity {
+	if targeted.Code != http.StatusOK {
 		t.Fatalf(
-			"targeted interrupt status = %d, want 422: %s",
+			"targeted interrupt status = %d, want 200: %s",
 			targeted.Code,
 			targeted.Body.String(),
 		)
+	}
+	var targetedEnvelope struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(targeted.Body.Bytes(), &targetedEnvelope); err != nil ||
+		len(targetedEnvelope.Data) != 1 ||
+		targetedEnvelope.Data[0]["session_thread_id"] != primaryThreadID {
+		t.Fatalf("targeted interrupt response = %+v, err=%v", targetedEnvelope, err)
 	}
 }
 

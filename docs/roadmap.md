@@ -107,10 +107,11 @@ uses its own Agent configuration, provider transcript, usage, retry state, and
 event/preview stream while sharing Session infrastructure. A completed report
 wakes the primary Thread for a later synthesis turn. Child confirmation,
 custom-tool, and self-hosted tool requests are cross-posted to the primary
-stream and their client responses route back to the owning Thread. Exact hosted
-preview suppression for report-only turns, targeted/global multi-Thread
-interrupts, archive/deletion Workflow shutdown, and advisor Threads remain M2
-work.
+stream and their client responses route back to the owning Thread. Global and
+targeted interrupts now use independently processable Thread receipts and the
+same PostgreSQL finish race as the primary runtime. Exact hosted preview
+suppression for report-only turns, archive/deletion Workflow shutdown, and
+advisor Threads remain M2 work.
 
 The living SDK baseline is now v1.62. Agent inference geography is persisted,
 forwarded to every model request, and validated across coordinator rosters and
@@ -158,10 +159,11 @@ asynchronous reports, retry ownership, and Session status/usage aggregation.
 Client-action waits are also Thread-owned: child confirmation, custom-tool, and
 self-hosted tool requests are cross-posted with client-visible IDs, while
 results are routed to the canonical child event and resume only that Thread's
-complete action barrier. The remaining M2 work is exact hosted preview
-suppression for report-only turns, global and targeted interrupts, child
-archive and Session-deletion Workflow shutdown, immutable child context
-snapshots, and the distinct advisor lifecycle.
+complete action barrier. Global and targeted interrupts now route through every
+affected Thread ledger and preserve the primary runtime's durable completion
+race. The remaining M2 work is exact hosted preview suppression for report-only
+turns, child archive and Session-deletion Workflow shutdown, immutable child
+context snapshots, and the distinct advisor lifecycle.
 Advisor consultation Threads and shared Session budget enforcement follow the
 ordinary child runtime because both depend on correct per-Thread usage and
 Session-level aggregation, but retain their distinct public behavior.

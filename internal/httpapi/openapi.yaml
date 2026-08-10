@@ -4981,9 +4981,10 @@ components:
           type: string
           const: user.interrupt
         session_thread_id:
-          description: Targeted interrupts are outside the supported single-agent core and return 422.
+          description: If omitted, interrupts every non-archived Thread; otherwise interrupts only the named Thread.
           type: string
           minLength: 1
+          pattern: '^sthr_'
     UserToolConfirmationEventInput:
       type: object
       additionalProperties: false

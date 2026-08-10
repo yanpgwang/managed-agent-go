@@ -428,11 +428,8 @@ func (s *SessionService) SendEvent(
 			// pending-action barrier and wake the SessionWorkflow only when the full
 			// result set is present.
 		case domain.EvUserInterrupt:
-			if _, targeted := draft.Payload["session_thread_id"]; targeted {
-				return nil, domain.Unsupported(
-					"targeted multi-agent interrupts are not supported",
-				)
-			}
+			// PostgreSQL resolves the optional Thread target under the Session
+			// admission lock. An omitted target fans out to every active Thread.
 		default:
 			return nil, domain.Unsupported(
 				"this client event is not supported on the PostgreSQL backend",

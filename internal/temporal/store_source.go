@@ -125,6 +125,17 @@ func (s storeSource) FirstUnprocessedInterruptAfter(
 	return s.store.FirstUnprocessedInterruptAfter(ctx, sessionID, afterSeq)
 }
 
+func (s storeSource) FirstUnprocessedThreadInterruptAfter(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	afterSeq int64,
+) (*domain.Event, error) {
+	return s.store.FirstUnprocessedThreadInterruptAfter(
+		ctx, sessionID, threadID, afterSeq,
+	)
+}
+
 func (s storeSource) HistoryThrough(ctx context.Context, sessionID, triggerEventID string, limit int) ([]domain.Event, error) {
 	return s.store.HistoryThrough(ctx, sessionID, triggerEventID, limit)
 }

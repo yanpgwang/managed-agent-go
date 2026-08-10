@@ -28,7 +28,7 @@ The PostgreSQL/Temporal control plane currently accepts:
 | Event | Current behavior |
 | --- | --- |
 | `user.message` | Starts a model turn |
-| `user.interrupt` | Cancels the active turn, or is acknowledged as an idle no-op; `session_thread_id` is not supported |
+| `user.interrupt` | Cancels active work, or is acknowledged as an idle no-op; omit `session_thread_id` to interrupt every non-archived Thread, or provide it to target one Thread |
 | `user.custom_tool_result` | Supplies a result for a pending custom tool call |
 | `user.tool_result` | Supplies a client-executed built-in result for a `self_hosted` environment |
 | `user.tool_confirmation` | Allows or denies a pending `always_ask` built-in |
@@ -40,8 +40,14 @@ The PostgreSQL/Temporal control plane currently accepts:
 `session_thread_id` when answering a child action cross-posted onto the primary
 stream. The event reference is authoritative for routing; the hint is optional
 and a conflicting value is rejected. The persisted response and any companion
-`system.message` belong to the child Thread. Targeted multi-agent interrupt
-shapes return `422 unsupported_error`.
+`system.message` belong to the child Thread.
+
+An interrupt without `session_thread_id` is admitted to the primary and every
+active, non-archived child Thread. Supplying `session_thread_id` admits it only
+to that Thread and wakes only its Workflow. An unknown or cross-Session Thread
+ID is rejected, as is a direct target that can no longer execute. The send
+response still contains exactly one event for each caller-submitted input;
+server-created fan-out receipts remain internal to their owning Thread ledgers.
 
 Content blocks are validated as closed tagged unions. Images accept `base64`
 and `url` sources; documents accept `base64`, `text`, and `url` sources, with
@@ -52,12 +58,13 @@ Tool-result search blocks require `source`, `title`, `citations.enabled`, and
 an array of text blocks. Unknown fields are rejected at every nested level.
 Text outcome rubrics are limited to 262,144 characters.
 
-An interrupt is first committed to PostgreSQL and then delivered to the
-Session Workflow as a metadata-only wakeup. An interrupt that commits before
-turn completion wins that ordering point: the turn ends with exactly one
-`session.status_idle` whose stop reason is `end_turn`. If completion commits
-first, a later interrupt is an idle control event. A batch may place a new
-`user.message` after `user.interrupt` to redirect the Session into another turn.
+An interrupt is first committed to PostgreSQL and then delivered to each
+affected Workflow as a metadata-only wakeup. An interrupt that commits before
+turn completion wins that ordering point: the owning execution ends with
+exactly one idle boundary whose stop reason is `end_turn`. If completion
+commits first, a later interrupt is an idle control event. A batch may place a
+new `user.message` after `user.interrupt` to redirect the primary Session into
+another turn.
 
 The response echoes only the submitted events:
 

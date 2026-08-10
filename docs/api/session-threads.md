@@ -73,9 +73,15 @@ action in the barrier has a result. A companion `system.message` follows the
 same route. A waiting child does not block work on the primary or a sibling,
 and it emits no terminal report until its barrier is resolved.
 
-The remaining multi-agent boundary is global and targeted interrupts, exact
-hosted preview suppression for report-only turns, Workflow shutdown on archive
-or Session deletion, and immutable child context snapshots. The v1.62
+Interrupts use the ordinary Session Events endpoint. Omitting
+`session_thread_id` durably fans the control event out to the primary and every
+active child ledger; providing it targets and wakes only the named Thread.
+Every Thread independently applies the same PostgreSQL finish-vs-interrupt
+ordering fence, active-Activity cancellation, and idle no-op behavior.
+
+The remaining multi-agent boundary is exact hosted preview suppression for
+report-only turns, Workflow shutdown on archive or Session deletion, and
+immutable child context snapshots. The v1.62
 `advisor` Thread is not represented as an ordinary child placeholder; it
 remains unsupported until its reserved, automatically terminating consultation
 lifecycle can be implemented end to end. Session budgets are also deferred

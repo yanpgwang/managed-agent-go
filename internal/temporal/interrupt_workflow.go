@@ -32,6 +32,7 @@ type turnInterruptWatcher struct {
 	interruptibleActx workflow.Context
 	wakeupCh          workflow.ReceiveChannel
 	sessionID         string
+	threadID          string
 	afterSeq          int64
 	preflightDone     bool
 }
@@ -40,6 +41,7 @@ func newTurnInterruptWatcher(
 	actx workflow.Context,
 	wakeupCh workflow.ReceiveChannel,
 	sessionID string,
+	threadID string,
 	afterSeq int64,
 ) *turnInterruptWatcher {
 	interruptibleActx := workflow.WithHeartbeatTimeout(
@@ -55,6 +57,7 @@ func newTurnInterruptWatcher(
 		interruptibleActx: interruptibleActx,
 		wakeupCh:          wakeupCh,
 		sessionID:         sessionID,
+		threadID:          threadID,
 		afterSeq:          afterSeq,
 	}
 }
@@ -109,7 +112,9 @@ func (w *turnInterruptWatcher) executeActivityWithPulseOn(
 	// stranded waiting for another Signal that may never arrive.
 	if !w.preflightDone {
 		w.preflightDone = true
-		pending, err := loadInterruptAfter(w.actx, w.sessionID, w.afterSeq)
+		pending, err := loadInterruptAfter(
+			w.actx, w.sessionID, w.threadID, w.afterSeq,
+		)
 		if err != nil {
 			return interruptibleActivityOutcome{}, err
 		}
@@ -172,7 +177,9 @@ func (w *turnInterruptWatcher) executeActivityWithPulseOn(
 			continue
 		}
 
-		pending, err := loadInterruptAfter(w.actx, w.sessionID, w.afterSeq)
+		pending, err := loadInterruptAfter(
+			w.actx, w.sessionID, w.threadID, w.afterSeq,
+		)
 		if err != nil {
 			return interruptibleActivityOutcome{}, err
 		}
@@ -198,7 +205,9 @@ func (w *turnInterruptWatcher) executeActivityWithPulseOn(
 // wait sleeps for a Workflow retry delay while preserving the same durable
 // interrupt semantics used by long-running Activities.
 func (w *turnInterruptWatcher) wait(delay time.Duration) (bool, error) {
-	pending, err := loadInterruptAfter(w.actx, w.sessionID, w.afterSeq)
+	pending, err := loadInterruptAfter(
+		w.actx, w.sessionID, w.threadID, w.afterSeq,
+	)
 	if err != nil {
 		return false, err
 	}
@@ -225,7 +234,9 @@ func (w *turnInterruptWatcher) wait(delay time.Duration) (bool, error) {
 		selector.Select(w.actx)
 		if timerReady {
 			cancelTimer()
-			pending, err := loadInterruptAfter(w.actx, w.sessionID, w.afterSeq)
+			pending, err := loadInterruptAfter(
+				w.actx, w.sessionID, w.threadID, w.afterSeq,
+			)
 			if err != nil {
 				return false, err
 			}
@@ -235,7 +246,9 @@ func (w *turnInterruptWatcher) wait(delay time.Duration) (bool, error) {
 		if !wakeupReady {
 			continue
 		}
-		pending, err := loadInterruptAfter(w.actx, w.sessionID, w.afterSeq)
+		pending, err := loadInterruptAfter(
+			w.actx, w.sessionID, w.threadID, w.afterSeq,
+		)
 		if err != nil {
 			return false, err
 		}
@@ -248,13 +261,16 @@ func (w *turnInterruptWatcher) wait(delay time.Duration) (bool, error) {
 func loadInterruptAfter(
 	actx workflow.Context,
 	sessionID string,
+	threadID string,
 	afterSeq int64,
 ) (LoadInterruptResult, error) {
 	var result LoadInterruptResult
 	err := workflow.ExecuteActivity(
 		actx,
 		ActivityLoadInterrupt,
-		LoadInterruptInput{SessionID: sessionID, AfterSeq: afterSeq},
+		LoadInterruptInput{
+			SessionID: sessionID, ThreadID: threadID, AfterSeq: afterSeq,
+		},
 	).Get(actx, &result)
 	return result, err
 }
@@ -266,6 +282,7 @@ func loadInterruptAfter(
 func acknowledgeIdleInterrupt(
 	actx workflow.Context,
 	sessionID string,
+	threadID string,
 	interruptEventID string,
 ) (RunTurnResult, error) {
 	var result RunTurnResult
@@ -274,6 +291,8 @@ func acknowledgeIdleInterrupt(
 		ActivityCompleteWorkflowTurn,
 		CompleteWorkflowTurnInput{
 			SessionID:      sessionID,
+			ThreadID:       threadID,
+			IsChild:        threadID != "",
 			TriggerEventID: interruptEventID,
 			Status:         domain.StatusIdle,
 		},

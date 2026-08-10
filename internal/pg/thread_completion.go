@@ -100,6 +100,57 @@ func (s *Store) CompleteThreadWorkflowTurn(
 			}
 			return nil
 		}
+
+		// Child admission and completion share the Session row lock, so the first
+		// unprocessed interrupt after this trigger defines the same authoritative
+		// finish-vs-interrupt race as the primary Thread.
+		var interrupt *domain.Event
+		if trigger.Type != domain.EvUserInterrupt {
+			row, err := q.FirstUnprocessedThreadInterruptAfter(
+				ctx,
+				pgstore.FirstUnprocessedThreadInterruptAfterParams{
+					SessionID: sessionID,
+					ThreadID:  threadID,
+					AfterSeq:  trigger.Seq,
+				},
+			)
+			switch {
+			case err == nil:
+				event, err := eventFromRow(row)
+				if err != nil {
+					return err
+				}
+				interrupt = &event
+			case errors.Is(err, pgx.ErrNoRows):
+				// Normal completion won.
+			default:
+				return err
+			}
+		}
+		if interrupt != nil {
+			outputDrafts, _, _ = interruptedTurnDrafts(outputDrafts)
+			transcriptDelta = closeInterruptedProviderTranscript(transcriptDelta)
+			toolUseMappings = retainCommittedProviderMappings(
+				toolUseMappings, outputDrafts,
+			)
+			status = domain.StatusIdle
+			pendingActionEventIDs = nil
+			if attemptID != "" {
+				attemptState = domain.RunAttemptInterrupted
+				attemptError = nil
+			}
+			outputDrafts = append(outputDrafts, domain.EventDraft{
+				Type: domain.EvSessionStatusIdle,
+				Payload: map[string]any{
+					"stop_reason": map[string]any{"type": "end_turn"},
+				},
+			})
+		}
+		if err := validatePendingCompletion(
+			status, outputDrafts, pendingActionEventIDs,
+		); err != nil {
+			return err
+		}
 		if attemptID != "" {
 			if err := validateAttemptFinish(attemptState, attemptError); err != nil {
 				return err
@@ -117,11 +168,52 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		if err != nil {
 			return err
 		}
+		hasUnresolved, err := q.HasUnresolvedPendingActions(
+			ctx,
+			pgstore.HasUnresolvedPendingActionsParams{
+				SessionID: sessionID, ThreadID: threadID,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		gatedAfterCompletion := hasUnresolved || len(pendingActionEventIDs) > 0
+
+		effectiveStatus := status
+		effectiveDrafts := outputDrafts
+		retriesExhausted := turnRetriesExhausted(outputDrafts)
+		if status == domain.StatusIdle && !gatedAfterCompletion {
+			remaining, err := q.CountUnprocessedThreadMessages(
+				ctx,
+				pgstore.CountUnprocessedThreadMessagesParams{
+					SessionID: sessionID, ThreadID: threadID,
+					ExcludeID: triggerEventID,
+				},
+			)
+			if err != nil {
+				return err
+			}
+			switch {
+			case interrupt != nil && remaining > 0:
+				// An interrupt visibly yields this child before already-queued work
+				// reopens it. Both lifecycle events commit in the same transaction.
+				effectiveStatus = domain.StatusRunning
+				effectiveDrafts = append(effectiveDrafts, domain.EventDraft{
+					Type: domain.EvSessionStatusRunning, Payload: map[string]any{},
+				})
+			case interrupt == nil && !retriesExhausted && remaining > 0:
+				// Ordinary queued follow-up work keeps the child continuously running;
+				// do not expose an intermediate idle projection between turns.
+				effectiveStatus = domain.StatusRunning
+				effectiveDrafts = withoutTerminalIdle(effectiveDrafts)
+			}
+		}
 
 		now := s.clock.Now().UTC()
 		primaryID := *thread.ParentThreadID
 		finalReport := []any(nil)
-		if status == domain.StatusIdle && len(pendingActionEventIDs) == 0 {
+		if interrupt == nil && status == domain.StatusIdle &&
+			len(pendingActionEventIDs) == 0 {
 			finalReport = lastAgentMessageContent(outputDrafts)
 		}
 		coordinatorReport := finalReport
@@ -129,7 +221,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 			coordinatorReport = terminatedChildReport(thread.Agent.Name, outputDrafts)
 		}
 		drafts := childThreadDrafts(
-			outputDrafts, thread.ID, thread.Agent.Name,
+			effectiveDrafts, thread.ID, thread.Agent.Name,
 			primaryID, session.AgentSnapshot.Name, len(finalReport) > 0,
 		)
 		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
@@ -249,8 +341,13 @@ func (s *Store) CompleteThreadWorkflowTurn(
 				return err
 			}
 		}
+		extraProcessedIDs := []string(nil)
+		if interrupt != nil {
+			extraProcessedIDs = append(extraProcessedIDs, interrupt.ID)
+		}
 		processedEventIDs, err := turnProcessedEventIDs(
-			ctx, q, sessionID, triggerEventID, nil, resolutionEventIDs,
+			ctx, q, sessionID, triggerEventID, nil,
+			resolutionEventIDs, extraProcessedIDs...,
 		)
 		if err != nil {
 			return err
@@ -262,9 +359,20 @@ func (s *Store) CompleteThreadWorkflowTurn(
 				return err
 			}
 		}
+		if retriesExhausted {
+			if err := q.FlushQueuedThreadMessages(
+				ctx,
+				pgstore.FlushQueuedThreadMessagesParams{
+					ProcessedAt: tsUTC(now), SessionID: sessionID,
+					ThreadID: threadID, ExcludeID: triggerEventID,
+				},
+			); err != nil {
+				return err
+			}
+		}
 
 		thread.Usage.Add(usage)
-		thread.TransitionStatus(status, now)
+		thread.TransitionStatus(effectiveStatus, now)
 		if err := putSessionThreadTx(ctx, tx, thread); err != nil {
 			return err
 		}
@@ -394,6 +502,8 @@ func childThreadDrafts(
 		switch draft.Type {
 		case domain.EvSessionStatusIdle:
 			draft.Type = domain.EvSessionThreadStatusIdle
+		case domain.EvSessionStatusRunning:
+			draft.Type = domain.EvSessionThreadStatusRunning
 		case domain.EvSessionStatusTerminated:
 			draft.Type = domain.EvSessionThreadStatusTerminated
 		case domain.EvSessionStatusRescheduling:
