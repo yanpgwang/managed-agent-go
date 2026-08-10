@@ -156,6 +156,35 @@ func TestAdmitEvents_TargetedInterruptRoutesOnlyNamedThread(t *testing.T) {
 	}
 }
 
+func TestAdmitEvents_TargetedPrimaryInterruptDoesNotWakeChildren(t *testing.T) {
+	fixture := newMultiagentInterruptFixture(t, "targeted_primary")
+	admission, err := fixture.store.AdmitEvents(
+		fixture.ctx,
+		fixture.session.ID,
+		[]domain.EventDraft{{
+			Type: domain.EvUserInterrupt,
+			Payload: map[string]any{
+				"session_thread_id": fixture.primary.ID,
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !admission.Enqueued || !admission.PrimaryEnqueued ||
+		len(admission.WakeThreadIDs) != 0 ||
+		len(admission.SubmittedEvents) != 1 ||
+		admission.SubmittedEvents[0].ThreadID != fixture.primary.ID {
+		t.Fatalf("targeted primary routing = %+v", admission)
+	}
+	childInterrupt, err := fixture.store.FirstUnprocessedThreadInterruptAfter(
+		fixture.ctx, fixture.session.ID, fixture.child.ID, fixture.childTrigger.Sequence,
+	)
+	if err != nil || childInterrupt != nil {
+		t.Fatalf("unexpected child interrupt = %+v, err=%v", childInterrupt, err)
+	}
+}
+
 func TestAdmitEvents_GlobalInterruptFansOutToEveryActiveThread(t *testing.T) {
 	fixture := newMultiagentInterruptFixture(t, "global")
 	admission, err := fixture.store.AdmitEvents(
@@ -241,6 +270,99 @@ func TestAdmitEvents_TargetedInterruptRejectsUnknownThread(t *testing.T) {
 	var domainErr *domain.DomainError
 	if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindValidation {
 		t.Fatalf("unknown target error = %v", err)
+	}
+}
+
+func TestAdmitEvents_TargetedInterruptRejectsTerminatedThread(t *testing.T) {
+	fixture := newMultiagentInterruptFixture(t, "terminated_target")
+	if _, err := fixture.store.CompleteThreadWorkflowTurn(
+		fixture.ctx, fixture.session.ID, fixture.child.ID, fixture.childTrigger.ID,
+		[]domain.EventDraft{
+			{Type: domain.EvSessionError, Payload: map[string]any{
+				"error": map[string]any{
+					"type": "model_request_failed_error", "message": "terminal failure",
+					"retry_status": map[string]any{"type": "terminal"},
+				},
+			}},
+			{Type: domain.EvSessionStatusTerminated, Payload: map[string]any{}},
+		},
+		domain.StatusTerminated, "", "", nil, nil, nil, nil, nil,
+		domain.TokenUsage{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	_, err := fixture.store.AdmitEvents(
+		fixture.ctx,
+		fixture.session.ID,
+		[]domain.EventDraft{{
+			Type: domain.EvUserInterrupt,
+			Payload: map[string]any{
+				"session_thread_id": fixture.child.ID,
+			},
+		}},
+	)
+	var domainErr *domain.DomainError
+	if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindConflict {
+		t.Fatalf("terminated target error = %v", err)
+	}
+}
+
+func TestCompleteThreadWorkflowTurn_IdleInterruptPreservesPendingBarrier(t *testing.T) {
+	fixture := newMultiagentInterruptFixture(t, "pending_barrier")
+	const actionID = "sevt_child_pending_interrupt_action"
+	if _, err := fixture.store.CompleteThreadWorkflowTurn(
+		fixture.ctx, fixture.session.ID, fixture.child.ID, fixture.childTrigger.ID,
+		[]domain.EventDraft{
+			{ID: actionID, Type: domain.EvAgentCustomToolUse, Payload: map[string]any{
+				"name": "review_result", "input": map[string]any{},
+			}},
+			{Type: domain.EvSessionStatusIdle, Payload: map[string]any{
+				"stop_reason": map[string]any{
+					"type": "requires_action", "event_ids": []string{actionID},
+				},
+			}},
+		},
+		domain.StatusIdle, "", "", nil, []string{actionID}, nil, nil, nil,
+		domain.TokenUsage{},
+	); err != nil {
+		t.Fatal(err)
+	}
+	admission, err := fixture.store.AdmitEvents(
+		fixture.ctx,
+		fixture.session.ID,
+		[]domain.EventDraft{{
+			Type: domain.EvUserInterrupt,
+			Payload: map[string]any{
+				"session_thread_id": fixture.child.ID,
+			},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ack, err := fixture.store.CompleteThreadWorkflowTurn(
+		fixture.ctx, fixture.session.ID, fixture.child.ID,
+		admission.SubmittedEvents[0].ID, nil,
+		domain.StatusIdle, "", "", nil, nil, nil, nil, nil, domain.TokenUsage{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ack.Events) != 0 {
+		t.Fatalf("parked interrupt emitted projection events: %+v", ack.Events)
+	}
+	pending, err := fixture.store.UnresolvedThreadPendingActions(
+		fixture.ctx, fixture.session.ID, fixture.child.ID,
+	)
+	if err != nil || len(pending) != 1 || pending[0].ActionEventID != actionID ||
+		pending[0].ResolvingEventID != nil || pending[0].ResolvedAt != nil {
+		t.Fatalf("pending barrier after interrupt = %+v, err=%v", pending, err)
+	}
+	interrupt, err := fixture.store.GetEvent(
+		fixture.ctx, fixture.session.ID, admission.SubmittedEvents[0].ID,
+	)
+	if err != nil || interrupt.ProcessedAt == nil {
+		t.Fatalf("parked interrupt = %+v, err=%v", interrupt, err)
 	}
 }
 

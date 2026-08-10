@@ -218,6 +218,7 @@ func TestSendEvents_ValidatesVariantShape(t *testing.T) {
 		`{"events":[]}`,
 		`{"events":[{"type":"user.message"}]}`,
 		`{"events":[{"type":"user.interrupt","session_thread_id":""}]}`,
+		`{"events":[{"type":"user.interrupt","session_thread_id":"thread_invalid"}]}`,
 		`{"events":[{"type":"user.custom_tool_result","content":[]}]}`,
 		`{"events":[{"type":"user.tool_confirmation","tool_use_id":"sevt_x","result":"maybe"}]}`,
 		`{"events":[{"type":"user.tool_confirmation","tool_use_id":"sevt_x","result":"deny","deny_message":42}]}`,

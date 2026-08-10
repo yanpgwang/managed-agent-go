@@ -85,9 +85,10 @@ after this statement.
   that later capability does not expand this frozen claim. Create-time vault
   IDs, File-sourced message content, and File-backed outcome rubrics remain
   outside this claim.
-- Agent skills and `multiagent` configuration can round-trip, but skill
-  execution, resolved rosters, Session Threads, delegation, and targeted
-  thread interrupts are outside this claim and do not execute.
+- At the time this statement was frozen, Agent skills and `multiagent`
+  configuration could round-trip, but skill execution, resolved rosters,
+  Session Threads, delegation, and targeted Thread interrupts did not execute.
+  Later implementations remain outside this frozen claim.
 - Session list filters for deployment and memory-store membership are parsed,
   but no current Session can match them because those resources are outside the
   included surface.

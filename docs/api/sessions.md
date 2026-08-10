@@ -192,10 +192,11 @@ POST /v1/sessions/{id}/archive
 DELETE /v1/sessions/{id}
 ```
 
-A running session cannot be archived or deleted and returns `409`. An
-untargeted `user.interrupt` durably cancels the active model or tool Activity
-across API and worker processes so the Session can return to `idle`. Interrupt
-routing to a specific multi-agent thread is not supported.
+A running session cannot be archived or deleted and returns `409`. A
+`user.interrupt` durably cancels active model or tool Activities across API and
+worker processes so the Session can return to `idle`. Omitting
+`session_thread_id` interrupts every non-archived Thread; providing it targets
+only the named Thread.
 
 Delete removes the session and persisted history, sends a final
 `session.deleted` event to active subscribers, and closes their streams:

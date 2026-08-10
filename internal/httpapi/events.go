@@ -318,6 +318,8 @@ func validateClientEvent(event map[string]any) error {
 		}
 		if threadID, present := event["session_thread_id"].(string); present && threadID == "" {
 			return domain.Validation("session_thread_id must not be empty")
+		} else if present && !strings.HasPrefix(threadID, domain.PrefixSessionThread) {
+			return domain.Validation("session_thread_id must start with sthr_")
 		}
 		return nil
 	case domain.EvUserCustomToolResult:
