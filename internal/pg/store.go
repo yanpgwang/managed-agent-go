@@ -2185,15 +2185,16 @@ func (s *Store) completeTurn(
 				return err
 			}
 		}
-		processedIDs := resolutionEventIDs
-		if len(processedIDs) == 0 {
-			processedIDs = []string{triggerEventID}
-		}
+		extraProcessedIDs := []string(nil)
 		if interrupt != nil {
-			processedIDs = append(processedIDs, interrupt.ID)
+			extraProcessedIDs = append(extraProcessedIDs, interrupt.ID)
 		}
-		if companionID, _ := triggerPayload[domain.InternalCompanionSystemEventID].(string); companionID != "" {
-			processedIDs = append(processedIDs, companionID)
+		processedIDs, err := turnProcessedEventIDs(
+			ctx, q, sessionID, triggerEventID, triggerPayload,
+			resolutionEventIDs, extraProcessedIDs...,
+		)
+		if err != nil {
+			return err
 		}
 		for _, eventID := range processedIDs {
 			if err := q.MarkEventProcessed(ctx, pgstore.MarkEventProcessedParams{

@@ -12,6 +12,8 @@ import (
 const (
 	childPendingActionRoutingChangeID = "child-pending-action-routing"
 	childPendingActionRoutingVersion  = 1
+	childParkedDrainBoundaryChangeID  = "child-message-park-drain-boundary"
+	childParkedDrainBoundaryVersion   = 1
 )
 
 // SessionThreadWorkflow is the independent durable loop for one child Agent.
@@ -46,6 +48,12 @@ func sessionThreadWorkflow(
 		workflow.DefaultVersion,
 		childPendingActionRoutingVersion,
 	) == childPendingActionRoutingVersion
+	parkedMessageDrainBoundary := workflow.GetVersion(
+		ctx,
+		childParkedDrainBoundaryChangeID,
+		workflow.DefaultVersion,
+		childParkedDrainBoundaryVersion,
+	) == childParkedDrainBoundaryVersion
 
 	coalesce := func() bool {
 		saw := false
@@ -95,11 +103,10 @@ func sessionThreadWorkflow(
 						return false, err
 					}
 					turns++
-					switch completed.Disposition {
-					case TurnTerminated:
-						return true, nil
-					case TurnParked:
-						return false, nil
+					if stop, terminated := threadDrainBoundary(
+						completed.Disposition, true,
+					); stop {
+						return terminated, nil
 					}
 					// Completion may have installed a new barrier. Re-evaluate it
 					// before consuming any queued follow-up message.
@@ -133,8 +140,14 @@ func sessionThreadWorkflow(
 						return false, err
 					}
 					turns++
-					if completed.Disposition == TurnTerminated {
-						return true, nil
+					// A committed message turn owns this receipt even when it parks.
+					// Advance before returning so barrier resume does not replay an
+					// already-completed PrepareTurn Activity.
+					cursor = event.Seq
+					if stop, terminated := threadDrainBoundary(
+						completed.Disposition, parkedMessageDrainBoundary,
+					); stop {
+						return terminated, nil
 					}
 				}
 				cursor = event.Seq
@@ -173,6 +186,24 @@ func sessionThreadWorkflow(
 		}
 		wakeupCh.Receive(ctx, nil)
 		drainRequested = true
+	}
+}
+
+// threadDrainBoundary centralizes the two dispositions that may stop the
+// current child-ledger drain. stopOnPark is version-gated for message turns so
+// histories recorded before that boundary keep their original command shape;
+// pending-action resumes have always stopped when they install a new barrier.
+func threadDrainBoundary(
+	disposition TurnDisposition,
+	stopOnPark bool,
+) (stop bool, terminated bool) {
+	switch disposition {
+	case TurnTerminated:
+		return true, true
+	case TurnParked:
+		return stopOnPark, false
+	default:
+		return false, false
 	}
 }
 
