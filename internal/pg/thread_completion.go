@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
@@ -119,13 +120,17 @@ func (s *Store) CompleteThreadWorkflowTurn(
 
 		now := s.clock.Now().UTC()
 		primaryID := *thread.ParentThreadID
-		report := []any(nil)
+		finalReport := []any(nil)
 		if status == domain.StatusIdle && len(pendingActionEventIDs) == 0 {
-			report = lastAgentMessageContent(outputDrafts)
+			finalReport = lastAgentMessageContent(outputDrafts)
+		}
+		coordinatorReport := finalReport
+		if status == domain.StatusTerminated {
+			coordinatorReport = terminatedChildReport(thread.Agent.Name, outputDrafts)
 		}
 		drafts := childThreadDrafts(
 			outputDrafts, thread.ID, thread.Agent.Name,
-			primaryID, session.AgentSnapshot.Name, len(report) > 0,
+			primaryID, session.AgentSnapshot.Name, len(finalReport) > 0,
 		)
 		maxSeq, err := q.MaxEventSeq(ctx, sessionID)
 		if err != nil {
@@ -180,7 +185,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 			return err
 		}
 
-		if len(report) > 0 {
+		if len(coordinatorReport) > 0 {
 			received, next, err := s.appendThreadDrafts(
 				ctx, q, sessionID, primaryID,
 				[]domain.EventDraft{{
@@ -188,7 +193,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 					Payload: map[string]any{
 						"from_session_thread_id": threadID,
 						"from_agent_name":        thread.Agent.Name,
-						"content":                report,
+						"content":                coordinatorReport,
 					},
 				}}, maxSeq, nil,
 			)
@@ -244,24 +249,11 @@ func (s *Store) CompleteThreadWorkflowTurn(
 				return err
 			}
 		}
-		processedEventIDs := resolutionEventIDs
-		if len(processedEventIDs) == 0 {
-			processedEventIDs = []string{triggerEventID}
-		}
-		for _, resolutionEventID := range resolutionEventIDs {
-			row, err := q.GetEvent(ctx, pgstore.GetEventParams{
-				SessionID: sessionID, ID: resolutionEventID,
-			})
-			if err != nil {
-				return err
-			}
-			var payload map[string]any
-			if err := json.Unmarshal(row.Payload, &payload); err != nil {
-				return err
-			}
-			if companionID, _ := payload[domain.InternalCompanionSystemEventID].(string); companionID != "" {
-				processedEventIDs = appendUniqueStrings(processedEventIDs, companionID)
-			}
+		processedEventIDs, err := turnProcessedEventIDs(
+			ctx, q, sessionID, triggerEventID, nil, resolutionEventIDs,
+		)
+		if err != nil {
+			return err
 		}
 		for _, eventID := range processedEventIDs {
 			if err := q.MarkEventProcessed(ctx, pgstore.MarkEventProcessedParams{
@@ -276,23 +268,25 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		if err := putSessionThreadTx(ctx, tx, thread); err != nil {
 			return err
 		}
-		if len(report) > 0 {
+		if len(coordinatorReport) > 0 {
 			primary, err := loadSessionThreadForUpdate(
 				ctx, tx, sessionID, primaryID,
 			)
 			if err != nil {
 				return err
 			}
-			if primary.Status == domain.StatusIdle {
-				primary.TransitionStatus(domain.StatusRunning, now)
-				if err := putSessionThreadTx(ctx, tx, primary); err != nil {
+			if coordinatorCanAcceptReport(primary) {
+				if primary.Status == domain.StatusIdle {
+					primary.TransitionStatus(domain.StatusRunning, now)
+					if err := putSessionThreadTx(ctx, tx, primary); err != nil {
+						return err
+					}
+				}
+				if err := q.UpsertOutbox(ctx, pgstore.UpsertOutboxParams{
+					SessionID: sessionID, MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
+				}); err != nil {
 					return err
 				}
-			}
-			if err := q.UpsertOutbox(ctx, pgstore.UpsertOutboxParams{
-				SessionID: sessionID, MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
-			}); err != nil {
-				return err
 			}
 		}
 
@@ -471,6 +465,47 @@ func lastAgentMessageContent(drafts []domain.EventDraft) []any {
 		return content
 	}
 	return nil
+}
+
+// terminatedChildReport turns the public terminal error already committed to
+// the child ledger into model-readable coordinator input. Lifecycle projection
+// alone is observable to clients but does not drive a coordinator turn, so a
+// failed delegation would otherwise disappear from synthesis.
+func terminatedChildReport(agentName string, drafts []domain.EventDraft) []any {
+	errorType := ""
+	message := ""
+	for index := len(drafts) - 1; index >= 0; index-- {
+		if drafts[index].Type != domain.EvSessionError {
+			continue
+		}
+		errorPayload, _ := drafts[index].Payload["error"].(map[string]any)
+		errorType, _ = errorPayload["type"].(string)
+		message, _ = errorPayload["message"].(string)
+		break
+	}
+	text := fmt.Sprintf("Agent %q terminated before completing its task.", agentName)
+	switch {
+	case errorType != "" && message != "":
+		text = fmt.Sprintf(
+			"Agent %q terminated before completing its task (%s): %s",
+			agentName, errorType, message,
+		)
+	case message != "":
+		text = fmt.Sprintf(
+			"Agent %q terminated before completing its task: %s",
+			agentName, message,
+		)
+	case errorType != "":
+		text = fmt.Sprintf(
+			"Agent %q terminated before completing its task (%s).",
+			agentName, errorType,
+		)
+	}
+	return []any{map[string]any{"type": "text", "text": text}}
+}
+
+func coordinatorCanAcceptReport(thread domain.SessionThread) bool {
+	return thread.ArchivedAt == nil && thread.Status != domain.StatusTerminated
 }
 
 func aggregateSessionThreadStatus(

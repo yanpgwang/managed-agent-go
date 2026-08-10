@@ -34,6 +34,7 @@ func timestampProto(at time.Time) *timestamppb.Timestamp {
 const replayWorkflowName = "SessionAgentTurn"
 
 const replaySessionWorkflowName = SessionWorkflowType
+const replaySessionThreadWorkflowName = SessionThreadWorkflowType
 
 const replayTaskQueue = "replay-task-queue"
 
@@ -351,6 +352,16 @@ func replaySessionHistory(t *testing.T, history *historypb.History) error {
 	return replayer.ReplayWorkflowHistory(nil, history)
 }
 
+func replaySessionThreadHistory(t *testing.T, history *historypb.History) error {
+	t.Helper()
+	replayer := worker.NewWorkflowReplayer()
+	replayer.RegisterWorkflowWithOptions(
+		SessionThreadWorkflow,
+		workflow.RegisterOptions{Name: replaySessionThreadWorkflowName},
+	)
+	return replayer.ReplayWorkflowHistory(nil, history)
+}
+
 // mcpToolRoundPrepared is the PrepareTurn result an MCP turn recorded in every
 // fixture below: one always_allow remote tool pinned for the session.
 func mcpToolRoundPrepared() PrepareTurnResult {
@@ -503,6 +514,85 @@ func TestReplay_SessionWorkflowAcrossInterruptGate(t *testing.T) {
 				partial()
 
 			require.NoError(t, replaySessionHistory(t, history))
+		})
+	}
+}
+
+// Child Workflows that parked before the message-drain boundary shipped
+// recorded one more LoadPendingActions command after turn completion. The new
+// version stops immediately. Both histories must replay across a rolling
+// worker upgrade without changing their recorded command streams.
+func TestReplay_SessionThreadWorkflowAcrossParkDrainBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		currentMarker bool
+	}{
+		{name: "before parked message drain boundary"},
+		{name: "current parked message drain boundary", currentMarker: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const (
+				sessionID = "sesn_replay_child"
+				threadID  = "sthr_replay_child"
+				messageID = "sevt_replay_child_message"
+			)
+			input := SessionThreadWorkflowInput{
+				SessionID: sessionID, ThreadID: threadID,
+			}
+			prepared := mcpToolRoundPrepared()
+			prepared.ThreadID = threadID
+			prepared.IsChild = true
+			prepared.Tools = []TurnTool{mcpTurnTool("always_ask")}
+			fixture := newNamedHistoryFixture(
+				t, replaySessionThreadWorkflowName, input,
+			).versionMarker(
+				childPendingActionRoutingChangeID,
+				childPendingActionRoutingVersion,
+			)
+			if test.currentMarker {
+				fixture.versionMarker(
+					childParkedDrainBoundaryChangeID,
+					childParkedDrainBoundaryVersion,
+				)
+			}
+			fixture.signal(
+				WakeupSignalName, WakeupSignal{MaxEventSeq: 1},
+			).activity(
+				ActivityLoadPendingActions, LoadPendingActionsResult{},
+			).activity(
+				ActivityLoadEvents, LoadEventsResult{Events: []EventRef{{
+					ID: messageID, Seq: 1,
+					Type: domain.EvAgentThreadMessageReceived,
+				}}},
+			).activity(
+				ActivityPrepareTurn, prepared,
+			)
+			for _, gate := range turnReplayVersionGates {
+				fixture.versionMarker(gate.changeID, gate.version)
+			}
+			fixture.activity(
+				ActivityStartModelRequest, nil,
+			).activity(
+				ActivityCallModel, mcpToolRoundCall(),
+			).activity(
+				ActivityCompleteWorkflowTurn,
+				RunTurnResult{Disposition: TurnParked},
+			)
+			if !test.currentMarker {
+				fixture.activity(
+					ActivityLoadPendingActions,
+					LoadPendingActionsResult{Actions: []PendingActionRef{{
+						ActionEventID:  "sevt_mcp_use",
+						ActionEventSeq: 2,
+						Kind:           domain.PendingToolConfirmation,
+					}}},
+				)
+			}
+
+			require.NoError(
+				t,
+				replaySessionThreadHistory(t, fixture.partial()),
+			)
 		})
 	}
 }

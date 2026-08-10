@@ -601,6 +601,65 @@ func TestPendingActions_PartialResolutionKeepsRemainingGate(t *testing.T) {
 	}
 }
 
+func TestPendingActions_ProcessesCompanionsFromEveryBarrierResolution(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session, triggerID := pendingTurn(t, store, "sess_pending_companions")
+	actionIDs := []string{"sevt_companion_a", "sevt_companion_b"}
+	parkCustomActions(t, store, session.ID, triggerID, actionIDs)
+
+	first, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{
+		{
+			Type: domain.EvUserCustomToolResult,
+			Payload: map[string]any{
+				"custom_tool_use_id": actionIDs[0], "content": []any{},
+			},
+		},
+		{
+			Type: domain.EvSystemMessage,
+			Payload: map[string]any{"content": []any{map[string]any{
+				"type": "text", "text": "context for the resumed turn",
+			}}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstResolution := eventOfType(t, first.Events, domain.EvUserCustomToolResult)
+	companion := eventOfType(t, first.Events, domain.EvSystemMessage)
+	if companion.ProcessedAt != nil {
+		t.Fatal("companion was processed before the complete barrier resumed")
+	}
+
+	second, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserCustomToolResult,
+		Payload: map[string]any{
+			"custom_tool_use_id": actionIDs[1], "content": []any{},
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResolution := eventOfType(t, second.Events, domain.EvUserCustomToolResult)
+	if _, err := store.CompleteWorkflowTurn(
+		ctx, session.ID, secondResolution.ID,
+		[]domain.EventDraft{{
+			Type: domain.EvSessionStatusIdle,
+			Payload: map[string]any{
+				"stop_reason": map[string]any{"type": "end_turn"},
+			},
+		}},
+		domain.StatusIdle, "", "", nil, nil,
+		[]string{firstResolution.ID, secondResolution.ID},
+	); err != nil {
+		t.Fatal(err)
+	}
+	companion, err = store.GetEvent(ctx, session.ID, companion.ID)
+	if err != nil || companion.ProcessedAt == nil {
+		t.Fatalf("processed companion = %+v, err=%v", companion, err)
+	}
+}
+
 func pendingTurn(t *testing.T, store *Store, sessionID string) (domain.Session, string) {
 	t.Helper()
 	ctx := context.Background()

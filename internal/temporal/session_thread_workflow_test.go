@@ -8,6 +8,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/activity"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
@@ -217,4 +218,89 @@ func TestSessionThreadWorkflowResumesBarrierBeforeQueuedMessage(t *testing.T) {
 		},
 		{SessionID: sessionID, TriggerEventID: queuedID},
 	}, prepared)
+}
+
+func TestSessionThreadWorkflowStopsDrainingAfterMessageTurnParks(t *testing.T) {
+	var ts testsuite.WorkflowTestSuite
+	env := ts.NewTestWorkflowEnvironment()
+	const (
+		sessionID = "sesn_child_new_barrier"
+		threadID  = "sthr_child_new_barrier"
+		firstID   = "sevt_child_first"
+		queuedID  = "sevt_child_queued"
+	)
+	events := []EventRef{
+		{ID: firstID, Seq: 1, Type: domain.EvAgentThreadMessageReceived},
+		{ID: queuedID, Seq: 2, Type: domain.EvAgentThreadMessageReceived},
+	}
+	env.RegisterActivityWithOptions(
+		func(context.Context, LoadPendingActionsInput) (LoadPendingActionsResult, error) {
+			return LoadPendingActionsResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadPendingActions},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, LoadEventsInput) (LoadEventsResult, error) {
+			return LoadEventsResult{Events: events}, nil
+		},
+		activity.RegisterOptions{Name: ActivityLoadEvents},
+	)
+	var prepared []string
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in PrepareTurnInput) (PrepareTurnResult, error) {
+			prepared = append(prepared, in.TriggerEventID)
+			return PrepareTurnResult{
+				ThreadID: threadID, IsChild: true,
+				Request: model.Request{Model: "fake"},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, StartModelRequestInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityStartModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, AppendWorkflowEventsInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityAppendWorkflowEvents},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			return CallModelResult{
+				Response:            model.Response{StopReason: "end_turn"},
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			if in.TriggerEventID == firstID {
+				return RunTurnResult{Disposition: TurnParked}, nil
+			}
+			return RunTurnResult{Disposition: TurnTerminated}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+	env.RegisterDelayedCallback(func() {
+		env.SignalWorkflow(WakeupSignalName, WakeupSignal{MaxEventSeq: 2})
+	}, time.Millisecond)
+
+	env.SetTestTimeout(10 * time.Second)
+	env.ExecuteWorkflow(
+		sessionThreadWorkflow,
+		SessionThreadWorkflowInput{SessionID: sessionID, ThreadID: threadID},
+		1,
+	)
+
+	var canErr *workflow.ContinueAsNewError
+	require.ErrorAs(t, env.GetWorkflowError(), &canErr)
+	var next SessionThreadWorkflowInput
+	require.NoError(
+		t,
+		converter.GetDefaultDataConverter().FromPayloads(canErr.Input, &next),
+	)
+	require.Equal(t, int64(1), next.StartCursor)
+	require.Equal(t, []string{firstID}, prepared)
 }

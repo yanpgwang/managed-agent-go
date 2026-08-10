@@ -3,6 +3,7 @@ package pg
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
@@ -385,6 +386,177 @@ WHERE session_id = $1 AND thread_id = $2`, session.ID, child.ID).Scan(&childWake
 	}
 }
 
+func TestTerminalChildFailureReportsAndWakesCoordinator(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_terminal_child")
+	session.AgentSnapshot = domain.Agent{
+		ID: session.AgentID, Version: session.AgentVersion, Name: "coordinator",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-test"}),
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{
+			Type: "agent", ID: "agent_reviewer", Version: 1,
+		}}},
+	}
+	session.MultiagentRoster = []domain.Agent{{
+		ID: "agent_reviewer", Version: 1, Name: "reviewer",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-reviewer"}),
+	}}
+	created, err := store.CreateSession(ctx, session, []domain.EventDraft{{
+		Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{map[string]any{
+			"type": "text", "text": "delegate a review",
+		}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	trigger := eventOfType(t, created.Events, domain.EvUserMessage)
+	threads, err := store.ListSessionThreads(
+		ctx, session.ID, app.SessionThreadListQuery{Limit: 10},
+	)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("primary Threads = %+v, err=%v", threads, err)
+	}
+	primary := threads[0]
+	if _, err := store.EnsureAttempt(
+		ctx, session.ID, trigger.ID, "ratm_terminal_delegate",
+	); err != nil {
+		t.Fatal(err)
+	}
+	delegateInput := map[string]any{
+		"agent_name": "reviewer", "message": "review the change",
+	}
+	if _, err := store.EnsureToolStep(
+		ctx, "ratm_terminal_delegate", "tstep_terminal_delegate", 0,
+		"sevt_private_terminal_delegate", agentruntime.SendToAgentToolName,
+		delegateInput,
+	); err != nil {
+		t.Fatal(err)
+	}
+	delegated, err := store.ExecuteCoordinatorToolStep(
+		ctx, session.ID, primary.ID, trigger.ID, "tstep_terminal_delegate",
+		agentruntime.SendToAgentToolName, delegateInput,
+	)
+	if err != nil || delegated.WakeThreadID == "" {
+		t.Fatalf("delegate = %+v, err=%v", delegated, err)
+	}
+	child, err := store.GetSessionThread(ctx, session.ID, delegated.WakeThreadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childEvents, err := store.ThreadEventsAfter(ctx, session.ID, child.ID, 0, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childTrigger := eventOfType(t, childEvents, domain.EvAgentThreadMessageReceived)
+
+	// The coordinator yields while the delegated turn is active. Its initial
+	// wakeup is consumed so the assertion below proves terminal completion
+	// durably schedules a fresh coordinator synthesis turn.
+	if _, err := store.CompleteWorkflowTurn(
+		ctx, session.ID, trigger.ID,
+		[]domain.EventDraft{{
+			Type: domain.EvSessionStatusIdle,
+			Payload: map[string]any{
+				"stop_reason": map[string]any{"type": "end_turn"},
+			},
+		}},
+		domain.StatusIdle, "ratm_terminal_delegate", domain.RunAttemptCompleted,
+		nil, nil, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	wakeup, ok, err := store.PendingWakeup(ctx, session.ID)
+	if err != nil || !ok {
+		t.Fatalf("initial wakeup = %+v ok=%v err=%v", wakeup, ok, err)
+	}
+	if removed, err := store.DeleteWakeupIfUnchanged(
+		ctx, session.ID, wakeup.MaxEventSeq,
+	); err != nil || !removed {
+		t.Fatalf("consume initial wakeup: removed=%v err=%v", removed, err)
+	}
+
+	const failureMessage = "provider rejected the child request"
+	if _, err := store.EnsureAttempt(
+		ctx, session.ID, childTrigger.ID, "ratm_terminal_child",
+	); err != nil {
+		t.Fatal(err)
+	}
+	attemptError := failureMessage
+	completion, err := store.CompleteThreadWorkflowTurn(
+		ctx, session.ID, child.ID, childTrigger.ID,
+		[]domain.EventDraft{
+			{Type: domain.EvSessionError, Payload: map[string]any{
+				"error": map[string]any{
+					"type": "model_request_failed_error", "message": failureMessage,
+					"retry_status": map[string]any{"type": "terminal"},
+				},
+			}},
+			{Type: domain.EvSessionStatusTerminated, Payload: map[string]any{}},
+		},
+		domain.StatusTerminated, "ratm_terminal_child", domain.RunAttemptFailed,
+		&attemptError, nil, nil, nil, nil, domain.TokenUsage{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completion.Session.Status != domain.StatusRunning {
+		t.Fatalf("aggregate status = %s, want running", completion.Session.Status)
+	}
+	child, err = store.GetSessionThread(ctx, session.ID, child.ID)
+	if err != nil || child.Status != domain.StatusTerminated {
+		t.Fatalf("terminated child = %+v, err=%v", child, err)
+	}
+	primary, err = store.GetSessionThread(ctx, session.ID, primary.ID)
+	if err != nil || primary.Status != domain.StatusRunning {
+		t.Fatalf("woken coordinator = %+v, err=%v", primary, err)
+	}
+	primaryEvents, err := store.QueryEvents(
+		ctx, session.ID, app.EventQuery{Limit: 100},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := eventOfType(t, primaryEvents, domain.EvAgentThreadMessageReceived)
+	content, _ := report.Payload["content"].([]any)
+	block, _ := content[0].(map[string]any)
+	text, _ := block["text"].(string)
+	if report.Payload["from_session_thread_id"] != child.ID ||
+		!strings.Contains(text, "reviewer") ||
+		!strings.Contains(text, "model_request_failed_error") ||
+		!strings.Contains(text, failureMessage) {
+		t.Fatalf("terminal child report = %+v", report)
+	}
+	eventOfType(t, primaryEvents, domain.EvSessionThreadStatusTerminated)
+	terminalWakeup, ok, err := store.PendingWakeup(ctx, session.ID)
+	if err != nil || !ok || terminalWakeup.MaxEventSeq < report.Sequence {
+		t.Fatalf("terminal wakeup = %+v ok=%v err=%v", terminalWakeup, ok, err)
+	}
+}
+
+func TestCoordinatorCanAcceptChildReport(t *testing.T) {
+	archivedAt := newSession("sesn_report_archived").CreatedAt
+	for _, test := range []struct {
+		name   string
+		thread domain.SessionThread
+		want   bool
+	}{
+		{name: "idle", thread: domain.SessionThread{Status: domain.StatusIdle}, want: true},
+		{name: "running", thread: domain.SessionThread{Status: domain.StatusRunning}, want: true},
+		{name: "rescheduling", thread: domain.SessionThread{Status: domain.StatusRescheduling}, want: true},
+		{name: "terminated", thread: domain.SessionThread{Status: domain.StatusTerminated}},
+		{name: "archived", thread: domain.SessionThread{
+			Status: domain.StatusIdle, ArchivedAt: &archivedAt,
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := coordinatorCanAcceptReport(test.thread); got != test.want {
+				t.Fatalf("coordinatorCanAcceptReport() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestChildPendingActionCrossPostsAndRoutesResolution(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
@@ -591,26 +763,7 @@ func TestChildPendingActionCrossPostsAndRoutesResolution(t *testing.T) {
 	}}); err == nil {
 		t.Fatal("expected mismatched session_thread_id to be rejected")
 	}
-	partial, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
-		Type: domain.EvUserToolConfirmation,
-		Payload: map[string]any{
-			"tool_use_id": clientAction.ID, "result": "allow",
-		},
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	confirmation := eventOfType(t, partial.Events, domain.EvUserToolConfirmation)
-	if confirmation.ThreadID != child.ID ||
-		confirmation.Payload["session_thread_id"] != child.ID {
-		t.Fatalf("routed confirmation = %+v", confirmation)
-	}
-	child, err = store.GetSessionThread(ctx, session.ID, child.ID)
-	if err != nil || child.Status != domain.StatusIdle || partial.Enqueued ||
-		partial.Session.Status != domain.StatusIdle {
-		t.Fatalf("partial child barrier = %+v/%+v, err=%v", child, partial, err)
-	}
-	admitted, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{
+	partial, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{
 		{
 			Type: domain.EvUserCustomToolResult,
 			Payload: map[string]any{
@@ -630,14 +783,33 @@ func TestChildPendingActionCrossPostsAndRoutesResolution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	customResult := eventOfType(t, admitted.Events, domain.EvUserCustomToolResult)
+	customResult := eventOfType(t, partial.Events, domain.EvUserCustomToolResult)
 	if customResult.ThreadID != child.ID ||
 		customResult.Payload["session_thread_id"] != child.ID {
 		t.Fatalf("routed custom result = %+v", customResult)
 	}
-	companion := eventOfType(t, admitted.Events, domain.EvSystemMessage)
+	companion := eventOfType(t, partial.Events, domain.EvSystemMessage)
 	if companion.ThreadID != child.ID {
 		t.Fatalf("routed companion system message = %+v", companion)
+	}
+	child, err = store.GetSessionThread(ctx, session.ID, child.ID)
+	if err != nil || child.Status != domain.StatusIdle || partial.Enqueued ||
+		partial.Session.Status != domain.StatusIdle {
+		t.Fatalf("partial child barrier = %+v/%+v, err=%v", child, partial, err)
+	}
+	admitted, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserToolConfirmation,
+		Payload: map[string]any{
+			"tool_use_id": clientAction.ID, "result": "allow",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	confirmation := eventOfType(t, admitted.Events, domain.EvUserToolConfirmation)
+	if confirmation.ThreadID != child.ID ||
+		confirmation.Payload["session_thread_id"] != child.ID {
+		t.Fatalf("routed confirmation = %+v", confirmation)
 	}
 	child, err = store.GetSessionThread(ctx, session.ID, child.ID)
 	if err != nil || child.Status != domain.StatusRunning ||
@@ -660,7 +832,7 @@ func TestChildPendingActionCrossPostsAndRoutesResolution(t *testing.T) {
 			}},
 		},
 		domain.StatusIdle, "", "", nil, nil,
-		[]string{confirmation.ID, customResult.ID}, nil, nil, domain.TokenUsage{},
+		[]string{customResult.ID, confirmation.ID}, nil, nil, domain.TokenUsage{},
 	)
 	if err != nil {
 		t.Fatal(err)
