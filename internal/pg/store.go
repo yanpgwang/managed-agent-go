@@ -526,6 +526,34 @@ func (s *Store) admitLocked(
 	session domain.Session,
 	drafts []domain.EventDraft,
 ) (Admission, error) {
+	var primaryThread *domain.SessionThread
+	if session.AgentSnapshot.Multiagent != nil {
+		body, err := q.GetPrimarySessionThreadProjection(ctx, session.ID)
+		if err != nil {
+			return Admission{}, err
+		}
+		var thread domain.SessionThread
+		if err := json.Unmarshal(body, &thread); err != nil {
+			return Admission{}, err
+		}
+		primaryThread = &thread
+	}
+	putRuntimeProjection := func() error {
+		if primaryThread == nil {
+			return s.putProjection(ctx, q, session)
+		}
+		body, err := json.Marshal(session)
+		if err != nil {
+			return err
+		}
+		if err := q.UpdateSessionStatus(ctx, pgstore.UpdateSessionStatusParams{
+			Status: string(session.Status), Body: body,
+			UpdatedAt: tsUTC(session.UpdatedAt), ID: session.ID,
+		}); err != nil {
+			return err
+		}
+		return putPrimaryThreadProjection(ctx, q, *primaryThread)
+	}
 	drafts = s.linkCompanionSystemMessage(drafts)
 	var err error
 	drafts, session, err = s.prepareOutcomeDrafts(session, drafts)
@@ -606,7 +634,7 @@ func (s *Store) admitLocked(
 
 	admission := Admission{Session: session, Events: events, MaxSeq: maxSeq}
 	if !hasRunnableWork && !hasInterrupt {
-		if err := s.putProjection(ctx, q, session); err != nil {
+		if err := putRuntimeProjection(); err != nil {
 			return Admission{}, err
 		}
 		return admission, nil
@@ -614,7 +642,7 @@ func (s *Store) admitLocked(
 
 	workRunnable := hasRunnableWork && (!gated || resolutionBarrierReady)
 	if !workRunnable && !hasInterrupt {
-		if err := s.putProjection(ctx, q, session); err != nil {
+		if err := putRuntimeProjection(); err != nil {
 			return Admission{}, err
 		}
 		return admission, nil
@@ -627,6 +655,9 @@ func (s *Store) admitLocked(
 	// synthetic running transition while idle.
 	if workRunnable {
 		session.MarkActiveOutcomeRunning()
+		if primaryThread != nil && primaryThread.Status != domain.StatusRunning {
+			primaryThread.TransitionStatus(domain.StatusRunning, s.clock.Now().UTC())
+		}
 	}
 	if workRunnable && session.Status == domain.StatusIdle {
 		session.TransitionStatus(domain.StatusRunning, s.clock.Now().UTC())
@@ -642,7 +673,7 @@ func (s *Store) admitLocked(
 		admission.Session = session
 		admission.MaxSeq = maxSeq
 	}
-	if err := s.putProjection(ctx, q, session); err != nil {
+	if err := putRuntimeProjection(); err != nil {
 		return Admission{}, err
 	}
 
@@ -922,10 +953,9 @@ func (s *Store) HistoryThrough(ctx context.Context, sessionID, triggerEventID st
 		return nil, err
 	}
 
-	priorRows, err := s.q.PriorProcessedModelTriggers(ctx, pgstore.PriorProcessedModelTriggersParams{
-		SessionID: sessionID,
-		BeforeSeq: trigger.Sequence,
-	})
+	priorRows, err := s.priorProcessedModelTriggers(
+		ctx, sessionID, trigger.ThreadID, trigger.Sequence,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -958,6 +988,47 @@ func (s *Store) HistoryThrough(ctx context.Context, sessionID, triggerEventID st
 		ordered = ordered[len(ordered)-limit:]
 	}
 	return ordered, nil
+}
+
+func (s *Store) priorProcessedModelTriggers(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	beforeSeq int64,
+) ([]pgstore.Event, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT event.*
+FROM events AS event
+WHERE event.session_id = $1
+  AND event.thread_id = $2
+  AND event.type IN (
+      'user.message', 'user.custom_tool_result', 'user.tool_confirmation',
+      'user.tool_result', 'agent.thread_message_received'
+  )
+  AND event.processed_at IS NOT NULL
+  AND event.seq < $3
+ORDER BY event.seq`, sessionID, threadID, beforeSeq)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEventRows(rows)
+}
+
+func scanEventRows(rows pgx.Rows) ([]pgstore.Event, error) {
+	var events []pgstore.Event
+	for rows.Next() {
+		var event pgstore.Event
+		if err := rows.Scan(
+			&event.ID, &event.SessionID, &event.Seq, &event.Type,
+			&event.Payload, &event.TurnEventID, &event.CreatedAt,
+			&event.ProcessedAt, &event.ThreadID,
+		); err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	return events, rows.Err()
 }
 
 // TurnCompletion reports the committed output of a turn and whether this call
@@ -1015,10 +1086,11 @@ func (s *Store) AppendWorkflowEvents(
 		if session.Status != domain.StatusRunning {
 			return domain.Conflict("workflow progress requires a running session")
 		}
-		if _, err := q.GetEvent(ctx, pgstore.GetEventParams{
+		trigger, err := q.GetEvent(ctx, pgstore.GetEventParams{
 			SessionID: sessionID,
 			ID:        triggerEventID,
-		}); errors.Is(err, pgx.ErrNoRows) {
+		})
+		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("trigger event not found")
 		} else if err != nil {
 			return err
@@ -1054,10 +1126,11 @@ func (s *Store) AppendWorkflowEvents(
 		if err != nil {
 			return err
 		}
-		if _, _, err := s.appendDrafts(
+		if _, _, err := s.appendThreadDrafts(
 			ctx,
 			q,
 			sessionID,
+			trigger.ThreadID,
 			drafts,
 			maxSeq,
 			&triggerEventID,
@@ -1096,9 +1169,17 @@ func (s *Store) RecordWorkflowRetry(
 		{ID: statusEventID, Type: domain.EvSessionStatusRescheduling, Payload: map[string]any{}},
 	}
 	applied := false
-	err := s.withTx(ctx, func(q *pgstore.Queries) error {
+	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		session, err := s.lockWorkflowTrigger(ctx, q, sessionID, triggerEventID)
 		if err != nil {
+			return err
+		}
+		if session.AgentSnapshot.Multiagent != nil {
+			err := s.recordPrimaryThreadWorkflowRetryLocked(
+				ctx, tx, q, &session, triggerEventID,
+				errorEventID, statusEventID, errorPayload,
+			)
+			applied = err == nil
 			return err
 		}
 		existing, err := workflowDraftsExisting(ctx, q, sessionID, triggerEventID, drafts)
@@ -1147,9 +1228,16 @@ func (s *Store) ResumeWorkflowRetry(
 		ID: statusEventID, Type: domain.EvSessionStatusRunning, Payload: map[string]any{},
 	}
 	applied := false
-	err := s.withTx(ctx, func(q *pgstore.Queries) error {
+	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		session, err := s.lockWorkflowTrigger(ctx, q, sessionID, triggerEventID)
 		if err != nil {
+			return err
+		}
+		if session.AgentSnapshot.Multiagent != nil {
+			err := s.resumePrimaryThreadWorkflowRetryLocked(
+				ctx, tx, q, &session, triggerEventID, statusEventID,
+			)
+			applied = err == nil
 			return err
 		}
 		existing, err := workflowDraftsExisting(
@@ -1185,6 +1273,150 @@ func (s *Store) ResumeWorkflowRetry(
 		s.notifySession(ctx, sessionID)
 	}
 	return nil
+}
+
+// recordPrimaryThreadWorkflowRetryLocked keeps retry ownership on the
+// coordinator Thread. A running child keeps the aggregate Session running even
+// while the coordinator itself is rescheduling.
+func (s *Store) recordPrimaryThreadWorkflowRetryLocked(
+	ctx context.Context,
+	tx pgx.Tx,
+	q *pgstore.Queries,
+	session *domain.Session,
+	triggerEventID string,
+	errorEventID string,
+	statusEventID string,
+	errorPayload map[string]any,
+) error {
+	errorDraft := domain.EventDraft{
+		ID: errorEventID, Type: domain.EvSessionError,
+		Payload: map[string]any{"error": errorPayload},
+	}
+	existing, err := workflowDraftsExisting(
+		ctx, q, session.ID, triggerEventID, []domain.EventDraft{errorDraft},
+	)
+	if err != nil || existing {
+		return err
+	}
+	primaryID, err := q.GetPrimarySessionThreadID(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+	primary, err := loadSessionThreadForUpdate(ctx, tx, session.ID, primaryID)
+	if err != nil {
+		return err
+	}
+	trigger, err := q.GetEvent(ctx, pgstore.GetEventParams{
+		SessionID: session.ID, ID: triggerEventID,
+	})
+	if err != nil {
+		return err
+	}
+	if trigger.ThreadID != primary.ID {
+		return domain.Conflict("coordinator retry trigger belongs to another Thread")
+	}
+	if primary.Status != domain.StatusRunning {
+		return domain.Conflict("coordinator retry requires a running primary Thread")
+	}
+
+	now := s.clock.Now().UTC()
+	primary.TransitionStatus(domain.StatusRescheduling, now)
+	if err := putSessionThreadTx(ctx, tx, primary); err != nil {
+		return err
+	}
+	aggregated, err := aggregateSessionThreadStatus(ctx, tx, session.ID)
+	if err != nil {
+		return err
+	}
+	drafts := []domain.EventDraft{errorDraft}
+	if aggregated == domain.StatusRescheduling {
+		drafts = append(drafts, domain.EventDraft{
+			ID: statusEventID, Type: domain.EvSessionStatusRescheduling,
+			Payload: map[string]any{},
+		})
+	}
+	maxSeq, err := q.MaxEventSeq(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+	if _, _, err := s.appendThreadDrafts(
+		ctx, q, session.ID, primary.ID, drafts, maxSeq, &triggerEventID,
+	); err != nil {
+		return err
+	}
+	if session.Status != aggregated {
+		session.TransitionStatus(aggregated, now)
+		if err := putSessionOnlyTx(ctx, tx, *session); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// resumePrimaryThreadWorkflowRetryLocked returns only the coordinator Thread
+// to running. The Session emits status_running only when its aggregate
+// projection actually changes.
+func (s *Store) resumePrimaryThreadWorkflowRetryLocked(
+	ctx context.Context,
+	tx pgx.Tx,
+	q *pgstore.Queries,
+	session *domain.Session,
+	triggerEventID string,
+	statusEventID string,
+) error {
+	primaryID, err := q.GetPrimarySessionThreadID(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+	primary, err := loadSessionThreadForUpdate(ctx, tx, session.ID, primaryID)
+	if err != nil {
+		return err
+	}
+	trigger, err := q.GetEvent(ctx, pgstore.GetEventParams{
+		SessionID: session.ID, ID: triggerEventID,
+	})
+	if err != nil {
+		return err
+	}
+	if trigger.ThreadID != primary.ID {
+		return domain.Conflict("coordinator retry trigger belongs to another Thread")
+	}
+	// The primary projection is the durable idempotency marker when another
+	// running child means no aggregate Session status event is necessary.
+	if primary.Status == domain.StatusRunning {
+		return nil
+	}
+	if primary.Status != domain.StatusRescheduling {
+		return domain.Conflict("coordinator retry resume requires a rescheduling primary Thread")
+	}
+
+	now := s.clock.Now().UTC()
+	primary.TransitionStatus(domain.StatusRunning, now)
+	if err := putSessionThreadTx(ctx, tx, primary); err != nil {
+		return err
+	}
+	aggregated, err := aggregateSessionThreadStatus(ctx, tx, session.ID)
+	if err != nil {
+		return err
+	}
+	if session.Status == aggregated {
+		return nil
+	}
+	maxSeq, err := q.MaxEventSeq(ctx, session.ID)
+	if err != nil {
+		return err
+	}
+	if _, _, err := s.appendThreadDrafts(
+		ctx, q, session.ID, primary.ID,
+		[]domain.EventDraft{{
+			ID: statusEventID, Type: domain.EvSessionStatusRunning,
+			Payload: map[string]any{},
+		}}, maxSeq, &triggerEventID,
+	); err != nil {
+		return err
+	}
+	session.TransitionStatus(aggregated, now)
+	return putSessionOnlyTx(ctx, tx, *session)
 }
 
 func (s *Store) lockWorkflowTrigger(
@@ -1484,6 +1716,17 @@ func (s *Store) completeTurn(
 		if err != nil {
 			return err
 		}
+		var primaryThread domain.SessionThread
+		independentPrimary := session.AgentSnapshot.Multiagent != nil
+		if independentPrimary {
+			body, err := q.GetPrimarySessionThreadProjection(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			if err := json.Unmarshal(body, &primaryThread); err != nil {
+				return err
+			}
+		}
 
 		trigger, err := q.GetEvent(ctx, pgstore.GetEventParams{SessionID: sessionID, ID: triggerEventID})
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -1716,6 +1959,18 @@ func (s *Store) completeTurn(
 			}
 		}
 
+		ownerStatus := effectiveStatus
+		if independentPrimary && effectiveStatus == domain.StatusIdle {
+			activeChildren, err := q.HasActiveChildThreads(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			if activeChildren {
+				effectiveStatus = domain.StatusRunning
+				drafts = withoutTerminalIdle(drafts)
+			}
+		}
+
 		events, finalMaxSeq, err := s.appendDrafts(
 			ctx,
 			q,
@@ -1807,7 +2062,23 @@ func (s *Store) completeTurn(
 		session.Usage.Add(usage)
 		applyOutcomeResults(&session, drafts, now)
 		session.TransitionStatus(effectiveStatus, now)
-		if err := s.putProjection(ctx, q, session); err != nil {
+		if independentPrimary {
+			primaryThread.Usage.Add(usage)
+			primaryThread.TransitionStatus(ownerStatus, now)
+			if err := putPrimaryThreadProjection(ctx, q, primaryThread); err != nil {
+				return err
+			}
+			body, err := json.Marshal(session)
+			if err != nil {
+				return err
+			}
+			if err := q.UpdateSessionStatus(ctx, pgstore.UpdateSessionStatusParams{
+				Status: string(session.Status), Body: body,
+				UpdatedAt: tsUTC(session.UpdatedAt), ID: session.ID,
+			}); err != nil {
+				return err
+			}
+		} else if err := s.putProjection(ctx, q, session); err != nil {
 			return err
 		}
 		// Messages admitted while the barrier was open intentionally wrote no

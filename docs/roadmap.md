@@ -98,15 +98,17 @@ or event state machine is introduced. See the [Environment Work guide](api/envir
 and [conformance matrix](api/environment-work-conformance.md). Environment-key
 issuance and tenant-scoped authorization remain platform hardening work.
 
-The Session Threads slice now implements all five public read/archive/event
-operations. Each Session gets one durable primary-thread identity in the same
-creation transaction. Every Thread owns an independent Agent, status, usage,
-timing projection, and event ledger. Events retain one Session-wide sequence
-for total ordering, while Session reads and the current workflow consume only
-the primary ledger. The durable child-creation boundary captures an immutable
-Agent from the Session-owned roster and commits the child projection with its
-parent `session.thread_created` event atomically. Model-triggered creation,
-child execution, and child live streaming remain M2 capabilities.
+The Session Threads slice implements all five public read/archive/event
+operations plus the ordinary coordinator execution path. `list_agents` and
+`send_to_agent` are private model tools: delegation atomically creates or
+resumes a persistent child Thread, appends the directional message and
+lifecycle events, and enqueues an independent Temporal Workflow. Each child
+uses its own Agent configuration, provider transcript, usage, retry state, and
+event/preview stream while sharing Session infrastructure. A completed report
+wakes the primary Thread for a later synthesis turn. Client-action routing,
+exact hosted preview suppression for report-only turns, targeted/global
+multi-Thread interrupts, archive/deletion Workflow shutdown, and advisor
+Threads remain M2 work.
 
 The living SDK baseline is now v1.62. Agent inference geography is persisted,
 forwarded to every model request, and validated across coordinator rosters and
@@ -146,10 +148,16 @@ ownership, migration backfill, and atomic child creation from that frozen
 roster are in place. Custom Skill retention, discovery, materialization, and
 activation now select the resolved Agent execution scope used by each Thread;
 primary/self paths remain compatible while external Agent paths are isolated.
-The remaining M2 work is connecting the coordinator runtime to child creation
-and the Thread-owned transcript, independent child execution,
-delegation/message delivery, cross-posted lifecycle and confirmation events,
-context compaction, and targeted interrupts.
+The ordinary coordinator runtime now connects private `list_agents` and
+`send_to_agent` model tools to replay-safe child creation/resume, a per-Thread
+outbox and stable Temporal Workflow, independent model/tool execution,
+Thread-scoped provider context and live previews, lifecycle cross-posting,
+asynchronous reports, retry ownership, and Session status/usage aggregation.
+The remaining M2 work is cross-posted confirmation/custom-tool requests and
+automatic response routing, exact hosted preview suppression for report-only
+turns, global and targeted interrupts, child archive and Session-deletion
+Workflow shutdown, immutable child context snapshots, and the distinct advisor
+lifecycle.
 Advisor consultation Threads and shared Session budget enforcement follow the
 ordinary child runtime because both depend on correct per-Thread usage and
 Session-level aggregation, but retain their distinct public behavior.

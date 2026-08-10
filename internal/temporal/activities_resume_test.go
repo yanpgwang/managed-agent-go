@@ -172,6 +172,7 @@ func TestPrepareTurn_ProjectsPinnedSkillDiscoveryMetadata(t *testing.T) {
 
 func TestPrepareTurn_SelectsThreadAgentRuntimeConfiguration(t *testing.T) {
 	root := domain.SessionSkillsRoot + "/.agents/0123456789abcdef01234567"
+	primaryThreadID := "sthr_primary"
 	base := newFakeSource([]domain.Event{{
 		ID: "sevt_child_skill", SessionID: "sess_child_skill",
 		ThreadID: "sthr_child", Sequence: 1, Type: domain.EvUserMessage,
@@ -193,6 +194,7 @@ func TestPrepareTurn_SelectsThreadAgentRuntimeConfiguration(t *testing.T) {
 		},
 		thread: domain.SessionThread{
 			ID: "sthr_child", SessionID: "sess_child_skill",
+			ParentThreadID: &primaryThreadID,
 			Agent: domain.Agent{
 				ID: "agent_child", Version: 2, Name: "reviewer",
 				Model: domain.Model{ID: "child-model"}, System: &childSystem,
@@ -227,6 +229,45 @@ func TestPrepareTurn_SelectsThreadAgentRuntimeConfiguration(t *testing.T) {
 	require.Contains(
 		t, prepared.Request.System, root+"/child-review/SKILL.md",
 	)
+	require.True(t, prepared.IsChild)
+	require.NotContains(t, summarizeModelTools(prepared.Request.Tools), modelToolSummary{
+		Name: agentruntime.SendToAgentToolName,
+	})
+}
+
+func TestPrepareTurn_AttachesPrivateCoordinatorToolsOnlyToPrimary(t *testing.T) {
+	base := newFakeSource([]domain.Event{{
+		ID: "sevt_coordinate", SessionID: "sess_coordinate", Sequence: 1,
+		Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "delegate the review"},
+		}},
+	}})
+	source := &configuredTranscriptFakeSource{
+		transcriptFakeSource: &transcriptFakeSource{fakeSource: base},
+		session: domain.Session{
+			ID: "sess_coordinate", Status: domain.StatusRunning,
+			AgentSnapshot: domain.Agent{
+				ID: "agent_coordinator", Version: 1, Name: "coordinator",
+				Model:      domain.Model{ID: "model"},
+				Multiagent: &domain.Multiagent{Type: "coordinator"},
+			},
+		},
+	}
+	prepared, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).PrepareTurn(context.Background(), PrepareTurnInput{
+		SessionID: "sess_coordinate", TriggerEventID: "sevt_coordinate",
+	})
+	require.NoError(t, err)
+	require.False(t, prepared.IsChild)
+	tools := summarizeModelTools(prepared.Request.Tools)
+	require.Contains(t, tools, modelToolSummary{Name: agentruntime.ListAgentsToolName})
+	require.Contains(t, tools, modelToolSummary{Name: agentruntime.SendToAgentToolName})
+	require.Contains(t, prepared.Tools, TurnTool{
+		Name: agentruntime.SendToAgentToolName, Kind: TurnToolCoordinator,
+		Permission: domain.PermissionPolicy{Type: "always_allow"},
+	})
 }
 
 func TestPrepareTurn_ReattachesInvokedSkillFromTranscriptAfterWorkerRestart(t *testing.T) {

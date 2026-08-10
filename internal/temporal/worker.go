@@ -28,6 +28,10 @@ func NewWorkerOnTaskQueue(
 	w := worker.New(c, taskQueue, worker.Options{})
 	w.RegisterWorkflow(SessionWorkflow)
 	w.RegisterWorkflowWithOptions(
+		SessionThreadWorkflow,
+		workflow.RegisterOptions{Name: SessionThreadWorkflowType},
+	)
+	w.RegisterWorkflowWithOptions(
 		SandboxCleanupWorkflow,
 		workflow.RegisterOptions{Name: SandboxCleanupWorkflowType},
 	)

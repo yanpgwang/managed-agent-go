@@ -197,7 +197,9 @@ func sessionWorkflow(ctx workflow.Context, in SessionWorkflowInput, canThreshold
 				if event.Seq <= cursor {
 					continue
 				}
-				if event.Type == domain.EvUserMessage || event.Type == domain.EvUserDefineOutcome {
+				if event.Type == domain.EvUserMessage ||
+					event.Type == domain.EvUserDefineOutcome ||
+					event.Type == domain.EvAgentThreadMessageReceived {
 					var interrupts *turnInterruptWatcher
 					if interruptsEnabled {
 						interrupts = newTurnInterruptWatcher(

@@ -236,3 +236,12 @@ func (s *sdkThreadStream) SubscribeContext(
 	close(frames)
 	return frames, func() {}, nil
 }
+
+func (s *sdkThreadStream) SubscribeThreadContext(
+	ctx context.Context,
+	sessionID string,
+	_ string,
+	deltaOptIn map[string]bool,
+) (<-chan app.Frame, func(), error) {
+	return s.SubscribeContext(ctx, sessionID, deltaOptIn)
+}

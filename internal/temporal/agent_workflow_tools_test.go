@@ -70,6 +70,35 @@ func TestPlanToolBatch_ClassifiesWholeRoundBeforeExecution(t *testing.T) {
 	)
 }
 
+func TestPlanToolBatch_KeepsCoordinatorToolsOutOfPublicToolEvents(t *testing.T) {
+	use := domain.ContentBlock{
+		Type: "tool_use", ToolUseID: "provider_delegate",
+		ToolName: "send_to_agent",
+		Input:    map[string]any{"agent_name": "reviewer", "message": "review auth"},
+	}
+	tools := indexTurnTools([]TurnTool{{
+		Name: "send_to_agent", Kind: TurnToolCoordinator,
+		Permission: domain.PermissionPolicy{Type: "always_allow"},
+	}})
+	plan, failure := planToolBatch(
+		[]domain.ContentBlock{use}, tools,
+		map[string]PlannedToolStep{"provider_delegate": {
+			ToolUseEventID:    "sevt_private_delegate",
+			ProviderToolUseID: "provider_delegate",
+			ToolStepID:        "tstep_delegate",
+		}},
+		true,
+	)
+
+	require.Empty(t, failure)
+	require.Empty(t, plan.actionDrafts)
+	require.Empty(t, plan.pendingActionEventIDs)
+	require.Equal(t, []plannedToolUse{{
+		use: use, publicEventID: "sevt_private_delegate",
+		stepID: "tstep_delegate", definition: tools["send_to_agent"],
+	}}, plan.executable)
+}
+
 func TestPlanToolBatch_RejectsInvalidRoundBeforePlanning(t *testing.T) {
 	tests := []struct {
 		name        string

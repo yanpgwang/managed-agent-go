@@ -292,6 +292,111 @@ func TestNATSStreamReconcilesLedgerAndCarriesPreviews(t *testing.T) {
 	}
 }
 
+func TestNATSStreamIsolatesChildThreadEventsAndPreviews(t *testing.T) {
+	fixture := newLiveTestFixture(t)
+	coordinator := domain.Agent{
+		ID: "agent_live_coordinator", Version: 1, Name: "coordinator",
+		Model:      domain.NormalizeModel(domain.Model{ID: "claude-opus-4-8"}),
+		Multiagent: &domain.Multiagent{Type: "coordinator"},
+	}
+	childAgent := domain.Agent{
+		ID: "agent_live_child", Version: 1, Name: "reviewer",
+		Model: domain.NormalizeModel(domain.Model{ID: "claude-sonnet-4-6"}),
+	}
+	session := domain.Session{
+		ID: "sesn_live_thread_isolation", Status: domain.StatusIdle,
+		AgentSnapshot: coordinator, MultiagentRoster: []domain.Agent{childAgent},
+		Metadata: map[string]any{}, CreatedAt: fixture.clock.Now(),
+		UpdatedAt: fixture.clock.Now(),
+	}
+	created, err := fixture.store.CreateSession(fixture.ctx, session, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	threads, err := fixture.store.ListSessionThreads(
+		fixture.ctx, session.ID, app.SessionThreadListQuery{Limit: 10},
+	)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("primary Thread = %+v, err=%v", threads, err)
+	}
+	child, _, err := fixture.store.CreateChildSessionThread(
+		fixture.ctx, created.Session.ID, threads[0].ID, childAgent.Name,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stream := NewStream(
+		fixture.store, fixture.broker, fixture.ids, fixture.clock,
+		20*time.Millisecond,
+	)
+	optIn := map[string]bool{domain.EvAgentMessage: true}
+	primaryFrames, cancelPrimary, err := stream.SubscribeContext(
+		fixture.ctx, session.ID, optIn,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelPrimary()
+	childFrames, cancelChild, err := stream.SubscribeThreadContext(
+		fixture.ctx, session.ID, child.ID, optIn,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancelChild()
+
+	childEvents, err := fixture.store.AppendThreadEvents(
+		fixture.ctx, session.ID, child.ID,
+		[]domain.EventDraft{{
+			Type: domain.EvAgentMessage,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "child output"},
+			}},
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childFrame := receiveFrame(t, childFrames)
+	if childFrame.Event == nil || childFrame.Event.ID != childEvents[0].ID {
+		t.Fatalf("child stream frame = %+v, want %s", childFrame, childEvents[0].ID)
+	}
+	assertLiveChannelQuiet(t, primaryFrames, 100*time.Millisecond)
+
+	childPreview := domain.PreviewFrame{
+		ThreadID: child.ID, Kind: domain.PreviewEventDelta,
+		EventID: "sevt_child_preview", EventType: domain.EvAgentMessage,
+		Text: "child delta",
+	}
+	if err := fixture.broker.PublishPreview(
+		fixture.ctx, session.ID, childPreview,
+	); err != nil {
+		t.Fatal(err)
+	}
+	childFrame = receiveFrame(t, childFrames)
+	if childFrame.Preview == nil || childFrame.Preview.Text != childPreview.Text ||
+		childFrame.Preview.ThreadID != child.ID {
+		t.Fatalf("child preview = %+v, want %+v", childFrame, childPreview)
+	}
+	assertLiveChannelQuiet(t, primaryFrames, 100*time.Millisecond)
+
+	primaryPreview := domain.PreviewFrame{
+		Kind: domain.PreviewEventDelta, EventID: "sevt_primary_preview",
+		EventType: domain.EvAgentMessage, Text: "primary delta",
+	}
+	if err := fixture.broker.PublishPreview(
+		fixture.ctx, session.ID, primaryPreview,
+	); err != nil {
+		t.Fatal(err)
+	}
+	primaryFrame := receiveFrame(t, primaryFrames)
+	if primaryFrame.Preview == nil || primaryFrame.Preview.Text != primaryPreview.Text {
+		t.Fatalf("primary preview = %+v, want %+v", primaryFrame, primaryPreview)
+	}
+	assertLiveChannelQuiet(t, childFrames, 100*time.Millisecond)
+}
+
 func receiveFrame(t *testing.T, frames <-chan app.Frame) app.Frame {
 	t.Helper()
 	select {

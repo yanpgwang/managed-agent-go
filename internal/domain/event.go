@@ -174,6 +174,12 @@ func IsInitialEventType(t string) bool {
 // time rather than when a later turn consumes it. Server-only events are already
 // processed when emitted; selected client events are acknowledged on receipt.
 func ProcessedOnReceipt(t string) bool {
+	// Cross-Thread messages are server-emitted but model-driving input on the
+	// receiving Thread. They remain unprocessed until that Thread turn commits,
+	// exactly like user.message on the primary ledger.
+	if t == EvAgentThreadMessageReceived {
+		return false
+	}
 	if !IsClientSubmittable(t) {
 		return true
 	}

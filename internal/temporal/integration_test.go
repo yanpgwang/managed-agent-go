@@ -40,6 +40,259 @@ func TestVerticalSlice_EndToEnd(t *testing.T) {
 	runVerticalSliceEndToEnd(t, model.NewFake(), "fake", 30*time.Second)
 }
 
+func TestVerticalSlice_MultiagentDelegationEndToEnd(t *testing.T) {
+	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
+	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
+	if dbURL == "" || hostPort == "" {
+		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the multiagent end-to-end slice")
+	}
+	ctx := context.Background()
+	store, cleanup := integrationStore(t, dbURL)
+	defer cleanup()
+	c, err := client.Dial(client.Options{HostPort: hostPort})
+	if err != nil {
+		t.Skipf("temporal unreachable at %s: %v", hostPort, err)
+	}
+	defer c.Close()
+
+	ids := domain.NewRandomIDGen()
+	probe := &multiagentProbeModel{}
+	runtime := temporalpkg.NewRuntime(temporalpkg.RuntimeConfig{
+		TemporalClient: c, Store: store, ModelClient: probe,
+		SandboxProvider: sandbox.NewLocalProvider(), IDGenerator: ids,
+		RelayConfig: temporalpkg.RelayConfig{PollInterval: 50 * time.Millisecond},
+		TaskQueue:   "managed-agent-multiagent-test-" + ids.NewID(""),
+	})
+	if err := runtime.Worker.Start(); err != nil {
+		t.Fatalf("worker start: %v", err)
+	}
+	defer runtime.Worker.Stop()
+	relayCtx, stopRelay := context.WithCancel(ctx)
+	defer stopRelay()
+	go func() { _ = runtime.Relay.Run(relayCtx) }()
+
+	session := domain.Session{
+		ID:      "sess_multiagent_e2e_" + ids.NewID(""),
+		AgentID: "agent_coordinator", AgentVersion: 1,
+		EnvironmentID: "env_1", Status: domain.StatusIdle,
+		Metadata: map[string]any{}, CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		AgentSnapshot: domain.Agent{
+			ID: "agent_coordinator", Version: 1, Name: "coordinator",
+			Model: domain.NormalizeModel(domain.Model{ID: "coordinator-model"}),
+			Multiagent: &domain.Multiagent{
+				Type: "coordinator",
+				Agents: []domain.AgentReference{{
+					Type: "agent", ID: "agent_reviewer", Version: 1,
+				}},
+			},
+		},
+		MultiagentRoster: []domain.Agent{{
+			ID: "agent_reviewer", Version: 1, Name: "reviewer",
+			Model: domain.NormalizeModel(domain.Model{ID: "child-model"}),
+		}},
+	}
+	orch := runtime.Orchestrator()
+	if _, _, err := orch.CreateSession(ctx, session, nil); err != nil {
+		t.Fatalf("create coordinator Session: %v", err)
+	}
+	defer terminateIntegrationWorkflow(t, c, session.ID)
+	if _, err := orch.Admit(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "delegate a review"},
+		}},
+	}}); err != nil {
+		t.Fatalf("admit coordinator task: %v", err)
+	}
+
+	deadline := time.Now().Add(30 * time.Second)
+	var primaryEvents []domain.Event
+	var threads []domain.SessionThread
+	for time.Now().Before(deadline) {
+		primaryEvents, err = store.EventsAfter(ctx, session.ID, 0, 200)
+		if err != nil {
+			t.Fatalf("read primary events: %v", err)
+		}
+		threads, err = store.ListSessionThreads(
+			ctx, session.ID, app.SessionThreadListQuery{Limit: 10},
+		)
+		if err != nil {
+			t.Fatalf("list Threads: %v", err)
+		}
+		current, getErr := store.GetSession(ctx, session.ID)
+		if getErr != nil {
+			t.Fatalf("get Session: %v", getErr)
+		}
+		if len(threads) == 2 && current.Status == domain.StatusIdle &&
+			hasType(primaryEvents, domain.EvAgentThreadMessageReceived) &&
+			probe.coordinatorCount() >= 3 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if len(threads) != 2 {
+		t.Fatalf("Threads = %+v, want primary and child", threads)
+	}
+	child := threads[1]
+	defer func() {
+		err := c.TerminateWorkflow(
+			context.Background(), "session-thread:"+child.ID, "", "test cleanup",
+		)
+		var notFound *serviceerror.NotFound
+		if err != nil && !errors.As(err, &notFound) {
+			t.Errorf("terminate child Workflow: %v", err)
+		}
+	}()
+	childEvents, err := store.ThreadEventsAfter(
+		ctx, session.ID, child.ID, 0, 200,
+	)
+	if err != nil {
+		t.Fatalf("read child events: %v", err)
+	}
+	for _, eventType := range []string{
+		domain.EvAgentThreadMessageReceived,
+		domain.EvSessionThreadStatusRunning,
+		domain.EvAgentThreadMessageSent,
+		domain.EvSessionThreadStatusIdle,
+	} {
+		if !hasType(childEvents, eventType) {
+			t.Fatalf("child event %s missing from %s", eventType, typeList(childEvents))
+		}
+	}
+	if hasType(childEvents, domain.EvAgentMessage) {
+		t.Fatalf("child report leaked as agent.message: %s", typeList(childEvents))
+	}
+	for _, eventType := range []string{
+		domain.EvSessionThreadCreated,
+		domain.EvAgentThreadMessageSent,
+		domain.EvSessionThreadStatusRunning,
+		domain.EvAgentThreadMessageReceived,
+		domain.EvSessionThreadStatusIdle,
+	} {
+		if !hasType(primaryEvents, eventType) {
+			t.Fatalf("primary event %s missing from %s", eventType, typeList(primaryEvents))
+		}
+	}
+	if probe.childCount() != 1 || probe.coordinatorCount() != 3 {
+		t.Fatalf(
+			"model calls coordinator=%d child=%d, want 3/1",
+			probe.coordinatorCount(), probe.childCount(),
+		)
+	}
+}
+
+type multiagentProbeModel struct {
+	mu               sync.Mutex
+	coordinatorCalls int
+	childCalls       int
+}
+
+func (m *multiagentProbeModel) CreateMessage(
+	_ context.Context,
+	req model.Request,
+) (model.Response, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	switch req.Model {
+	case "child-model":
+		m.childCalls++
+		if !requestContainsText(req, "Review the delegated change and report.") {
+			return model.Response{}, fmt.Errorf("child context omitted delegated task")
+		}
+		return textModelResponse("Child report: no blocking issues."), nil
+	case "coordinator-model":
+		m.coordinatorCalls++
+		switch m.coordinatorCalls {
+		case 1:
+			if !requestHasTool(req, agentruntime.SendToAgentToolName) ||
+				!requestHasTool(req, agentruntime.ListAgentsToolName) {
+				return model.Response{}, fmt.Errorf("coordinator tools were not attached")
+			}
+			return model.Response{
+				Content: []domain.ContentBlock{{
+					Type: "tool_use", ToolUseID: "toolu_delegate",
+					ToolName: agentruntime.SendToAgentToolName,
+					Input: map[string]any{
+						"agent_name": "reviewer",
+						"message":    "Review the delegated change and report.",
+					},
+				}},
+				StopReason: "tool_use",
+			}, nil
+		case 2:
+			return textModelResponse("The review is delegated."), nil
+		case 3:
+			if !requestContainsText(req, "Child report: no blocking issues.") {
+				return model.Response{}, fmt.Errorf("coordinator context omitted child report")
+			}
+			return textModelResponse("Synthesis: no blocking issues."), nil
+		default:
+			return model.Response{}, fmt.Errorf(
+				"unexpected coordinator model call %d", m.coordinatorCalls,
+			)
+		}
+	default:
+		return model.Response{}, fmt.Errorf("unexpected model %q", req.Model)
+	}
+}
+
+func (m *multiagentProbeModel) CreateMessageStream(
+	ctx context.Context,
+	req model.Request,
+	onDelta func(index int, text string),
+) (model.Response, error) {
+	response, err := m.CreateMessage(ctx, req)
+	if err != nil {
+		return model.Response{}, err
+	}
+	for index, block := range response.Content {
+		if block.Type == "text" && block.Text != "" && onDelta != nil {
+			onDelta(index, block.Text)
+		}
+	}
+	return response, nil
+}
+
+func (m *multiagentProbeModel) coordinatorCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.coordinatorCalls
+}
+
+func (m *multiagentProbeModel) childCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.childCalls
+}
+
+func requestHasTool(req model.Request, name string) bool {
+	for _, tool := range req.Tools {
+		if tool.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func requestContainsText(req model.Request, text string) bool {
+	for _, message := range req.Messages {
+		for _, block := range message.Content {
+			if block.Type == "text" && strings.Contains(block.Text, text) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func textModelResponse(text string) model.Response {
+	return model.Response{
+		Content:    []domain.ContentBlock{{Type: "text", Text: text}},
+		StopReason: "end_turn",
+	}
+}
+
 // TestVerticalSlice_LiveModelEndToEnd exercises the same durable platform path
 // with a real Anthropic-shaped Messages endpoint. It is deliberately gated so
 // normal development and CI never make billable, credentialed network calls.

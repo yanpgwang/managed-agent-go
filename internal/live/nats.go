@@ -72,7 +72,7 @@ func (b *Broker) PublishPreview(
 	if err != nil {
 		return err
 	}
-	return b.connection.Publish(previewSubject(sessionID), payload)
+	return b.connection.Publish(previewSubject(sessionID, frame.ThreadID), payload)
 }
 
 type previewEnvelope struct {
@@ -88,8 +88,12 @@ func eventSubject(sessionID string) string {
 	return "managed_agent.session." + subjectToken(sessionID) + ".events"
 }
 
-func previewSubject(sessionID string) string {
-	return "managed_agent.session." + subjectToken(sessionID) + ".previews"
+func previewSubject(sessionID string, threadIDs ...string) string {
+	subject := "managed_agent.session." + subjectToken(sessionID)
+	if len(threadIDs) > 0 && threadIDs[0] != "" {
+		subject += ".thread." + subjectToken(threadIDs[0])
+	}
+	return subject + ".previews"
 }
 
 func subjectToken(value string) string {
@@ -128,7 +132,31 @@ func (s *Stream) SubscribeContext(
 	sessionID string,
 	deltaOptIn map[string]bool,
 ) (<-chan app.Frame, func(), error) {
-	cursor, err := s.store.LatestEventSequence(parent, sessionID)
+	return s.subscribeContext(parent, sessionID, "", deltaOptIn)
+}
+
+func (s *Stream) SubscribeThreadContext(
+	parent context.Context,
+	sessionID string,
+	threadID string,
+	deltaOptIn map[string]bool,
+) (<-chan app.Frame, func(), error) {
+	return s.subscribeContext(parent, sessionID, threadID, deltaOptIn)
+}
+
+func (s *Stream) subscribeContext(
+	parent context.Context,
+	sessionID string,
+	threadID string,
+	deltaOptIn map[string]bool,
+) (<-chan app.Frame, func(), error) {
+	var cursor int64
+	var err error
+	if threadID == "" {
+		cursor, err = s.store.LatestEventSequence(parent, sessionID)
+	} else {
+		cursor, err = s.store.LatestThreadEventSequence(parent, sessionID, threadID)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
@@ -148,7 +176,7 @@ func (s *Stream) SubscribeContext(
 	if len(deltaOptIn) > 0 {
 		previews = make(chan *nats.Msg, 256)
 		previewSubscription, err = s.broker.connection.ChanSubscribe(
-			previewSubject(sessionID),
+			previewSubject(sessionID, threadID),
 			previews,
 		)
 		if err != nil {
@@ -173,6 +201,7 @@ func (s *Stream) SubscribeContext(
 	go s.tail(
 		ctx,
 		sessionID,
+		threadID,
 		cursor,
 		deltaOptIn,
 		wakeups,
@@ -187,6 +216,7 @@ func (s *Stream) SubscribeContext(
 func (s *Stream) tail(
 	ctx context.Context,
 	sessionID string,
+	threadID string,
 	cursor int64,
 	deltaOptIn map[string]bool,
 	wakeups <-chan *nats.Msg,
@@ -209,7 +239,15 @@ func (s *Stream) tail(
 
 	reconcile := func() bool {
 		for {
-			events, err := s.store.EventsAfter(ctx, sessionID, cursor, 1000)
+			var events []domain.Event
+			var err error
+			if threadID == "" {
+				events, err = s.store.EventsAfter(ctx, sessionID, cursor, 1000)
+			} else {
+				events, err = s.store.ThreadEventsAfter(
+					ctx, sessionID, threadID, cursor, 1000,
+				)
+			}
 			if err != nil {
 				return false
 			}
@@ -309,7 +347,8 @@ func (s *Stream) tail(
 				continue
 			}
 			preview := domain.PreviewFrame{
-				Kind: envelope.Kind, EventID: envelope.EventID,
+				ThreadID: threadID,
+				Kind:     envelope.Kind, EventID: envelope.EventID,
 				EventType:           envelope.EventType,
 				ModelRequestStartID: envelope.ModelRequestStartID,
 				Index:               envelope.Index,

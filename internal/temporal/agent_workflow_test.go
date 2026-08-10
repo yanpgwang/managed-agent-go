@@ -76,6 +76,45 @@ func registerWorkflowTurnActivities(
 	)
 }
 
+func TestWorkflowTurn_PublishesPrimaryPreviewsOnSessionStream(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	registerWorkflowTurnActivities(
+		env,
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{
+				ThreadID: "sthr_primary",
+				Request:  model.Request{Model: "test-model"},
+			}, nil
+		},
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			require.Empty(t, in.ThreadID)
+			return CallModelResult{
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+				MessageEventID:      "sevt_primary_message",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content:    []domain.ContentBlock{{Type: "text", Text: "done"}},
+				},
+			}, nil
+		},
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{}, nil
+		},
+		func(context.Context, CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sesn_primary_preview", TriggerEventID: "sevt_user",
+	})
+	require.NoError(t, env.GetWorkflowError())
+}
+
 func TestWorkflowTurn_PersistsEachModelStartBeforeCallAndPreservesRoundOrder(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

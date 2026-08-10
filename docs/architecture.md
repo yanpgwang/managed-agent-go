@@ -123,19 +123,22 @@ or sandbox dependencies.
 ## Durable write path
 
 Submitting input is not “write an event, then call Temporal.” PostgreSQL commits
-the client events, `session.status_running`, Session projection, and one
-coalescible outbox wakeup in one transaction. A crash therefore cannot leave
-accepted input without a durable path to orchestration. A direct
-Signal-With-Start is only a latency optimization; the relay is the correctness
-path.
+the client events, status projections, and a coalescible owner-Workflow wakeup
+in one transaction. Primary work uses the legacy Session outbox; each child
+Thread uses a `(Session, Thread)` outbox and stable Workflow identity. A crash
+therefore cannot leave accepted input without a durable path to orchestration.
+The relay is the correctness path.
 
 Model and tool calls happen as Temporal Activities outside SQL transactions.
 Before each provider call, PostgreSQL durably appends its model-request start;
 completed intermediate model/tool rounds are appended idempotently before a
 later provider call can start. Turn completion atomically commits the remaining
-output, provider transcript, trigger `processed_at`, final Session status, and
-optional attempt finalization. PostgreSQL emits best-effort NATS wakeups after
-each commit; SSE subscribers read the committed rows by sequence.
+output, owning Thread provider transcript and usage, trigger `processed_at`,
+Thread status, aggregate Session status/usage, and optional attempt
+finalization. A child report is appended to the primary ledger and wakes a
+later coordinator turn in that same transaction. PostgreSQL emits best-effort
+NATS wakeups after each commit; SSE subscribers read the selected Thread's
+committed rows by sequence.
 
 Physical session deletion is a small saga: PostgreSQL first marks the row as
 deleting under the admission lock, the API terminates its Session Workflow, a
@@ -189,6 +192,10 @@ The strongest current risks are semantic rather than structural:
    materialization, and unauthenticated MCP tools are implemented. Context
    Snapshots, provider-round records, deployment-managed MCP authentication, and
    reference-only Temporal payloads remain open.
+5. Ordinary coordinator delegation and persistent child execution are wired.
+   Cross-posted pending-action response routing, targeted/global multi-Thread
+   interrupts, and explicit termination of waiting child Workflows during
+   archive or Session deletion remain open before M2 is complete.
 
 Current API support is tracked in the [compatibility matrix](compatibility.md);
 planned capability work is kept in the [roadmap](roadmap.md).

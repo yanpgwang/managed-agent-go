@@ -160,6 +160,7 @@ func runWorkflowTurnInternal(
 		actx:                     actx,
 		sessionID:                sessionID,
 		threadID:                 prepared.ThreadID,
+		isChild:                  prepared.IsChild,
 		skillRuntimeRoot:         prepared.SkillRuntimeRoot,
 		triggerEventID:           triggerEventID,
 		resolutionEventIDs:       resolutionEventIDs,
@@ -231,8 +232,13 @@ func runWorkflowTurnInternal(
 			}
 
 			var err error
+			previewThreadID := ""
+			if prepared.IsChild {
+				previewThreadID = prepared.ThreadID
+			}
 			called, activityOutcome, err = turn.callModel(CallModelInput{
 				SessionID:             sessionID,
+				ThreadID:              previewThreadID,
 				ModelRequestStartID:   modelRequestStartID,
 				ModelRequestEndID:     modelRequestEndID,
 				HandleRetryableErrors: modelRetryLifecycle,
@@ -319,15 +325,22 @@ func runWorkflowTurnInternal(
 				if providerID == "" {
 					providerID = planned.ToolUseEventID
 				}
+				toolName := toolNameForProviderID(
+					called.Response.Content,
+					providerID,
+				)
+				if toolsByName[toolName].Kind == TurnToolCoordinator {
+					// Coordinator tools have no public tool-use event. Their provider
+					// ids are already preserved in the private transcript and must not
+					// be represented by a mapping to a synthetic public id.
+					continue
+				}
 				turn.toolUseMappings = append(
 					turn.toolUseMappings,
 					domain.ProviderToolUseMapping{
 						PublicEventID:     planned.ToolUseEventID,
 						ProviderToolUseID: providerID,
-						ToolName: toolNameForProviderID(
-							called.Response.Content,
-							providerID,
-						),
+						ToolName:          toolName,
 					},
 				)
 			}

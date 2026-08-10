@@ -19,7 +19,7 @@ WHERE event.session_id = $1
       SELECT thread.id FROM session_threads AS thread
       WHERE thread.session_id = $1 AND thread.kind = 'primary'
   )
-  AND event.type = 'user.message'
+  AND event.type IN ('user.message', 'agent.thread_message_received')
   AND event.processed_at IS NULL
   AND event.id <> $2
 `
@@ -29,7 +29,7 @@ type CountUnprocessedUserMessagesParams struct {
 	ExcludeID string
 }
 
-// CountUnprocessedUserMessages counts user.message events still awaiting a turn,
+// CountUnprocessedUserMessages counts primary model triggers still awaiting a turn,
 // excluding one id (the trigger just processed in the same transaction). It lets
 // CompleteTurn decide whether this turn is the last: only then does the session
 // go idle; otherwise it stays running with no intermediate idle event.
@@ -56,6 +56,27 @@ type DeleteOutboxIfSeqParams struct {
 // and re-delivered with the higher sequence (a harmless duplicate wakeup).
 func (q *Queries) DeleteOutboxIfSeq(ctx context.Context, arg DeleteOutboxIfSeqParams) (int64, error) {
 	result, err := q.db.Exec(ctx, deleteOutboxIfSeq, arg.SessionID, arg.MaxEventSeq)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const deleteThreadOutboxIfSeq = `-- name: DeleteThreadOutboxIfSeq :execrows
+DELETE FROM thread_orchestration_outbox
+WHERE session_id = $1
+  AND thread_id = $2
+  AND max_event_seq = $3
+`
+
+type DeleteThreadOutboxIfSeqParams struct {
+	SessionID   string
+	ThreadID    string
+	MaxEventSeq int64
+}
+
+func (q *Queries) DeleteThreadOutboxIfSeq(ctx context.Context, arg DeleteThreadOutboxIfSeqParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteThreadOutboxIfSeq, arg.SessionID, arg.ThreadID, arg.MaxEventSeq)
 	if err != nil {
 		return 0, err
 	}
@@ -142,7 +163,7 @@ WITH queued AS (
           SELECT thread.id FROM session_threads AS thread
           WHERE thread.session_id = $2 AND thread.kind = 'primary'
       )
-      AND queued_event.type = 'user.message'
+      AND queued_event.type IN ('user.message', 'agent.thread_message_received')
       AND queued_event.processed_at IS NULL
       AND queued_event.id <> $3
 ), flushed_ids AS (
@@ -271,6 +292,26 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, err
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const hasActiveChildThreads = `-- name: HasActiveChildThreads :one
+SELECT EXISTS(
+    SELECT 1
+    FROM session_threads
+    WHERE session_id = $1
+      AND kind = 'child'
+      AND archived_at IS NULL
+      AND status IN ('running', 'rescheduling')
+) AS active
+`
+
+// HasActiveChildThreads lets primary completion preserve the aggregate Session
+// running state while one or more independently executing children are active.
+func (q *Queries) HasActiveChildThreads(ctx context.Context, sessionID string) (bool, error) {
+	row := q.db.QueryRow(ctx, hasActiveChildThreads, sessionID)
+	var active bool
+	err := row.Scan(&active)
+	return active, err
 }
 
 const insertEvent = `-- name: InsertEvent :exec
@@ -453,6 +494,52 @@ func (q *Queries) ListEventsByTurn(ctx context.Context, arg ListEventsByTurnPara
 	return items, nil
 }
 
+const listOrchestrationWakeups = `-- name: ListOrchestrationWakeups :many
+SELECT session_id, ''::text AS thread_id, max_event_seq, enqueued_at, attempts
+FROM orchestration_outbox
+UNION ALL
+SELECT session_id, thread_id, max_event_seq, enqueued_at, attempts
+FROM thread_orchestration_outbox
+ORDER BY enqueued_at
+LIMIT $1
+`
+
+type ListOrchestrationWakeupsRow struct {
+	SessionID   string
+	ThreadID    string
+	MaxEventSeq int64
+	EnqueuedAt  pgtype.Timestamptz
+	Attempts    int32
+}
+
+// ListOrchestrationWakeups merges primary and child delivery queues without
+// changing either queue's idempotency key.
+func (q *Queries) ListOrchestrationWakeups(ctx context.Context, rowLimit int32) ([]ListOrchestrationWakeupsRow, error) {
+	rows, err := q.db.Query(ctx, listOrchestrationWakeups, rowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOrchestrationWakeupsRow{}
+	for rows.Next() {
+		var i ListOrchestrationWakeupsRow
+		if err := rows.Scan(
+			&i.SessionID,
+			&i.ThreadID,
+			&i.MaxEventSeq,
+			&i.EnqueuedAt,
+			&i.Attempts,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listOutboxBatch = `-- name: ListOutboxBatch :many
 SELECT session_id, max_event_seq, enqueued_at, attempts, last_attempt_at, last_error
 FROM orchestration_outbox
@@ -563,6 +650,31 @@ type MarkOutboxAttemptParams struct {
 // observability without removing the wakeup.
 func (q *Queries) MarkOutboxAttempt(ctx context.Context, arg MarkOutboxAttemptParams) error {
 	_, err := q.db.Exec(ctx, markOutboxAttempt, arg.LastAttemptAt, arg.LastError, arg.SessionID)
+	return err
+}
+
+const markThreadOutboxAttempt = `-- name: MarkThreadOutboxAttempt :exec
+UPDATE thread_orchestration_outbox
+SET attempts = attempts + 1,
+    last_attempt_at = $1,
+    last_error = $2
+WHERE session_id = $3 AND thread_id = $4
+`
+
+type MarkThreadOutboxAttemptParams struct {
+	LastAttemptAt pgtype.Timestamptz
+	LastError     *string
+	SessionID     string
+	ThreadID      string
+}
+
+func (q *Queries) MarkThreadOutboxAttempt(ctx context.Context, arg MarkThreadOutboxAttemptParams) error {
+	_, err := q.db.Exec(ctx, markThreadOutboxAttempt,
+		arg.LastAttemptAt,
+		arg.LastError,
+		arg.SessionID,
+		arg.ThreadID,
+	)
 	return err
 }
 
@@ -704,5 +816,37 @@ type UpsertOutboxParams struct {
 // max_event_seq to the highest known receipt sequence rather than adding a row.
 func (q *Queries) UpsertOutbox(ctx context.Context, arg UpsertOutboxParams) error {
 	_, err := q.db.Exec(ctx, upsertOutbox, arg.SessionID, arg.MaxEventSeq, arg.EnqueuedAt)
+	return err
+}
+
+const upsertThreadOutbox = `-- name: UpsertThreadOutbox :exec
+INSERT INTO thread_orchestration_outbox (
+    session_id, thread_id, max_event_seq, enqueued_at
+)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (session_id, thread_id) DO UPDATE
+SET max_event_seq = GREATEST(
+        thread_orchestration_outbox.max_event_seq,
+        EXCLUDED.max_event_seq
+    ),
+    enqueued_at = EXCLUDED.enqueued_at
+`
+
+type UpsertThreadOutboxParams struct {
+	SessionID   string
+	ThreadID    string
+	MaxEventSeq int64
+	EnqueuedAt  pgtype.Timestamptz
+}
+
+// UpsertThreadOutbox is the independent coalescible wakeup for one child
+// Thread Workflow. Session-wide sequence numbers still preserve causal order.
+func (q *Queries) UpsertThreadOutbox(ctx context.Context, arg UpsertThreadOutboxParams) error {
+	_, err := q.db.Exec(ctx, upsertThreadOutbox,
+		arg.SessionID,
+		arg.ThreadID,
+		arg.MaxEventSeq,
+		arg.EnqueuedAt,
+	)
 	return err
 }

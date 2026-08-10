@@ -9,25 +9,25 @@ Baseline: `managed-agents-2026-04-01`, Anthropic Go SDK `v1.62.0`.
 
 | Operation | Route | HTTP | Official Go SDK | Durable semantics | Known limitation |
 | --- | --- | --- | --- | --- | --- |
-| Get Thread | `GET /v1/sessions/{session_id}/threads/{thread_id}` | Yes | Yes | Independent PostgreSQL Thread execution projection | Runtime-triggered child execution is not connected yet. |
-| List Threads | `GET /v1/sessions/{session_id}/threads` | Yes | Yes | Primary-first forward keyset page of independent projections | Runtime-triggered child execution is not connected yet. |
+| Get Thread | `GET /v1/sessions/{session_id}/threads/{thread_id}` | Yes | Yes | Independent PostgreSQL Thread execution projection | Advisor Thread snapshots are not implemented. |
+| List Threads | `GET /v1/sessions/{session_id}/threads` | Yes | Yes | Primary-first forward keyset page of independent projections | Advisor Thread snapshots are not implemented. |
 | Archive Thread | `POST /v1/sessions/{session_id}/threads/{thread_id}/archive` | Yes | Yes | Reuses the idle-only Session archive fence | Archiving the primary archives the single-thread Session. |
-| List Thread Events | `GET /v1/sessions/{session_id}/threads/{thread_id}/events` | Yes | Yes | Forward page over the selected Thread's authoritative ledger | Child execution does not emit model events yet. |
-| Stream Thread Events | `GET /v1/sessions/{session_id}/threads/{thread_id}/stream` | Yes | Yes | Primary NATS wakeups/previews with PostgreSQL repair | Child event streaming returns `422` rather than exposing primary activity. |
+| List Thread Events | `GET /v1/sessions/{session_id}/threads/{thread_id}/events` | Yes | Yes | Forward page over the selected Thread's authoritative ledger | Cross-posted client-action routing remains open. |
+| Stream Thread Events | `GET /v1/sessions/{session_id}/threads/{thread_id}/stream` | Yes | Yes | Thread-scoped NATS previews plus PostgreSQL repair | The stream intentionally does not replay history. |
 
 The test suite exercises all five methods through the official SDK, response
 field decoding, Session/Thread ownership checks, migration-backed identity and
 projection backfill, transactional primary projection updates, immutable
 Session-roster capture during atomic child creation, multiple child instances
 of one callable Agent, nested-Thread rejection, per-Thread event ownership and
-migration backfill, child event-list isolation, cursor scoping, SSE decoding,
-archive state, and cascade deletion.
+migration backfill, private coordinator tools, replay-safe child creation and
+follow-up delivery, independent Workflow/outbox identity, provider context,
+status/usage/retry aggregation, asynchronous reports, child event/preview
+isolation, cursor scoping, SSE decoding, archive state, and cascade deletion.
 
 Not yet claimed:
 
-- model-triggered child-Thread creation, execution, concurrency, and independent context;
-- lifecycle transitions beyond the durable `session.thread_created` parent event;
-- `agent.thread_message_*` events;
 - cross-posted tool/custom events and targeted interrupts;
-- child workflow use of the Thread-owned provider transcript and context compaction;
+- child pending-action response routing and Workflow shutdown on archive/delete;
+- immutable child context snapshots and explicit context-compaction events;
 - advisor consultation Threads and Session-wide list-cost budget enforcement.

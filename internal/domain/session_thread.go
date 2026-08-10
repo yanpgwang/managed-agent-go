@@ -88,6 +88,27 @@ func (t SessionThread) ObservableStats(now time.Time) (activeSeconds, durationSe
 	return activeSeconds, max(0, end.Sub(t.CreatedAt).Seconds())
 }
 
+// TransitionStatus updates a Thread's independent timing projection. Session
+// aggregation is performed by the storage transaction after the owning Thread
+// moves; it must never be copied back into sibling Thread projections.
+func (t *SessionThread) TransitionStatus(next Status, now time.Time) {
+	now = now.UTC()
+	if t.Status == StatusRunning && next != StatusRunning && t.RunningSince != nil {
+		t.ActiveSeconds += max(0, now.Sub(*t.RunningSince).Seconds())
+		t.RunningSince = nil
+	}
+	if t.Status != StatusRunning && next == StatusRunning {
+		runningSince := now
+		t.RunningSince = &runningSince
+	}
+	if next == StatusTerminated && t.TerminatedAt == nil {
+		terminatedAt := now
+		t.TerminatedAt = &terminatedAt
+	}
+	t.Status = next
+	t.UpdatedAt = now
+}
+
 func utcTimePtr(value *time.Time) *time.Time {
 	if value == nil {
 		return nil

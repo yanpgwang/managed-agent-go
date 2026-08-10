@@ -306,6 +306,36 @@ FOR UPDATE`, sessionID, threadID).Scan(&status, &archivedAt); errors.Is(err, pgx
 	return committed, nil
 }
 
+// ThreadEventsAfter is the authoritative cursor read for one independent child
+// Workflow. Sequence remains Session-wide, but rows from sibling ledgers never
+// enter this execution history.
+func (s *Store) ThreadEventsAfter(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	cursor int64,
+	limit int,
+) ([]domain.Event, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT event.*
+FROM events AS event
+WHERE event.session_id = $1 AND event.thread_id = $2 AND event.seq > $3
+ORDER BY event.seq
+LIMIT $4`, sessionID, threadID, cursor, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	stored, err := scanEventRows(rows)
+	if err != nil {
+		return nil, err
+	}
+	return eventsFromRows(stored)
+}
+
 func sessionThreadFromRow(
 	threadID string,
 	sessionID string,
@@ -328,6 +358,26 @@ func sessionThreadFromRow(
 	thread.UpdatedAt = updatedAt.UTC()
 	thread.ArchivedAt = utcTimePtr(archivedAt)
 	return thread, nil
+}
+
+func putPrimaryThreadProjection(
+	ctx context.Context,
+	q *pgstore.Queries,
+	thread domain.SessionThread,
+) error {
+	body, err := json.Marshal(thread)
+	if err != nil {
+		return err
+	}
+	return q.UpdatePrimarySessionThreadProjection(
+		ctx,
+		pgstore.UpdatePrimarySessionThreadProjectionParams{
+			Status: string(thread.Status), Body: body,
+			UpdatedAt:  tsUTC(thread.UpdatedAt),
+			ArchivedAt: tsPtr(thread.ArchivedAt),
+			SessionID:  thread.SessionID,
+		},
+	)
 }
 
 // putPrimarySessionThreadProjection synchronizes the current single-Thread

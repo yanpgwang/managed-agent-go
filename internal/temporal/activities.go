@@ -74,6 +74,27 @@ type EventSource interface {
 	) (TurnCompletionResult, error)
 }
 
+type ThreadEventSource interface {
+	ThreadEventsAfter(
+		context.Context, string, string, int64, int,
+	) ([]domain.Event, error)
+}
+
+type CoordinatorToolSource interface {
+	ExecuteCoordinatorToolStep(
+		context.Context, string, string, string, string, string, map[string]any,
+	) (domain.ToolStepResult, error)
+}
+
+type ThreadWorkflowRetrySource interface {
+	RecordThreadWorkflowRetry(
+		context.Context, string, string, string, string, string, map[string]any,
+	) error
+	ResumeThreadWorkflowRetry(
+		context.Context, string, string, string, string,
+	) error
+}
+
 // UsageCompletionSource is implemented by stores that can atomically account
 // model usage while completing a public turn. It is optional so lightweight
 // EventSource implementations remain source-compatible.
@@ -136,6 +157,25 @@ type ProviderTranscriptUsageCompletionSource interface {
 	CompleteWorkflowTurnWithTranscriptAndUsage(
 		ctx context.Context,
 		sessionID string,
+		triggerEventID string,
+		output []domain.EventDraft,
+		status domain.Status,
+		attemptID string,
+		attemptState domain.RunAttemptState,
+		attemptError *string,
+		pendingActionEventIDs []string,
+		resolutionEventIDs []string,
+		transcriptDelta []domain.Message,
+		toolUseMappings []domain.ProviderToolUseMapping,
+		usage domain.TokenUsage,
+	) (TurnCompletionResult, error)
+}
+
+type ThreadCompletionSource interface {
+	CompleteThreadWorkflowTurn(
+		ctx context.Context,
+		sessionID string,
+		threadID string,
 		triggerEventID string,
 		output []domain.EventDraft,
 		status domain.Status,
@@ -383,7 +423,21 @@ func (a *Activities) LoadEvents(ctx context.Context, in LoadEventsInput) (LoadEv
 	if limit <= 0 {
 		limit = loadBatchLimit
 	}
-	events, err := a.source.EventsAfter(ctx, in.SessionID, in.Cursor, limit)
+	var events []domain.Event
+	var err error
+	if in.ThreadID != "" {
+		threadSource, ok := a.source.(ThreadEventSource)
+		if !ok {
+			return LoadEventsResult{}, fmt.Errorf(
+				"temporal: event source cannot read child Thread events",
+			)
+		}
+		events, err = threadSource.ThreadEventsAfter(
+			ctx, in.SessionID, in.ThreadID, in.Cursor, limit,
+		)
+	} else {
+		events, err = a.source.EventsAfter(ctx, in.SessionID, in.Cursor, limit)
+	}
 	if err != nil {
 		return LoadEventsResult{}, err
 	}
@@ -501,6 +555,23 @@ func (a *Activities) RecordModelRetry(
 	ctx context.Context,
 	in RecordModelRetryInput,
 ) error {
+	errorPayload := map[string]any{
+		"type":    in.Error.Type,
+		"message": in.Error.Message,
+		"retry_status": map[string]any{
+			"type": "retrying",
+		},
+	}
+	if in.IsChild {
+		source, ok := a.source.(ThreadWorkflowRetrySource)
+		if !ok {
+			return fmt.Errorf("temporal: event source does not support child Thread retries")
+		}
+		return source.RecordThreadWorkflowRetry(
+			ctx, in.SessionID, in.ThreadID, in.TriggerEventID,
+			in.ErrorEventID, in.StatusEventID, errorPayload,
+		)
+	}
 	source, ok := a.source.(WorkflowRetrySource)
 	if !ok {
 		return fmt.Errorf("temporal: event source does not support workflow retries")
@@ -511,13 +582,7 @@ func (a *Activities) RecordModelRetry(
 		in.TriggerEventID,
 		in.ErrorEventID,
 		in.StatusEventID,
-		map[string]any{
-			"type":    in.Error.Type,
-			"message": in.Error.Message,
-			"retry_status": map[string]any{
-				"type": "retrying",
-			},
-		},
+		errorPayload,
 	)
 }
 
@@ -527,6 +592,16 @@ func (a *Activities) ResumeModelRetry(
 	ctx context.Context,
 	in ResumeModelRetryInput,
 ) error {
+	if in.IsChild {
+		source, ok := a.source.(ThreadWorkflowRetrySource)
+		if !ok {
+			return fmt.Errorf("temporal: event source does not support child Thread retries")
+		}
+		return source.ResumeThreadWorkflowRetry(
+			ctx, in.SessionID, in.ThreadID, in.TriggerEventID,
+			in.StatusEventID,
+		)
+	}
 	source, ok := a.source.(WorkflowRetrySource)
 	if !ok {
 		return fmt.Errorf("temporal: event source does not support workflow retries")
@@ -571,6 +646,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		return PrepareTurnResult{}, err
 	}
 	executionAgent := session.AgentSnapshot
+	var executionThread *domain.SessionThread
 	if trigger.ThreadID != "" {
 		if threads, ok := a.source.(SessionThreadSource); ok {
 			thread, err := threads.GetSessionThread(ctx, in.SessionID, trigger.ThreadID)
@@ -578,6 +654,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 				return PrepareTurnResult{}, err
 			}
 			executionAgent = thread.Agent
+			executionThread = &thread
 		}
 	}
 	var pending []domain.PendingAction
@@ -688,6 +765,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	result := PrepareTurnResult{
 		AttemptID:        a.ids.NewID(domain.PrefixRunAttempt),
 		ThreadID:         trigger.ThreadID,
+		IsChild:          executionThread != nil && executionThread.ParentThreadID != nil,
 		SkillRuntimeRoot: runtimeSkills.Root,
 		Request: model.Request{
 			Model:        executionAgent.Model.ID,
@@ -695,6 +773,21 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			System:       system,
 			Tools:        toolSchemas,
 		},
+	}
+	if executionAgent.Multiagent != nil && !result.IsChild {
+		result.Request.Tools = append(
+			result.Request.Tools,
+			agentruntime.CoordinatorToolSchemas()...,
+		)
+		for _, name := range []string{
+			agentruntime.ListAgentsToolName,
+			agentruntime.SendToAgentToolName,
+		} {
+			result.Tools = append(result.Tools, TurnTool{
+				Name: name, Kind: TurnToolCoordinator,
+				Permission: domain.PermissionPolicy{Type: "always_allow"},
+			})
+		}
 	}
 	if trigger.Type == domain.EvUserDefineOutcome {
 		outcomeID, _ := trigger.Payload["outcome_id"].(string)
@@ -1128,7 +1221,8 @@ func drivesPreparedModelTurn(eventType string) bool {
 		domain.EvUserDefineOutcome,
 		domain.EvUserCustomToolResult,
 		domain.EvUserToolResult,
-		domain.EvUserToolConfirmation:
+		domain.EvUserToolConfirmation,
+		domain.EvAgentThreadMessageReceived:
 		return true
 	default:
 		return false
@@ -1422,6 +1516,7 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 		defer previewMu.Unlock()
 		if !startedPreview {
 			_ = a.previews.PublishPreview(ctx, in.SessionID, domain.PreviewFrame{
+				ThreadID:            in.ThreadID,
 				Kind:                domain.PreviewEventStart,
 				EventID:             messageEventID,
 				EventType:           domain.EvAgentMessage,
@@ -1430,6 +1525,7 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 			startedPreview = true
 		}
 		_ = a.previews.PublishPreview(ctx, in.SessionID, domain.PreviewFrame{
+			ThreadID:            in.ThreadID,
 			Kind:                domain.PreviewEventDelta,
 			EventID:             messageEventID,
 			EventType:           domain.EvAgentMessage,
@@ -1448,6 +1544,7 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 		}
 		thinkingEventID = a.ids.NewID(domain.PrefixEvent)
 		_ = a.previews.PublishPreview(ctx, in.SessionID, domain.PreviewFrame{
+			ThreadID:            in.ThreadID,
 			Kind:                domain.PreviewEventStart,
 			EventID:             thinkingEventID,
 			EventType:           domain.EvAgentThinking,
@@ -1559,8 +1656,8 @@ func modelRetryErrorType(kind model.ErrorKind) string {
 // without a result is classified ambiguous and reported as a successful result
 // so the Workflow terminates rather than retrying the side effect.
 func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (ExecuteToolResult, error) {
-	if a.journal == nil || a.sandboxes == nil {
-		return ExecuteToolResult{}, fmt.Errorf("temporal: tool execution requires a journal and sandbox")
+	if a.journal == nil {
+		return ExecuteToolResult{}, fmt.Errorf("temporal: tool execution requires a journal")
 	}
 	stopHeartbeat := heartbeatActivity(ctx)
 	defer stopHeartbeat()
@@ -1620,6 +1717,27 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	kind := in.ToolKind
 	if kind == "" {
 		kind = TurnToolBuiltin
+	}
+	if kind == TurnToolCoordinator {
+		source, ok := a.source.(CoordinatorToolSource)
+		if !ok {
+			return ExecuteToolResult{}, fmt.Errorf(
+				"temporal: event source cannot execute coordinator tools",
+			)
+		}
+		result, err := source.ExecuteCoordinatorToolStep(
+			ctx, in.SessionID, in.ThreadID, in.TriggerEventID,
+			in.ToolStepID, in.ToolName, in.Input,
+		)
+		if err != nil {
+			return ExecuteToolResult{}, err
+		}
+		return ExecuteToolResult{Result: workflowToolResult(result)}, nil
+	}
+	if a.sandboxes == nil {
+		return ExecuteToolResult{}, fmt.Errorf(
+			"temporal: sandbox tool execution requires a sandbox",
+		)
 	}
 	var executor tools.Executor
 	var skillSource SessionSkillSource
@@ -2192,7 +2310,21 @@ func (a *Activities) CompleteWorkflowTurn(
 	defer cancel()
 	var completion TurnCompletionResult
 	var err error
-	if source, ok := a.source.(ProviderTranscriptUsageCompletionSource); ok {
+	if in.IsChild {
+		source, ok := a.source.(ThreadCompletionSource)
+		if !ok {
+			return RunTurnResult{}, fmt.Errorf(
+				"temporal: event source cannot complete child Thread turns",
+			)
+		}
+		completion, err = source.CompleteThreadWorkflowTurn(
+			dctx, in.SessionID, in.ThreadID, in.TriggerEventID,
+			in.Output, in.Status, in.AttemptID, in.AttemptState,
+			in.AttemptError, in.PendingActionEventIDs,
+			in.ResolutionEventIDs, in.TranscriptDelta,
+			in.ToolUseMappings, in.Usage,
+		)
+	} else if source, ok := a.source.(ProviderTranscriptUsageCompletionSource); ok {
 		completion, err = source.CompleteWorkflowTurnWithTranscriptAndUsage(
 			dctx,
 			in.SessionID,

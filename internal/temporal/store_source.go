@@ -64,6 +64,59 @@ func (s storeSource) EventsAfter(ctx context.Context, sessionID string, cursor i
 	return s.store.EventsAfter(ctx, sessionID, cursor, limit)
 }
 
+func (s storeSource) ThreadEventsAfter(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	cursor int64,
+	limit int,
+) ([]domain.Event, error) {
+	return s.store.ThreadEventsAfter(ctx, sessionID, threadID, cursor, limit)
+}
+
+func (s storeSource) ExecuteCoordinatorToolStep(
+	ctx context.Context,
+	sessionID string,
+	parentThreadID string,
+	triggerEventID string,
+	stepID string,
+	toolName string,
+	input map[string]any,
+) (domain.ToolStepResult, error) {
+	executed, err := s.store.ExecuteCoordinatorToolStep(
+		ctx, sessionID, parentThreadID, triggerEventID,
+		stepID, toolName, input,
+	)
+	return executed.Result, err
+}
+
+func (s storeSource) RecordThreadWorkflowRetry(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	triggerEventID string,
+	errorEventID string,
+	statusEventID string,
+	errorPayload map[string]any,
+) error {
+	return s.store.RecordThreadWorkflowRetry(
+		ctx, sessionID, threadID, triggerEventID,
+		errorEventID, statusEventID, errorPayload,
+	)
+}
+
+func (s storeSource) ResumeThreadWorkflowRetry(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	triggerEventID string,
+	statusEventID string,
+) error {
+	return s.store.ResumeThreadWorkflowRetry(
+		ctx, sessionID, threadID, triggerEventID, statusEventID,
+	)
+}
+
 func (s storeSource) FirstUnprocessedInterruptAfter(
 	ctx context.Context,
 	sessionID string,
@@ -282,6 +335,37 @@ func (s storeSource) CompleteWorkflowTurnWithTranscriptAndUsage(
 		Applied: res.Applied,
 		Status:  res.Session.Status,
 		Parked:  &parked,
+	}, nil
+}
+
+func (s storeSource) CompleteThreadWorkflowTurn(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	triggerEventID string,
+	output []domain.EventDraft,
+	status domain.Status,
+	attemptID string,
+	attemptState domain.RunAttemptState,
+	attemptError *string,
+	pendingActionEventIDs []string,
+	resolutionEventIDs []string,
+	transcriptDelta []domain.Message,
+	toolUseMappings []domain.ProviderToolUseMapping,
+	usage domain.TokenUsage,
+) (TurnCompletionResult, error) {
+	res, err := s.store.CompleteThreadWorkflowTurn(
+		ctx, sessionID, threadID, triggerEventID, output, status,
+		attemptID, attemptState, attemptError, pendingActionEventIDs,
+		resolutionEventIDs, transcriptDelta, toolUseMappings, usage,
+	)
+	if err != nil {
+		return TurnCompletionResult{}, err
+	}
+	parked := res.Parked
+	return TurnCompletionResult{
+		Events: res.Events, Applied: res.Applied,
+		Status: res.Session.Status, Parked: &parked,
 	}, nil
 }
 

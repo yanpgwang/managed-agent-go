@@ -121,7 +121,7 @@ func ProjectMessages(events []Event) []Message {
 	}
 	for _, e := range events {
 		switch e.Type {
-		case EvUserMessage:
+		case EvUserMessage, EvAgentThreadMessageReceived:
 			add(RoleUser, contentBlocks(e.Payload))
 		case EvUserDefineOutcome:
 			add(RoleUser, outcomePromptBlocks(e.Payload))

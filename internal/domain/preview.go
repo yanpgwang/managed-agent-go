@@ -9,6 +9,7 @@ const (
 // frames are NEVER persisted and never appear in the event history; they are
 // delivered only to stream subscribers that opted in via event_deltas[].
 type PreviewFrame struct {
+	ThreadID            string // empty for the primary stream; child Thread otherwise
 	Kind                string // PreviewEventStart | PreviewEventDelta
 	EventID             string // the id of the event being previewed (== the eventual persisted event id)
 	EventType           string // event_start: the previewed event's type (e.g. "agent.message")

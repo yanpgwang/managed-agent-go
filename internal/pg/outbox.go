@@ -14,7 +14,10 @@ import (
 // job — the SessionWorkflow loads authoritative events from PostgreSQL after its
 // own durable cursor and ignores sequences it has already observed.
 type OutboxWakeup struct {
-	SessionID   string
+	SessionID string
+	// ThreadID is empty for the primary SessionWorkflow and names an
+	// independent child SessionThreadWorkflow otherwise.
+	ThreadID    string
 	MaxEventSeq int64
 	EnqueuedAt  time.Time
 	Attempts    int
@@ -32,17 +35,16 @@ func (s *Store) ListWakeupsForDelivery(ctx context.Context, limit int) ([]Outbox
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.q.ListOutboxBatch(ctx, int32(limit))
+	rows, err := s.q.ListOrchestrationWakeups(ctx, int32(limit))
 	if err != nil {
 		return nil, err
 	}
 	out := make([]OutboxWakeup, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, OutboxWakeup{
-			SessionID:   row.SessionID,
-			MaxEventSeq: row.MaxEventSeq,
-			EnqueuedAt:  row.EnqueuedAt.Time.UTC(),
-			Attempts:    int(row.Attempts),
+			SessionID: row.SessionID, ThreadID: row.ThreadID,
+			MaxEventSeq: row.MaxEventSeq, EnqueuedAt: row.EnqueuedAt.Time.UTC(),
+			Attempts: int(row.Attempts),
 		})
 	}
 	return out, nil
@@ -53,7 +55,11 @@ func (s *Store) ListWakeupsForDelivery(ctx context.Context, limit int) ([]Outbox
 // actually deleted: false means either new work coalesced into the row after the
 // signal was sent (it remains and is re-delivered with the higher sequence) or
 // another relay already deleted it — both harmless.
-func (s *Store) DeleteWakeupIfUnchanged(ctx context.Context, sessionID string, maxSeq int64) (bool, error) {
+func (s *Store) DeleteWakeupIfUnchanged(
+	ctx context.Context,
+	sessionID string,
+	maxSeq int64,
+) (bool, error) {
 	affected, err := s.q.DeleteOutboxIfSeq(ctx, pgstore.DeleteOutboxIfSeqParams{
 		SessionID:   sessionID,
 		MaxEventSeq: maxSeq,
@@ -64,14 +70,51 @@ func (s *Store) DeleteWakeupIfUnchanged(ctx context.Context, sessionID string, m
 	return affected > 0, nil
 }
 
+func (s *Store) DeleteThreadWakeupIfUnchanged(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	maxSeq int64,
+) (bool, error) {
+	affected, err := s.q.DeleteThreadOutboxIfSeq(
+		ctx,
+		pgstore.DeleteThreadOutboxIfSeqParams{
+			SessionID: sessionID, ThreadID: threadID, MaxEventSeq: maxSeq,
+		},
+	)
+	if err != nil {
+		return false, err
+	}
+	return affected > 0, nil
+}
+
 // RecordAttempt bumps the failed-delivery counter and records the last error for
 // backoff and observability. The wakeup is left in place for retry.
-func (s *Store) RecordAttempt(ctx context.Context, sessionID string, cause string) error {
+func (s *Store) RecordAttempt(
+	ctx context.Context,
+	sessionID string,
+	cause string,
+) error {
 	return s.q.MarkOutboxAttempt(ctx, pgstore.MarkOutboxAttemptParams{
 		LastAttemptAt: tsUTC(s.clock.Now().UTC()),
 		LastError:     &cause,
 		SessionID:     sessionID,
 	})
+}
+
+func (s *Store) RecordThreadAttempt(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	cause string,
+) error {
+	return s.q.MarkThreadOutboxAttempt(
+		ctx,
+		pgstore.MarkThreadOutboxAttemptParams{
+			LastAttemptAt: tsUTC(s.clock.Now().UTC()), LastError: &cause,
+			SessionID: sessionID, ThreadID: threadID,
+		},
+	)
 }
 
 // PendingWakeup returns the current outbox wakeup for a session and whether one
