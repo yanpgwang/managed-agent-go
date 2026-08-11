@@ -6,6 +6,14 @@ const sidebars: SidebarsConfig = {
     'getting-started',
     {
       type: 'category',
+      label: 'Guides',
+      items: [
+        'guides/multi-agent',
+        'sandboxes',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Concepts',
       items: [
         'architecture',
@@ -17,15 +25,7 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Guides',
-      items: [
-        'deployment',
-        'sandboxes',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'API reference',
+      label: 'Reference',
       items: [
         'api/overview',
         'api/agents',
@@ -34,28 +34,40 @@ const sidebars: SidebarsConfig = {
         'api/sessions',
         'api/events',
         'api/session-threads',
+        'api/session-resources',
+        'api/files',
+        'api/skills',
+        'api/memory',
+        'api/vaults',
         'api/deployments',
       ],
     },
     {
       type: 'category',
-      label: 'Compatibility & conformance',
+      label: 'Operations',
       items: [
-        'compatibility',
-        'compatibility/core-v1',
-        'api/core-conformance',
-        'api/files-conformance',
-        'api/skills-conformance',
-        'api/memory-conformance',
-        'api/vaults-conformance',
-        'api/deployments-conformance',
-        'api/environment-work-conformance',
-        'api/session-threads-conformance',
-        'api/session-resources-conformance',
-        'provenance',
+        'deployment',
       ],
     },
-    'roadmap',
+    {
+      type: 'category',
+      label: 'Project',
+      items: [
+        'compatibility',
+        'roadmap',
+        'releases',
+        {
+          type: 'category',
+          label: 'Maintainer evidence',
+          collapsed: true,
+          items: [
+            'conformance',
+            'provenance',
+            'compatibility/core-v1',
+          ],
+        },
+      ],
+    },
   ],
 };
 

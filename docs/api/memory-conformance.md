@@ -6,7 +6,8 @@ slug: /api/memory-conformance
 # Memory conformance
 
 This matrix records the Memory API and Memory-backed Session Resource slice
-separately from the frozen [core compatibility statement](../compatibility/core-v1.md).
+separately from the historical
+[M1 core compatibility snapshot](../compatibility/core-v1.md).
 Memory resource routes use `anthropic-beta: agent-memory-2026-07-22`; Session
 creation continues to use `managed-agents-2026-04-01`.
 

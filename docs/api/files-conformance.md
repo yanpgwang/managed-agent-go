@@ -5,10 +5,9 @@ slug: /api/files-conformance
 
 # Files API conformance
 
-This matrix records the implemented Files slice separately from the frozen
-[core compatibility statement](../compatibility/core-v1.md). Files requests
-use `anthropic-beta: files-api-2025-04-14`; they do not expand the core
-`managed-agents-2026-04-01` claim.
+This matrix records the Files slice separately from the historical
+[M1 core compatibility snapshot](../compatibility/core-v1.md). Files requests
+use `anthropic-beta: files-api-2025-04-14`.
 
 ## Operation evidence
 

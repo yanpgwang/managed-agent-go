@@ -58,5 +58,7 @@ tested through raw HTTP and the official Go SDK.
   sessions, events, and the runtime fit together.
 - **[API reference](api/overview.md)** — implemented endpoints, request shapes,
   and transport conventions.
-- **[Compatibility & conformance](compatibility.md)** — exactly what is
-  supported, limited, or not supported.
+- **[Run a multi-agent Session](guides/multi-agent.md)** — configure a
+  coordinator, delegate to persistent child Threads, and inspect their work.
+- **[API compatibility](compatibility.md)** — exactly what is supported,
+  limited, in preview, or not supported.
