@@ -157,5 +157,3 @@ update, and archive. A package-manager error prevents sandbox binding and tool
 execution; a later retry resumes provisioning from the durable intent. The
 selected isolated sandbox image must provide every requested package-manager
 binary.
-The [core conformance matrix](core-conformance.md) tracks the wire and durable
-runtime evidence separately from route presence.

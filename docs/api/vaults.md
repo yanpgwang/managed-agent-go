@@ -37,5 +37,5 @@ Authenticated redirects must keep the exact origin. Remote 401/403 responses
 produce `mcp_authentication_failed_error` without terminating the Session.
 
 Environment-variable secret egress and refresh-failure webhooks are not
-implemented. See the [Vault conformance ledger](vaults-conformance.md) and
-[Deployment model](../deployment.md) for keyring configuration.
+implemented. See [Deployment model](../deployment.md) for keyring
+configuration.

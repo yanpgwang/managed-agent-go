@@ -13,8 +13,7 @@ not imply unrestricted support for every hosted behavior.
 
 This reference documents repository behavior. See
 [API compatibility](../compatibility.md) for exactly what is supported,
-limited, in preview, or not supported. Maintainer matrices live separately in
-[Conformance evidence](../conformance.md).
+limited, in preview, or not supported.
 
 :::
 

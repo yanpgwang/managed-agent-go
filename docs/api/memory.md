@@ -37,4 +37,4 @@ and perform a final writeback before sandbox deletion. Read-only mounts are
 enforced by Docker.
 
 Automatic 30-day Version retention and non-Docker Session mounts are not
-implemented. See the [Memory conformance ledger](memory-conformance.md).
+implemented.

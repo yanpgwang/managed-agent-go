@@ -4,6 +4,7 @@ const sidebars: SidebarsConfig = {
   docs: [
     'intro',
     'getting-started',
+    'compatibility',
     {
       type: 'category',
       label: 'Guides',
@@ -49,25 +50,7 @@ const sidebars: SidebarsConfig = {
         'deployment',
       ],
     },
-    {
-      type: 'category',
-      label: 'Project',
-      items: [
-        'compatibility',
-        'roadmap',
-        'releases',
-        {
-          type: 'category',
-          label: 'Maintainer evidence',
-          collapsed: true,
-          items: [
-            'conformance',
-            'provenance',
-            'compatibility/core-2026-08-03',
-          ],
-        },
-      ],
-    },
+    'roadmap',
   ],
 };
 

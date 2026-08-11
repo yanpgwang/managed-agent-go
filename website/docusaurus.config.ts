@@ -96,7 +96,7 @@ const config: Config = {
           ],
         },
         {
-          title: 'Project',
+          title: 'Resources',
           items: [
             {
               label: 'API compatibility',
@@ -104,7 +104,7 @@ const config: Config = {
             },
             {
               label: 'Releases',
-              to: '/releases',
+              href: 'https://github.com/yanpgwang/managed-agent-go/releases',
             },
             {
               label: 'Roadmap',
