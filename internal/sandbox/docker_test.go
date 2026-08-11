@@ -115,6 +115,54 @@ func TestDocker_FileRoundTripAndConfinement(t *testing.T) {
 	}
 }
 
+func TestDocker_ToolFilePathUsesExplicitResourceRoots(t *testing.T) {
+	box := &dockerSandbox{fileRoots: dockerToolFileRoots(Spec{
+		MemoryStores: []MemoryStoreMount{
+			{
+				RuntimePath: "/mnt/memory/project",
+				Access:      domain.MemoryAccessReadWrite,
+			},
+			{
+				RuntimePath: "/mnt/memory/reference",
+				Access:      domain.MemoryAccessReadOnly,
+			},
+		},
+	})}
+	tests := []struct {
+		name    string
+		path    string
+		write   bool
+		want    string
+		wantErr string
+	}{
+		{name: "relative workspace", path: "src/main.go", want: "/workspace/src/main.go"},
+		{name: "absolute workspace", path: "/workspace/src/main.go", want: "/workspace/src/main.go"},
+		{name: "uploads read", path: "/mnt/session/uploads/input.csv", want: "/mnt/session/uploads/input.csv"},
+		{name: "uploads write", path: "/mnt/session/uploads/input.csv", write: true, wantErr: "read-only"},
+		{name: "skills read", path: "/workspace/skills/pdf/SKILL.md", want: "/workspace/skills/pdf/SKILL.md"},
+		{name: "skills write", path: "/workspace/skills/pdf/SKILL.md", write: true, wantErr: "read-only"},
+		{name: "memory read write", path: "/mnt/memory/project/note.md", write: true, want: "/mnt/memory/project/note.md"},
+		{name: "memory read only read", path: "/mnt/memory/reference/note.md", want: "/mnt/memory/reference/note.md"},
+		{name: "memory read only write", path: "/mnt/memory/reference/note.md", write: true, wantErr: "read-only"},
+		{name: "relative escape", path: "../secret", wantErr: "escapes root"},
+		{name: "absolute escape", path: "/etc/passwd", wantErr: "escapes root"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := box.toolFilePath(test.path, test.write)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("toolFilePath(%q, %t) error = %v, want %q", test.path, test.write, err, test.wantErr)
+				}
+				return
+			}
+			if err != nil || got != test.want {
+				t.Fatalf("toolFilePath(%q, %t) = %q, %v; want %q", test.path, test.write, got, err, test.want)
+			}
+		})
+	}
+}
+
 func TestDocker_MemoryStoreMountRoundTripAndReadOnlyBoundary(t *testing.T) {
 	readWrite := MemoryStoreMount{
 		Identity: "sesrsc_memory_rw", StoreID: "memstore_rw",
@@ -147,6 +195,26 @@ func TestDocker_MemoryStoreMountRoundTripAndReadOnlyBoundary(t *testing.T) {
 		[]MemoryStoreFile{file("mem_ref", "/policy.md", "fixed")},
 	); err != nil {
 		t.Fatal(err)
+	}
+	if content, err := box.ReadFile(
+		context.Background(), "/mnt/memory/project/notes/a.md",
+	); err != nil || string(content) != "initial" {
+		t.Fatalf("ReadFile on read-write Memory = %q, %v", content, err)
+	}
+	if err := box.WriteFile(
+		context.Background(), "/mnt/memory/project/notes/a.md", []byte("file-tool"),
+	); err != nil {
+		t.Fatalf("WriteFile on read-write Memory: %v", err)
+	}
+	if content, err := box.ReadFile(
+		context.Background(), "/mnt/memory/reference/policy.md",
+	); err != nil || string(content) != "fixed" {
+		t.Fatalf("ReadFile on read-only Memory = %q, %v", content, err)
+	}
+	if err := box.WriteFile(
+		context.Background(), "/mnt/memory/reference/policy.md", []byte("changed"),
+	); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("WriteFile on read-only Memory error = %v", err)
 	}
 	result, err := box.Exec(context.Background(), Command{
 		Path: "sh", Args: []string{"-c", `printf updated > /mnt/memory/project/notes/a.md && printf new > /mnt/memory/project/new.md`},
@@ -281,6 +349,10 @@ func TestDocker_CreateIsIdempotentAndAttachPreservesWorkspace(t *testing.T) {
 	if err != nil || !present {
 		t.Fatalf("attached sandbox did not recognize staged resource: present=%t err=%v", present, err)
 	}
+	resourceByFileTool, err := attached.ReadFile(ctx, resourceMount.RuntimePath)
+	if err != nil || !bytes.Equal(resourceByFileTool, resourceContent) {
+		t.Fatalf("attached ReadFile resource = %q, err=%v", resourceByFileTool, err)
+	}
 	result, err := attached.Exec(ctx, Command{
 		Path: "sh", Args: []string{"-c", "cat /mnt/session/uploads/restart.txt"},
 	})
@@ -403,6 +475,17 @@ func TestDocker_FileResourceMountIsAtomicAndReadOnly(t *testing.T) {
 	present, err = resources.HasReadOnlyFile(context.Background(), mount)
 	if err != nil || !present {
 		t.Fatalf("HasReadOnlyFile after import = %t, err=%v", present, err)
+	}
+	readByTool, err := sb.ReadFile(
+		context.Background(), "/mnt/session/uploads/nested/data.txt",
+	)
+	if err != nil || !bytes.Equal(readByTool, content) {
+		t.Fatalf("ReadFile mounted resource = %q, %v", readByTool, err)
+	}
+	if err := sb.WriteFile(
+		context.Background(), "/mnt/session/uploads/nested/data.txt", []byte("changed"),
+	); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("WriteFile mounted resource error = %v", err)
 	}
 
 	result, err := sb.Exec(context.Background(), Command{

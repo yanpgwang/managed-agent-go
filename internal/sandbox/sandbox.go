@@ -127,8 +127,10 @@ func (r Ref) validate() error {
 	return nil
 }
 
-// Sandbox is a provisioned execution environment. File paths passed to
-// ReadFile/WriteFile are relative to (and confined within) Root.
+// Sandbox is a provisioned execution environment. Relative file paths passed
+// to ReadFile/WriteFile resolve beneath Root. Providers may additionally expose
+// explicit absolute resource mounts, but must keep every other path confined
+// and enforce each mount's read-only/read-write boundary.
 type Sandbox interface {
 	Exec(ctx context.Context, cmd Command) (*Result, error)
 	ReadFile(ctx context.Context, path string) ([]byte, error)
