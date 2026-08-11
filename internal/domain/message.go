@@ -55,10 +55,11 @@ type ProviderTranscript struct {
 }
 
 // ProjectMessages folds an ordered session event log into a Messages-API
-// conversation. S1 handles only user.message and agent.message text blocks;
-// status, error, and server-only events are skipped, as are turns that carry no
-// non-empty text. This is where "the server owns history" is realized: the
-// durable event log is the single truth, projected to the model every turn.
+// conversation. User messages, cross-Thread messages, Agent messages, and
+// paired tool calls/results become model input; status, error, and other
+// server-only events are skipped. This is where "the server owns history" is
+// realized: the durable event log is the single truth, projected to the model
+// every turn.
 //
 // The real Messages API requires strictly alternating roles. Two real flows
 // produce consecutive same-role messages: a user sending several user.message
@@ -121,8 +122,10 @@ func ProjectMessages(events []Event) []Message {
 	}
 	for _, e := range events {
 		switch e.Type {
-		case EvUserMessage, EvAgentThreadMessageReceived:
+		case EvUserMessage:
 			add(RoleUser, contentBlocks(e.Payload))
+		case EvAgentThreadMessageReceived:
+			add(RoleUser, threadMessageBlocks(e.Payload))
 		case EvUserDefineOutcome:
 			add(RoleUser, outcomePromptBlocks(e.Payload))
 		case EvAgentMessage:
@@ -183,6 +186,45 @@ func ProjectMessages(events []Event) []Message {
 		}
 	}
 	return out
+}
+
+// threadMessageBlocks preserves the sender identity carried by the public
+// agent.thread_message_received event when projecting it into a provider's
+// user-role input. Providers generally expose only user/assistant roles, so a
+// structured envelope distinguishes an internal cross-Thread message from a
+// message authored by the Session's user. The original rich content blocks are
+// kept between the envelope markers rather than flattened.
+func threadMessageBlocks(payload map[string]any) []ContentBlock {
+	content := contentBlocks(payload)
+	if len(content) == 0 {
+		return nil
+	}
+	metadata, _ := json.Marshal(struct {
+		FromSessionThreadID string `json:"from_session_thread_id,omitempty"`
+		FromAgentName       string `json:"from_agent_name,omitempty"`
+	}{
+		FromSessionThreadID: stringValue(payload["from_session_thread_id"]),
+		FromAgentName:       stringValue(payload["from_agent_name"]),
+	})
+	header := ContentBlock{
+		Type: "text",
+		Text: "<agent-thread-message>\n<metadata>" + string(metadata) +
+			"</metadata>\n<content>",
+	}
+	footer := ContentBlock{
+		Type: "text",
+		Text: "</content>\n</agent-thread-message>",
+	}
+	blocks := make([]ContentBlock, 0, len(content)+2)
+	blocks = append(blocks, header)
+	blocks = append(blocks, content...)
+	blocks = append(blocks, footer)
+	return blocks
+}
+
+func stringValue(raw any) string {
+	value, _ := raw.(string)
+	return value
 }
 
 func outcomePromptBlocks(payload map[string]any) []ContentBlock {

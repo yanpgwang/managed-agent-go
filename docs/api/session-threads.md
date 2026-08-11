@@ -64,7 +64,10 @@ appends directional message and lifecycle events, and writes the child outbox.
 The relay starts a stable per-Thread Temporal Workflow. Follow-up sends reuse
 that Thread and its provider-native transcript. A completed child answer is
 reported asynchronously to the primary Thread, which is then scheduled for a
-separate synthesis turn.
+separate synthesis turn. The model-facing projection wraps the report with its
+`from_agent_name` and `from_session_thread_id`; providers still receive a legal
+user-role input, while the coordinator can distinguish internal Agent traffic
+from user-authored messages and address follow-ups to the existing Thread.
 
 ## Client-action routing
 

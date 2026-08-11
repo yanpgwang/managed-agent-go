@@ -302,6 +302,7 @@ func TestPrepareTurn_SelectsThreadAgentRuntimeConfiguration(t *testing.T) {
 		t, prepared.Request.System, root+"/child-review/SKILL.md",
 	)
 	require.True(t, prepared.IsChild)
+	require.NotContains(t, prepared.Request.System, "<managed-agents-coordinator>")
 	require.NotContains(t, summarizeModelTools(prepared.Request.Tools), modelToolSummary{
 		Name: agentruntime.SendToAgentToolName,
 	})
@@ -421,6 +422,8 @@ func TestPrepareTurn_AttachesPrivateCoordinatorToolsOnlyToPrimary(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.False(t, prepared.IsChild)
+	require.Contains(t, prepared.Request.System, "<managed-agents-coordinator>")
+	require.Contains(t, prepared.Request.System, "<agent-thread-message>")
 	tools := summarizeModelTools(prepared.Request.Tools)
 	require.Contains(t, tools, modelToolSummary{Name: agentruntime.ListAgentsToolName})
 	require.Contains(t, tools, modelToolSummary{Name: agentruntime.SendToAgentToolName})
