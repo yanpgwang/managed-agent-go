@@ -396,6 +396,90 @@ func TestPrepareTurn_ChildCompactionRestoresFirstDurableSnapshot(t *testing.T) {
 	require.Equal(t, first.Request.Messages, second.Request.Messages)
 }
 
+func TestPrepareTurn_PrimaryCompactionRestoresFirstDurableSnapshot(t *testing.T) {
+	processedAt := time.Now().UTC()
+	const (
+		sessionID = "sesn_primary_snapshot"
+		threadID  = "sthr_primary_snapshot"
+		priorID   = "sevt_primary_prior"
+		currentID = "sevt_primary_current"
+	)
+	base := newFakeSource([]domain.Event{
+		{
+			ID: priorID, SessionID: sessionID, ThreadID: threadID,
+			Sequence: 1, Type: domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "first task"},
+			}},
+			ProcessedAt: &processedAt,
+		},
+		{
+			ID: currentID, SessionID: sessionID, ThreadID: threadID,
+			Sequence: 2, Type: domain.EvUserMessage,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "follow up"},
+			}},
+		},
+	})
+	primaryAgent := domain.Agent{
+		ID: "agent_primary", Version: 1, Name: "coordinator",
+		Model: domain.Model{ID: "primary-model"},
+	}
+	source := &threadConfiguredTranscriptFakeSource{
+		configuredTranscriptFakeSource: &configuredTranscriptFakeSource{
+			transcriptFakeSource: &transcriptFakeSource{
+				fakeSource: base,
+				transcript: domain.ProviderTranscript{
+					TriggerEventIDs: []string{priorID},
+					Messages: []domain.Message{
+						{Role: domain.RoleUser, Content: []domain.ContentBlock{{
+							Type: "text", Text: strings.Repeat("old task ", 8_000),
+						}}},
+						{Role: domain.RoleAssistant, Content: []domain.ContentBlock{{
+							Type: "text", Text: strings.Repeat("old answer ", 8_000),
+						}}},
+					},
+				},
+			},
+			session: domain.Session{
+				ID: sessionID, Status: domain.StatusRunning,
+				AgentSnapshot: primaryAgent,
+			},
+		},
+		thread: domain.SessionThread{
+			ID: threadID, SessionID: sessionID, Agent: primaryAgent,
+			Status: domain.StatusRunning,
+		},
+	}
+
+	first, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithContextTokenBudget(12_000).PrepareTurn(
+		context.Background(),
+		PrepareTurnInput{SessionID: sessionID, TriggerEventID: currentID},
+	)
+	require.NoError(t, err)
+	require.False(t, first.IsChild)
+	require.Equal(t, threadID, first.ThreadID)
+	require.True(t, first.ContextProjection.Compacted)
+	require.Equal(t, "csnp_test", first.ContextSnapshotID)
+	require.Equal(t, []string{priorID, currentID},
+		source.snapshot.TranscriptTriggerEventIDs)
+
+	second, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithContextTokenBudget(1_000_000).PrepareTurn(
+		context.Background(),
+		PrepareTurnInput{SessionID: sessionID, TriggerEventID: currentID},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 2, source.snapshotGetCalls)
+	require.Equal(t, 1, source.snapshotPutCalls)
+	require.Equal(t, first.ContextSnapshotID, second.ContextSnapshotID)
+	require.Equal(t, first.ContextProjection, second.ContextProjection)
+	require.Equal(t, first.Request.Messages, second.Request.Messages)
+}
+
 func TestPrepareTurn_AttachesPrivateCoordinatorToolsOnlyToPrimary(t *testing.T) {
 	base := newFakeSource([]domain.Event{{
 		ID: "sevt_coordinate", SessionID: "sess_coordinate", Sequence: 1,

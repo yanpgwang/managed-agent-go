@@ -40,7 +40,7 @@ history would create competing sources of truth.
 The context boundary now includes a lossless Provider Transcript rather than
 reconstructing provider-native history from public events. Native Web
 Search/Fetch and MCP keep separate raw, model-facing, and public projections;
-compacted child projections are preserved in immutable internal snapshots. See
+compacted projections are preserved per Thread in immutable internal snapshots. See
 [Storage, context, and connected tools](storage-context-and-tools.md).
 
 ## Tool runtime
