@@ -433,6 +433,74 @@ func TestPrepareTurn_AttachesPrivateCoordinatorToolsOnlyToPrimary(t *testing.T) 
 	})
 }
 
+func TestPrepareTurn_LedgerFallbackPreservesSentThreadMessages(t *testing.T) {
+	processedAt := time.Now().UTC()
+	base := newFakeSource([]domain.Event{
+		{
+			ID: "sevt_request", SessionID: "sess_fallback", Sequence: 1,
+			Type: domain.EvUserMessage, ProcessedAt: &processedAt,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "research the release"},
+			}},
+		},
+		{
+			ID: "sevt_delegated", SessionID: "sess_fallback", Sequence: 2,
+			Type: domain.EvAgentThreadMessageSent, ProcessedAt: &processedAt,
+			Payload: map[string]any{
+				"to_session_thread_id": "sthr_researcher",
+				"to_agent_name":        "researcher",
+				"content": []any{
+					map[string]any{"type": "text", "text": "inspect the release notes"},
+				},
+			},
+		},
+		{
+			ID: "sevt_report", SessionID: "sess_fallback", Sequence: 3,
+			Type: domain.EvAgentThreadMessageReceived,
+			Payload: map[string]any{
+				"from_session_thread_id": "sthr_researcher",
+				"from_agent_name":        "researcher",
+				"content": []any{
+					map[string]any{"type": "text", "text": "the release is ready"},
+				},
+			},
+		},
+	})
+	source := &configuredTranscriptFakeSource{
+		transcriptFakeSource: &transcriptFakeSource{fakeSource: base},
+		session: domain.Session{
+			ID: "sess_fallback", Status: domain.StatusRunning,
+			AgentSnapshot: domain.Agent{
+				ID: "agent_coordinator", Version: 1, Name: "coordinator",
+				Model:      domain.Model{ID: "model"},
+				Multiagent: &domain.Multiagent{Type: "coordinator"},
+			},
+		},
+	}
+
+	prepared, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).PrepareTurn(context.Background(), PrepareTurnInput{
+		SessionID: "sess_fallback", TriggerEventID: "sevt_report",
+	})
+	require.NoError(t, err)
+	require.False(t, prepared.UsesProviderTranscript)
+	require.Len(t, prepared.Request.Messages, 3)
+	require.Equal(t, domain.RoleAssistant, prepared.Request.Messages[1].Role)
+	require.Contains(
+		t,
+		prepared.Request.Messages[1].Content[0].Text,
+		`"to_session_thread_id":"sthr_researcher"`,
+	)
+	require.Equal(
+		t,
+		"inspect the release notes",
+		prepared.Request.Messages[1].Content[1].Text,
+	)
+	require.Equal(t, domain.RoleUser, prepared.Request.Messages[2].Role)
+	require.Equal(t, "the release is ready", prepared.Request.Messages[2].Content[1].Text)
+}
+
 func TestPrepareTurn_ReattachesInvokedSkillFromTranscriptAfterWorkerRestart(t *testing.T) {
 	processedAt := time.Now().UTC()
 	base := newFakeSource([]domain.Event{

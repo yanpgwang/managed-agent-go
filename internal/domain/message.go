@@ -125,7 +125,9 @@ func ProjectMessages(events []Event) []Message {
 		case EvUserMessage:
 			add(RoleUser, contentBlocks(e.Payload))
 		case EvAgentThreadMessageReceived:
-			add(RoleUser, threadMessageBlocks(e.Payload))
+			add(RoleUser, receivedThreadMessageBlocks(e.Payload))
+		case EvAgentThreadMessageSent:
+			add(RoleAssistant, sentThreadMessageBlocks(e.Payload))
 		case EvUserDefineOutcome:
 			add(RoleUser, outcomePromptBlocks(e.Payload))
 		case EvAgentMessage:
@@ -188,37 +190,53 @@ func ProjectMessages(events []Event) []Message {
 	return out
 }
 
-// threadMessageBlocks preserves the sender identity carried by the public
+// receivedThreadMessageBlocks preserves the sender identity carried by the public
 // agent.thread_message_received event when projecting it into a provider's
 // user-role input. Providers generally expose only user/assistant roles, so a
 // structured envelope distinguishes an internal cross-Thread message from a
 // message authored by the Session's user. The original rich content blocks are
 // kept between the envelope markers rather than flattened.
-func threadMessageBlocks(payload map[string]any) []ContentBlock {
-	content := contentBlocks(payload)
-	if len(content) == 0 {
-		return nil
-	}
-	metadata, _ := json.Marshal(struct {
+func receivedThreadMessageBlocks(payload map[string]any) []ContentBlock {
+	return envelopedThreadMessageBlocks(payload, struct {
 		FromSessionThreadID string `json:"from_session_thread_id,omitempty"`
 		FromAgentName       string `json:"from_agent_name,omitempty"`
 	}{
 		FromSessionThreadID: stringValue(payload["from_session_thread_id"]),
 		FromAgentName:       stringValue(payload["from_agent_name"]),
 	})
-	header := ContentBlock{
+}
+
+// sentThreadMessageBlocks preserves a Thread's own delegated task, follow-up,
+// or report in event-ledger context reconstruction. A sent message is
+// assistant-authored; omitting it would make a coordinator forget its prior
+// delegation (and make a child forget its prior report) whenever the private
+// provider transcript is unavailable and PrepareTurn safely falls back.
+func sentThreadMessageBlocks(payload map[string]any) []ContentBlock {
+	return envelopedThreadMessageBlocks(payload, struct {
+		ToSessionThreadID string `json:"to_session_thread_id,omitempty"`
+		ToAgentName       string `json:"to_agent_name,omitempty"`
+	}{
+		ToSessionThreadID: stringValue(payload["to_session_thread_id"]),
+		ToAgentName:       stringValue(payload["to_agent_name"]),
+	})
+}
+
+func envelopedThreadMessageBlocks(payload map[string]any, identity any) []ContentBlock {
+	content := contentBlocks(payload)
+	if len(content) == 0 {
+		return nil
+	}
+	metadata, _ := json.Marshal(identity)
+	blocks := make([]ContentBlock, 0, len(content)+2)
+	blocks = append(blocks, ContentBlock{
 		Type: "text",
 		Text: "<agent-thread-message>\n<metadata>" + string(metadata) +
 			"</metadata>\n<content>",
-	}
-	footer := ContentBlock{
-		Type: "text",
-		Text: "</content>\n</agent-thread-message>",
-	}
-	blocks := make([]ContentBlock, 0, len(content)+2)
-	blocks = append(blocks, header)
+	})
 	blocks = append(blocks, content...)
-	blocks = append(blocks, footer)
+	blocks = append(blocks, ContentBlock{
+		Type: "text", Text: "</content>\n</agent-thread-message>",
+	})
 	return blocks
 }
 

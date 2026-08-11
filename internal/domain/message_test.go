@@ -608,6 +608,32 @@ func TestProjectMessages_ThreadMessageReceivedIsModelInput(t *testing.T) {
 	}
 }
 
+func TestProjectMessages_ThreadMessageSentIsModelOutput(t *testing.T) {
+	messages := ProjectMessages([]Event{{
+		Type: EvAgentThreadMessageSent,
+		Payload: map[string]any{
+			"to_session_thread_id": "sthr_researcher",
+			"to_agent_name":        "researcher",
+			"content": []any{
+				map[string]any{"type": "text", "text": "research the release"},
+			},
+		},
+	}})
+	if len(messages) != 1 || messages[0].Role != RoleAssistant || len(messages[0].Content) != 3 {
+		t.Fatalf("projected sent Thread message = %#v", messages)
+	}
+	header := messages[0].Content[0].Text
+	if !strings.Contains(header, "<agent-thread-message>") ||
+		!strings.Contains(header, `"to_session_thread_id":"sthr_researcher"`) ||
+		!strings.Contains(header, `"to_agent_name":"researcher"`) {
+		t.Fatalf("sent Thread message identity envelope = %q", header)
+	}
+	if messages[0].Content[1].Text != "research the release" ||
+		messages[0].Content[2].Text != "</content>\n</agent-thread-message>" {
+		t.Fatalf("sent Thread message content = %#v", messages[0].Content)
+	}
+}
+
 func TestProjectMessages_UserMessageHasNoThreadEnvelope(t *testing.T) {
 	messages := ProjectMessages([]Event{ev(EvUserMessage, "hello")})
 	if len(messages) != 1 || len(messages[0].Content) != 1 ||
