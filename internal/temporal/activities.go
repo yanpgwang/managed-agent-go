@@ -148,7 +148,7 @@ type ThreadProviderTranscriptSource interface {
 }
 
 // ThreadContextSnapshotSource persists an immutable compacted projection for
-// one child Thread trigger. Production PostgreSQL implements it; lightweight
+// one Thread trigger. Production PostgreSQL implements it; lightweight
 // test sources may omit it and continue exercising projection in memory.
 type ThreadContextSnapshotSource interface {
 	GetThreadContextSnapshotForTrigger(
@@ -1050,7 +1050,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		result.ContextProjection.ProjectedEstimatedTokens =
 			domain.EstimateMessagesTokens(result.Request.Messages)
 	}
-	if result.IsChild {
+	if result.ThreadID != "" {
 		if snapshots, ok := a.source.(ThreadContextSnapshotSource); ok {
 			snapshot, found, err := snapshots.GetThreadContextSnapshotForTrigger(
 				ctx,

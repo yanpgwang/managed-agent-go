@@ -145,3 +145,61 @@ func TestThreadContextSnapshotIsImmutableAndChainsWithinThread(t *testing.T) {
 		t.Fatalf("second snapshot parent = %v, want %s", second.ParentSnapshotID, first.ID)
 	}
 }
+
+func TestPrimaryThreadContextSnapshotUsesPrimaryLedger(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	session := newSession("sesn_primary_context_snapshot")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+		t.Fatal(err)
+	}
+	threads, err := store.ListSessionThreads(
+		ctx, session.ID, app.SessionThreadListQuery{Limit: 1},
+	)
+	if err != nil || len(threads) != 1 {
+		t.Fatalf("primary Thread = %+v, err=%v", threads, err)
+	}
+	primary := threads[0]
+	admission, err := store.AdmitEvents(ctx, session.ID, []domain.EventDraft{{
+		Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "compact this turn"},
+		}},
+	}})
+	if err != nil || len(admission.SubmittedEvents) != 1 {
+		t.Fatalf("primary trigger = %+v, err=%v", admission.SubmittedEvents, err)
+	}
+	trigger := admission.SubmittedEvents[0]
+	if trigger.ThreadID != primary.ID {
+		t.Fatalf("trigger Thread = %q, want %q", trigger.ThreadID, primary.ID)
+	}
+
+	projection := domain.ContextProjection{
+		Compacted: true, OriginalEstimatedTokens: 20_000,
+		ProjectedEstimatedTokens: 4_000, DroppedMessages: 12,
+	}
+	messages := []domain.Message{{
+		Role: domain.RoleUser,
+		Content: []domain.ContentBlock{{
+			Type: "text", Text: "Earlier session context was compacted.",
+		}},
+	}}
+	snapshot, err := store.PutThreadContextSnapshot(
+		ctx,
+		session.ID,
+		primary.ID,
+		trigger.ID,
+		[]string{trigger.ID},
+		messages,
+		projection,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, found, err := store.GetThreadContextSnapshotForTrigger(
+		ctx, session.ID, primary.ID, trigger.ID,
+	)
+	if err != nil || !found || !reflect.DeepEqual(snapshot, loaded) {
+		t.Fatalf("primary snapshot = %+v, found=%v, err=%v", loaded, found, err)
+	}
+}

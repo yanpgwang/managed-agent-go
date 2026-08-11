@@ -510,7 +510,7 @@ tool boundaries needed for native web and unauthenticated MCP:
 7. Request-time token-aware context projection and extractive compaction are
    deeply detached from the durable transcript, including nested tool inputs
    and rich/raw content, so request adaptation cannot mutate stored history.
-   Compacted child projections are durably snapshotted. Complete
+   Compacted projections are durably snapshotted per Thread. Complete
    per-provider-round audit recipes, deployment-managed MCP authentication,
    provider-round records, explicit per-endpoint capability profiles, and
    reference-only Temporal payloads remain follow-up work.
@@ -532,7 +532,7 @@ tool boundaries needed for native web and unauthenticated MCP:
 5. **Self-hosted execution:** built-in calls park for `user.tool_result` and are
    implemented. Optional managed search/fetch providers remain follow-up work.
 6. **Context engineering:** conservative token budgets, rich-content-aware
-   projection, extractive compaction, and immutable compacted-child checkpoints
+   projection, extractive compaction, and immutable per-Thread compaction checkpoints
    are implemented. Complete provider-request audit recipes, provider-exact
    counters, and retention controls remain follow-up work. Independent
    cross-Session Memory now uses PostgreSQL-backed Stores and Docker Session
