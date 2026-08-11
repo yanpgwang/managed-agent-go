@@ -6,8 +6,9 @@ slug: /api/skills-conformance
 # Skills API conformance
 
 This matrix records the custom Skills resource slice separately from the
-historical [M1 core compatibility snapshot](../compatibility/core-v1.md).
-Skills requests use `anthropic-beta: skills-2025-10-02`.
+historical
+[core compatibility snapshot](../compatibility/core-2026-08-03.md). Skills
+requests use `anthropic-beta: skills-2025-10-02`.
 
 ## Operation evidence
 

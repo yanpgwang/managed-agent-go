@@ -6,8 +6,8 @@ slug: /api/files-conformance
 # Files API conformance
 
 This matrix records the Files slice separately from the historical
-[M1 core compatibility snapshot](../compatibility/core-v1.md). Files requests
-use `anthropic-beta: files-api-2025-04-14`.
+[core compatibility snapshot](../compatibility/core-2026-08-03.md). Files
+requests use `anthropic-beta: files-api-2025-04-14`.
 
 ## Operation evidence
 
