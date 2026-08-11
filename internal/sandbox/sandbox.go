@@ -252,6 +252,21 @@ type MemoryStoreSandbox interface {
 	ReplaceMemoryStore(context.Context, MemoryStoreMount, []MemoryStoreFile) error
 }
 
+// ResourceSynchronizationSandbox coordinates Session-shared tool execution
+// with destructive resource refreshes. Tool operations take a shared lock so
+// independent Threads may still run in parallel. A complete Memory snapshot,
+// control-plane sync, and filesystem refresh take the exclusive lock.
+//
+// TryLockResourceSync is used before a tool: if another tool is already active,
+// that tool joins the current resource wave instead of serializing behind a
+// refresh. LockResourceSync is used after tools and during release, where the
+// caller must wait for every active operation before publishing a new baseline.
+type ResourceSynchronizationSandbox interface {
+	LockResourceOperation(context.Context) (func(), error)
+	TryLockResourceSync(context.Context) (context.Context, func(), bool, error)
+	LockResourceSync(context.Context) (context.Context, func(), error)
+}
+
 // ReadOnlySkillMount describes one immutable canonical Skill archive expected
 // beneath /workspace/skills. RuntimePath is the absolute Agent-scope directory;
 // Name is its safe final component. ArchiveRoot is the upload's validated

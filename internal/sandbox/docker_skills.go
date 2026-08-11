@@ -154,7 +154,7 @@ func (s *dockerSandbox) HasReadOnlySkill(
 	if err != nil {
 		return false, err
 	}
-	unlock, err := s.acquireResourceLock(ctx)
+	unlock, err := s.acquireResourceReadLock(ctx)
 	if err != nil {
 		return false, err
 	}

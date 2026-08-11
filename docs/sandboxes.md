@@ -103,15 +103,18 @@ at `/mnt/memory/<store-slug>` as ordinary UTF-8 files. A `read_only` attachment
 is a read-only bind mount even to container root; a `read_write` attachment is
 writable during the tool step.
 
-Before a tool runs, the worker writes any surviving local changes from an
-earlier interrupted Activity, merges the current PostgreSQL heads, and records
-their IDs and SHA-256 values in provider-owned state outside the mount. After
-the tool, every changed, created, and deleted file is committed in one
-PostgreSQL transaction as immutable `session_actor` Versions. A concurrent
-change to the same baseline returns a precondition error instead of silently
-overwriting it. Session deletion performs a final writeback before destroying
-the sandbox so a crash between tool execution and ordinary writeback does not
-discard Memory changes.
+Before the first tool in a concurrent wave runs, the worker writes any surviving
+local changes from an earlier interrupted Activity, merges the current
+PostgreSQL heads, and records their IDs and SHA-256 values in provider-owned
+state outside the mount. Concurrent Threads then share that filesystem wave;
+the mount is not refreshed underneath an active tool. After every active tool
+in the wave has released its shared resource lock, changed, created, and deleted
+files are committed in one PostgreSQL transaction as immutable `session_actor`
+Versions and the baseline is refreshed under an exclusive provider lock. A
+concurrent external change to the same baseline returns a precondition error
+instead of silently overwriting it. Session deletion performs a final
+writeback before destroying the sandbox so a crash between tool execution and
+ordinary writeback does not discard Memory changes.
 
 ## Compatibility contract
 

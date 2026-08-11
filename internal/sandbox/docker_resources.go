@@ -418,31 +418,88 @@ func resourceMarkerIdentity(marker []byte) string {
 	return identity
 }
 
-func (s *dockerSandbox) acquireResourceLock(ctx context.Context) (func(), error) {
+type dockerResourceSyncContextKey struct{}
+
+func resourceSyncLockHeld(ctx context.Context) bool {
+	held, _ := ctx.Value(dockerResourceSyncContextKey{}).(bool)
+	return held
+}
+
+func (s *dockerSandbox) acquireResourceLockMode(
+	ctx context.Context,
+	mode int,
+	wait bool,
+) (func(), bool, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	if s.resourceRoot == "" {
+		return nil, false, Permanent(errors.New(
+			"sandbox: Docker container has no provider-owned Resource root",
+		))
+	}
 	lockPath := filepath.Join(s.resourceRoot, dockerResourceStateDir, ".lock")
 	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox: open File Resource lock: %w", err)
+		return nil, false, fmt.Errorf("sandbox: open Resource lock: %w", err)
 	}
 	for {
-		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = syscall.Flock(int(lock.Fd()), mode|syscall.LOCK_NB)
 		if err == nil {
 			return func() {
 				_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
 				_ = lock.Close()
-			}, nil
+			}, true, nil
 		}
 		if !errors.Is(err, syscall.EWOULDBLOCK) && !errors.Is(err, syscall.EAGAIN) {
 			_ = lock.Close()
-			return nil, fmt.Errorf("sandbox: lock File Resource state: %w", err)
+			return nil, false, fmt.Errorf("sandbox: lock Resource state: %w", err)
+		}
+		if !wait {
+			_ = lock.Close()
+			return func() {}, false, nil
 		}
 		select {
 		case <-ctx.Done():
 			_ = lock.Close()
-			return nil, ctx.Err()
+			return nil, false, ctx.Err()
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
+}
+
+func (s *dockerSandbox) acquireResourceLock(ctx context.Context) (func(), error) {
+	unlock, _, err := s.acquireResourceLockMode(ctx, syscall.LOCK_EX, true)
+	return unlock, err
+}
+
+func (s *dockerSandbox) acquireResourceReadLock(ctx context.Context) (func(), error) {
+	unlock, _, err := s.acquireResourceLockMode(ctx, syscall.LOCK_SH, true)
+	return unlock, err
+}
+
+func (s *dockerSandbox) LockResourceOperation(ctx context.Context) (func(), error) {
+	return s.acquireResourceReadLock(ctx)
+}
+
+func (s *dockerSandbox) TryLockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), bool, error) {
+	unlock, acquired, err := s.acquireResourceLockMode(ctx, syscall.LOCK_EX, false)
+	if err != nil || !acquired {
+		return ctx, unlock, acquired, err
+	}
+	return context.WithValue(ctx, dockerResourceSyncContextKey{}, true), unlock, true, nil
+}
+
+func (s *dockerSandbox) LockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), error) {
+	unlock, err := s.acquireResourceLock(ctx)
+	if err != nil {
+		return ctx, nil, err
+	}
+	return context.WithValue(ctx, dockerResourceSyncContextKey{}, true), unlock, nil
 }
 
 func (s *dockerSandbox) HasReadOnlyFile(
@@ -462,7 +519,7 @@ func (s *dockerSandbox) HasReadOnlyFile(
 	if err != nil {
 		return false, err
 	}
-	unlock, err := s.acquireResourceLock(ctx)
+	unlock, err := s.acquireResourceReadLock(ctx)
 	if err != nil {
 		return false, err
 	}
