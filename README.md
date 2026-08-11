@@ -98,11 +98,9 @@ make local-down
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [compatibility summary](https://yanpgwang.github.io/managed-agent-go/compatibility)
-states the user-visible boundary. Maintainers can inspect the
-[90-operation conformance evidence](https://yanpgwang.github.io/managed-agent-go/maintainers/conformance)
-and its upstream sources separately. Ordinary persistent child-Agent
-orchestration is implemented; advisors, shared Session budgets,
-environment-variable secret egress, and production-platform hardening remain
+states the user-visible boundary. Ordinary persistent child-Agent orchestration
+is implemented; advisors, shared Session budgets, environment-variable secret
+egress, and production-platform hardening remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
 ## Architecture
@@ -144,7 +142,6 @@ and sandbox lifecycle.
 | Run a coordinator and child Agents | [Multi-agent guide](https://yanpgwang.github.io/managed-agent-go/guides/multi-agent) |
 | Check an API operation | [API reference](https://yanpgwang.github.io/managed-agent-go/api) |
 | Understand supported behavior | [API compatibility](https://yanpgwang.github.io/managed-agent-go/compatibility) |
-| Audit compatibility evidence | [Conformance evidence](https://yanpgwang.github.io/managed-agent-go/maintainers/conformance) |
 | Plan a deployment | [Deployment model](https://yanpgwang.github.io/managed-agent-go/deployment) |
 
 The complete documentation is also published at

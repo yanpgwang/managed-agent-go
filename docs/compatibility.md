@@ -19,10 +19,11 @@ Use this page to decide whether a workflow is ready for your deployment:
   yet strong enough for a compatibility commitment.
 - **Not supported** — rejected explicitly rather than silently accepted.
 
-The current branch exposes all 90 operations in the pinned official Go SDK.
+Mango exposes all 90 operations represented by the pinned official Go SDK.
 Operation count is not a parity claim: accepted fields, durable behavior,
-provider capabilities, and deployment constraints still matter. Maintainer
-evidence lives in the [conformance ledger](conformance.md).
+provider capabilities, and deployment constraints still matter. Compatibility
+claims are enforced by the repository's HTTP, SDK, PostgreSQL, Temporal, and
+service test suites.
 
 ## Capability summary
 
@@ -65,10 +66,8 @@ error whenever it can be detected at admission time.
 
 Compatibility changes use raw HTTP/OpenAPI tests, the official Go SDK as a
 black-box client, PostgreSQL transaction tests, Temporal replay and integration
-tests, and real PostgreSQL/Temporal/NATS/MinIO/Docker service tests. Exact
-evidence and upstream sources are maintained in
-[Conformance evidence](conformance.md) and
-[Upstream provenance](provenance.md).
+tests, and real PostgreSQL/Temporal/NATS/MinIO/Docker service tests.
 
-Mango has not published a versioned release. See [Releases](releases.md) for
-the version policy and [Roadmap](roadmap.md) for remaining work.
+Mango has not published a versioned release. Published versions will appear in
+[GitHub Releases](https://github.com/yanpgwang/managed-agent-go/releases). See
+[Roadmap](roadmap.md) for remaining work.

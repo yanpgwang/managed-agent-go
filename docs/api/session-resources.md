@@ -41,5 +41,4 @@ sandbox capability. GitHub repository resources and update-time repository
 token rotation are not implemented; unsupported variants return an explicit
 `422`.
 
-See [Files](files.md), [Memory](memory.md), and the
-[Session Resources conformance ledger](session-resources-conformance.md).
+See [Files](files.md) and [Memory](memory.md).

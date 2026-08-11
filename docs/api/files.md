@@ -45,5 +45,4 @@ independent, downloadable Session-scoped copies.
 - Files storage remains single-tenant, and startup reconciliation currently
   assumes one Files-enabled API process.
 
-See [Session Resources](session-resources.md) to mount a File in a Session and
-the [Files conformance ledger](files-conformance.md) for test evidence.
+See [Session Resources](session-resources.md) to mount a File in a Session.

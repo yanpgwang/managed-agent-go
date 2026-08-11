@@ -114,5 +114,4 @@ repository resources are rejected explicitly because Mango does not yet have a
 sealed clone-token path. Exact hosted scheduler jitter and automatic Deployment
 archival when an Agent is archived are not claimed.
 
-See the [Deployments conformance matrix](deployments-conformance.md) for
-operation-level evidence and limitations.
+See [API compatibility](../compatibility.md) for the current support boundary.

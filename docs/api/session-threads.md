@@ -98,6 +98,4 @@ terminating consultation lifecycle can be implemented end to end. Session
 budgets are also deferred until list cost is aggregated across all
 independently running Threads.
 
-Start with the [multi-agent guide](../guides/multi-agent.md), then use the
-[Session Threads conformance matrix](session-threads-conformance.md) when you
-need operation-level evidence.
+Start with the [multi-agent guide](../guides/multi-agent.md).

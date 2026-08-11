@@ -65,5 +65,4 @@ or scope them to one Environment. Work `secret` is therefore returned as
 `null`. Put authentication, tenant isolation, and environment-scoped
 authorization in front of this surface before production exposure.
 
-See the [Environment Work conformance matrix](environment-work-conformance.md)
-for operation-level evidence and remaining limits.
+See [API compatibility](../compatibility.md) for the current support boundary.

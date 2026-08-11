@@ -49,6 +49,3 @@ roster Agents use isolated namespaces below `/workspace/skills/.agents/`.
 
 Anthropic-managed Skills, GitHub repository auto-loading, self-hosted runtime
 activation, and current remote-sandbox activation are not implemented.
-
-See the [Skills conformance ledger](skills-conformance.md) for validation,
-retention, and runtime evidence.
