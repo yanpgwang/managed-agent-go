@@ -74,8 +74,9 @@ make local-down
 ## API compatibility
 
 > [!IMPORTANT]
-> Mango is in alpha. It implements a documented subset of the API and is not an
-> Anthropic product or a drop-in replacement for every Managed Agents feature.
+> Mango is in alpha. It exposes the 90 operations in its pinned Managed Agents
+> contract, with capability-specific limitations, and is not an Anthropic
+> product or a drop-in replacement for every hosted behavior.
 > Its architecture is designed for production operation, but the project does
 > not yet claim production readiness.
 > Review the [compatibility matrix](https://yanpgwang.github.io/managed-agent-go/compatibility)
@@ -96,20 +97,13 @@ make local-down
 | Session Threads | Persistent coordinator delegation with independent child context, execution, usage, retries, reports, isolated event/preview streams, routed client-action waits, and global or targeted durable interrupts |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
-The [versioned core compatibility statement](https://yanpgwang.github.io/managed-agent-go/compatibility/core-v1)
-freezes the first scoped single-agent claim. The living conformance matrices
-for [core resources](https://yanpgwang.github.io/managed-agent-go/api/core-conformance),
-[Files](https://yanpgwang.github.io/managed-agent-go/api/files-conformance),
-[Session Resources](https://yanpgwang.github.io/managed-agent-go/api/session-resources-conformance),
-[Skills](https://yanpgwang.github.io/managed-agent-go/api/skills-conformance),
-[Memory](https://yanpgwang.github.io/managed-agent-go/api/memory-conformance),
-[Vaults](https://yanpgwang.github.io/managed-agent-go/api/vaults-conformance),
-[Deployments](https://yanpgwang.github.io/managed-agent-go/api/deployments-conformance), and
-[Environment Work](https://yanpgwang.github.io/managed-agent-go/api/environment-work-conformance), and
-[Session Threads](https://yanpgwang.github.io/managed-agent-go/api/session-threads-conformance)
-record operation-level evidence and known limitations. Multi-agent
-orchestration, environment-variable secret egress, and webhooks remain
-[roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
+The [compatibility summary](https://yanpgwang.github.io/managed-agent-go/compatibility)
+states the user-visible boundary. Maintainers can inspect the
+[90-operation conformance evidence](https://yanpgwang.github.io/managed-agent-go/maintainers/conformance)
+and its upstream sources separately. Ordinary persistent child-Agent
+orchestration is implemented; Context Snapshots, advisors, shared Session
+budgets, environment-variable secret egress, and production-platform hardening
+remain [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
 ## Architecture
 
@@ -147,8 +141,10 @@ and sandbox lifecycle.
 | Run my first agent session | [Getting started](https://yanpgwang.github.io/managed-agent-go/getting-started) |
 | Connect a real model endpoint | [Use a real model endpoint](https://yanpgwang.github.io/managed-agent-go/getting-started#use-a-real-model-endpoint) |
 | Choose an execution backend | [Sandbox backends](https://yanpgwang.github.io/managed-agent-go/sandboxes) |
+| Run a coordinator and child Agents | [Multi-agent guide](https://yanpgwang.github.io/managed-agent-go/guides/multi-agent) |
 | Check an API operation | [API reference](https://yanpgwang.github.io/managed-agent-go/api) |
-| Understand compatibility claims | [Compatibility and provenance](https://yanpgwang.github.io/managed-agent-go/compatibility) |
+| Understand supported behavior | [API compatibility](https://yanpgwang.github.io/managed-agent-go/compatibility) |
+| Audit compatibility evidence | [Conformance evidence](https://yanpgwang.github.io/managed-agent-go/maintainers/conformance) |
 | Plan a deployment | [Deployment model](https://yanpgwang.github.io/managed-agent-go/deployment) |
 
 The complete documentation is also published at

@@ -1,144 +1,79 @@
 ---
-title: Core compatibility statement v1.0.0
-slug: /compatibility/core-v1
+title: M1 core compatibility snapshot
+slug: /maintainers/conformance/m1-core-snapshot
 ---
 
-# Core compatibility statement v1.0.0
+# M1 core compatibility snapshot
 
 | Field | Value |
 | --- | --- |
-| Statement ID | `mango-core-1.0.0` |
-| Published | 2026-08-03 |
+| Snapshot ID | `mango-m1-core-2026-08-03` |
+| Captured | 2026-08-03 |
+| Source revision | `297c6685494184c22f0a3628c621d76b36015551` |
 | Upstream beta | `managed-agents-2026-04-01` |
 | SDK evidence | Anthropic Go SDK `v1.61.0` |
-| Status | Published |
+| Status | Historical engineering evidence |
 
-This statement applies to source revisions that contain this document and pass
-the repository CI gates. It freezes Mango's first compatibility claim for the
-core single-agent Claude Managed Agents integration surface.
+This page preserves the first scoped single-agent compatibility checkpoint. It
+is not a Mango `v1.0.0` release: the repository had no tag, immutable image, or
+release artifact at this point.
 
-## Claim
+Current behavior is documented in [API compatibility](../compatibility.md).
 
-Mango implements all 21 SDK-visible operations in the core Agent, Environment,
-Session, and Session Event lifecycle. For the fields and behaviors included
-below, requests can be made with the official Anthropic Go SDK against Mango's
-base URL, and accepted work follows the documented durable single-agent state
-transitions.
+## Captured claim
 
-This is a scoped interoperability claim. It is not a claim of universal API
-parity, hosted-infrastructure equivalence, or production security readiness.
-
-## Included surface
+At the source revision above, Mango implemented the 21 SDK-visible Agent,
+Environment, Session, and Session Event operations. The official Go SDK could
+exercise the included request/response shapes, and accepted work followed the
+documented durable single-agent state transitions.
 
 | Resource | Included operations |
 | --- | --- |
-| Agents | Create, list, get, update, list versions, archive |
+| Agents | Create, list, get, update, list Versions, archive |
 | Environments | Create, list, get, update, archive, delete |
 | Sessions | Create, list, get, update, archive, delete |
 | Session Events | Send, list, stream |
 
-The runtime claim covers one primary Session agent: model turns, the core
-single-agent event union, sandbox built-ins, provider-native Web Search/Fetch,
-custom tools, unauthenticated public MCP tools, confirmations, untargeted
-interrupts, text-rubric outcomes, context projection, and restart recovery.
+The runtime evidence covered one primary Agent: model turns, the core event
+union, sandbox built-ins, provider-native Web Search/Fetch, custom tools,
+unauthenticated public MCP tools, confirmations, untargeted interrupts,
+text-rubric outcomes, context projection, and restart recovery.
 
-The normative operation ledger is the
-[core API conformance matrix](../api/core-conformance.md). The living
-[coverage matrix](../compatibility.md) remains the source for current behavior
-after this statement.
+This was a scoped interoperability checkpoint, not a claim of universal API
+parity, hosted-infrastructure equivalence, or production security readiness.
 
-## Required deployment profile
+## Evidence captured
 
-- The API and worker use PostgreSQL, Temporal, and NATS as documented, and use
-  the same sandbox-provider selection.
-- Real model execution requires a Messages-compatible endpoint that supports
-  the selected model and any provider-native tools requested by the Agent.
-- Strict transport validation requires Mango's `-strict` mode. This validates
-  compatibility headers and credential presence; it is not authentication.
-- Package-configured Environments require Docker or a remote isolated provider.
-  Limited networking requires OpenSandbox. Incapable providers reject the
-  configuration with `422` instead of storing unenforced intent.
-
-## Evidence
-
-- Raw HTTP and OpenAPI tests lock request, response, default, null, error, and
+- Raw HTTP and OpenAPI tests for request, response, default, null, error, and
   event-union behavior.
-- Official Go SDK black-box tests cover every core lifecycle and paging path.
-- PostgreSQL and Temporal suites cover admission, state transitions, event
-  ordering, pending-action barriers, retry and interrupt races, restart replay,
-  sandbox ownership, and deletion fences.
-- Service conformance runs against PostgreSQL, Temporal, NATS, and Docker.
-- Race, lint, vet, documentation, container, and dependency-security gates run
-  in CI.
-- Safe live text and sandbox-tool turns and OpenSandbox lifecycle behavior have
-  separate opt-in evidence. Hosted Managed Agents differential testing is not
-  part of this statement because no suitable credential was available.
+- Official Go SDK black-box tests for every included lifecycle and paging path.
+- PostgreSQL and Temporal tests for admission, transitions, event ordering,
+  client-action barriers, retry/interrupt races, replay, sandbox ownership, and
+  deletion fences.
+- Service tests using PostgreSQL, Temporal, NATS, and Docker.
+- CI gates for lint, unit/race tests, vet, docs, container build, and dependency
+  security.
 
-## Known differences and limitations
+The operation ledger is preserved in the
+[core conformance matrix](../api/core-conformance.md).
 
-### Resource and wire boundaries
+## Boundaries at capture time
 
-- At the time this v1.0.0 statement was frozen, non-empty Session `resources`
-  and create-time `vault_ids` were rejected. Current Files-enabled Docker
-  deployments conditionally support File-backed Session Resources, as recorded
-  in the separate [Session Resources conformance matrix](../api/session-resources-conformance.md);
-  that later capability does not expand this frozen claim. Create-time vault
-  IDs, File-sourced message content, and File-backed outcome rubrics remain
-  outside this claim.
-- At the time this statement was frozen, Agent skills and `multiagent`
-  configuration could round-trip, but skill execution, resolved rosters,
-  Session Threads, delegation, and targeted Thread interrupts did not execute.
-  Later implementations remain outside this frozen claim.
-- Session list filters for deployment and memory-store membership are parsed,
-  but no current Session can match them because those resources are outside the
-  included surface.
-- Environment and Session list limits use documented local defaults and maxima
-  where the upstream reference and SDK types do not specify bounds. Exact
-  undocumented error wording and hosted pagination-token encoding are not
-  claimed.
+- Non-empty Session Resources and create-time Vault references were rejected.
+- Skill execution, resolved rosters, child Threads, delegation, and targeted
+  interrupts were not included.
+- Files, Skills, Memory, Vaults, Deployments, Environment Work, Session Threads,
+  schedules, and webhooks were outside the checkpoint.
+- Environment package installation was per Session rather than cached across
+  Sessions sharing an Environment.
+- Limited egress was enforceable only through OpenSandbox.
+- Web Search/Fetch required provider-native support and `always_allow`.
+- MCP covered unauthenticated public Streamable HTTP only.
+- Context budgeting used a conservative estimate and extractive compaction.
+- Streams did not replay history or interpret `Last-Event-ID`.
+- Header checks were not authentication; tenant isolation, quotas, audit,
+  backup, observability, Worker Versioning, and production deployment assets
+  were not included.
 
-### Runtime and integration boundaries
-
-- Anthropic documents package caching across Sessions that share an
-  Environment. Mango snapshots the Environment and installs its packages once
-  per Session sandbox instead; this can add provisioning latency and registry
-  traffic. The selected image must contain each configured package manager.
-- Limited egress is enforced only by OpenSandbox. Package setup uses a fixed
-  public-registry allowlist; custom registries and direct Go VCS hosts require
-  explicit `allowed_hosts`. Live limited-egress conformance depends on the
-  operator's OpenSandbox runtime.
-- The local sandbox is not a security boundary. Remote sandbox adapters remain
-  Preview, and provider selection is process-global.
-- Web Search/Fetch require `always_allow` and a Messages endpoint that supports
-  the native server tools. Mango does not supply a separate managed Web
-  executor for endpoints that lack them.
-- MCP supports unauthenticated public Streamable HTTP. Vault-backed
-  authentication, private-network connectivity, deprecated-SSE fallback,
-  resources, and prompts are not supported.
-- The built-in sandbox tools are Mango implementations with a POSIX-like
-  command dependency, not a claim of byte-for-byte equivalence to Anthropic's
-  hosted tool runtime.
-- Context budgeting uses a conservative server-owned estimate and extractive
-  compaction. It is not a provider tokenizer or an endpoint/model-specific
-  context profile.
-- Event streams do not replay history and do not interpret `Last-Event-ID`.
-  Clients use the documented open-stream-then-list recovery procedure. Preview
-  frames are intentionally ephemeral.
-
-### Operational and security boundaries
-
-- Header checks do not provide authentication, authorization, tenant
-  isolation, quotas, or audit controls.
-- The repository does not yet publish a supported production deployment,
-  Worker Versioning policy, rolling-upgrade proof, backup plan, or production
-  observability package.
-- Files, Skills execution, Memory Stores, Vaults, Deployments, Deployment Runs,
-  Session Threads, the self-hosted Environment Work API, schedules, and
-  webhooks remain outside this statement.
-
-## Version policy
-
-The scope and claims of `mango-core-1.0.0` will not be broadened in place.
-Factual corrections may clarify this page without expanding the claim. A new
-upstream beta target, SDK contract baseline, included resource surface, or
-material runtime guarantee requires a new compatibility statement version.
+Later work may supersede these boundaries on `main`, but it does not rewrite
+what this checkpoint demonstrated.

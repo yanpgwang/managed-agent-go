@@ -66,8 +66,10 @@ If the coordinator pins `model.inference_geo`, every independently referenced
 Agent must pin the same value; if the coordinator leaves it unset, every member
 must also leave it unset. A model change that would violate this invariant must
 replace or clear the roster in the same Agent update.
-Runtime delegation and child Session Threads remain a separate compatibility
-milestone.
+Ordinary roster entries can execute as persistent child Session Threads with
+independent context, events, usage, and Workflow state. See the
+[multi-agent guide](../guides/multi-agent.md) for an end-to-end example and
+[Session Threads](session-threads.md) for the public observation API.
 
 Anthropic Go SDK v1.62 also exposes an `advisor` roster entry. Mango rejects
 that variant rather than treating it as an ordinary Agent: advisor
@@ -187,8 +189,7 @@ their stored snapshot.
 Custom Skill references are validated and version-pinned. Docker-backed cloud
 Sessions materialize those pins read-only and expose a private `Skill`
 dispatcher that loads the selected `SKILL.md` into the conversation on demand;
-this remains a conditional post-core capability rather than part of the frozen
-core claim. Agents with Skills must enable `read` for referenced files, and may
-not define a custom tool named `Skill`. Multi-agent topology execution remains
-outside the supported core. Accepted Agent tool and MCP shapes are validated
-before a version is stored.
+this is currently limited to the Docker execution path. Agents with Skills
+must enable `read` for referenced files, and may not define a custom tool named
+`Skill`. Accepted Agent tool and MCP shapes are validated before a version is
+stored.

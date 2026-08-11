@@ -6,10 +6,9 @@ slug: /api/session-resources-conformance
 # Session Resources conformance
 
 This matrix records the File-backed and Memory-backed Session Resources slices
-separately from the frozen
-[core compatibility statement](../compatibility/core-v1.md). The routes use
-`anthropic-beta: managed-agents-2026-04-01`, but this later work does not
-retroactively expand the core v1.0.0 claim.
+separately from the historical
+[M1 core compatibility snapshot](../compatibility/core-v1.md). The routes use
+`anthropic-beta: managed-agents-2026-04-01`.
 
 ## Operation evidence
 

@@ -86,6 +86,10 @@ const config: Config = {
               to: '/architecture',
             },
             {
+              label: 'Multi-agent guide',
+              to: '/guides/multi-agent',
+            },
+            {
               label: 'API reference',
               to: '/api',
             },
@@ -95,8 +99,12 @@ const config: Config = {
           title: 'Project',
           items: [
             {
-              label: 'API Coverage',
+              label: 'API compatibility',
               to: '/compatibility',
+            },
+            {
+              label: 'Releases',
+              to: '/releases',
             },
             {
               label: 'Roadmap',

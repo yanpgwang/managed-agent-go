@@ -1,266 +1,96 @@
 ---
-title: Compatibility provenance
-slug: /provenance
+title: Upstream provenance
+slug: /maintainers/provenance
 ---
 
-# Compatibility provenance
+# Upstream provenance
 
-Official, normative sources used to design and verify public-wire compatibility
-are listed here. Non-official material, if deliberately consulted for independent
-internal design, is secondary and cannot establish a compatibility claim.
+This maintainer page records the normative public sources used to shape
+Mango's compatibility surface. It is deliberately not an implementation
+history. Git commits and release notes record when Mango behavior changed.
 
-## Official Go SDK (test dependency)
+Only official Anthropic documentation and SDKs establish a public
+compatibility claim. Other agent runtimes may inform independent internal
+design, but they are not normative for the HTTP or event contract.
 
-- [github.com/anthropics/anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go)
-- Test and reference version: [v1.62.0](https://github.com/anthropics/anthropic-sdk-go/tree/v1.62.0),
-  tag commit `0239529cb2a929c9e52b68f36fa7e413392c00fd` (verified
-  2026-08-09).
-- Module checksum recorded in `go.sum`:
-  `h1:nKkyMPJnFF7PfrWlKw77mCY5ZiEswPPq8nK4sz9is78=`.
-- Used only as a black-box compatibility client in tests (base URL pointed at an
-  in-process `httptest` server through an explicit per-test client). No
-  package-global SDK base-URL hook is used, and no SDK request/response types are
-  copied into this repository. Successful decoding is evidence of
-  interoperability, but it does not verify that every required response field
-  is present.
+## SDK evidence
 
-## Official documentation and API Reference
+- Client: [github.com/anthropics/anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go)
+- Pinned test baseline: [v1.62.0](https://github.com/anthropics/anthropic-sdk-go/tree/v1.62.0)
+- Tag commit: `0239529cb2a929c9e52b68f36fa7e413392c00fd`
+- Module checksum: `h1:nKkyMPJnFF7PfrWlKw77mCY5ZiEswPPq8nK4sz9is78=`
+- Last contract review: 2026-08-10
 
-Baseline verified through 2026-08-04. Entries below record later focused
-verification where applicable.
+Tests point an explicit SDK client at an in-process Mango server. Successful
+SDK decoding proves client interoperability for that test; it does not prove
+that every optional upstream field or undocumented hosted behavior is present.
 
-- [API overview](https://platform.claude.com/docs/en/api/overview) — auth
-  headers, pagination, request-size limit, and error envelope.
-- [Claude API errors](https://platform.claude.com/docs/en/api/errors) — Messages
-  API status/error types, request IDs, transient retry classes, and
-  `Retry-After`.
-- [Create Agent](https://platform.claude.com/docs/en/api/beta/agents/create) —
-  model configuration, initial `version`, and response shape.
-- [Update Agent](https://platform.claude.com/docs/en/api/beta/agents/update) —
-  optimistic concurrency and update-field semantics.
-- [List Agents](https://platform.claude.com/docs/en/api/beta/agents/list) —
-  `created_at[gte]`, `created_at[lte]`, `include_archived`, `limit`, and `page`;
-  the documented Agent limit default of 20 and maximum of 100. Verified
-  2026-08-09 against the API reference and official Go SDK v1.62.0 types.
-- [List Agent Versions](https://platform.claude.com/docs/en/api/beta/agents/versions/list) —
-  `limit`, `page`, the nullable `next_page` response cursor, and the documented
-  default of 20 and maximum of 100. Verified 2026-08-03 against the API
-  reference and official Go SDK v1.62.0 types.
-- [List Environments](https://platform.claude.com/docs/en/api/beta/environments/list) —
-  `include_archived`, `limit`, and `page`, with a forward cursor response and no
-  documented created-at filters or limit bounds. Verified 2026-08-03 against
-  the API reference and official Go SDK v1.62.0 types.
-- [Environments](https://platform.claude.com/docs/en/api/beta/environments) —
-  required resource fields, resolved default cloud configuration, lifecycle
-  methods, and the `environment_deleted` response. Verified 2026-08-03 against
-  the API reference and official Go SDK v1.62.0 types.
-- [Start a session](https://platform.claude.com/docs/en/managed-agents/sessions)
-  — agent reference forms, initial events, and resolved snapshot.
-- [Create Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/create)
-  — full session response and resolved snapshot.
-- [Session operations](https://platform.claude.com/docs/en/managed-agents/session-operations)
-  — statuses, pagination, archive, and delete behavior, plus the mid-session
-  agent configuration update: `tools`/`mcp_servers` only, full replacement,
-  session-local, and only while the session is `idle`.
-- [Update Session API Reference](https://platform.claude.com/docs/en/api/beta/sessions/update)
-  — the five body fields (`agent`, `budget`, `metadata`, `title`, `vault_ids`),
-  the per-key metadata patch, and the documented rejection of `vault_ids`.
+## Beta contracts
+
+| Surface | Header |
+| --- | --- |
+| Managed Agents, Deployments, Vaults, Environment Work, Session Threads | `anthropic-beta: managed-agents-2026-04-01` |
+| Files | `anthropic-beta: files-api-2025-04-14` |
+| Skills | `anthropic-beta: skills-2025-10-02` |
+| Memory resource routes | `anthropic-beta: agent-memory-2026-07-22` |
+
+Memory Store attachment remains part of Session creation under the Managed
+Agents beta. Strict mode rejects a Memory resource request that combines the
+Memory and Managed Agents beta values.
+
+## Resource API sources
+
+- [API overview](https://platform.claude.com/docs/en/api/overview) and
+  [errors](https://platform.claude.com/docs/en/api/errors)
+- [Agents](https://platform.claude.com/docs/en/api/beta/agents)
+- [Environments](https://platform.claude.com/docs/en/api/beta/environments)
+- [Sessions](https://platform.claude.com/docs/en/api/beta/sessions) and
+  [Session operations](https://platform.claude.com/docs/en/managed-agents/session-operations)
+- [Session Events](https://platform.claude.com/docs/en/api/beta/sessions/events) and
+  [events and streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming)
+- [Session Threads](https://platform.claude.com/docs/en/api/beta/sessions/threads) and
+  [multi-agent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration)
 - [Session budgets](https://platform.claude.com/docs/en/managed-agents/session-budgets)
-  — the shared cross-Thread list-cost ceiling, nullable response projection,
-  usage fields, and budget-reached lifecycle. The current implementation
-  exposes the nullable projection but explicitly rejects non-null limits.
-- [Events and streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming)
-  — event unions, content blocks, processing, and reconnect behavior.
-- [Events API Reference](https://platform.claude.com/docs/en/api/beta/sessions/events)
-  — `requires_action.event_ids`, the all-actions resolution boundary, and
-  per-event `processed_at` semantics used by the durable pending-action gate.
-- [List Events API Reference](https://platform.claude.com/docs/en/api/beta/sessions/events/list)
-  — filters, pagination envelope, and per-event shapes.
-- [Multiagent orchestration](https://platform.claude.com/docs/en/managed-agents/multiagent-orchestration)
-  and [Session Threads API](https://platform.claude.com/docs/en/api/beta/sessions/threads)
-  — the primary-thread identity, per-Thread execution fields, thread ordering,
-  per-thread event views, five HTTP operations, and the boundary between the
-  Session stream and child activity. Verified 2026-08-09 against the current
-  documentation and Anthropic Go SDK `v1.62.0` types and methods. This focused
-  verification also covered `model.inference_geo`, roster-wide geography
-  consistency, full Session-resolved roster definitions, `self` override
-  propagation, parent-stream `session.thread_created`, isolated Thread event
-  views and conversation histories, multiple child instances of one callable
-  Agent, private `list_agents`/`send_to_agent` delegation, persistent follow-up
-  Threads, Session status aggregation, child preview isolation, cross-Thread
-  message direction, retry ownership, the advisor variant, cross-posted client
-  actions, targeted/global interrupt semantics, and shared Session budgets.
-- [Files API](https://platform.claude.com/docs/en/api/beta/files) and
-  [Files guide](https://platform.claude.com/docs/en/build-with-claude/files) —
-  the five operations, `files-api-2025-04-14` beta header, multipart upload,
-  500 MB limit, ID-based bidirectional pagination, filename restrictions,
-  scope, and downloadable semantics. Verified 2026-08-04 against the API
-  reference and official Go SDK v1.62.0 types and methods.
-- [Session Resources API](https://platform.claude.com/docs/en/api/beta/sessions/resources)
-  and [Managed Agents Files](https://platform.claude.com/docs/en/managed-agents/files) —
-  the five operations, File-only runtime Add request, required response fields,
-  cursor semantics, absolute/default mount paths, read-only attachment copies,
-  runtime add/delete behavior, and the 500-resource Session limit. Verified
-  2026-08-09 against the current documentation and official Go SDK v1.62.0.
-- [Managed Agents Skills](https://platform.claude.com/docs/en/managed-agents/skills),
-  [Using Agent Skills with the API](https://platform.claude.com/docs/en/build-with-claude/skills-guide),
-  [Agent Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview),
-  and [Skills API](https://platform.claude.com/docs/en/api/beta/skills) — the
-  nine custom resource operations, `skills-2025-10-02` beta header, multipart
-  and zip bundle forms, 30 MB limit, single-root and metadata requirements,
-  immutable Version lifecycle, cursor pages, archive download, delete ordering,
-  the custom/Anthropic reference union, omitted/`latest` Version resolution,
-  and the 500-Skill Session limit. Verified 2026-08-04 against the current
-  documentation and official Go SDK v1.62.0.
-- [Managed Agents Memory](https://platform.claude.com/docs/en/managed-agents/memory)
-  and [Memory Stores API](https://platform.claude.com/docs/en/api/beta/memory-stores) —
-  the fourteen Store, Memory, and immutable Version operations,
-  `agent-memory-2026-07-22` beta header, basic/full views, depth-one path
-  projection, SHA-256 preconditions, actor attribution, archive and redaction
-  semantics, create-time Session attachment, eight-Store limit, access modes,
-  instructions, and `/mnt/memory/<store-slug>` filesystem behavior. Verified
-  2026-08-09 against the current documentation and official Go SDK v1.62.0.
-- [Vaults API](https://platform.claude.com/docs/en/api/beta/vaults) and
-  [Go Credential API](https://platform.claude.com/docs/en/api/go/beta/vaults/credentials) —
-  Vault and Credential lifecycle routes, tagged authentication inputs,
-  write-only sensitive fields, list bounds, MCP OAuth validation, automatic
-  expiry refresh, and refresh-failure classification. Verified 2026-08-08
-  against Anthropic Go SDK `v1.62.0` and the current Vault runtime guide.
-- [Scheduled deployments](https://platform.claude.com/docs/en/managed-agents/scheduled-deployments),
-  [Deployments API](https://platform.claude.com/docs/en/api/beta/deployments),
-  and [Deployment Runs API](https://platform.claude.com/docs/en/api/beta/deployment-runs) —
-  the ten lifecycle and Run operations, immutable Agent Version resolution,
-  five-field cron schedules and IANA timezones, pause/unpause/archive behavior,
-  manual execution while paused, forward pagination and filters, Run failure
-  records, and scheduled error auto-pause behavior. Verified 2026-08-09 against
-  the current documentation and Anthropic Go SDK `v1.62.0` types and methods.
-- [Claude Code Skill content lifecycle](https://code.claude.com/docs/en/slash-commands#skill-content-lifecycle)
-  — on-demand main-instruction loading, supporting-file access, persistence
-  after invocation, and the documented 5,000-token per-Skill / 25,000-token
-  combined post-compaction budget. This informs the private runtime context
-  lifecycle, not the Managed Agents public resource wire. Verified 2026-08-04.
+- [Files](https://platform.claude.com/docs/en/api/beta/files) and
+  [Managed Agents Files](https://platform.claude.com/docs/en/managed-agents/files)
+- [Session Resources](https://platform.claude.com/docs/en/api/beta/sessions/resources)
+- [Skills](https://platform.claude.com/docs/en/api/beta/skills) and
+  [Managed Agents Skills](https://platform.claude.com/docs/en/managed-agents/skills)
+- [Memory Stores](https://platform.claude.com/docs/en/api/beta/memory-stores) and
+  [Managed Agents Memory](https://platform.claude.com/docs/en/managed-agents/memory)
+- [Vaults](https://platform.claude.com/docs/en/api/beta/vaults) and
+  [Credentials](https://platform.claude.com/docs/en/api/go/beta/vaults/credentials)
+- [Deployments](https://platform.claude.com/docs/en/api/beta/deployments),
+  [Deployment Runs](https://platform.claude.com/docs/en/api/beta/deployment-runs), and
+  [scheduled deployments](https://platform.claude.com/docs/en/managed-agents/scheduled-deployments)
+- [Self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
 
-## Tool and sandbox sources
-
-Verified 2026-07-28. These inform the tool-use loop, the built-in toolset
-declaration, the custom/permission handoff, and the tool-block event wire.
+## Runtime behavior sources
 
 - [Managed Agents tools](https://platform.claude.com/docs/en/managed-agents/tools)
-  — the `agent_toolset_20260401` built-in toolset, per-tool `enabled` and
-  `permission_policy` config, custom tools, and MCP toolsets.
-  Verified 2026-08-03 against the documented nested field sets, the 128-entry
-  tool limit, required custom-tool fields, custom name/description bounds, and
-  MCP tool-config name bounds; custom-tool `input_schema` remains an open JSON
-  Schema beyond its required object wrapper.
-- [List Events](https://platform.claude.com/docs/en/api/beta/sessions/events/list)
-  and
-  [Send Events](https://platform.claude.com/docs/en/api/beta/sessions/events/send)
-  — the `agent.tool_use` / `agent.tool_result` / `agent.custom_tool_use` event
-  variants and the `user.custom_tool_result` / `user.tool_confirmation` client
-  events used for the handoff. The same references define the distinct
-  `agent.mcp_tool_use` (required `mcp_server_name`, bare tool `name`, optional
-  `evaluated_permission`) and `agent.mcp_tool_result` (`mcp_tool_use_id`, no
-  server name) variants, and state that `user.tool_confirmation.tool_use_id`
-  answers either tool-use variant. Verified 2026-08-03.
 - [Permission policies](https://platform.claude.com/docs/en/managed-agents/permission-policies)
-  — `always_allow` / `always_ask` / `always_deny` evaluation and the
-  `requires_action` stop reason that a pending confirmation produces.
 - [MCP connector](https://platform.claude.com/docs/en/managed-agents/mcp-connector)
-  — Agent definitions declare only the server type, name, and URL; credentials
-  are supplied separately through Session vaults. Also covers server/toolset
-  matching, default permission policy, oversized-result handling, and
-  recoverable connection failures. Verified 2026-08-03.
+- [Cloud Environments](https://platform.claude.com/docs/en/managed-agents/environments)
 - [Web Search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)
-  and
-  [Web Fetch](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool)
-  — provider-native server-tool declarations, result blocks, citations, and
-  continuation behavior. Verified 2026-08-01.
-- [Cloud environment setup](https://platform.claude.com/docs/en/managed-agents/environments)
-  — reusable Environment configuration, isolated session sandbox ownership,
-  limited-network semantics, package-manager access, and package caching across
-  Sessions sharing an Environment. Verified 2026-08-03.
-- [Self-hosted sandboxes](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
-  — the control-plane/worker boundary and session-scoped sandbox guidance.
-  Verified 2026-08-09 together with the official Go SDK v1.62.0
-  `BetaEnvironmentWorkService`, `lib/environments.WorkPoller`, and
-  `lib/environments.EnvironmentWorker`: the eight Work routes, queue/Ack state
-  transition, conditional heartbeat, reclaim parameters, worker identity,
-  graceful/forced Stop, Session Work payload, Skill download, and reuse of the
-  Session Events tool-result loop.
-- [Bash tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool)
-  and
-  [Text editor tool](https://platform.claude.com/docs/en/agents-and-tools/tool-use/text-editor-tool)
-  — consulted for public parameter conventions that shaped the *internal*
-  input schemas we hand the model. These are Tool-Use (Messages API)
-  conventions, not part of the Managed Agents public wire; the schemas we send
-  are an internal design choice and are marked `partial`/internal in
-  `docs/compatibility.md`.
-
-The
-[Anthropic Sandbox Runtime](https://github.com/anthropic-experimental/sandbox-runtime)
-repository is referenced only as an experimental candidate backend. It does
-not establish Managed Agents API compatibility and no SRT integration is
-currently implemented.
-
-Beta header for Managed Agents core routes covered here:
-`anthropic-beta: managed-agents-2026-04-01`. Files routes use the independent
-`anthropic-beta: files-api-2025-04-14` header. Skills routes use
-`anthropic-beta: skills-2025-10-02`. Memory routes use
-`anthropic-beta: agent-memory-2026-07-22` and reject combining it with the
-Managed Agents beta; Memory Store attachment remains part of Session creation
-under the Managed Agents beta.
-
-## Streaming sources
-
-Verified 2026-08-03. These inform the opt-in shape and event correlation used
-by stream-only previews.
-
-- [Events and streaming](https://platform.claude.com/docs/en/managed-agents/events-and-streaming)
-  — persisted event streaming, event-delta opt-in, and reconnect guidance.
+  and [Web Fetch](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-fetch-tool)
 - [Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming)
-  — upstream Messages API SSE event types decoded by the real model client.
+- [Claude Code Skill content lifecycle](https://code.claude.com/docs/en/slash-commands#skill-content-lifecycle)
 
-The inbound Messages API SSE wire and the outbound Managed Agents preview wire
-are separate contracts. The implementation translates between them rather than
-forwarding upstream frames.
+The Claude Code Skill source informs Mango's private on-demand instruction
+lifecycle. It does not establish the Managed Agents resource wire. Likewise,
+Messages SSE frames and Managed Agents preview frames are separate contracts;
+Mango translates between them rather than forwarding provider frames directly.
 
-## Compatibility claim boundary
+## Verification policy
 
-- The sandbox-executed tool set is `bash`, `read`, `write`, `edit`, `glob`, and
-  `grep`. `web_fetch` and `web_search` use the configured Messages API endpoint
-  as provider-native server tools and currently require `always_allow`.
-- MCP tool discovery and execution support unauthenticated public Streamable
-  HTTP servers with Session-pinned definitions, permission checks, durable
-  journaling, and sandbox materialization for large or binary results. Vault
-  authentication, private-network connectivity, deprecated-SSE fallback,
-  resources, and prompts are not supported.
-- The default local sandbox is a guardrail, not a security boundary; the
-  optional Docker provider supplies container isolation.
-- Multiagent coordinator rosters are strictly validated and resolve ID,
-  versioned, and `self` inputs to immutable concrete Agent Version references.
-  Session creation freezes the corresponding full Agent definitions and applies
-  Session overrides to `self` snapshots. Every Session has a durable primary
-  Thread with an independent execution projection, and all five Thread
-  read/archive/event operations are implemented. Child execution, delegation,
-  cross-thread messaging/event projection, and orchestration are not yet
-  implemented.
-- The Files API and File-backed Session Resources have separate conditional
-  conformance matrices. They are not part of the frozen Managed Agents core
-  claim.
-- The custom Skills resource API, reference validation, and immutable Version
-  pinning have a separate conditional conformance matrix. Docker-backed cloud
-  runtime materialization is included in that conditional claim, not in the
-  frozen core claim.
-- The Memory resource API and Memory-backed Session Resources have a separate
-  conditional conformance matrix. PostgreSQL-backed resources and Docker
-  runtime persistence are included in that conditional claim, not in the
-  frozen core claim.
-- Other unsupported product surfaces are excluded from compatibility claims
-  until their wire behavior is implemented and tested.
-- Only official documentation and official SDKs are normative for the public
-  compatibility surface.
+When an upstream contract changes:
 
-The resulting frozen claim is
-[core compatibility statement v1.0.0](compatibility/core-v1.md). Its explicit
-limitations take precedence over any broader shorthand elsewhere in the
-documentation.
+1. record the new official SDK tag and documentation sources here;
+2. update the OpenAPI and operation inventory;
+3. add raw-wire and official-SDK tests for changed request/response behavior;
+4. add PostgreSQL/Temporal evidence when the change affects durable semantics;
+5. update [API compatibility](compatibility.md) with any user-visible limit;
+6. preserve old Temporal histories and stored resource shapes through explicit
+   compatibility code or a documented migration.
+
+The detailed evidence map is [Conformance evidence](conformance.md).

@@ -5,15 +5,16 @@ slug: /api
 
 # API overview
 
-The server implements a practical subset of the Claude Managed Agents and
-Files HTTP APIs under `/v1`.
+The server exposes the 90 operations in its pinned Claude Managed Agents,
+Files, Skills, and Memory HTTP contract under `/v1`. Operation presence does
+not imply unrestricted support for every hosted behavior.
 
 :::info
 
 This reference documents repository behavior. See
-[Compatibility & conformance](../compatibility.md) for exactly what is
-supported, limited, or not supported — and for the per-operation conformance
-matrices.
+[API compatibility](../compatibility.md) for exactly what is supported,
+limited, in preview, or not supported. Maintainer matrices live separately in
+[Conformance evidence](../conformance.md).
 
 :::
 
@@ -43,6 +44,11 @@ Resource-specific request shapes are covered in:
 - [Sessions](sessions.md)
 - [Events and streaming](events.md)
 - [Session Threads](session-threads.md)
+- [Session Resources](session-resources.md)
+- [Files](files.md)
+- [Skills](skills.md)
+- [Memory](memory.md)
+- [Vaults and Credentials](vaults.md)
 - [Deployments and Deployment Runs](deployments.md)
 
 ## Headers

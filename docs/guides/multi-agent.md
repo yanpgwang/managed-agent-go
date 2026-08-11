@@ -1,0 +1,141 @@
+---
+title: Run a multi-agent Session
+slug: /guides/multi-agent
+---
+
+# Run a multi-agent Session
+
+This guide creates two worker Agents, places them in a coordinator roster, and
+observes the persistent child Threads that the coordinator starts while
+handling a Session.
+
+Multi-agent execution uses the ordinary Session and Event APIs. Delegation is
+not a client-side endpoint: a coordinator receives the private `list_agents`
+and `send_to_agent` model tools and decides when to call them.
+
+## Prerequisites
+
+- Complete [Getting started](../getting-started.md).
+- Use a Messages-compatible model that can call tools. The deterministic local
+  model is useful for platform smoke tests but does not make open-ended
+  delegation decisions.
+- Keep every roster Agent on the same `inference_geo` value, or leave it unset
+  everywhere.
+
+The examples use the local API at `http://localhost:8080`.
+
+## Create the worker Agents
+
+```bash
+RESEARCHER_ID=$(
+  curl -sS http://localhost:8080/v1/agents \
+    -H 'content-type: application/json' \
+    -d '{
+      "name": "researcher",
+      "model": "claude-model-id",
+      "system": "Investigate the question and return a concise evidence-backed report."
+    }' | jq -r .id
+)
+
+REVIEWER_ID=$(
+  curl -sS http://localhost:8080/v1/agents \
+    -H 'content-type: application/json' \
+    -d '{
+      "name": "reviewer",
+      "model": "claude-model-id",
+      "system": "Review the proposed answer, identify errors, and return corrections."
+    }' | jq -r .id
+)
+```
+
+Agent names identify callable roster members inside one Session and therefore
+must be distinct.
+
+## Create the coordinator
+
+```bash
+COORDINATOR_ID=$(
+  curl -sS http://localhost:8080/v1/agents \
+    -H 'content-type: application/json' \
+    -d "{
+      \"name\": \"coordinator\",
+      \"model\": \"claude-model-id\",
+      \"system\": \"Delegate research and review in parallel, then synthesize the final answer.\",
+      \"multiagent\": {
+        \"type\": \"coordinator\",
+        \"agents\": [\"$RESEARCHER_ID\", \"$REVIEWER_ID\"]
+      }
+    }" | jq -r .id
+)
+```
+
+Mango resolves every roster entry to an immutable Agent Version when the
+coordinator Version is written. Session creation then expands those pins into
+complete Session-owned Agent snapshots, so later Agent updates cannot drift a
+running team.
+
+## Start and prompt the Session
+
+Create a cloud Environment and Session as in the quick start, using
+`COORDINATOR_ID` as the Session Agent. Then send a normal `user.message`:
+
+```bash
+curl -sS "http://localhost:8080/v1/sessions/$SESSION_ID/events" \
+  -H 'content-type: application/json' \
+  -d '{
+    "events": [{
+      "type": "user.message",
+      "content": [{"type":"text","text":"Compare two approaches, have the reviewer challenge the result, and give me one recommendation."}]
+    }]
+  }' | jq
+```
+
+The coordinator may create child Threads asynchronously. Each child owns its
+Agent snapshot, event ledger, provider transcript, usage, retry state, live
+preview stream, and Temporal Workflow while sharing the Session sandbox and
+attached resources.
+
+## Observe the team
+
+List the primary and child Threads:
+
+```bash
+curl -sS "http://localhost:8080/v1/sessions/$SESSION_ID/threads" | jq
+```
+
+Read one child ledger independently:
+
+```bash
+curl -sS \
+  "http://localhost:8080/v1/sessions/$SESSION_ID/threads/$THREAD_ID/events" |
+  jq
+```
+
+The primary Session stream contains condensed lifecycle and directional
+message projections. A completed child answer arrives as a report and wakes a
+later coordinator synthesis turn; it is not duplicated as a primary
+`agent.message`.
+
+## Answer a child action
+
+If a child needs confirmation or a custom/self-hosted tool result, Mango
+projects an answerable event onto the primary Session stream. Reply to that
+event ID through the ordinary Session Events endpoint. An optional
+`session_thread_id` may be echoed as a routing check; a conflicting value is
+rejected.
+
+An interrupt without `session_thread_id` targets the primary and every active
+child. Include a child ID to interrupt only that Thread.
+
+## Current limits
+
+- Ordinary roster Agents are supported; the distinct upstream `advisor`
+  consultation lifecycle is not.
+- Child transcripts are durable and independently compacted, but the public
+  Context Snapshot resource is not yet implemented.
+- Shared Session list-cost budgets are not enforced across concurrent Threads.
+- Exact hosted preview suppression for report-only coordinator turns remains a
+  compatibility boundary.
+
+See [Session Threads](../api/session-threads.md) for the HTTP contract and
+[API compatibility](../compatibility.md) for the current support boundary.
