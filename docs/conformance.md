@@ -50,8 +50,8 @@ smallest appropriate evidence:
 - real PostgreSQL, Temporal, NATS, MinIO, and Docker service tests for composed
   behavior.
 
-The [M1 core compatibility snapshot](compatibility/core-v1.md) preserves the
-scope and evidence captured on 2026-08-03. It is a historical engineering
+The [core compatibility snapshot](compatibility/core-2026-08-03.md) preserves
+the scope and evidence captured on 2026-08-03. It is a historical engineering
 snapshot, not a published Mango release.
 
 Official sources and verification boundaries are listed in

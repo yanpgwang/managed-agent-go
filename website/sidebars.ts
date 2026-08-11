@@ -63,7 +63,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'conformance',
             'provenance',
-            'compatibility/core-v1',
+            'compatibility/core-2026-08-03',
           ],
         },
       ],
