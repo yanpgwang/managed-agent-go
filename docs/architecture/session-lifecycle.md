@@ -5,8 +5,10 @@ title: Session lifecycle
 # Session lifecycle
 
 A Session is a durable conversation and execution boundary. PostgreSQL owns its
-public state and event history; one Temporal Workflow serializes its in-flight
-work.
+public state and event history. The primary Thread runs through the Session
+Workflow, and each child Thread owns an independent Temporal Workflow. Work is
+serialized within a Thread, while independent Threads may execute concurrently
+against the Session's shared sandbox.
 
 ## Public states
 
@@ -45,7 +47,8 @@ an execution queue.
 
 ## Turn execution
 
-One Workflow ID is derived from each Session ID. The Workflow:
+The primary Workflow ID is derived from the Session ID; each child Workflow ID
+is derived from its Thread ID. Each Workflow:
 
 1. loads the next claimable trigger from PostgreSQL;
 2. reconstructs model-facing history from committed causal history;
@@ -54,8 +57,11 @@ One Workflow ID is derived from each Session ID. The Workflow:
    the final Session state in one PostgreSQL transaction;
 5. advances to the next trigger only after that commit.
 
-Different Sessions can execute concurrently. Work within one Session remains
-serialized.
+Different Sessions and different Threads within one Session can execute
+concurrently. Work within an individual Thread remains serialized. Provider
+resource locks allow ordinary tool operations to share the Session sandbox,
+while a complete Memory snapshot, PostgreSQL sync, and filesystem refresh runs
+exclusively between active tool waves.
 
 ## Event order and conversation order
 

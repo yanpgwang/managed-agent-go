@@ -242,6 +242,57 @@ func TestMemoryRuntime_DockerPostgresRoundTrip(t *testing.T) {
 	if err != nil || read.ExitCode != 0 || strings.TrimSpace(string(read.Stdout)) != "initial" {
 		t.Fatalf("read mounted Memory: result=%+v err=%v", read, err)
 	}
+	locker, ok := box.(sandbox.ResourceSynchronizationSandbox)
+	if !ok {
+		t.Fatal("Docker sandbox does not coordinate tool operations with Memory sync")
+	}
+	unlockOperation, err := locker.LockResourceOperation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wave, err := box.Exec(ctx, sandbox.Command{
+		Path: "sh", Args: []string{"-c", `printf wave > /mnt/memory/agent-memory/notes/a.md`},
+	})
+	if err != nil || wave.ExitCode != 0 {
+		unlockOperation()
+		t.Fatalf("change active tool wave: result=%+v err=%v", wave, err)
+	}
+	// A concurrent tool joins the current filesystem wave. Its pre-tool
+	// Reconcile must not refresh the mount underneath the active operation.
+	if err := materializer.Reconcile(ctx, session.ID, box); err != nil {
+		unlockOperation()
+		t.Fatalf("concurrent reconcile: %v", err)
+	}
+	waveRead, err := box.Exec(ctx, sandbox.Command{
+		Path: "sh", Args: []string{"-c", "cat /mnt/memory/agent-memory/notes/a.md"},
+	})
+	if err != nil || waveRead.ExitCode != 0 || strings.TrimSpace(string(waveRead.Stdout)) != "wave" {
+		unlockOperation()
+		t.Fatalf("reconcile clobbered active tool data: result=%+v err=%v", waveRead, err)
+	}
+	writebackDone := make(chan error, 1)
+	go func() {
+		writebackDone <- materializer.Writeback(ctx, session.ID, box)
+	}()
+	select {
+	case err := <-writebackDone:
+		unlockOperation()
+		t.Fatalf("writeback completed before the active tool wave ended: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlockOperation()
+	select {
+	case err := <-writebackDone:
+		if err != nil {
+			t.Fatalf("coordinated writeback: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("writeback did not resume after the active tool wave ended")
+	}
+	waveHeads, err := service.RuntimeHeads(ctx, memoryStore.ID)
+	if err != nil || len(waveHeads) != 1 || waveHeads[0].Content != "wave" {
+		t.Fatalf("coordinated heads = %+v, %v", waveHeads, err)
+	}
 	changed, err := box.Exec(ctx, sandbox.Command{
 		Path: "sh", Args: []string{"-c", `printf updated > /mnt/memory/agent-memory/notes/a.md; printf new > /mnt/memory/agent-memory/new.md`},
 	})
@@ -258,7 +309,7 @@ func TestMemoryRuntime_DockerPostgresRoundTrip(t *testing.T) {
 	versions, err := service.ListMemoryVersions(ctx, memoryStore.ID, app.MemoryVersionListQuery{
 		SessionID: session.ID, Limit: 100,
 	})
-	if err != nil || len(versions.Versions) != 2 {
+	if err != nil || len(versions.Versions) != 3 {
 		t.Fatalf("session-authored versions = %+v, %v", versions, err)
 	}
 	// Simulate a worker crash after a final tool changed the mount but before the

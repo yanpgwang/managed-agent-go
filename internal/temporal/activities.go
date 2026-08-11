@@ -1951,6 +1951,22 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 			return ExecuteToolResult{}, reconcileErr
 		}
 	}
+	var unlockResourceOperation func()
+	if locker, ok := box.(sandbox.ResourceSynchronizationSandbox); ok {
+		unlockResourceOperation, err = locker.LockResourceOperation(ctx)
+		if err != nil {
+			if sandbox.IsPermanent(err) {
+				out.FatalError = err.Error()
+				return out, nil
+			}
+			return ExecuteToolResult{}, err
+		}
+		defer func() {
+			if unlockResourceOperation != nil {
+				unlockResourceOperation()
+			}
+		}()
+	}
 	if !retrySafeStarted {
 		dctx, cancel := durableCtx(ctx)
 		err = a.journal.StartToolStep(dctx, step.ID)
@@ -2126,6 +2142,10 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 			Content: executed.Content,
 			IsError: executed.IsError,
 		}
+	}
+	if unlockResourceOperation != nil {
+		unlockResourceOperation()
+		unlockResourceOperation = nil
 	}
 	if writer, ok := a.resources.(SandboxResourceWriteback); ok {
 		writebackCtx, cancel := durableCtx(ctx)

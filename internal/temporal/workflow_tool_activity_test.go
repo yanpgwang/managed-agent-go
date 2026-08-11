@@ -113,6 +113,71 @@ type failingWritebackReconciler struct{}
 
 type permanentSandboxLease struct{}
 
+type synchronizationObservingSandbox struct {
+	sandbox.Sandbox
+	operationActive atomic.Bool
+	execSawLock     atomic.Bool
+}
+
+type synchronizationObservingReconciler struct {
+	box                *synchronizationObservingSandbox
+	writebackSawUnlock atomic.Bool
+}
+
+func (s *synchronizationObservingSandbox) Exec(
+	ctx context.Context,
+	command sandbox.Command,
+) (*sandbox.Result, error) {
+	if s.operationActive.Load() {
+		s.execSawLock.Store(true)
+	}
+	return s.Sandbox.Exec(ctx, command)
+}
+
+func (s *synchronizationObservingSandbox) LockResourceOperation(
+	context.Context,
+) (func(), error) {
+	if !s.operationActive.CompareAndSwap(false, true) {
+		return nil, errors.New("resource operation lock already held")
+	}
+	return func() { s.operationActive.Store(false) }, nil
+}
+
+func (s *synchronizationObservingSandbox) TryLockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), bool, error) {
+	return ctx, func() {}, true, nil
+}
+
+func (s *synchronizationObservingSandbox) LockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), error) {
+	return ctx, func() {}, nil
+}
+
+func (r *synchronizationObservingReconciler) Reconcile(
+	context.Context,
+	string,
+	sandbox.Sandbox,
+) error {
+	if r.box.operationActive.Load() {
+		return errors.New("resource operation lock acquired before reconcile")
+	}
+	return nil
+}
+
+func (r *synchronizationObservingReconciler) Writeback(
+	context.Context,
+	string,
+	sandbox.Sandbox,
+) error {
+	if r.box.operationActive.Load() {
+		return errors.New("resource operation lock retained during writeback")
+	}
+	r.writebackSawUnlock.Store(true)
+	return nil
+}
+
 func (permanentSandboxLease) Acquire(
 	context.Context,
 	string,
@@ -421,6 +486,47 @@ func TestExecuteTool_WritebackFailurePreservesToolOutput(t *testing.T) {
 	}
 	if !journal.result.IsError || len(journal.result.Content) != len(result.Result.Content) {
 		t.Fatalf("journaled result = %+v", journal.result)
+	}
+}
+
+func TestExecuteTool_CoordinatesResourceSyncAroundToolOperation(t *testing.T) {
+	ctx := context.Background()
+	_, inner, err := sandbox.NewLocalProvider().Create(ctx, t.Name(), sandbox.Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = inner.Destroy(context.Background()) })
+	box := &synchronizationObservingSandbox{Sandbox: inner}
+	reconciler := &synchronizationObservingReconciler{box: box}
+	journal := &memoryMCPJournal{}
+	activities := NewActivities(
+		nil,
+		newFakeSource(nil),
+		journal,
+		&fixedSandboxLease{box: box},
+		&testIDGen{},
+	).WithSandboxResourceReconciler(reconciler)
+
+	result, err := activities.ExecuteTool(ctx, ExecuteToolInput{
+		SessionID: "sesn_resource_sync", TriggerEventID: "sevt_trigger",
+		AttemptID: "ratm_resource_sync", Ordinal: 0,
+		ToolUseEventID: "sevt_tool", ToolStepID: "tstep_resource_sync",
+		ToolName: "bash", Input: map[string]any{"command": "printf synchronized"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Result.IsError {
+		t.Fatalf("tool result = %+v", result.Result)
+	}
+	if !box.execSawLock.Load() {
+		t.Fatal("tool execution was not protected by the shared resource lock")
+	}
+	if box.operationActive.Load() {
+		t.Fatal("shared resource lock remained held after ExecuteTool")
+	}
+	if !reconciler.writebackSawUnlock.Load() {
+		t.Fatal("writeback did not run after releasing the shared resource lock")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
@@ -76,6 +77,84 @@ func TestDockerMemory_InterruptedRefreshHasNoStaleBaseline(t *testing.T) {
 	if len(snapshot.Baseline) != 0 || len(snapshot.Current) != 1 ||
 		snapshot.Current[0].Path != "/note.md" ||
 		string(snapshot.Current[0].Content) != "partial" {
+		t.Fatalf("snapshot = %+v", snapshot)
+	}
+}
+
+func TestDockerResourceSynchronization_SharedToolsAndExclusiveMemorySync(t *testing.T) {
+	box, mount, _ := newDockerMemoryTestSandbox(t)
+	ctx := context.Background()
+
+	unlockFirst, err := box.LockResourceOperation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlockSecond, err := box.LockResourceOperation(ctx)
+	if err != nil {
+		unlockFirst()
+		t.Fatalf("second shared operation lock: %v", err)
+	}
+	unlockSecond()
+
+	_, releaseTry, acquired, err := box.TryLockResourceSync(ctx)
+	if err != nil {
+		unlockFirst()
+		t.Fatal(err)
+	}
+	if acquired {
+		releaseTry()
+		unlockFirst()
+		t.Fatal("exclusive Memory sync acquired while a tool operation was active")
+	}
+
+	locked := make(chan context.Context, 1)
+	released := make(chan struct{})
+	go func() {
+		lockedCtx, release, lockErr := box.LockResourceSync(ctx)
+		if lockErr != nil {
+			locked <- nil
+			return
+		}
+		locked <- lockedCtx
+		<-released
+		release()
+	}()
+	select {
+	case <-locked:
+		unlockFirst()
+		close(released)
+		t.Fatal("exclusive Memory sync did not wait for the active tool operation")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	unlockFirst()
+	var lockedCtx context.Context
+	select {
+	case lockedCtx = <-locked:
+		if lockedCtx == nil {
+			close(released)
+			t.Fatal("exclusive Memory sync failed")
+		}
+	case <-time.After(time.Second):
+		close(released)
+		t.Fatal("exclusive Memory sync did not acquire after tools completed")
+	}
+
+	// The marked context suppresses nested locking in the snapshot primitives;
+	// the caller already owns the complete synchronization transaction.
+	if err := box.ReplaceMemoryStore(lockedCtx, mount, []MemoryStoreFile{
+		dockerMemoryTestFile("mem_note", "/note.md", "coordinated"),
+	}); err != nil {
+		close(released)
+		t.Fatal(err)
+	}
+	snapshot, err := box.ReadMemoryStore(lockedCtx, mount)
+	close(released)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snapshot.Initialized || len(snapshot.Current) != 1 ||
+		string(snapshot.Current[0].Content) != "coordinated" {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 }

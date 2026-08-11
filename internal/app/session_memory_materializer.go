@@ -35,7 +35,7 @@ func (m *SessionMemoryMaterializer) Reconcile(
 	sessionID string,
 	box sandbox.Sandbox,
 ) error {
-	return m.converge(ctx, sessionID, box, false)
+	return m.converge(ctx, sessionID, box, false, true)
 }
 
 func (m *SessionMemoryMaterializer) Writeback(
@@ -43,7 +43,7 @@ func (m *SessionMemoryMaterializer) Writeback(
 	sessionID string,
 	box sandbox.Sandbox,
 ) error {
-	return m.converge(ctx, sessionID, box, false)
+	return m.converge(ctx, sessionID, box, false, false)
 }
 
 func (m *SessionMemoryMaterializer) WritebackForRelease(
@@ -51,7 +51,7 @@ func (m *SessionMemoryMaterializer) WritebackForRelease(
 	sessionID string,
 	box sandbox.Sandbox,
 ) error {
-	return m.converge(ctx, sessionID, box, true)
+	return m.converge(ctx, sessionID, box, true, false)
 }
 
 func (m *SessionMemoryMaterializer) converge(
@@ -59,6 +59,7 @@ func (m *SessionMemoryMaterializer) converge(
 	sessionID string,
 	box sandbox.Sandbox,
 	includeDeleting bool,
+	trySync bool,
 ) error {
 	resources, err := m.resources.SessionResourcesForReconcile(ctx, sessionID)
 	if err != nil {
@@ -81,6 +82,26 @@ func (m *SessionMemoryMaterializer) converge(
 			"sandbox: provider cannot materialize Memory Stores for Session %s",
 			sessionID,
 		))
+	}
+	if locker, ok := box.(sandbox.ResourceSynchronizationSandbox); ok {
+		var unlock func()
+		if trySync {
+			lockedCtx, release, acquired, err := locker.TryLockResourceSync(ctx)
+			if err != nil {
+				return err
+			}
+			if !acquired {
+				return nil
+			}
+			ctx, unlock = lockedCtx, release
+		} else {
+			lockedCtx, release, err := locker.LockResourceSync(ctx)
+			if err != nil {
+				return err
+			}
+			ctx, unlock = lockedCtx, release
+		}
+		defer unlock()
 	}
 	for _, resource := range memoryResources {
 		mount := sandbox.MemoryStoreMount{

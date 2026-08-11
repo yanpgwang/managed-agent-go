@@ -228,9 +228,12 @@ func (s *dockerSandbox) ReadMemoryStore(
 	if err != nil {
 		return MemoryStoreSnapshot{}, err
 	}
-	unlock, err := s.acquireResourceLock(ctx)
-	if err != nil {
-		return MemoryStoreSnapshot{}, err
+	unlock := func() {}
+	if !resourceSyncLockHeld(ctx) {
+		unlock, err = s.acquireResourceLock(ctx)
+		if err != nil {
+			return MemoryStoreSnapshot{}, err
+		}
 	}
 	defer unlock()
 
@@ -370,9 +373,12 @@ func (s *dockerSandbox) ReplaceMemoryStore(
 		return err
 	}
 
-	unlock, err := s.acquireResourceLock(ctx)
-	if err != nil {
-		return err
+	unlock := func() {}
+	if !resourceSyncLockHeld(ctx) {
+		unlock, err = s.acquireResourceLock(ctx)
+		if err != nil {
+			return err
+		}
 	}
 	defer unlock()
 	// Missing manifest means an interrupted refresh is never mistaken for agent
