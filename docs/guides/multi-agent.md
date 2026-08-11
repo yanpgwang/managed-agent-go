@@ -60,7 +60,7 @@ COORDINATOR_ID=$(
     -d "{
       \"name\": \"coordinator\",
       \"model\": \"claude-model-id\",
-      \"system\": \"Delegate research and review in parallel, then synthesize the final answer.\",
+      \"system\": \"Delegate independent work in parallel. When review depends on a research result, send the completed report to the reviewer as a follow-up task, then synthesize the final answer.\",
       \"multiagent\": {
         \"type\": \"coordinator\",
         \"agents\": [\"$RESEARCHER_ID\", \"$REVIEWER_ID\"]
@@ -72,7 +72,7 @@ COORDINATOR_ID=$(
 Mango resolves every roster entry to an immutable Agent Version when the
 coordinator Version is written. Session creation then expands those pins into
 complete Session-owned Agent snapshots, so later Agent updates cannot drift a
-running team.
+running Session.
 
 ## Start and prompt the Session
 
@@ -95,7 +95,14 @@ Agent snapshot, event ledger, provider transcript, usage, retry state, live
 preview stream, and Temporal Workflow while sharing the Session sandbox and
 attached resources.
 
-## Observe the team
+`send_to_agent` does not block the coordinator turn. Independent work can run
+in parallel, but dependencies remain the coordinator's responsibility: one
+child does not receive another child's future report automatically. Wait for
+the prerequisite report to arrive on the primary Thread, then send the
+dependent child a self-contained task. Follow-ups can name the existing child
+Thread so it continues with its prior context.
+
+## Observe the Threads
 
 List the primary and child Threads:
 
@@ -114,7 +121,9 @@ curl -sS \
 The primary Session stream contains condensed lifecycle and directional
 message projections. A completed child answer arrives as a report and wakes a
 later coordinator synthesis turn; it is not duplicated as a primary
-`agent.message`.
+`agent.message`. The runtime preserves `from_agent_name` and
+`from_session_thread_id` when it presents that report to the coordinator model,
+so the internal Agent message cannot be mistaken for a new user message.
 
 ## Answer a child action
 

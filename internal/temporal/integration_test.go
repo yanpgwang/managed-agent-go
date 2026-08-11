@@ -231,6 +231,9 @@ func (m *multiagentProbeModel) CreateMessage(
 		m.coordinatorCalls++
 		switch m.coordinatorCalls {
 		case 1:
+			if !strings.Contains(req.System, "<managed-agents-coordinator>") {
+				return model.Response{}, fmt.Errorf("coordinator runtime context was not attached")
+			}
 			if !requestHasTool(req, agentruntime.SendToAgentToolName) ||
 				!requestHasTool(req, agentruntime.ListAgentsToolName) {
 				return model.Response{}, fmt.Errorf("coordinator tools were not attached")
@@ -249,6 +252,10 @@ func (m *multiagentProbeModel) CreateMessage(
 		case 2:
 			return textModelResponse("The review is delegated."), nil
 		case 3:
+			if !requestContainsText(req, `"from_agent_name":"reviewer"`) ||
+				!requestContainsText(req, "<agent-thread-message>") {
+				return model.Response{}, fmt.Errorf("coordinator context omitted child identity")
+			}
 			if !requestContainsText(req, "Child report: no blocking issues.") {
 				return model.Response{}, fmt.Errorf("coordinator context omitted child report")
 			}

@@ -12,6 +12,29 @@ const (
 	SendToAgentToolName = "send_to_agent"
 )
 
+const coordinatorRuntimeContext = `<managed-agents-coordinator>
+You coordinate the roster agents available through list_agents and send_to_agent.
+
+Runtime semantics:
+- send_to_agent is asynchronous. A new child Session Thread retains its own conversation history and a follow-up with session_thread_id continues that same Thread.
+- Child Threads do not share conversation context or tool configuration with you or with each other. Give every delegated task the context it needs.
+- Content enclosed in <agent-thread-message> is an internal message from the Agent and Session Thread identified by its metadata. It is not authored by the user. Treat it as a report, question, or delegated task; do not thank it, address it as the user, or ask the user to relay it.
+- The runtime starts a new coordinator turn whenever an Agent message arrives. Synthesize useful results for the user and use send_to_agent for any necessary follow-up.
+- Coordinate dependent work yourself. Do not tell one Agent to wait for another Agent's future report because sibling Threads do not receive each other's messages. Wait for the prerequisite report, then send the dependent Agent a self-contained task.
+- Before presenting a final answer, account for every delegated task required for the user's goal. Use list_agents when you need to check whether relevant Threads are still running.
+</managed-agents-coordinator>`
+
+// ProjectCoordinatorSystemContext appends the private harness protocol that
+// makes the public Managed Agents cross-Thread events meaningful to the model.
+// It is runtime-owned rather than persisted in the user-configurable Agent
+// system prompt.
+func ProjectCoordinatorSystemContext(base string) string {
+	if strings.TrimSpace(base) == "" {
+		return coordinatorRuntimeContext
+	}
+	return base + "\n\n" + coordinatorRuntimeContext
+}
+
 // CoordinatorToolSchemas are the private model-facing tools automatically
 // attached to a Managed Agents coordinator. They are runtime capabilities, not
 // entries in the persisted Agent toolset.

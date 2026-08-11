@@ -581,12 +581,37 @@ func TestProjectMessages_SelfHostedToolResultPairing(t *testing.T) {
 func TestProjectMessages_ThreadMessageReceivedIsModelInput(t *testing.T) {
 	messages := ProjectMessages([]Event{{
 		Type: EvAgentThreadMessageReceived,
-		Payload: map[string]any{"content": []any{map[string]any{
-			"type": "text", "text": "subagent report",
-		}}},
+		Payload: map[string]any{
+			"from_session_thread_id": "sthr_reviewer",
+			"from_agent_name":        "reviewer",
+			"content": []any{
+				map[string]any{"type": "text", "text": "subagent report"},
+				map[string]any{"type": "image", "source": map[string]any{
+					"type": "url", "url": "https://example.com/review.png",
+				}},
+			},
+		},
 	}})
-	if len(messages) != 1 || messages[0].Role != RoleUser ||
-		len(messages[0].Content) != 1 || messages[0].Content[0].Text != "subagent report" {
+	if len(messages) != 1 || messages[0].Role != RoleUser || len(messages[0].Content) != 4 {
 		t.Fatalf("projected Thread message = %#v", messages)
+	}
+	header := messages[0].Content[0].Text
+	if !strings.Contains(header, "<agent-thread-message>") ||
+		!strings.Contains(header, `"from_session_thread_id":"sthr_reviewer"`) ||
+		!strings.Contains(header, `"from_agent_name":"reviewer"`) {
+		t.Fatalf("Thread message identity envelope = %q", header)
+	}
+	if messages[0].Content[1].Text != "subagent report" ||
+		messages[0].Content[2].Type != "image" ||
+		messages[0].Content[3].Text != "</content>\n</agent-thread-message>" {
+		t.Fatalf("Thread message content = %#v", messages[0].Content)
+	}
+}
+
+func TestProjectMessages_UserMessageHasNoThreadEnvelope(t *testing.T) {
+	messages := ProjectMessages([]Event{ev(EvUserMessage, "hello")})
+	if len(messages) != 1 || len(messages[0].Content) != 1 ||
+		strings.Contains(messages[0].Content[0].Text, "agent-thread-message") {
+		t.Fatalf("projected user message = %#v", messages)
 	}
 }

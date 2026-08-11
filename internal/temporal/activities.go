@@ -859,6 +859,9 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		},
 	}
 	if executionAgent.Multiagent != nil && !result.IsChild {
+		result.Request.System = agentruntime.ProjectCoordinatorSystemContext(
+			result.Request.System,
+		)
 		result.Request.Tools = append(
 			result.Request.Tools,
 			agentruntime.CoordinatorToolSchemas()...,
