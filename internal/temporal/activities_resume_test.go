@@ -82,8 +82,11 @@ type configuredTranscriptFakeSource struct {
 
 type threadConfiguredTranscriptFakeSource struct {
 	*configuredTranscriptFakeSource
-	thread  domain.SessionThread
-	runtime domain.SkillRuntime
+	thread           domain.SessionThread
+	runtime          domain.SkillRuntime
+	snapshot         *domain.ContextSnapshot
+	snapshotGetCalls int
+	snapshotPutCalls int
 }
 
 type threadPendingFakeSource struct {
@@ -113,6 +116,54 @@ func (s *threadConfiguredTranscriptFakeSource) GetSessionThread(
 	string,
 ) (domain.SessionThread, error) {
 	return s.thread, nil
+}
+
+func (s *threadConfiguredTranscriptFakeSource) LoadThreadProviderTranscript(
+	context.Context,
+	string,
+	string,
+) (domain.ProviderTranscript, error) {
+	return s.transcript, nil
+}
+
+func (s *threadConfiguredTranscriptFakeSource) PutThreadContextSnapshot(
+	_ context.Context,
+	sessionID string,
+	threadID string,
+	triggerEventID string,
+	transcriptTriggerEventIDs []string,
+	messages []domain.Message,
+	projection domain.ContextProjection,
+) (domain.ContextSnapshot, error) {
+	s.snapshotPutCalls++
+	if s.snapshot != nil {
+		return *s.snapshot, nil
+	}
+	s.snapshot = &domain.ContextSnapshot{
+		ID: "csnp_test", SessionID: sessionID, ThreadID: threadID,
+		TriggerEventID: triggerEventID,
+		TranscriptTriggerEventIDs: append(
+			[]string(nil), transcriptTriggerEventIDs...,
+		),
+		Messages: messages, Projection: projection,
+		ContextPolicyVersion: domain.ContextPolicyVersion,
+	}
+	return *s.snapshot, nil
+}
+
+func (s *threadConfiguredTranscriptFakeSource) GetThreadContextSnapshotForTrigger(
+	_ context.Context,
+	sessionID string,
+	threadID string,
+	triggerEventID string,
+) (domain.ContextSnapshot, bool, error) {
+	s.snapshotGetCalls++
+	if s.snapshot == nil || s.snapshot.SessionID != sessionID ||
+		s.snapshot.ThreadID != threadID ||
+		s.snapshot.TriggerEventID != triggerEventID {
+		return domain.ContextSnapshot{}, false, nil
+	}
+	return *s.snapshot, true, nil
 }
 
 func (s *threadConfiguredTranscriptFakeSource) SessionThreadSkillRuntime(
@@ -254,6 +305,94 @@ func TestPrepareTurn_SelectsThreadAgentRuntimeConfiguration(t *testing.T) {
 	require.NotContains(t, summarizeModelTools(prepared.Request.Tools), modelToolSummary{
 		Name: agentruntime.SendToAgentToolName,
 	})
+}
+
+func TestPrepareTurn_ChildCompactionRestoresFirstDurableSnapshot(t *testing.T) {
+	processedAt := time.Now().UTC()
+	const (
+		sessionID = "sesn_child_snapshot"
+		threadID  = "sthr_child_snapshot"
+		priorID   = "sevt_child_prior"
+		currentID = "sevt_child_current"
+	)
+	primaryThreadID := "sthr_primary_snapshot"
+	base := newFakeSource([]domain.Event{
+		{
+			ID: priorID, SessionID: sessionID, ThreadID: threadID,
+			Sequence: 1, Type: domain.EvAgentThreadMessageReceived,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "first task"},
+			}},
+			ProcessedAt: &processedAt,
+		},
+		{
+			ID: currentID, SessionID: sessionID, ThreadID: threadID,
+			Sequence: 2, Type: domain.EvAgentThreadMessageReceived,
+			Payload: map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "follow up"},
+			}},
+		},
+	})
+	source := &threadConfiguredTranscriptFakeSource{
+		configuredTranscriptFakeSource: &configuredTranscriptFakeSource{
+			transcriptFakeSource: &transcriptFakeSource{
+				fakeSource: base,
+				transcript: domain.ProviderTranscript{
+					TriggerEventIDs: []string{priorID},
+					Messages: []domain.Message{
+						{Role: domain.RoleUser, Content: []domain.ContentBlock{{
+							Type: "text", Text: strings.Repeat("old task ", 8_000),
+						}}},
+						{Role: domain.RoleAssistant, Content: []domain.ContentBlock{{
+							Type: "text", Text: strings.Repeat("old answer ", 8_000),
+						}}},
+					},
+				},
+			},
+			session: domain.Session{
+				ID: sessionID, Status: domain.StatusRunning,
+				AgentSnapshot: domain.Agent{
+					ID: "agent_primary", Version: 1, Name: "coordinator",
+					Model: domain.Model{ID: "primary-model"},
+				},
+			},
+		},
+		thread: domain.SessionThread{
+			ID: threadID, SessionID: sessionID,
+			ParentThreadID: &primaryThreadID,
+			Agent: domain.Agent{
+				ID: "agent_child", Version: 1, Name: "reviewer",
+				Model: domain.Model{ID: "child-model"},
+			},
+			Status: domain.StatusRunning,
+		},
+	}
+
+	first, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithContextTokenBudget(12_000).PrepareTurn(
+		context.Background(),
+		PrepareTurnInput{SessionID: sessionID, TriggerEventID: currentID},
+	)
+	require.NoError(t, err)
+	require.True(t, first.IsChild)
+	require.True(t, first.ContextProjection.Compacted)
+	require.Equal(t, "csnp_test", first.ContextSnapshotID)
+	require.Equal(t, []string{priorID, currentID},
+		source.snapshot.TranscriptTriggerEventIDs)
+
+	second, err := NewActivities(
+		nil, source, nil, nil, &testIDGen{},
+	).WithContextTokenBudget(1_000_000).PrepareTurn(
+		context.Background(),
+		PrepareTurnInput{SessionID: sessionID, TriggerEventID: currentID},
+	)
+	require.NoError(t, err)
+	require.Equal(t, 2, source.snapshotGetCalls)
+	require.Equal(t, 1, source.snapshotPutCalls)
+	require.Equal(t, first.ContextSnapshotID, second.ContextSnapshotID)
+	require.Equal(t, first.ContextProjection, second.ContextProjection)
+	require.Equal(t, first.Request.Messages, second.Request.Messages)
 }
 
 func TestPrepareTurn_AttachesPrivateCoordinatorToolsOnlyToPrimary(t *testing.T) {

@@ -13,6 +13,7 @@ const (
 	PrefixEnv             = "env_"
 	PrefixSession         = "sesn_"
 	PrefixSessionThread   = "sthr_"
+	PrefixContextSnapshot = "csnp_"
 	PrefixEvent           = "sevt_"
 	PrefixRun             = "run_"
 	PrefixOutcome         = "outc_"

@@ -5136,6 +5136,7 @@ components:
         - session.thread_status_terminated
         - agent.thread_message_received
         - agent.thread_message_sent
+        - agent.thread_context_compacted
         - span.outcome_evaluation_start
         - span.outcome_evaluation_ongoing
         - span.outcome_evaluation_end
@@ -5402,6 +5403,14 @@ components:
               type: array
               items: {$ref: '#/components/schemas/MessageContentInput'}
       unevaluatedProperties: false
+    AgentThreadContextCompactedEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, const: agent.thread_context_compacted}
+      unevaluatedProperties: false
 
     SessionEndTurn:
       type: object
@@ -5641,6 +5650,7 @@ components:
         - $ref: '#/components/schemas/SessionThreadStatusTerminatedEvent'
         - $ref: '#/components/schemas/AgentThreadMessageReceivedEvent'
         - $ref: '#/components/schemas/AgentThreadMessageSentEvent'
+        - $ref: '#/components/schemas/AgentThreadContextCompactedEvent'
         - $ref: '#/components/schemas/SpanOutcomeEvaluationStartEvent'
         - $ref: '#/components/schemas/SpanOutcomeEvaluationOngoingEvent'
         - $ref: '#/components/schemas/SpanOutcomeEvaluationEndEvent'

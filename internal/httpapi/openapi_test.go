@@ -134,7 +134,7 @@ func TestOpenAPISessionEventContract(t *testing.T) {
 		"session.thread_created", "session.thread_status_idle",
 		"session.thread_status_running", "session.thread_status_rescheduled",
 		"session.thread_status_terminated", "agent.thread_message_received",
-		"agent.thread_message_sent",
+		"agent.thread_message_sent", "agent.thread_context_compacted",
 		"span.outcome_evaluation_start", "span.outcome_evaluation_ongoing",
 		"span.outcome_evaluation_end", "span.model_request_start", "span.model_request_end",
 	})

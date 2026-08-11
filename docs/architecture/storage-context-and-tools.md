@@ -129,6 +129,14 @@ Compaction creates a new snapshot and summary entry. It never rewrites the
 original provider transcript. This gives debugging and audit tools an exact
 answer to both “what happened?” and “what did this model call actually see?”
 
+The current implementation durably checkpoints compacted child message
+projections: represented transcript event IDs, projected messages, token
+projection, context-policy version, and the preceding snapshot ID. The Thread's
+pinned Agent configuration and runtime capabilities remain separately
+authoritative. A complete audit recipe for every provider round, including
+resolved system instructions, tool schemas, adapter version, and model
+parameters, remains follow-up work; it is not a public Managed Agents resource.
+
 ### Operation Journal
 
 The existing `turn_attempts` and `tool_steps` journal remains the authority for
@@ -502,7 +510,8 @@ tool boundaries needed for native web and unauthenticated MCP:
 7. Request-time token-aware context projection and extractive compaction are
    deeply detached from the durable transcript, including nested tool inputs
    and rich/raw content, so request adaptation cannot mutate stored history.
-   Durable Context Snapshot records, deployment-managed MCP authentication,
+   Compacted child projections are durably snapshotted. Complete
+   per-provider-round audit recipes, deployment-managed MCP authentication,
    provider-round records, explicit per-endpoint capability profiles, and
    reference-only Temporal payloads remain follow-up work.
 
@@ -523,10 +532,11 @@ tool boundaries needed for native web and unauthenticated MCP:
 5. **Self-hosted execution:** built-in calls park for `user.tool_result` and are
    implemented. Optional managed search/fetch providers remain follow-up work.
 6. **Context engineering:** conservative token budgets, rich-content-aware
-   projection, and extractive compaction are implemented. Durable snapshot
-   records, provider-exact counters, and retention controls remain follow-up
-   work. Independent cross-Session Memory now uses PostgreSQL-backed Stores and
-   Docker Session mounts.
+   projection, extractive compaction, and immutable compacted-child checkpoints
+   are implemented. Complete provider-request audit recipes, provider-exact
+   counters, and retention controls remain follow-up work. Independent
+   cross-Session Memory now uses PostgreSQL-backed Stores and Docker Session
+   mounts.
 
 The first two steps were treated as prerequisites rather than cleanup after
 native web, so new Sessions do not depend on reconstructing provider context

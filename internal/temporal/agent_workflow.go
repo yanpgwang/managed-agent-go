@@ -65,6 +65,9 @@ const (
 
 	modelRetryLifecycleChangeID = "public-model-retry-lifecycle"
 	modelRetryLifecycleVersion  = 1
+
+	contextCompactionEventChangeID = "thread-context-compaction-event"
+	contextCompactionEventVersion  = 1
 )
 
 // runWorkflowTurn owns the plan-act-observe loop in deterministic Workflow
@@ -155,6 +158,19 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		modelRetryLifecycleVersion,
 	) == modelRetryLifecycleVersion
+	contextCompactionEvents := workflow.GetVersion(
+		actx,
+		contextCompactionEventChangeID,
+		workflow.DefaultVersion,
+		contextCompactionEventVersion,
+	) == contextCompactionEventVersion
+	initialOutput := append([]domain.EventDraft(nil), prepared.PreludeEvents...)
+	if contextCompactionEvents && prepared.ContextProjection.Compacted {
+		initialOutput = append(initialOutput, domain.EventDraft{
+			Type:    domain.EvAgentThreadContextCompacted,
+			Payload: map[string]any{},
+		})
+	}
 
 	turn := &workflowTurnState{
 		actx:                     actx,
@@ -169,7 +185,7 @@ func runWorkflowTurnInternal(
 		outcomeHeartbeats:        outcomeEvaluationHeartbeats,
 		outcomeHeartbeatInterval: outcomeEvaluationHeartbeatInterval,
 		usesProviderTranscript:   prepared.UsesProviderTranscript,
-		output:                   append([]domain.EventDraft(nil), prepared.PreludeEvents...),
+		output:                   initialOutput,
 		transcriptDelta: append(
 			[]domain.Message(nil),
 			prepared.TranscriptDelta...,

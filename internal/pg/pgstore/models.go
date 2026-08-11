@@ -297,6 +297,21 @@ type SkillVersion struct {
 	UncompressedSizeBytes int64
 }
 
+// Private immutable compacted message projections; never a public Session resource
+type ThreadContextSnapshot struct {
+	ID                        string
+	SessionID                 string
+	ThreadID                  string
+	TriggerEventID            string
+	ParentSnapshotID          *string
+	SnapshotOrdinal           *int64
+	TranscriptTriggerEventIds []byte
+	Messages                  []byte
+	Projection                []byte
+	ContextPolicyVersion      int32
+	CreatedAt                 pgtype.Timestamptz
+}
+
 type ThreadOrchestrationOutbox struct {
 	SessionID     string
 	ThreadID      string
