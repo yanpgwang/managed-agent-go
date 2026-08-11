@@ -89,12 +89,14 @@ active child ledger; providing it targets and wakes only the named Thread.
 Every Thread independently applies the same PostgreSQL finish-vs-interrupt
 ordering fence, active-Activity cancellation, and idle no-op behavior.
 
-The remaining multi-agent boundary is exact hosted preview suppression for
-report-only turns and immutable child context snapshots. The v1.62
-`advisor` Thread is not represented as an ordinary child placeholder; it
-remains unsupported until its reserved, automatically terminating consultation
-lifecycle can be implemented end to end. Session budgets are also deferred
-until list cost is aggregated across all independently running Threads.
+Compacted child context projections are durably checkpointed, and
+`agent.thread_context_compacted` is emitted on the owning Thread ledger. The
+remaining multi-agent boundary includes exact hosted preview suppression for
+report-only turns. The v1.62 `advisor` Thread is not represented as an ordinary
+child placeholder; it remains unsupported until its reserved, automatically
+terminating consultation lifecycle can be implemented end to end. Session
+budgets are also deferred until list cost is aggregated across all
+independently running Threads.
 
 Start with the [multi-agent guide](../guides/multi-agent.md), then use the
 [Session Threads conformance matrix](session-threads-conformance.md) when you

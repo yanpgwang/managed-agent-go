@@ -17,18 +17,6 @@ contract and implementation evidence evolve.
 
 ## Current focus
 
-### Finish durable multi-agent execution
-
-Mango supports ordinary coordinator delegation and persistent child-Agent
-Threads. The current focus is completing the remaining context-recovery and
-coordinator-synthesis semantics so that long-running multi-agent Sessions stay
-correct across retries, restarts, and context compaction.
-
-Follow the active scope in
-[Issue #116](https://github.com/yanpgwang/managed-agent-go/issues/116).
-
-## Next adoption boundary
-
 ### Ship a developer preview
 
 The next release boundary is a reproducible, self-hosted build for evaluation

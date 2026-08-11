@@ -219,6 +219,40 @@ func (s storeSource) LoadThreadProviderTranscript(
 	return s.store.LoadThreadProviderTranscript(ctx, sessionID, threadID)
 }
 
+func (s storeSource) PutThreadContextSnapshot(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	triggerEventID string,
+	transcriptTriggerEventIDs []string,
+	messages []domain.Message,
+	projection domain.ContextProjection,
+) (domain.ContextSnapshot, error) {
+	return s.store.PutThreadContextSnapshot(
+		ctx,
+		sessionID,
+		threadID,
+		triggerEventID,
+		transcriptTriggerEventIDs,
+		messages,
+		projection,
+	)
+}
+
+func (s storeSource) GetThreadContextSnapshotForTrigger(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	triggerEventID string,
+) (domain.ContextSnapshot, bool, error) {
+	return s.store.GetThreadContextSnapshotForTrigger(
+		ctx,
+		sessionID,
+		threadID,
+		triggerEventID,
+	)
+}
+
 func (s storeSource) CompleteWorkflowTurn(
 	ctx context.Context,
 	sessionID string,

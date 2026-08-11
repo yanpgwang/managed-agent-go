@@ -59,9 +59,10 @@ Transcript. Every transcript row has a database foreign key to its public
 trigger event, and Thread ownership is derived from that event rather than
 duplicated, so private context cannot drift between Threads. The causal
 public-event projection remains only as a compatibility fallback for histories
-created before transcript support. Immutable Context Snapshots remain follow-up
-work. This separation is required for native server-tool blocks, citations,
-compaction, and large results. See
+created before transcript support. Compacted child projections are preserved as
+immutable internal snapshots, and the owning Thread emits the documented
+context-compaction event. This separation is required for native server-tool
+blocks, citations, compaction, and large results. See
 [Storage, context, and connected tools](architecture/storage-context-and-tools.md).
 The model endpoint performs inference; it does not own session state.
 
@@ -179,7 +180,8 @@ The strongest current risks are semantic rather than structural:
 
 1. Model requests are bounded by a conservative server-owned token estimate and
    extractive compaction policy. Provider-exact tokenizers, per-model context
-   profiles, and durable Context Snapshot resources are not yet implemented.
+   profiles, and complete per-provider-request audit snapshots are not yet
+   implemented. Compacted child message projections are durably checkpointed.
 2. Sandboxes are session-scoped and durably bound to opaque provider IDs.
    Restart reattachment and deletion cleanup are implemented for local and
    Docker on the same host/daemon. Provisioning intent closes the

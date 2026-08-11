@@ -4,7 +4,27 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 )
+
+const ContextPolicyVersion = 1
+
+// ContextSnapshot is an internal immutable record of the compacted message
+// projection used to prepare one Thread turn. It is not part of the public
+// Managed Agents resource model; the public evidence of compaction is the
+// agent.thread_context_compacted event on the owning Thread ledger.
+type ContextSnapshot struct {
+	ID                        string            `json:"id"`
+	SessionID                 string            `json:"session_id"`
+	ThreadID                  string            `json:"thread_id"`
+	TriggerEventID            string            `json:"trigger_event_id"`
+	ParentSnapshotID          *string           `json:"parent_snapshot_id,omitempty"`
+	TranscriptTriggerEventIDs []string          `json:"transcript_trigger_event_ids"`
+	Messages                  []Message         `json:"messages"`
+	Projection                ContextProjection `json:"projection"`
+	ContextPolicyVersion      int               `json:"context_policy_version"`
+	CreatedAt                 time.Time         `json:"created_at"`
+}
 
 // ContextProjection describes the private request-time projection of the
 // lossless provider transcript. It is intentionally not a public Session

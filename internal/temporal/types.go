@@ -136,6 +136,7 @@ type PrepareTurnResult struct {
 	TranscriptDelta        []domain.Message         `json:"transcript_delta,omitempty"`
 	Outcome                *domain.OutcomeSpec      `json:"outcome,omitempty"`
 	ContextProjection      domain.ContextProjection `json:"context_projection"`
+	ContextSnapshotID      string                   `json:"context_snapshot_id,omitempty"`
 }
 
 type EvaluateOutcomeInput struct {

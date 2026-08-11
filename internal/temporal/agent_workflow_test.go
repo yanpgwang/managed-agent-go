@@ -115,6 +115,66 @@ func TestWorkflowTurn_PublishesPrimaryPreviewsOnSessionStream(t *testing.T) {
 	require.NoError(t, env.GetWorkflowError())
 }
 
+func TestWorkflowTurn_EmitsContextCompactionOnOwningThread(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	var completed CompleteWorkflowTurnInput
+	registerWorkflowTurnActivities(
+		env,
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{
+				ThreadID: "sthr_child", IsChild: true,
+				Request: model.Request{
+					Model: "test-model",
+					Messages: []domain.Message{{
+						Role: domain.RoleUser,
+						Content: []domain.ContentBlock{{
+							Type: "text", Text: "compacted input",
+						}},
+					}},
+				},
+				ContextProjection: domain.ContextProjection{Compacted: true},
+				ContextSnapshotID: "csnp_child",
+			}, nil
+		},
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			return CallModelResult{
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+				MessageEventID:      "sevt_child_message",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content: []domain.ContentBlock{{
+						Type: "text", Text: "done",
+					}},
+				},
+			}, nil
+		},
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{}, nil
+		},
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			completed = in
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sesn_child_compaction", TriggerEventID: "sevt_child_input",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, []string{
+		domain.EvAgentThreadContextCompacted,
+		domain.EvAgentMessage,
+		domain.EvSpanModelRequestEnd,
+		domain.EvSessionThreadStatusIdle,
+	}, draftTypes(completed.Output))
+	require.Equal(t, "sthr_child", completed.ThreadID)
+	require.True(t, completed.IsChild)
+}
+
 func TestWorkflowTurn_PersistsEachModelStartBeforeCallAndPreservesRoundOrder(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

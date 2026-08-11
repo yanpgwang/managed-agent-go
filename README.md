@@ -101,9 +101,9 @@ The [compatibility summary](https://yanpgwang.github.io/managed-agent-go/compati
 states the user-visible boundary. Maintainers can inspect the
 [90-operation conformance evidence](https://yanpgwang.github.io/managed-agent-go/maintainers/conformance)
 and its upstream sources separately. Ordinary persistent child-Agent
-orchestration is implemented; Context Snapshots, advisors, shared Session
-budgets, environment-variable secret egress, and production-platform hardening
-remain [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
+orchestration is implemented; advisors, shared Session budgets,
+environment-variable secret egress, and production-platform hardening remain
+[roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
 ## Architecture
 

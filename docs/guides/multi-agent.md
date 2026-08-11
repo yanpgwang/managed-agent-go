@@ -131,8 +131,9 @@ child. Include a child ID to interrupt only that Thread.
 
 - Ordinary roster Agents are supported; the distinct upstream `advisor`
   consultation lifecycle is not.
-- Child transcripts are durable and independently compacted, but the public
-  Context Snapshot resource is not yet implemented.
+- Child transcripts are durable and independently compacted. Compacted message
+  projections are stored as immutable internal snapshots, and compaction is
+  observable through `agent.thread_context_compacted` on the owning Thread.
 - Shared Session list-cost budgets are not enforced across concurrent Threads.
 - Exact hosted preview suppression for report-only coordinator turns remains a
   compatibility boundary.

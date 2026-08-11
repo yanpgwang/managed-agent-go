@@ -147,6 +147,27 @@ type ThreadProviderTranscriptSource interface {
 	) (domain.ProviderTranscript, error)
 }
 
+// ThreadContextSnapshotSource persists an immutable compacted projection for
+// one child Thread trigger. Production PostgreSQL implements it; lightweight
+// test sources may omit it and continue exercising projection in memory.
+type ThreadContextSnapshotSource interface {
+	GetThreadContextSnapshotForTrigger(
+		ctx context.Context,
+		sessionID string,
+		threadID string,
+		triggerEventID string,
+	) (domain.ContextSnapshot, bool, error)
+	PutThreadContextSnapshot(
+		ctx context.Context,
+		sessionID string,
+		threadID string,
+		triggerEventID string,
+		transcriptTriggerEventIDs []string,
+		messages []domain.Message,
+		projection domain.ContextProjection,
+	) (domain.ContextSnapshot, error)
+}
+
 // ProviderTranscriptCompletionSource atomically commits the public turn and
 // the private provider transcript delta.
 type ProviderTranscriptCompletionSource interface {
@@ -897,6 +918,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		history = withoutResumeEvents(history, resumeActions)
 	}
 	result.Request.Messages = domain.ProjectMessages(history)
+	var snapshotTranscriptEventIDs []string
 	if transcriptSource, ok := a.source.(ProviderTranscriptSource); ok {
 		var transcript domain.ProviderTranscript
 		if threadSource, ok := a.source.(ThreadProviderTranscriptSource); ok &&
@@ -940,6 +962,20 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 					append([]domain.Message(nil), transcript.Messages...),
 					delta,
 				)
+				snapshotTranscriptEventIDs = append(
+					[]string(nil), transcript.TriggerEventIDs...,
+				)
+				if len(in.ResolutionEventIDs) > 0 {
+					snapshotTranscriptEventIDs = append(
+						snapshotTranscriptEventIDs,
+						in.ResolutionEventIDs...,
+					)
+				} else {
+					snapshotTranscriptEventIDs = append(
+						snapshotTranscriptEventIDs,
+						trigger.ID,
+					)
+				}
 			}
 		}
 	}
@@ -1010,6 +1046,42 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		)
 		result.ContextProjection.ProjectedEstimatedTokens =
 			domain.EstimateMessagesTokens(result.Request.Messages)
+	}
+	if result.IsChild {
+		if snapshots, ok := a.source.(ThreadContextSnapshotSource); ok {
+			snapshot, found, err := snapshots.GetThreadContextSnapshotForTrigger(
+				ctx,
+				in.SessionID,
+				result.ThreadID,
+				trigger.ID,
+			)
+			if err != nil {
+				return PrepareTurnResult{}, err
+			}
+			if !found && result.ContextProjection.Compacted {
+				snapshot, err = snapshots.PutThreadContextSnapshot(
+					ctx,
+					in.SessionID,
+					result.ThreadID,
+					trigger.ID,
+					snapshotTranscriptEventIDs,
+					result.Request.Messages,
+					result.ContextProjection,
+				)
+				if err != nil {
+					return PrepareTurnResult{}, err
+				}
+				found = true
+			}
+			if found {
+				// The first committed snapshot is authoritative for an Activity
+				// retry, even when an upgraded worker would no longer compact or
+				// would project the same transcript differently.
+				result.ContextSnapshotID = snapshot.ID
+				result.Request.Messages = snapshot.Messages
+				result.ContextProjection = snapshot.Projection
+			}
+		}
 	}
 	return result, nil
 }

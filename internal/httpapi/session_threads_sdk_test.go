@@ -51,10 +51,8 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	childEvent.ID = "sevt_child_thread_sdk"
 	childEvent.ThreadID = service.next.ID
 	childEvent.Sequence = 3
-	childEvent.Type = domain.EvUserMessage
-	childEvent.Payload = map[string]any{
-		"content": []any{map[string]any{"type": "text", "text": "hello"}},
-	}
+	childEvent.Type = domain.EvAgentThreadContextCompacted
+	childEvent.Payload = map[string]any{}
 	server := httptest.NewServer(NewServer(Deps{
 		Sessions: &testSessionService{sessions: map[string]domain.Session{
 			service.thread.SessionID: {ID: service.thread.SessionID},
@@ -101,7 +99,9 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	childEvents, err := client.Beta.Sessions.Threads.Events.List(ctx, service.next.ID,
 		anthropic.BetaSessionThreadEventListParams{SessionID: service.thread.SessionID},
 	)
-	if err != nil || len(childEvents.Data) != 1 || childEvents.Data[0].ID != childEvent.ID {
+	if err != nil || len(childEvents.Data) != 1 || childEvents.Data[0].ID != childEvent.ID ||
+		childEvents.Data[0].Type != domain.EvAgentThreadContextCompacted ||
+		childEvents.Data[0].AsAgentThreadContextCompacted().ID != childEvent.ID {
 		t.Fatalf("List child Session Thread Events = %+v, err=%v", childEvents, err)
 	}
 
