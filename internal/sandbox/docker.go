@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -252,6 +253,7 @@ func (p *dockerProvider) Create(
 		provider:           p,
 		cid:                cid,
 		timeout:            spec.Timeout,
+		fileRoots:          dockerToolFileRoots(spec),
 		resourceRoot:       resourceRoot,
 		resourceMountReady: true,
 		skillMountReady:    true,
@@ -361,6 +363,7 @@ func (p *dockerProvider) attachTarget(
 		provider:           p,
 		cid:                fields[0],
 		timeout:            spec.Timeout,
+		fileRoots:          dockerToolFileRoots(spec),
 		resourceRoot:       resourceRoot,
 		resourceMountReady: resourceMountReady,
 		skillMountReady:    skillMountReady,
@@ -393,6 +396,10 @@ type dockerSandbox struct {
 	provider *dockerProvider
 	cid      string
 	timeout  time.Duration
+	// fileRoots is the complete file-tool authority inside the container.
+	// Bash still follows the container's own filesystem permissions, while
+	// Read/Write/Edit are limited to these explicit roots.
+	fileRoots []dockerToolFileRoot
 
 	resourceRoot       string
 	resourceMountReady bool
@@ -463,18 +470,55 @@ func (s *dockerSandbox) Exec(ctx context.Context, cmd Command) (*Result, error) 
 	return res, nil
 }
 
-// containedPath joins a caller-supplied path onto the container root and
-// verifies, by pure lexical analysis, that the cleaned result stays within
-// root. It rejects ".." escapes and absolute paths that resolve outside root.
-// The check is intentionally string-only: it never touches the host filesystem
-// and reasons about POSIX container paths (the "path" package, not "filepath",
-// so results are identical regardless of the host OS separator).
-func containedPath(root, p string) (string, error) {
-	clean := path.Clean(path.Join(root, p))
-	if clean != root && !strings.HasPrefix(clean+"/", root+"/") {
-		return "", fmt.Errorf("sandbox: path %q escapes root", p)
+type dockerToolFileRoot struct {
+	path     string
+	writable bool
+}
+
+// dockerToolFileRoots builds the explicit authority used by standard file
+// tools. More-specific roots come first so the immutable Skill tree remains
+// read-only even though it is nested beneath the writable workspace.
+func dockerToolFileRoots(spec Spec) []dockerToolFileRoot {
+	roots := []dockerToolFileRoot{
+		{path: domain.SessionSkillsRoot},
+		{path: SessionUploadsRoot},
 	}
-	return clean, nil
+	for _, mount := range spec.MemoryStores {
+		roots = append(roots, dockerToolFileRoot{
+			path:     path.Clean(mount.RuntimePath),
+			writable: mount.Access == domain.MemoryAccessReadWrite,
+		})
+	}
+	roots = append(roots, dockerToolFileRoot{path: dockerRoot, writable: true})
+	sort.SliceStable(roots, func(i, j int) bool {
+		return len(roots[i].path) > len(roots[j].path)
+	})
+	return roots
+}
+
+// toolFilePath resolves a caller-supplied path using POSIX container semantics
+// and verifies it against the sandbox's explicit file-tool authority. It never
+// touches the host filesystem, so traversal checks are identical on every
+// worker OS.
+func (s *dockerSandbox) toolFilePath(value string, write bool) (string, error) {
+	clean := path.Clean(value)
+	if !path.IsAbs(clean) {
+		clean = path.Clean(path.Join(dockerRoot, clean))
+	}
+	roots := s.fileRoots
+	if len(roots) == 0 {
+		roots = dockerToolFileRoots(Spec{})
+	}
+	for _, root := range roots {
+		if clean != root.path && !strings.HasPrefix(clean+"/", root.path+"/") {
+			continue
+		}
+		if write && !root.writable {
+			return "", fmt.Errorf("sandbox: path %q is read-only", value)
+		}
+		return clean, nil
+	}
+	return "", fmt.Errorf("sandbox: path %q escapes root and approved resource mounts", value)
 }
 
 // ReadFile copies a file out of the container via `docker cp` into a host temp
@@ -485,7 +529,7 @@ func (s *dockerSandbox) ReadFile(ctx context.Context, path string) ([]byte, erro
 	if s.isDead() {
 		return nil, errDead
 	}
-	containerPath, err := containedPath(dockerRoot, path)
+	containerPath, err := s.toolFilePath(path, false)
 	if err != nil {
 		return nil, err
 	}
@@ -516,7 +560,7 @@ func (s *dockerSandbox) WriteFile(ctx context.Context, filePath string, data []b
 	if s.isDead() {
 		return errDead
 	}
-	containerPath, err := containedPath(dockerRoot, filePath)
+	containerPath, err := s.toolFilePath(filePath, true)
 	if err != nil {
 		return err
 	}
