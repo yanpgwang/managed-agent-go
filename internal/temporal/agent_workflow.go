@@ -18,6 +18,12 @@ const (
 	// Workflow history forever.
 	maxWorkflowToolRounds = 20
 
+	// Provider continuations are successful Messages API responses, not
+	// transport retries. Bound them independently so a provider that never
+	// reaches a natural stop cannot grow Workflow history forever.
+	maxPauseTurnContinuations = 5
+	maxOutputContinuations    = 3
+
 	// maxModelRequestAttempts bounds provider-level retries for one immutable
 	// model request. Infrastructure failures remain Activity errors and retain
 	// Temporal's unbounded recovery policy.
@@ -68,6 +74,18 @@ const (
 
 	contextCompactionEventChangeID = "thread-context-compaction-event"
 	contextCompactionEventVersion  = 1
+
+	providerStopReasonChangeID = "provider-stop-reason-state-machine"
+	providerStopReasonVersion  = 1
+)
+
+type providerResponseDisposition uint8
+
+const (
+	providerResponseComplete providerResponseDisposition = iota
+	providerResponseExecuteTools
+	providerResponseContinuePause
+	providerResponseContinueOutput
 )
 
 // runWorkflowTurn owns the plan-act-observe loop in deterministic Workflow
@@ -164,6 +182,12 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		contextCompactionEventVersion,
 	) == contextCompactionEventVersion
+	providerStopReasons := workflow.GetVersion(
+		actx,
+		providerStopReasonChangeID,
+		workflow.DefaultVersion,
+		providerStopReasonVersion,
+	) == providerStopReasonVersion
 	initialOutput := append([]domain.EventDraft(nil), prepared.PreludeEvents...)
 	if contextCompactionEvents && prepared.ContextProjection.Compacted {
 		initialOutput = append(initialOutput, domain.EventDraft{
@@ -221,6 +245,11 @@ func runWorkflowTurnInternal(
 	}
 	outcomeIteration := 0
 	outcomeFinished := false
+	pauseTurnContinuations := 0
+	outputContinuations := 0
+	pauseChainActive := false
+	var pauseMessagesBase []domain.Message
+	var pauseTranscriptBase []domain.Message
 	for round := 0; round < maxRounds; round++ {
 		// A later model request must never overtake completed public progress
 		// from the preceding tool/outcome round in PostgreSQL receipt order.
@@ -328,7 +357,35 @@ func runWorkflowTurnInternal(
 				return RunTurnResult{}, err
 			}
 		}
+		var toolUses []domain.ContentBlock
+		for _, block := range called.Response.Content {
+			if block.Type == "tool_use" {
+				toolUses = append(toolUses, block)
+			}
+		}
+		disposition := providerResponseComplete
+		providerFailure := ""
+		if providerStopReasons {
+			disposition, providerFailure = classifyProviderResponse(
+				called.Response.StopReason,
+				len(toolUses),
+			)
+		}
+
 		if prepared.UsesProviderTranscript {
+			if providerStopReasons && disposition == providerResponseContinuePause {
+				if pauseChainActive {
+					turn.transcriptDelta = append(
+						[]domain.Message(nil),
+						pauseTranscriptBase...,
+					)
+				} else {
+					pauseTranscriptBase = append(
+						[]domain.Message(nil),
+						turn.transcriptDelta...,
+					)
+				}
+			}
 			turn.transcriptDelta = agentruntime.AppendMerging(
 				turn.transcriptDelta,
 				[]domain.Message{{
@@ -337,6 +394,9 @@ func runWorkflowTurnInternal(
 				}},
 			)
 			for _, planned := range called.ToolSteps {
+				if providerStopReasons && disposition != providerResponseExecuteTools {
+					break
+				}
 				providerID := planned.ProviderToolUseID
 				if providerID == "" {
 					providerID = planned.ToolUseEventID
@@ -361,6 +421,9 @@ func runWorkflowTurnInternal(
 				)
 			}
 		}
+		if providerStopReasons && disposition != providerResponseContinuePause {
+			pauseChainActive = false
+		}
 		if called.ThinkingEventID != "" {
 			turn.output = append(turn.output, domain.EventDraft{
 				ID: called.ThinkingEventID, Type: domain.EvAgentThinking,
@@ -384,10 +447,77 @@ func runWorkflowTurnInternal(
 			})
 		}
 
-		var toolUses []domain.ContentBlock
-		for _, block := range called.Response.Content {
-			if block.Type == "tool_use" {
-				toolUses = append(toolUses, block)
+		if providerFailure != "" {
+			if end := modelRequestEndDraft(called, false); end != nil {
+				turn.output = append(turn.output, *end)
+			}
+			if activityOutcome.Interrupted {
+				return turn.complete(nil)
+			}
+			return turn.terminateTyped(
+				"model_request_failed_error",
+				providerFailure,
+			)
+		}
+		if providerStopReasons {
+			switch disposition {
+			case providerResponseContinuePause:
+				if end := modelRequestEndDraft(called, false); end != nil {
+					turn.output = append(turn.output, *end)
+				}
+				if activityOutcome.Interrupted {
+					return turn.complete(nil)
+				}
+				if pauseTurnContinuations >= maxPauseTurnContinuations {
+					return turn.terminateTyped(
+						"model_request_failed_error",
+						"model exceeded the pause_turn continuation limit",
+					)
+				}
+				pauseTurnContinuations++
+				if pauseChainActive {
+					messages = append([]domain.Message(nil), pauseMessagesBase...)
+				} else {
+					pauseMessagesBase = append([]domain.Message(nil), messages...)
+				}
+				messages = agentruntime.AppendMerging(messages, []domain.Message{{
+					Role:    domain.RoleAssistant,
+					Content: called.Response.Content,
+				}})
+				pauseChainActive = true
+				continue
+			case providerResponseContinueOutput:
+				if end := modelRequestEndDraft(called, false); end != nil {
+					turn.output = append(turn.output, *end)
+				}
+				if activityOutcome.Interrupted {
+					return turn.complete(nil)
+				}
+				if outputContinuations >= maxOutputContinuations {
+					return turn.terminateTyped(
+						"model_request_failed_error",
+						"model exceeded the max_tokens continuation limit",
+					)
+				}
+				outputContinuations++
+				recoveryMessage := domain.Message{
+					Role: domain.RoleUser,
+					Content: []domain.ContentBlock{{
+						Type: "text",
+						Text: "Output token limit reached. Continue directly from where you stopped without apologizing or recapping.",
+					}},
+				}
+				messages = agentruntime.AppendMerging(messages, []domain.Message{
+					{Role: domain.RoleAssistant, Content: called.Response.Content},
+					recoveryMessage,
+				})
+				if prepared.UsesProviderTranscript {
+					turn.transcriptDelta = agentruntime.AppendMerging(
+						turn.transcriptDelta,
+						[]domain.Message{recoveryMessage},
+					)
+				}
+				continue
 			}
 		}
 		if len(toolUses) == 0 {
@@ -608,9 +738,52 @@ func runWorkflowTurnInternal(
 		})
 	}
 
-	// Reaching the safety bound closes the public turn normally rather than
-	// allowing unbounded Workflow history.
+	if providerStopReasons {
+		return turn.terminateTyped(
+			"model_request_failed_error",
+			"agent loop exceeded the per-turn round limit",
+		)
+	}
+	// Preserve the legacy replay outcome for Workflow histories that crossed
+	// the safety bound before stop-reason handling was introduced.
 	return turn.complete(nil)
+}
+
+func classifyProviderResponse(
+	stopReason string,
+	toolUseCount int,
+) (providerResponseDisposition, string) {
+	switch stopReason {
+	case "end_turn", "stop_sequence", "refusal", "model_context_window_exceeded":
+		if toolUseCount > 0 {
+			return providerResponseComplete,
+				"model returned " + stopReason + " with a client tool_use block"
+		}
+		return providerResponseComplete, ""
+	case "tool_use":
+		if toolUseCount == 0 {
+			return providerResponseComplete,
+				"model returned tool_use without a client tool_use block"
+		}
+		return providerResponseExecuteTools, ""
+	case "pause_turn":
+		if toolUseCount > 0 {
+			return providerResponseComplete,
+				"model returned pause_turn with a client tool_use block"
+		}
+		return providerResponseContinuePause, ""
+	case "max_tokens":
+		if toolUseCount > 0 {
+			return providerResponseComplete,
+				"model returned max_tokens with a potentially incomplete client tool_use block"
+		}
+		return providerResponseContinueOutput, ""
+	case "":
+		return providerResponseComplete, "model response has no stop_reason"
+	default:
+		return providerResponseComplete,
+			"model returned unsupported stop_reason " + strconv.Quote(stopReason)
+	}
 }
 
 // modelRequestSpanIDs are deterministic Workflow-owned operation ids. Owning

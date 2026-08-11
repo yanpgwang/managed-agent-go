@@ -657,7 +657,7 @@ func TestWorkflowTurn_MixedExecutableAndPendingToolsCommitExecutedTranscriptResu
 					ToolStepID: "tstep_ask",
 				},
 			},
-			Response: model.Response{Content: []domain.ContentBlock{
+			Response: model.Response{StopReason: "tool_use", Content: []domain.ContentBlock{
 				{
 					Type: "tool_use", ToolUseID: "provider_read", ToolName: "read",
 					Input: map[string]any{"path": "a.txt"},
@@ -805,7 +805,7 @@ func TestWorkflowTurn_AmbiguousToolTerminatesHonestly(t *testing.T) {
 			ToolSteps: []PlannedToolStep{{
 				ToolUseEventID: "sevt_ambiguous", ToolStepID: "tstep_ambiguous",
 			}},
-			Response: model.Response{Content: []domain.ContentBlock{{
+			Response: model.Response{StopReason: "tool_use", Content: []domain.ContentBlock{{
 				Type: "tool_use", ToolUseID: "sevt_ambiguous", ToolName: "bash",
 				Input: map[string]any{"command": "side effect"},
 			}}},
@@ -863,7 +863,7 @@ func TestWorkflowTurn_PermanentToolPreparationTerminatesHonestly(t *testing.T) {
 				ToolUseEventID: "sevt_resource_permanent",
 				ToolStepID:     "tstep_resource_permanent",
 			}},
-			Response: model.Response{Content: []domain.ContentBlock{{
+			Response: model.Response{StopReason: "tool_use", Content: []domain.ContentBlock{{
 				Type: "tool_use", ToolUseID: "sevt_resource_permanent", ToolName: "bash",
 				Input: map[string]any{"command": "true"},
 			}}},
@@ -1221,7 +1221,7 @@ func TestWorkflowTurn_MixedBatchExecutesBuiltinAndParksClientAction(t *testing.T
 				{ToolUseEventID: "sevt_builtin", ToolStepID: "tstep_builtin"},
 				{ToolUseEventID: "sevt_custom", ToolStepID: "tstep_custom"},
 			},
-			Response: model.Response{Content: []domain.ContentBlock{
+			Response: model.Response{StopReason: "tool_use", Content: []domain.ContentBlock{
 				{
 					Type: "tool_use", ToolUseID: "sevt_builtin", ToolName: "bash",
 					Input: map[string]any{"command": "must not run"},
@@ -1451,7 +1451,7 @@ func TestWorkflowTurn_SelfHostedToolResultResumesWithoutServerExecution(t *testi
 		modelInput = in
 		return CallModelResult{
 			MessageEventID: "sevt_final",
-			Response: model.Response{Content: []domain.ContentBlock{{
+			Response: model.Response{StopReason: "end_turn", Content: []domain.ContentBlock{{
 				Type: "text", Text: "used client result",
 			}}},
 		}, nil
@@ -1700,7 +1700,7 @@ func TestWorkflowTurn_ResumeExecutionKeepsToolOrdinal(t *testing.T) {
 					ToolUseEventID: "sevt_bash",
 					ToolStepID:     "tstep_bash",
 				}},
-				Response: model.Response{Content: []domain.ContentBlock{{
+				Response: model.Response{StopReason: "tool_use", Content: []domain.ContentBlock{{
 					Type:      "tool_use",
 					ToolUseID: "sevt_bash",
 					ToolName:  "bash",

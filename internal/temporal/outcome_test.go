@@ -185,7 +185,8 @@ func TestWorkflowTurnEvaluatesOutcomeAndAccountsUsage(t *testing.T) {
 			ModelRequestStartID: in.ModelRequestStartID,
 			ModelRequestEndID:   in.ModelRequestEndID,
 			Response: model.Response{
-				Content: []domain.ContentBlock{{Type: "text", Text: "finished report"}},
+				StopReason: "end_turn",
+				Content:    []domain.ContentBlock{{Type: "text", Text: "finished report"}},
 				Usage: domain.TokenUsage{
 					InputTokens: 10, OutputTokens: 4, Speed: "standard",
 				},
@@ -261,8 +262,9 @@ func TestWorkflowTurnClosesStartedOutcomeEvaluationOnFatalGraderResult(t *testin
 			ModelRequestStartID: in.ModelRequestStartID,
 			ModelRequestEndID:   in.ModelRequestEndID,
 			Response: model.Response{
-				Content: []domain.ContentBlock{{Type: "text", Text: "report"}},
-				Usage:   domain.TokenUsage{InputTokens: 5, OutputTokens: 2},
+				StopReason: "end_turn",
+				Content:    []domain.ContentBlock{{Type: "text", Text: "report"}},
+				Usage:      domain.TokenUsage{InputTokens: 5, OutputTokens: 2},
 			},
 		}, nil
 	}
