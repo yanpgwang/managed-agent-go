@@ -1,33 +1,174 @@
 package sandbox
 
 import (
+	"archive/tar"
 	"archive/zip"
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	containerderrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/pkg/authconfig"
+	"github.com/moby/moby/api/types/container"
+	dockerclient "github.com/moby/moby/client"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
 func dockerAvailable(t *testing.T) {
 	t.Helper()
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not installed")
+	engine, err := dockerclient.New(dockerclient.FromEnv)
+	if err != nil {
+		t.Skipf("Docker Engine client unavailable: %v", err)
 	}
-	if err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").Run(); err != nil {
-		t.Skip("docker daemon not reachable")
+	t.Cleanup(func() { _ = engine.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := engine.Ping(ctx, dockerclient.PingOptions{
+		NegotiateAPIVersion: true,
+	}); err != nil {
+		t.Skipf("Docker Engine not reachable: %v", err)
 	}
+}
+
+type stubDockerEngine struct {
+	dockerEngine
+	listFn         func(context.Context, dockerclient.ContainerListOptions) (dockerclient.ContainerListResult, error)
+	inspectFn      func(context.Context, string, dockerclient.ContainerInspectOptions) (dockerclient.ContainerInspectResult, error)
+	createFn       func(context.Context, dockerclient.ContainerCreateOptions) (dockerclient.ContainerCreateResult, error)
+	startFn        func(context.Context, string, dockerclient.ContainerStartOptions) (dockerclient.ContainerStartResult, error)
+	removeFn       func(context.Context, string, dockerclient.ContainerRemoveOptions) (dockerclient.ContainerRemoveResult, error)
+	copyFromFn     func(context.Context, string, dockerclient.CopyFromContainerOptions) (dockerclient.CopyFromContainerResult, error)
+	inspectImageFn func(context.Context, string, ...dockerclient.ImageInspectOption) (dockerclient.ImageInspectResult, error)
+	pullImageFn    func(context.Context, string, dockerclient.ImagePullOptions) (dockerclient.ImagePullResponse, error)
+	execCreateFn   func(context.Context, string, dockerclient.ExecCreateOptions) (dockerclient.ExecCreateResult, error)
+	execAttachFn   func(context.Context, string, dockerclient.ExecAttachOptions) (dockerclient.ExecAttachResult, error)
+	execInspectFn  func(context.Context, string, dockerclient.ExecInspectOptions) (dockerclient.ExecInspectResult, error)
+}
+
+func (s *stubDockerEngine) ImageInspect(
+	ctx context.Context,
+	image string,
+	options ...dockerclient.ImageInspectOption,
+) (dockerclient.ImageInspectResult, error) {
+	if s.inspectImageFn == nil {
+		return dockerclient.ImageInspectResult{}, nil
+	}
+	return s.inspectImageFn(ctx, image, options...)
+}
+
+func (s *stubDockerEngine) ImagePull(
+	ctx context.Context,
+	image string,
+	options dockerclient.ImagePullOptions,
+) (dockerclient.ImagePullResponse, error) {
+	return s.pullImageFn(ctx, image, options)
+}
+
+type stubImagePullResponse struct {
+	dockerclient.ImagePullResponse
+	waited bool
+	err    error
+}
+
+func (*stubImagePullResponse) Close() error { return nil }
+
+func (s *stubImagePullResponse) Wait(context.Context) error {
+	s.waited = true
+	return s.err
+}
+
+func (s *stubDockerEngine) ContainerCreate(
+	ctx context.Context,
+	options dockerclient.ContainerCreateOptions,
+) (dockerclient.ContainerCreateResult, error) {
+	return s.createFn(ctx, options)
+}
+
+func (s *stubDockerEngine) ContainerStart(
+	ctx context.Context,
+	cid string,
+	options dockerclient.ContainerStartOptions,
+) (dockerclient.ContainerStartResult, error) {
+	if s.startFn == nil {
+		return dockerclient.ContainerStartResult{}, nil
+	}
+	return s.startFn(ctx, cid, options)
+}
+
+func (s *stubDockerEngine) ContainerRemove(
+	ctx context.Context,
+	cid string,
+	options dockerclient.ContainerRemoveOptions,
+) (dockerclient.ContainerRemoveResult, error) {
+	if s.removeFn == nil {
+		return dockerclient.ContainerRemoveResult{}, nil
+	}
+	return s.removeFn(ctx, cid, options)
+}
+
+func (s *stubDockerEngine) ExecCreate(
+	ctx context.Context,
+	cid string,
+	options dockerclient.ExecCreateOptions,
+) (dockerclient.ExecCreateResult, error) {
+	return s.execCreateFn(ctx, cid, options)
+}
+
+func (s *stubDockerEngine) ExecAttach(
+	ctx context.Context,
+	execID string,
+	options dockerclient.ExecAttachOptions,
+) (dockerclient.ExecAttachResult, error) {
+	return s.execAttachFn(ctx, execID, options)
+}
+
+func (s *stubDockerEngine) ExecInspect(
+	ctx context.Context,
+	execID string,
+	options dockerclient.ExecInspectOptions,
+) (dockerclient.ExecInspectResult, error) {
+	return s.execInspectFn(ctx, execID, options)
+}
+
+func (s *stubDockerEngine) CopyFromContainer(
+	ctx context.Context,
+	cid string,
+	options dockerclient.CopyFromContainerOptions,
+) (dockerclient.CopyFromContainerResult, error) {
+	return s.copyFromFn(ctx, cid, options)
+}
+
+func (s *stubDockerEngine) ContainerList(
+	ctx context.Context,
+	options dockerclient.ContainerListOptions,
+) (dockerclient.ContainerListResult, error) {
+	if s.listFn == nil {
+		return dockerclient.ContainerListResult{}, nil
+	}
+	return s.listFn(ctx, options)
+}
+
+func (s *stubDockerEngine) ContainerInspect(
+	ctx context.Context,
+	cid string,
+	options dockerclient.ContainerInspectOptions,
+) (dockerclient.ContainerInspectResult, error) {
+	if s.inspectFn == nil {
+		return dockerclient.ContainerInspectResult{}, nil
+	}
+	return s.inspectFn(ctx, cid, options)
 }
 
 func newDockerSB(t *testing.T, spec Spec) Sandbox {
@@ -46,6 +187,313 @@ func newDockerSB(t *testing.T, spec Spec) Sandbox {
 	}
 	t.Cleanup(func() { sb.Destroy(context.Background()) })
 	return sb
+}
+
+func TestDocker_CreateBuildsTypedEngineRequest(t *testing.T) {
+	var captured dockerclient.ContainerCreateOptions
+	engine := &stubDockerEngine{
+		inspectFn: func(
+			context.Context,
+			string,
+			dockerclient.ContainerInspectOptions,
+		) (dockerclient.ContainerInspectResult, error) {
+			return dockerclient.ContainerInspectResult{},
+				containerderrdefs.ErrNotFound.WithMessage("missing")
+		},
+		createFn: func(
+			_ context.Context,
+			options dockerclient.ContainerCreateOptions,
+		) (dockerclient.ContainerCreateResult, error) {
+			captured = options
+			return dockerclient.ContainerCreateResult{ID: "container-id"}, nil
+		},
+	}
+	provider, err := newDockerProviderWithEngine(DockerConfig{
+		DefaultImage: "alpine:test", ResourceBaseDir: t.TempDir(),
+	}, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = provider.Create(context.Background(), t.Name(), Spec{
+		Memory: "512m", CPUs: "1.5", Network: "bridge", PidsLimit: 64,
+		MemoryStores: []MemoryStoreMount{{
+			Identity: "sesrsc_memory", StoreID: "memstore_test",
+			RuntimePath: "/mnt/memory/project", Access: domain.MemoryAccessReadOnly,
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if captured.Config == nil || captured.Config.Image != "alpine:test" ||
+		captured.Config.WorkingDir != dockerRoot ||
+		captured.Config.Labels[dockerManagedLabel] != "true" ||
+		captured.Config.Labels[dockerSessionKeyLabel] != t.Name() {
+		t.Fatalf("container config = %+v", captured.Config)
+	}
+	if captured.HostConfig == nil || captured.HostConfig.NetworkMode != "bridge" ||
+		captured.HostConfig.Memory != 512*1024*1024 ||
+		captured.HostConfig.NanoCPUs != 1_500_000_000 ||
+		captured.HostConfig.PidsLimit == nil ||
+		*captured.HostConfig.PidsLimit != 64 {
+		t.Fatalf("host config = %+v", captured.HostConfig)
+	}
+	mounts := make(map[string]bool, len(captured.HostConfig.Mounts))
+	for _, mounted := range captured.HostConfig.Mounts {
+		mounts[mounted.Target] = mounted.ReadOnly
+	}
+	if !mounts[SessionUploadsRoot] || !mounts[domain.SessionSkillsRoot] ||
+		!mounts["/mnt/memory/project"] {
+		t.Fatalf("mounts = %+v", captured.HostConfig.Mounts)
+	}
+}
+
+func TestDocker_EnsureImagePullsAndWaitsWhenMissing(t *testing.T) {
+	response := &stubImagePullResponse{}
+	pulledImage := ""
+	engine := &stubDockerEngine{
+		inspectImageFn: func(
+			context.Context,
+			string,
+			...dockerclient.ImageInspectOption,
+		) (dockerclient.ImageInspectResult, error) {
+			return dockerclient.ImageInspectResult{},
+				containerderrdefs.ErrNotFound.WithMessage("missing")
+		},
+		pullImageFn: func(
+			_ context.Context,
+			image string,
+			_ dockerclient.ImagePullOptions,
+		) (dockerclient.ImagePullResponse, error) {
+			pulledImage = image
+			return response, nil
+		},
+	}
+	provider := &dockerProvider{engine: engine}
+	if err := provider.ensureImage(context.Background(), "alpine:latest"); err != nil {
+		t.Fatal(err)
+	}
+	if pulledImage != "alpine:latest" || !response.waited {
+		t.Fatalf("pull image = %q, waited = %t", pulledImage, response.waited)
+	}
+}
+
+func TestDocker_EnsureImageUsesStandardRegistryAuth(t *testing.T) {
+	configDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(configDir, "config.json"),
+		[]byte(`{"auths":{"registry.example.com":{"auth":"dXNlcjpwYXNz"}}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	response := &stubImagePullResponse{}
+	var encodedAuth string
+	engine := &stubDockerEngine{
+		inspectImageFn: func(
+			context.Context,
+			string,
+			...dockerclient.ImageInspectOption,
+		) (dockerclient.ImageInspectResult, error) {
+			return dockerclient.ImageInspectResult{},
+				containerderrdefs.ErrNotFound.WithMessage("missing")
+		},
+		pullImageFn: func(
+			_ context.Context,
+			_ string,
+			options dockerclient.ImagePullOptions,
+		) (dockerclient.ImagePullResponse, error) {
+			encodedAuth = options.RegistryAuth
+			return response, nil
+		},
+	}
+	provider := &dockerProvider{engine: engine, registryAuthDir: configDir}
+	if err := provider.ensureImage(
+		context.Background(), "registry.example.com/team/private:latest",
+	); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := authconfig.Decode(encodedAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Username != "user" || resolved.Password != "pass" ||
+		resolved.ServerAddress != "registry.example.com" {
+		t.Fatalf("registry auth = %+v", resolved)
+	}
+}
+
+func TestDocker_ExecWaitsForFinalExitCode(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+	go func() {
+		defer func() { _ = serverConn.Close() }()
+		header := make([]byte, 8)
+		header[0] = 1 // stdout
+		binary.BigEndian.PutUint32(header[4:], uint32(len("done")))
+		_, _ = serverConn.Write(append(header, []byte("done")...))
+	}()
+	inspectCalls := 0
+	engine := &stubDockerEngine{
+		execCreateFn: func(
+			context.Context,
+			string,
+			dockerclient.ExecCreateOptions,
+		) (dockerclient.ExecCreateResult, error) {
+			return dockerclient.ExecCreateResult{ID: "exec-id"}, nil
+		},
+		execAttachFn: func(
+			context.Context,
+			string,
+			dockerclient.ExecAttachOptions,
+		) (dockerclient.ExecAttachResult, error) {
+			return dockerclient.ExecAttachResult{HijackedResponse: dockerclient.NewHijackedResponse(
+				clientConn, "application/vnd.docker.multiplexed-stream",
+			)}, nil
+		},
+		execInspectFn: func(
+			context.Context,
+			string,
+			dockerclient.ExecInspectOptions,
+		) (dockerclient.ExecInspectResult, error) {
+			inspectCalls++
+			if inspectCalls == 1 {
+				return dockerclient.ExecInspectResult{Running: true}, nil
+			}
+			return dockerclient.ExecInspectResult{ExitCode: 7}, nil
+		},
+	}
+	result, err := (&dockerProvider{engine: engine}).execContainer(
+		context.Background(), "container-id", Command{Path: "false"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ExitCode != 7 || string(result.Stdout) != "done" || inspectCalls != 2 {
+		t.Fatalf("result=%+v inspect calls=%d", result, inspectCalls)
+	}
+}
+
+func TestDocker_CreateCleansRejectedGeneration(t *testing.T) {
+	base := t.TempDir()
+	engine := &stubDockerEngine{
+		inspectFn: func(
+			context.Context,
+			string,
+			dockerclient.ContainerInspectOptions,
+		) (dockerclient.ContainerInspectResult, error) {
+			return dockerclient.ContainerInspectResult{},
+				containerderrdefs.ErrNotFound.WithMessage("missing")
+		},
+		createFn: func(
+			context.Context,
+			dockerclient.ContainerCreateOptions,
+		) (dockerclient.ContainerCreateResult, error) {
+			return dockerclient.ContainerCreateResult{},
+				containerderrdefs.ErrInvalidArgument.WithMessage("bad create request")
+		},
+	}
+	providerInterface, err := newDockerProviderWithEngine(DockerConfig{
+		ResourceBaseDir: base,
+	}, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = providerInterface.Create(context.Background(), t.Name(), Spec{})
+	if err == nil {
+		t.Fatal("create unexpectedly succeeded")
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("rejected create leaked resource roots: %v", entries)
+	}
+}
+
+func TestDocker_StartFailureRemovesContainerAndGeneration(t *testing.T) {
+	base := t.TempDir()
+	removed := false
+	engine := &stubDockerEngine{
+		inspectFn: func(
+			context.Context,
+			string,
+			dockerclient.ContainerInspectOptions,
+		) (dockerclient.ContainerInspectResult, error) {
+			return dockerclient.ContainerInspectResult{},
+				containerderrdefs.ErrNotFound.WithMessage("missing")
+		},
+		createFn: func(
+			context.Context,
+			dockerclient.ContainerCreateOptions,
+		) (dockerclient.ContainerCreateResult, error) {
+			return dockerclient.ContainerCreateResult{ID: "container-id"}, nil
+		},
+		startFn: func(
+			context.Context,
+			string,
+			dockerclient.ContainerStartOptions,
+		) (dockerclient.ContainerStartResult, error) {
+			return dockerclient.ContainerStartResult{}, errors.New("start failed")
+		},
+		removeFn: func(
+			_ context.Context,
+			cid string,
+			options dockerclient.ContainerRemoveOptions,
+		) (dockerclient.ContainerRemoveResult, error) {
+			removed = cid == "container-id" && options.Force
+			return dockerclient.ContainerRemoveResult{}, nil
+		},
+	}
+	providerInterface, err := newDockerProviderWithEngine(DockerConfig{
+		ResourceBaseDir: base,
+	}, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = providerInterface.Create(context.Background(), t.Name(), Spec{})
+	if err == nil || !removed {
+		t.Fatalf("start failure err=%v removed=%t", err, removed)
+	}
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("start failure leaked resource roots: %v", entries)
+	}
+}
+
+func TestDocker_ReadFileRejectsContainerSymlinkArchive(t *testing.T) {
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	if err := writer.WriteHeader(&tar.Header{
+		Name: "link", Typeflag: tar.TypeSymlink, Linkname: "/etc/passwd",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	engine := &stubDockerEngine{
+		copyFromFn: func(
+			context.Context,
+			string,
+			dockerclient.CopyFromContainerOptions,
+		) (dockerclient.CopyFromContainerResult, error) {
+			return dockerclient.CopyFromContainerResult{
+				Content: io.NopCloser(bytes.NewReader(archive.Bytes())),
+			}, nil
+		},
+	}
+	box := &dockerSandbox{
+		provider: &dockerProvider{engine: engine}, cid: "container-id",
+		fileRoots: dockerToolFileRoots(Spec{}),
+	}
+	_, err := box.ReadFile(context.Background(), "/workspace/link")
+	if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), "not a regular file") {
+		t.Fatalf("ReadFile symlink error = %v", err)
+	}
 }
 
 func TestDocker_ExecAndExitCode(t *testing.T) {
@@ -75,9 +523,11 @@ func TestDocker_Timeout(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *dockerSandbox, got %T", sb)
 	}
-	out, _ := exec.Command("docker", "inspect", "-f", "{{.State.Running}}", ds.cid).Output()
-	if got := strings.TrimSpace(string(out)); got != "false" {
-		t.Fatalf("container still running after timeout: inspect=%q", got)
+	inspected, err := ds.provider.engine.ContainerInspect(
+		context.Background(), ds.cid, dockerclient.ContainerInspectOptions{},
+	)
+	if err != nil || inspected.Container.State == nil || inspected.Container.State.Running {
+		t.Fatalf("container still running after timeout: inspect=%+v err=%v", inspected.Container.State, err)
 	}
 }
 
@@ -89,6 +539,12 @@ func TestDocker_FileRoundTripAndConfinement(t *testing.T) {
 	b, err := sb.ReadFile(context.Background(), "sub/a.txt")
 	if err != nil || string(b) != "data" {
 		t.Fatalf("read = %q err=%v", b, err)
+	}
+	mode, err := sb.Exec(context.Background(), Command{
+		Path: "stat", Args: []string{"-c", "%a", "sub/a.txt"},
+	})
+	if err != nil || mode.ExitCode != 0 || strings.TrimSpace(string(mode.Stdout)) != "644" {
+		t.Fatalf("written file mode: result=%+v err=%v", mode, err)
 	}
 	// Path-escape confinement: assert on the specific "escapes root" signal,
 	// not merely err != nil. A bare non-nil check cannot distinguish a
@@ -273,8 +729,7 @@ func TestDocker_ExecAfterTimeoutReturnsError(t *testing.T) {
 	}
 
 	// The container is now dead. A subsequent exec must return an explicit
-	// error rather than the silent (ExitCode=125, err=nil) result the raw
-	// docker CLI would produce against a stopped container.
+	// error rather than a raw provider failure against a stopped container.
 	res2, err := sb.Exec(context.Background(), Command{Path: "sh", Args: []string{"-c", "echo hi"}})
 	if err == nil {
 		t.Fatalf("exec after timeout: expected error, got res=%+v err=nil", res2)
@@ -382,29 +837,32 @@ func TestDocker_AttachLegacyContainerAllowsResourceDetach(t *testing.T) {
 	provider := providerInterface.(*dockerProvider)
 	sessionKey := t.Name()
 	name := dockerContainerName(sessionKey)
-	stdout, stderr, code, err := provider.runDocker(
-		ctx,
-		nil,
-		"create",
-		"--name", name,
-		"--label", dockerManagedLabel+"=true",
-		"--label", dockerSessionKeyLabel+"="+sessionKey,
-		"--network", "none",
-		"-w", dockerRoot,
-		"alpine:latest",
-		"sh", "-c", keepAlive,
-	)
-	if err != nil || code != 0 {
-		t.Fatalf("create legacy container: code=%d stderr=%q err=%v", code, stderr, err)
+	if err := provider.ensureImage(ctx, "alpine:latest"); err != nil {
+		t.Fatal(err)
 	}
-	cid := strings.TrimSpace(string(stdout))
+	created, err := provider.engine.ContainerCreate(ctx, dockerclient.ContainerCreateOptions{
+		Name: name,
+		Config: &container.Config{
+			Image: "alpine:latest", WorkingDir: dockerRoot,
+			Cmd: []string{"sh", "-c", keepAlive},
+			Labels: map[string]string{
+				dockerManagedLabel: "true", dockerSessionKeyLabel: sessionKey,
+			},
+		},
+		HostConfig: &container.HostConfig{NetworkMode: "none"},
+	})
+	if err != nil {
+		t.Fatalf("create legacy container: %v", err)
+	}
+	cid := strings.TrimSpace(created.ID)
 	if cid == "" {
 		t.Fatal("create legacy container returned no id")
 	}
 	t.Cleanup(func() { provider.forceRemove(cid) })
-	_, stderr, code, err = provider.runDocker(ctx, nil, "start", cid)
-	if err != nil || code != 0 {
-		t.Fatalf("start legacy container: code=%d stderr=%q err=%v", code, stderr, err)
+	if _, err := provider.engine.ContainerStart(
+		ctx, cid, dockerclient.ContainerStartOptions{},
+	); err != nil {
+		t.Fatalf("start legacy container: %v", err)
 	}
 
 	box, err := provider.Attach(
@@ -828,10 +1286,9 @@ func TestDocker_FileResourceDirectoryModesIgnoreUmask(t *testing.T) {
 	oldUmask := syscall.Umask(0o077)
 	defer syscall.Umask(oldUmask)
 
-	providerInterface, err := NewDockerProvider(DockerConfig{
-		DockerPath:      "/usr/bin/true",
+	providerInterface, err := newDockerProviderWithEngine(DockerConfig{
 		ResourceBaseDir: t.TempDir(),
-	})
+	}, &stubDockerEngine{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -865,10 +1322,9 @@ func TestDocker_FileResourceDirectoryModesIgnoreUmask(t *testing.T) {
 
 func TestDocker_ReapsOnlyStaleUnreferencedResourceRoots(t *testing.T) {
 	base := t.TempDir()
-	providerInterface, err := NewDockerProvider(DockerConfig{
-		DockerPath:      "/usr/bin/true",
+	providerInterface, err := newDockerProviderWithEngine(DockerConfig{
 		ResourceBaseDir: base,
-	})
+	}, &stubDockerEngine{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -906,9 +1362,15 @@ func TestDocker_ReapsOnlyStaleUnreferencedResourceRoots(t *testing.T) {
 
 func TestDocker_ReaperDoesNothingWhenContainerAuditFails(t *testing.T) {
 	base := t.TempDir()
-	providerInterface, err := NewDockerProvider(DockerConfig{
-		DockerPath:      "/usr/bin/false",
+	providerInterface, err := newDockerProviderWithEngine(DockerConfig{
 		ResourceBaseDir: base,
+	}, &stubDockerEngine{
+		listFn: func(
+			context.Context,
+			dockerclient.ContainerListOptions,
+		) (dockerclient.ContainerListResult, error) {
+			return dockerclient.ContainerListResult{}, errors.New("audit unavailable")
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -933,9 +1395,16 @@ func TestDocker_ReaperDoesNothingWhenContainerAuditFails(t *testing.T) {
 }
 
 func TestDocker_ResourceMountInspectFailureRemainsRetryable(t *testing.T) {
-	providerInterface, err := NewDockerProvider(DockerConfig{
-		DockerPath:      "/usr/bin/false",
+	providerInterface, err := newDockerProviderWithEngine(DockerConfig{
 		ResourceBaseDir: t.TempDir(),
+	}, &stubDockerEngine{
+		inspectFn: func(
+			context.Context,
+			string,
+			dockerclient.ContainerInspectOptions,
+		) (dockerclient.ContainerInspectResult, error) {
+			return dockerclient.ContainerInspectResult{}, errors.New("inspect unavailable")
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -951,7 +1420,9 @@ func TestDocker_ResourceMountInspectFailureRemainsRetryable(t *testing.T) {
 
 func TestDocker_DefaultResourceDirectoryFallsBackWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
-	providerInterface, err := NewDockerProvider(DockerConfig{DockerPath: "/usr/bin/true"})
+	providerInterface, err := newDockerProviderWithEngine(
+		DockerConfig{}, &stubDockerEngine{},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

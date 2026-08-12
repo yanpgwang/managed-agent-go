@@ -58,7 +58,9 @@ These labels describe project support, not a security certification.
 | [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) | Planned | Kubernetes CRD, controller, and routing layer | Planned | Stateful sandbox resource | Kubernetes deployments |
 | Anthropic Sandbox Runtime, Vercel Sandbox, and Cloudflare Sandbox | Evaluating | Backend-specific | Evaluating | Backend-specific | Later adapters |
 
-The Docker provider has not been audited for hostile multi-tenant workloads.
+The Docker provider uses the Docker Engine API through the supported Moby Go
+client with API-version negotiation; it has no runtime dependency on the
+`docker` CLI. It has not been audited for hostile multi-tenant workloads.
 The local provider is not a security boundary. No backend currently carries a
 production security claim.
 

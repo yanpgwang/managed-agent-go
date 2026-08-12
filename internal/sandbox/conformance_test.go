@@ -1,7 +1,6 @@
 package sandbox_test
 
 import (
-	"os/exec"
 	"testing"
 	"time"
 
@@ -22,22 +21,11 @@ func TestDockerProviderConformance(t *testing.T) {
 	sandboxtest.Run(t, sandboxtest.Config{
 		NewProvider: func(t *testing.T) sandbox.Provider {
 			t.Helper()
-			if _, err := exec.LookPath("docker"); err != nil {
-				t.Skip("docker not installed")
-			}
-			if err := exec.Command(
-				"docker",
-				"version",
-				"--format",
-				"{{.Server.Version}}",
-			).Run(); err != nil {
-				t.Skip("docker daemon not reachable")
-			}
 			provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{
 				DefaultImage: "alpine:latest",
 			})
 			if err != nil {
-				t.Fatal(err)
+				t.Skipf("Docker Engine not reachable: %v", err)
 			}
 			return provider
 		},

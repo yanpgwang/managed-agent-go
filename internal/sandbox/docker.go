@@ -1,20 +1,34 @@
 package sandbox
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
+	"math"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/containerd/errdefs"
+	"github.com/distribution/reference"
+	dockerconfig "github.com/docker/cli/cli/config"
+	"github.com/docker/cli/cli/config/credentials"
+	"github.com/docker/go-units"
+	"github.com/moby/moby/api/pkg/authconfig"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	registrytypes "github.com/moby/moby/api/types/registry"
+	"github.com/moby/moby/client"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -38,14 +52,17 @@ const (
 
 // DockerConfig configures the Docker-backed Provider.
 type DockerConfig struct {
-	// DockerPath is the docker CLI binary. Empty resolves via exec.LookPath.
-	DockerPath string
 	// DefaultImage is used when Spec.Image is empty. Empty defaults to
 	// "alpine:latest".
 	DefaultImage string
 	// ResourceBaseDir stores provider-owned File Resource staging directories.
 	// Empty uses a stable, non-hidden directory beneath the host user's home.
 	ResourceBaseDir string
+	// RegistryAuthConfigDir is the directory containing Docker's config.json.
+	// Empty honors DOCKER_CONFIG and then ~/.docker. The provider resolves the
+	// standard auths, credsStore, and credHelpers entries only when a missing
+	// image must be pulled.
+	RegistryAuthConfigDir string
 }
 
 // dockerRoot is the working directory inside every container.
@@ -55,27 +72,71 @@ const dockerRoot = "/workspace"
 // huge argument keeps PID 1 alive until the container is removed.
 const keepAlive = "sleep 2147483647"
 
-// dockerProvider provisions container-backed sandboxes by shelling out to the
-// docker CLI (no docker Go client, no extra module dependency).
-type dockerProvider struct {
-	dockerPath      string
-	defaultImage    string
-	resourceBaseDir string
-	resourceAudit   sync.Once
+// dockerEngine is the narrow Engine API surface used by the provider. Keeping
+// this boundary smaller than client.APIClient makes lifecycle failure paths
+// unit-testable without a daemon.
+type dockerEngine interface {
+	ContainerCreate(context.Context, client.ContainerCreateOptions) (client.ContainerCreateResult, error)
+	ContainerInspect(context.Context, string, client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+	ContainerList(context.Context, client.ContainerListOptions) (client.ContainerListResult, error)
+	ContainerStart(context.Context, string, client.ContainerStartOptions) (client.ContainerStartResult, error)
+	ContainerRemove(context.Context, string, client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
+	ContainerKill(context.Context, string, client.ContainerKillOptions) (client.ContainerKillResult, error)
+	ImageInspect(context.Context, string, ...client.ImageInspectOption) (client.ImageInspectResult, error)
+	ImagePull(context.Context, string, client.ImagePullOptions) (client.ImagePullResponse, error)
+	ExecCreate(context.Context, string, client.ExecCreateOptions) (client.ExecCreateResult, error)
+	ExecAttach(context.Context, string, client.ExecAttachOptions) (client.ExecAttachResult, error)
+	ExecInspect(context.Context, string, client.ExecInspectOptions) (client.ExecInspectResult, error)
+	CopyFromContainer(context.Context, string, client.CopyFromContainerOptions) (client.CopyFromContainerResult, error)
+	CopyToContainer(context.Context, string, client.CopyToContainerOptions) (client.CopyToContainerResult, error)
 }
 
-const dockerResourceReapGrace = 24 * time.Hour
+// dockerProvider provisions container-backed sandboxes through the Docker
+// Engine API. It never depends on the docker CLI binary or its subprocess
+// behavior.
+type dockerProvider struct {
+	engine          dockerEngine
+	defaultImage    string
+	resourceBaseDir string
+	registryAuthDir string
 
-// NewDockerProvider returns a Provider backed by the docker CLI. It resolves the
-// docker binary eagerly so a missing docker fails fast at construction.
+	resourceAuditMu sync.Mutex
+	resourceAuditAt time.Time
+}
+
+const (
+	dockerResourceReapGrace    = 24 * time.Hour
+	dockerResourceAuditEvery   = time.Hour
+	dockerExecInspectPollEvery = 10 * time.Millisecond
+)
+
+// NewDockerProvider returns a Provider backed by Docker's supported Go client.
+// client.FromEnv honors DOCKER_HOST, DOCKER_API_VERSION and TLS variables; the
+// client negotiates a compatible Engine API version on its first request.
 func NewDockerProvider(cfg DockerConfig) (Provider, error) {
-	path := cfg.DockerPath
-	if path == "" {
-		p, err := exec.LookPath("docker")
-		if err != nil {
-			return nil, fmt.Errorf("sandbox: docker not found: %w", err)
-		}
-		path = p
+	engine, err := client.New(client.FromEnv)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: create Docker Engine client: %w", err)
+	}
+	probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, err := engine.Ping(probeCtx, client.PingOptions{
+		NegotiateAPIVersion: true,
+	}); err != nil {
+		_ = engine.Close()
+		return nil, fmt.Errorf("sandbox: Docker Engine is unreachable: %w", err)
+	}
+	provider, err := newDockerProviderWithEngine(cfg, engine)
+	if err != nil {
+		_ = engine.Close()
+		return nil, err
+	}
+	return provider, nil
+}
+
+func newDockerProviderWithEngine(cfg DockerConfig, engine dockerEngine) (Provider, error) {
+	if engine == nil {
+		return nil, errors.New("sandbox: Docker Engine client is required")
 	}
 	image := cfg.DefaultImage
 	if image == "" {
@@ -103,7 +164,8 @@ func NewDockerProvider(cfg DockerConfig) (Provider, error) {
 		return nil, fmt.Errorf("sandbox: resolve docker resource directory: %w", err)
 	}
 	return &dockerProvider{
-		dockerPath: path, defaultImage: image, resourceBaseDir: resourceBaseDir,
+		engine: engine, defaultImage: image, resourceBaseDir: resourceBaseDir,
+		registryAuthDir: cfg.RegistryAuthConfigDir,
 	}, nil
 }
 
@@ -116,32 +178,6 @@ func (*dockerProvider) SupportsFileResources() bool { return true }
 func (*dockerProvider) SupportsSkillBundles() bool { return true }
 
 func (*dockerProvider) SupportsMemoryStores() bool { return true }
-
-// runDocker invokes the docker CLI with the given args, capturing stdout/stderr
-// (capped) and the process exit code. The passed ctx bounds the whole call.
-func (p *dockerProvider) runDocker(ctx context.Context, stdin []byte, args ...string) (stdout, stderr []byte, exitCode int, err error) {
-	c := exec.CommandContext(ctx, p.dockerPath, args...)
-	if len(stdin) > 0 {
-		c.Stdin = bytes.NewReader(stdin)
-	}
-	outBuf := &cappedBuffer{cap: maxOutput}
-	errBuf := &cappedBuffer{cap: maxOutput}
-	c.Stdout = outBuf
-	c.Stderr = errBuf
-
-	runErr := c.Run()
-	stdout = outBuf.Bytes()
-	stderr = errBuf.Bytes()
-
-	if runErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			return stdout, stderr, exitErr.ExitCode(), nil
-		}
-		return stdout, stderr, -1, runErr
-	}
-	return stdout, stderr, 0, nil
-}
 
 func (p *dockerProvider) Create(
 	ctx context.Context,
@@ -177,75 +213,114 @@ func (p *dockerProvider) Create(
 		return Ref{}, nil, err
 	}
 
-	args := []string{
-		"create",
-		"--name", name,
-		"--label", dockerManagedLabel + "=true",
-		"--label", dockerSessionKeyLabel + "=" + sessionKey,
-		"--network", network,
-		"--mount", "type=bind,source=" + resourceFiles + ",target=" + SessionUploadsRoot + ",readonly",
-		"--mount", "type=bind,source=" + resourceSkills + ",target=" + domain.SessionSkillsRoot + ",readonly",
-		"-w", dockerRoot,
+	mounts := []mount.Mount{
+		{
+			Type: mount.TypeBind, Source: resourceFiles,
+			Target: SessionUploadsRoot, ReadOnly: true,
+		},
+		{
+			Type: mount.TypeBind, Source: resourceSkills,
+			Target: domain.SessionSkillsRoot, ReadOnly: true,
+		},
 	}
-	for _, mount := range spec.MemoryStores {
-		source := memoryMounts[mount.Identity]
-		option := "type=bind,source=" + source + ",target=" + mount.RuntimePath
-		if mount.Access == domain.MemoryAccessReadOnly {
-			option += ",readonly"
-		}
-		args = append(args, "--mount", option)
+	for _, memoryMount := range spec.MemoryStores {
+		mounts = append(mounts, mount.Mount{
+			Type:     mount.TypeBind,
+			Source:   memoryMounts[memoryMount.Identity],
+			Target:   memoryMount.RuntimePath,
+			ReadOnly: memoryMount.Access == domain.MemoryAccessReadOnly,
+		})
 	}
+	resources := container.Resources{}
 	if spec.Memory != "" {
-		args = append(args, "-m", spec.Memory)
+		resources.Memory, err = units.RAMInBytes(spec.Memory)
+		if err != nil || resources.Memory <= 0 {
+			_ = os.RemoveAll(resourceRoot)
+			return Ref{}, nil, Permanent(fmt.Errorf(
+				"sandbox: invalid Docker memory limit %q", spec.Memory,
+			))
+		}
 	}
 	if spec.CPUs != "" {
-		args = append(args, "--cpus", spec.CPUs)
+		cpus, parseErr := strconv.ParseFloat(spec.CPUs, 64)
+		if parseErr != nil || math.IsNaN(cpus) || math.IsInf(cpus, 0) ||
+			cpus <= 0 || cpus >= float64(math.MaxInt64)/1e9 {
+			_ = os.RemoveAll(resourceRoot)
+			return Ref{}, nil, Permanent(fmt.Errorf(
+				"sandbox: invalid Docker CPU limit %q", spec.CPUs,
+			))
+		}
+		resources.NanoCPUs = int64(cpus * 1e9)
+		if resources.NanoCPUs <= 0 {
+			_ = os.RemoveAll(resourceRoot)
+			return Ref{}, nil, Permanent(fmt.Errorf(
+				"sandbox: invalid Docker CPU limit %q", spec.CPUs,
+			))
+		}
 	}
 	if spec.PidsLimit > 0 {
-		args = append(args, "--pids-limit", fmt.Sprintf("%d", spec.PidsLimit))
+		pidsLimit := int64(spec.PidsLimit)
+		resources.PidsLimit = &pidsLimit
 	}
-	args = append(args, image, "sh", "-c", keepAlive)
-
-	// Known narrow window: if the caller's ctx is cancelled while `docker
-	// create` is mid-flight, exec.CommandContext kills the CLI but the daemon
-	// may have already created the container. We never learn its id, so we
-	// cannot clean it up. This is an inherent edge of the CLI-via-exec approach
-	// and is rare; a container-lifecycle audit/reaper would be the general fix.
-	stdout, stderr, code, err := p.runDocker(ctx, nil, args...)
+	if err := p.ensureImage(ctx, image); err != nil {
+		_ = os.RemoveAll(resourceRoot)
+		return Ref{}, nil, err
+	}
+	created, err := p.engine.ContainerCreate(ctx, client.ContainerCreateOptions{
+		Name: name,
+		Config: &container.Config{
+			Image:      image,
+			WorkingDir: dockerRoot,
+			Cmd:        []string{"sh", "-c", keepAlive},
+			Labels: map[string]string{
+				dockerManagedLabel:    "true",
+				dockerSessionKeyLabel: sessionKey,
+			},
+		},
+		HostConfig: &container.HostConfig{
+			NetworkMode: container.NetworkMode(network),
+			Mounts:      mounts,
+			Resources:   resources,
+		},
+	})
 	if err != nil {
-		// The CLI may have lost its response after the daemon created the
-		// container. Preserve the unique mount generation for later attach/audit.
-		return Ref{}, nil, fmt.Errorf("sandbox: docker create: %w", err)
-	}
-	if code != 0 {
 		// Two workers may race after both observe no persisted binding. Docker's
 		// unique container name is the provider-side idempotency key: the loser
 		// attaches to the winner rather than creating a second resource.
-		if box, attachErr := p.attachTarget(ctx, name, sessionKey, spec); attachErr == nil {
+		if errdefs.IsConflict(err) || errdefs.IsAlreadyExists(err) {
+			box, attachErr := p.attachTarget(ctx, name, sessionKey, spec)
+			if attachErr == nil {
+				_ = os.RemoveAll(resourceRoot)
+				return Ref{Provider: p.Name(), ID: box.cid}, box, nil
+			}
 			_ = os.RemoveAll(resourceRoot)
-			return Ref{Provider: p.Name(), ID: box.cid}, box, nil
+			return Ref{}, nil, fmt.Errorf(
+				"sandbox: Docker Engine create conflict: %w",
+				errors.Join(err, attachErr),
+			)
 		}
-		_ = os.RemoveAll(resourceRoot)
-		return Ref{}, nil, fmt.Errorf("sandbox: docker create failed (exit %d): %s", code, strings.TrimSpace(string(stderr)))
+		if dockerCreateDefinitelyRejected(err) {
+			_ = os.RemoveAll(resourceRoot)
+		}
+		// A transport failure can lose the create acknowledgement after the
+		// daemon accepted it. Preserve the unique mount generation for the next
+		// attach/audit instead of deleting a live container's bind source.
+		return Ref{}, nil, fmt.Errorf("sandbox: Docker Engine create: %w", err)
 	}
-	cid := strings.TrimSpace(string(stdout))
+	cid := strings.TrimSpace(created.ID)
 	if cid == "" {
-		// Treat an empty successful response as ambiguous for the same reason as
-		// a transport error: deleting the bind source could corrupt a container
-		// the daemon actually created.
-		return Ref{}, nil, errors.New("sandbox: docker create returned empty container id")
+		return Ref{}, nil, errors.New("sandbox: Docker Engine create returned empty container ID")
 	}
 
 	// From here on, any failure must remove the created container so we never
 	// leak it.
-	if _, startErr, startCode, rerr := p.runDocker(ctx, nil, "start", cid); rerr != nil || startCode != 0 {
-		p.forceRemove(cid)
+	if _, startErr := p.engine.ContainerStart(ctx, cid, client.ContainerStartOptions{}); startErr != nil {
+		if p.forceRemove(cid) {
+			_ = os.RemoveAll(resourceRoot)
+		}
 		// forceRemove is best-effort. Keep the mount generation if daemon cleanup
 		// could not be acknowledged; a provider audit can remove both safely.
-		if rerr != nil {
-			return Ref{}, nil, fmt.Errorf("sandbox: docker start: %w", rerr)
-		}
-		return Ref{}, nil, fmt.Errorf("sandbox: docker start failed (exit %d): %s", startCode, strings.TrimSpace(string(startErr)))
+		return Ref{}, nil, fmt.Errorf("sandbox: Docker Engine start: %w", startErr)
 	}
 
 	ref := Ref{Provider: p.Name(), ID: cid}
@@ -259,6 +334,75 @@ func (p *dockerProvider) Create(
 		skillMountReady:    true,
 		memoryMounts:       memoryMounts,
 	}, nil
+}
+
+// ensureImage preserves `docker create` parity without invoking the CLI. The
+// Engine create endpoint never pulls a missing image, so the adapter performs
+// an explicit pull and consumes its progress stream before creating the
+// container. Concurrent pulls are safe and deduplicated by the daemon.
+func (p *dockerProvider) ensureImage(ctx context.Context, image string) error {
+	if _, err := p.engine.ImageInspect(ctx, image); err == nil {
+		return nil
+	} else if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("sandbox: Docker Engine inspect image %q: %w", image, err)
+	}
+	registryAuth, err := dockerRegistryAuth(p.registryAuthDir, image)
+	if err != nil {
+		return fmt.Errorf("sandbox: resolve Docker registry auth for %q: %w", image, err)
+	}
+	pulled, err := p.engine.ImagePull(ctx, image, client.ImagePullOptions{
+		RegistryAuth: registryAuth,
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox: Docker Engine pull image %q: %w", image, err)
+	}
+	defer func() { _ = pulled.Close() }()
+	if err := pulled.Wait(ctx); err != nil {
+		return fmt.Errorf("sandbox: Docker Engine pull image %q: %w", image, err)
+	}
+	return nil
+}
+
+// dockerRegistryAuth preserves the credential behavior users get from
+// `docker pull` without executing the docker CLI. Docker's official config
+// package resolves inline auth plus native credential stores/helpers; the
+// Engine API receives the same base64url-encoded AuthConfig payload.
+func dockerRegistryAuth(configDir, image string) (string, error) {
+	configFile, err := dockerconfig.Load(configDir)
+	if err != nil {
+		return "", err
+	}
+	if !configFile.ContainsAuth() {
+		configFile.CredentialsStore = credentials.DetectDefaultStore(
+			configFile.CredentialsStore,
+		)
+	}
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := configFile.GetAuthConfig(reference.Domain(named))
+	if err != nil {
+		return "", err
+	}
+	return authconfig.Encode(registrytypes.AuthConfig{
+		Username:      resolved.Username,
+		Password:      resolved.Password,
+		Auth:          resolved.Auth,
+		ServerAddress: resolved.ServerAddress,
+		IdentityToken: resolved.IdentityToken,
+		RegistryToken: resolved.RegistryToken,
+	})
+}
+
+// dockerCreateDefinitelyRejected identifies Engine responses for which the
+// daemon definitively did not create a container. Transport, cancellation,
+// internal, and unknown errors deliberately retain the bind-mount generation:
+// they may represent a lost acknowledgement after a successful create.
+func dockerCreateDefinitelyRejected(err error) bool {
+	return errdefs.IsInvalidArgument(err) || errdefs.IsNotFound(err) ||
+		errdefs.IsPermissionDenied(err) || errdefs.IsUnauthorized(err) ||
+		errdefs.IsFailedPrecondition(err) || errdefs.IsNotImplemented(err)
 }
 
 func (p *dockerProvider) Attach(
@@ -294,74 +438,56 @@ func (p *dockerProvider) attachTarget(
 	expectedSessionKey string,
 	spec Spec,
 ) (*dockerSandbox, error) {
-	format := "{{.Id}}\t{{index .Config.Labels \"" + dockerManagedLabel +
-		"\"}}\t{{index .Config.Labels \"" + dockerSessionKeyLabel +
-		"\"}}\t{{.State.Running}}"
-	stdout, stderr, code, err := p.runDocker(ctx, nil, "inspect", "--format", format, target)
+	result, err := p.engine.ContainerInspect(ctx, target, client.ContainerInspectOptions{})
 	if err != nil {
-		return nil, fmt.Errorf("sandbox: docker inspect: %w", err)
-	}
-	if code != 0 {
-		message := strings.TrimSpace(string(stderr))
-		lowerMessage := strings.ToLower(message)
-		if strings.Contains(lowerMessage, "no such object") ||
-			strings.Contains(lowerMessage, "no such container") {
+		if errdefs.IsNotFound(err) {
 			return nil, fmt.Errorf("%w: docker container %q", ErrNotFound, target)
 		}
-		return nil, fmt.Errorf(
-			"sandbox: docker inspect failed (exit %d): %s",
-			code,
-			message,
-		)
+		return nil, fmt.Errorf("sandbox: Docker Engine inspect: %w", err)
 	}
-	fields := strings.Split(strings.TrimSpace(string(stdout)), "\t")
-	if len(fields) != 4 || fields[0] == "" {
+	inspected := result.Container
+	if inspected.ID == "" || inspected.Config == nil || inspected.State == nil {
 		return nil, fmt.Errorf("sandbox: invalid docker inspect result for %q", target)
 	}
-	if fields[1] != "true" {
+	if inspected.Config.Labels[dockerManagedLabel] != "true" {
 		return nil, Permanent(fmt.Errorf(
 			"sandbox: refusing to attach unmanaged docker container %q",
 			target,
 		))
 	}
-	if expectedSessionKey != "" && fields[2] != expectedSessionKey {
+	if expectedSessionKey != "" &&
+		inspected.Config.Labels[dockerSessionKeyLabel] != expectedSessionKey {
 		return nil, Permanent(fmt.Errorf(
 			"sandbox: docker container %q belongs to another session",
 			target,
 		))
 	}
-	if fields[3] != "true" {
-		_, startErr, startCode, startRunErr := p.runDocker(ctx, nil, "start", fields[0])
-		if startRunErr != nil {
-			return nil, fmt.Errorf("sandbox: docker start attached container: %w", startRunErr)
-		}
-		if startCode != 0 {
-			return nil, fmt.Errorf(
-				"sandbox: docker start attached container failed (exit %d): %s",
-				startCode,
-				strings.TrimSpace(string(startErr)),
-			)
+	if !inspected.State.Running {
+		if _, startErr := p.engine.ContainerStart(
+			ctx, inspected.ID, client.ContainerStartOptions{},
+		); startErr != nil {
+			return nil, fmt.Errorf("sandbox: Docker Engine start attached container: %w", startErr)
 		}
 	}
 	resourceRoot, resourceMountReady, err := p.inspectResourceMount(
-		ctx, fields[0], expectedSessionKey,
+		ctx, inspected.ID, expectedSessionKey,
 	)
 	if err != nil {
 		return nil, err
 	}
-	skillMountReady, err := p.inspectSkillMount(ctx, fields[0], resourceRoot)
+	skillMountReady, err := p.inspectSkillMount(ctx, inspected.ID, resourceRoot)
 	if err != nil {
 		return nil, err
 	}
 	memoryMounts, err := p.inspectMemoryMounts(
-		ctx, fields[0], resourceRoot, spec.MemoryStores,
+		ctx, inspected.ID, resourceRoot, spec.MemoryStores,
 	)
 	if err != nil {
 		return nil, err
 	}
 	return &dockerSandbox{
 		provider:           p,
-		cid:                fields[0],
+		cid:                inspected.ID,
 		timeout:            spec.Timeout,
 		fileRoots:          dockerToolFileRoots(spec),
 		resourceRoot:       resourceRoot,
@@ -371,25 +497,22 @@ func (p *dockerProvider) attachTarget(
 	}, nil
 }
 
-// bestEffortDocker runs a docker CLI command with a fresh, bounded context so it
-// still executes even when the caller's context is already cancelled, ignoring
-// the result. It backs cleanup/teardown paths where failures are non-actionable.
-func (p *dockerProvider) bestEffortDocker(args ...string) {
+// forceRemove best-effort removes a container with a fresh bounded context so
+// cleanup still runs when the originating request has already been cancelled.
+func (p *dockerProvider) forceRemove(cid string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, _, _, _ = p.runDocker(ctx, nil, args...)
-}
-
-// forceRemove best-effort removes a container so we never leak it.
-func (p *dockerProvider) forceRemove(cid string) {
-	p.bestEffortDocker("rm", "-f", cid)
+	_, err := p.engine.ContainerRemove(ctx, cid, client.ContainerRemoveOptions{Force: true})
+	return err == nil || errdefs.IsNotFound(err)
 }
 
 // kill best-effort SIGKILLs the container (PID 1), tearing down any exec'd
 // processes so a timed-out command does not linger. The container remains
 // present (stopped) so Destroy can still remove it.
 func (p *dockerProvider) kill(cid string) {
-	p.bestEffortDocker("kill", cid)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_, _ = p.engine.ContainerKill(ctx, cid, client.ContainerKillOptions{Signal: "KILL"})
 }
 
 type dockerSandbox struct {
@@ -432,6 +555,87 @@ func (s *dockerSandbox) isDead() bool {
 
 func (s *dockerSandbox) Root() string { return dockerRoot }
 
+func (p *dockerProvider) execContainer(
+	ctx context.Context,
+	cid string,
+	cmd Command,
+) (*Result, error) {
+	command := append([]string{cmd.Path}, cmd.Args...)
+	created, err := p.engine.ExecCreate(ctx, cid, client.ExecCreateOptions{
+		AttachStdin:  true,
+		AttachStdout: true,
+		AttachStderr: true,
+		WorkingDir:   dockerRoot,
+		Cmd:          command,
+	})
+	if err != nil {
+		return &Result{ExitCode: -1}, fmt.Errorf("sandbox: Docker Engine exec create: %w", err)
+	}
+	attached, err := p.engine.ExecAttach(ctx, created.ID, client.ExecAttachOptions{})
+	if err != nil {
+		return &Result{ExitCode: -1}, fmt.Errorf("sandbox: Docker Engine exec attach: %w", err)
+	}
+	defer attached.Close()
+
+	// Stdin and output must flow concurrently: either side may exceed a socket
+	// buffer before the process consumes the other. Closing the write half is
+	// also how commands waiting for EOF are allowed to finish.
+	go func() {
+		if len(cmd.Stdin) > 0 {
+			_, _ = io.Copy(attached.Conn, bytes.NewReader(cmd.Stdin))
+		}
+		_ = attached.CloseWrite()
+	}()
+
+	stdout := &cappedBuffer{cap: maxOutput}
+	stderr := &cappedBuffer{cap: maxOutput}
+	copyDone := make(chan error, 1)
+	go func() {
+		_, copyErr := stdcopy.StdCopy(stdout, stderr, attached.Reader)
+		copyDone <- copyErr
+	}()
+
+	var copyErr error
+	select {
+	case copyErr = <-copyDone:
+	case <-ctx.Done():
+		attached.Close()
+		<-copyDone
+		return &Result{
+			Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: -1,
+		}, ctx.Err()
+	}
+	if copyErr != nil {
+		return &Result{
+			Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: -1,
+		}, fmt.Errorf("sandbox: read Docker exec stream: %w", copyErr)
+	}
+	for {
+		inspected, err := p.engine.ExecInspect(ctx, created.ID, client.ExecInspectOptions{})
+		if err != nil {
+			return &Result{
+				Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: -1,
+			}, fmt.Errorf("sandbox: Docker Engine exec inspect: %w", err)
+		}
+		if !inspected.Running {
+			return &Result{
+				Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: inspected.ExitCode,
+			}, nil
+		}
+		timer := time.NewTimer(dockerExecInspectPollEvery)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return &Result{
+				Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: -1,
+			}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
 func (s *dockerSandbox) Exec(ctx context.Context, cmd Command) (*Result, error) {
 	if s.isDead() {
 		return nil, errDead
@@ -445,16 +649,16 @@ func (s *dockerSandbox) Exec(ctx context.Context, cmd Command) (*Result, error) 
 		defer cancel()
 	}
 
-	args := append([]string{"exec", "-i", "-w", dockerRoot, s.cid, cmd.Path}, cmd.Args...)
-	stdout, stderr, code, err := s.provider.runDocker(ctx, cmd.Stdin, args...)
-
-	res := &Result{Stdout: stdout, Stderr: stderr, ExitCode: code}
+	res, err := s.provider.execContainer(ctx, s.cid, cmd)
 
 	// Timeout: the deadline elapsing means docker exec was killed. The process
 	// inside the container keeps running, so kill the container best-effort to
 	// avoid a lingering runaway command. Killing PID 1 stops the whole
 	// container, so the sandbox is now permanently dead.
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		if res == nil {
+			res = &Result{}
+		}
 		res.TimedOut = true
 		res.ExitCode = -1
 		s.markDead()
@@ -465,7 +669,7 @@ func (s *dockerSandbox) Exec(ctx context.Context, cmd Command) (*Result, error) 
 		return res, ctx.Err()
 	}
 	if err != nil {
-		return res, fmt.Errorf("sandbox: docker exec: %w", err)
+		return res, err
 	}
 	return res, nil
 }
@@ -521,10 +725,9 @@ func (s *dockerSandbox) toolFilePath(value string, write bool) (string, error) {
 	return "", fmt.Errorf("sandbox: path %q escapes root and approved resource mounts", value)
 }
 
-// ReadFile copies a file out of the container via `docker cp` into a host temp
-// file and returns its bytes. docker cp streams a tar of the raw file contents,
-// so binary files round-trip faithfully (unlike exec+cat, which can mangle
-// NULs and trailing newlines).
+// ReadFile streams the Engine archive response and rejects non-regular files.
+// Binary content round-trips without exposing a container-provided symlink on
+// the worker filesystem.
 func (s *dockerSandbox) ReadFile(ctx context.Context, path string) ([]byte, error) {
 	if s.isDead() {
 		return nil, errDead
@@ -534,28 +737,34 @@ func (s *dockerSandbox) ReadFile(ctx context.Context, path string) ([]byte, erro
 		return nil, err
 	}
 
-	tmp, err := os.CreateTemp("", "mas-sbx-read-*")
+	copied, err := s.provider.engine.CopyFromContainer(
+		ctx,
+		s.cid,
+		client.CopyFromContainerOptions{SourcePath: containerPath},
+	)
 	if err != nil {
-		return nil, fmt.Errorf("sandbox: create temp: %w", err)
+		return nil, fmt.Errorf("sandbox: Docker Engine copy from container: %w", err)
 	}
-	tmpName := tmp.Name()
-	tmp.Close()
-	defer os.Remove(tmpName)
-
-	_, stderr, code, err := s.provider.runDocker(ctx, nil, "cp", s.cid+":"+containerPath, tmpName)
+	defer func() { _ = copied.Content.Close() }()
+	reader := tar.NewReader(copied.Content)
+	header, err := reader.Next()
 	if err != nil {
-		return nil, fmt.Errorf("sandbox: docker cp (read): %w", err)
+		return nil, fmt.Errorf("sandbox: read Docker file archive: %w", err)
 	}
-	if code != 0 {
-		return nil, fmt.Errorf("sandbox: docker cp (read) failed (exit %d): %s", code, strings.TrimSpace(string(stderr)))
+	if !header.FileInfo().Mode().IsRegular() {
+		return nil, Permanent(fmt.Errorf(
+			"sandbox: path %q is not a regular file", path,
+		))
 	}
-
-	return os.ReadFile(tmpName)
+	content, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: read Docker file content: %w", err)
+	}
+	return content, nil
 }
 
-// WriteFile writes data to a path inside the container. It creates the parent
-// directory (docker exec mkdir -p), stages the bytes in a host temp file, and
-// copies them in via `docker cp`, which preserves binary content exactly.
+// WriteFile creates the parent directory through Engine exec, then streams one
+// regular-file tar entry into the container through the archive API.
 func (s *dockerSandbox) WriteFile(ctx context.Context, filePath string, data []byte) error {
 	if s.isDead() {
 		return errDead
@@ -566,33 +775,45 @@ func (s *dockerSandbox) WriteFile(ctx context.Context, filePath string, data []b
 	}
 
 	parent := path.Dir(containerPath)
-	if _, stderr, code, mkErr := s.provider.runDocker(ctx, nil, "exec", "-w", dockerRoot, s.cid, "mkdir", "-p", parent); mkErr != nil || code != 0 {
-		if mkErr != nil {
-			return fmt.Errorf("sandbox: docker exec mkdir: %w", mkErr)
-		}
-		return fmt.Errorf("sandbox: docker exec mkdir failed (exit %d): %s", code, strings.TrimSpace(string(stderr)))
+	result, err := s.Exec(ctx, Command{
+		Path: "mkdir", Args: []string{"-p", parent},
+	})
+	if err != nil {
+		return fmt.Errorf("sandbox: create Docker file parent: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf(
+			"sandbox: create Docker file parent failed (exit %d): %s",
+			result.ExitCode, strings.TrimSpace(string(result.Stderr)),
+		)
 	}
 
-	tmp, err := os.CreateTemp("", "mas-sbx-write-*")
-	if err != nil {
-		return fmt.Errorf("sandbox: create temp: %w", err)
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	if err := writer.WriteHeader(&tar.Header{
+		// Memory mounts are synchronized by the non-root worker after container
+		// execution. Keep archive writes worker-readable on a Linux bind mount;
+		// path authority still prevents writes outside approved roots.
+		Name: path.Base(containerPath), Mode: 0o644, Size: int64(len(data)),
+		Typeflag: tar.TypeReg, ModTime: time.Now(),
+	}); err != nil {
+		return fmt.Errorf("sandbox: create Docker file archive: %w", err)
 	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-	if _, err := tmp.Write(data); err != nil {
-		tmp.Close()
-		return fmt.Errorf("sandbox: write temp: %w", err)
+	if _, err := writer.Write(data); err != nil {
+		return fmt.Errorf("sandbox: write Docker file archive: %w", err)
 	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("sandbox: close temp: %w", err)
+	if err := writer.Close(); err != nil {
+		return fmt.Errorf("sandbox: close Docker file archive: %w", err)
 	}
-
-	_, stderr, code, err := s.provider.runDocker(ctx, nil, "cp", tmpName, s.cid+":"+containerPath)
-	if err != nil {
-		return fmt.Errorf("sandbox: docker cp (write): %w", err)
-	}
-	if code != 0 {
-		return fmt.Errorf("sandbox: docker cp (write) failed (exit %d): %s", code, strings.TrimSpace(string(stderr)))
+	if _, err := s.provider.engine.CopyToContainer(
+		ctx,
+		s.cid,
+		client.CopyToContainerOptions{
+			DestinationPath: parent,
+			Content:         bytes.NewReader(archive.Bytes()),
+		},
+	); err != nil {
+		return fmt.Errorf("sandbox: Docker Engine copy to container: %w", err)
 	}
 	return nil
 }
@@ -608,16 +829,10 @@ func (s *dockerSandbox) Destroy(ctx context.Context) error {
 	// wired into the runtime.
 	rmCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	_, stderr, code, err := s.provider.runDocker(rmCtx, nil, "rm", "-f", s.cid)
-	if err != nil {
-		return fmt.Errorf("sandbox: docker rm: %w", err)
-	}
-	if code != 0 {
-		msg := strings.TrimSpace(string(stderr))
-		// Idempotent: a container that is already gone is not an error.
-		if !strings.Contains(msg, "No such container") {
-			return fmt.Errorf("sandbox: docker rm failed (exit %d): %s", code, msg)
-		}
+	if _, err := s.provider.engine.ContainerRemove(
+		rmCtx, s.cid, client.ContainerRemoveOptions{Force: true},
+	); err != nil && !errdefs.IsNotFound(err) {
+		return fmt.Errorf("sandbox: Docker Engine remove: %w", err)
 	}
 	if s.resourceRoot == "" {
 		return nil

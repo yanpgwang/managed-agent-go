@@ -1,11 +1,9 @@
 package sandbox
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -19,6 +17,8 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/client"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 )
 
@@ -35,11 +35,18 @@ func dockerResourceRootPrefix(sessionKey string) string {
 }
 
 func (p *dockerProvider) auditResourceRoots() {
-	p.resourceAudit.Do(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		_ = p.reapStaleResourceRoots(ctx, time.Now().Add(-dockerResourceReapGrace))
-	})
+	now := time.Now()
+	p.resourceAuditMu.Lock()
+	if !p.resourceAuditAt.IsZero() && now.Sub(p.resourceAuditAt) < dockerResourceAuditEvery {
+		p.resourceAuditMu.Unlock()
+		return
+	}
+	p.resourceAuditAt = now
+	p.resourceAuditMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	_ = p.reapStaleResourceRoots(ctx, now.Add(-dockerResourceReapGrace))
 }
 
 func (p *dockerProvider) reapStaleResourceRoots(
@@ -94,42 +101,20 @@ func (p *dockerProvider) activeDockerResourceRoots(
 	ctx context.Context,
 	base string,
 ) (map[string]struct{}, error) {
-	stdout, stderr, code, err := p.runDocker(
-		ctx,
-		nil,
-		"ps", "-aq", "--filter", "label="+dockerManagedLabel+"=true",
+	filters := make(client.Filters).Add(
+		"label", dockerManagedLabel+"=true",
 	)
+	listed, err := p.engine.ContainerList(ctx, client.ContainerListOptions{
+		All: true, Filters: filters,
+	})
 	if err != nil {
-		return nil, err
-	}
-	if code != 0 {
-		return nil, fmt.Errorf(
-			"sandbox: list managed Docker containers failed (exit %d): %s",
-			code,
-			strings.TrimSpace(string(stderr)),
-		)
+		return nil, fmt.Errorf("sandbox: list managed Docker containers: %w", err)
 	}
 	active := make(map[string]struct{})
-	for _, cid := range strings.Fields(string(stdout)) {
-		mountsOut, mountsErr, inspectCode, inspectErr := p.runDocker(
-			ctx, nil, "inspect", "--format", "{{json .Mounts}}", cid,
-		)
-		if inspectErr != nil {
-			return nil, inspectErr
-		}
-		if inspectCode != 0 {
-			return nil, fmt.Errorf(
-				"sandbox: inspect managed Docker container failed (exit %d): %s",
-				inspectCode,
-				strings.TrimSpace(string(mountsErr)),
-			)
-		}
-		var mounts []struct {
-			Source      string
-			Destination string
-		}
-		if err := json.Unmarshal(bytes.TrimSpace(mountsOut), &mounts); err != nil {
-			return nil, fmt.Errorf("sandbox: decode managed Docker mounts: %w", err)
+	for _, item := range listed.Items {
+		mounts, err := p.inspectContainerMounts(ctx, item.ID)
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: inspect managed Docker container: %w", err)
 		}
 		for _, mount := range mounts {
 			directory := ""
@@ -154,6 +139,17 @@ func (p *dockerProvider) activeDockerResourceRoots(
 		}
 	}
 	return active, nil
+}
+
+func (p *dockerProvider) inspectContainerMounts(
+	ctx context.Context,
+	cid string,
+) ([]container.MountPoint, error) {
+	result, err := p.engine.ContainerInspect(ctx, cid, client.ContainerInspectOptions{})
+	if err != nil {
+		return nil, err
+	}
+	return result.Container.Mounts, nil
 }
 
 func isDockerResourceRootName(name string) bool {
@@ -238,29 +234,26 @@ func (p *dockerProvider) inspectSkillMount(
 	cid string,
 	resourceRoot string,
 ) (bool, error) {
-	format := `{{range .Mounts}}{{if eq .Destination "` + domain.SessionSkillsRoot + `"}}{{.Source}}` +
-		"\t" + `{{.RW}}{{end}}{{end}}`
-	stdout, stderr, code, err := p.runDocker(ctx, nil, "inspect", "--format", format, cid)
+	mounts, err := p.inspectContainerMounts(ctx, cid)
 	if err != nil {
-		return false, fmt.Errorf("sandbox: inspect docker Skill mount: %w", err)
+		return false, fmt.Errorf("sandbox: inspect Docker Skill mount: %w", err)
 	}
-	if code != 0 {
-		return false, fmt.Errorf(
-			"sandbox: inspect docker Skill mount failed (exit %d): %s",
-			code, strings.TrimSpace(string(stderr)),
-		)
+	var actual *container.MountPoint
+	for index := range mounts {
+		if mounts[index].Destination == domain.SessionSkillsRoot {
+			actual = &mounts[index]
+			break
+		}
 	}
-	raw := strings.TrimSpace(string(stdout))
-	if raw == "" {
+	if actual == nil {
 		return false, nil
 	}
-	fields := strings.Split(raw, "\t")
-	if len(fields) != 2 || fields[1] != "false" || resourceRoot == "" {
+	if actual.RW || resourceRoot == "" {
 		return false, Permanent(errors.New(
 			"sandbox: Docker Skill mount is not a recognized read-only bind mount",
 		))
 	}
-	skillsRoot, err := canonicalLocalPath(fields[0])
+	skillsRoot, err := canonicalLocalPath(actual.Source)
 	if err != nil {
 		return false, fmt.Errorf("sandbox: resolve Docker Skill mount: %w", err)
 	}
@@ -278,33 +271,29 @@ func (p *dockerProvider) inspectResourceMount(
 	cid string,
 	sessionKey string,
 ) (string, bool, error) {
-	format := `{{range .Mounts}}{{if eq .Destination "` + SessionUploadsRoot + `"}}{{.Source}}` +
-		"\t" + `{{.RW}}{{end}}{{end}}`
-	stdout, stderr, code, err := p.runDocker(ctx, nil, "inspect", "--format", format, cid)
+	mounts, err := p.inspectContainerMounts(ctx, cid)
 	if err != nil {
-		return "", false, fmt.Errorf("sandbox: inspect docker File Resource mount: %w", err)
+		return "", false, fmt.Errorf("sandbox: inspect Docker File Resource mount: %w", err)
 	}
-	if code != 0 {
-		return "", false, fmt.Errorf(
-			"sandbox: inspect docker File Resource mount failed (exit %d): %s",
-			code,
-			strings.TrimSpace(string(stderr)),
-		)
+	var actual *container.MountPoint
+	for index := range mounts {
+		if mounts[index].Destination == SessionUploadsRoot {
+			actual = &mounts[index]
+			break
+		}
 	}
-	raw := strings.TrimSpace(string(stdout))
-	if raw == "" {
+	if actual == nil {
 		// Containers created before File Resources were introduced remain valid
 		// for ordinary tools. Active resources fail explicitly, while deleting
 		// resources reconcile as a no-op because no mount could contain them.
 		return "", false, nil
 	}
-	fields := strings.Split(raw, "\t")
-	if len(fields) != 2 || fields[1] != "false" {
+	if actual.RW {
 		return "", false, Permanent(errors.New(
 			"sandbox: Docker File Resource mount is not a recognized read-only bind mount",
 		))
 	}
-	filesRoot, err := canonicalLocalPath(fields[0])
+	filesRoot, err := canonicalLocalPath(actual.Source)
 	if err != nil {
 		return "", false, fmt.Errorf("sandbox: resolve Docker File Resource mount: %w", err)
 	}

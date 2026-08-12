@@ -65,7 +65,10 @@ implemented.
 
 File-backed Session Resources additionally require
 `MANAGED_AGENT_SANDBOX=docker`. The worker must run where the selected Docker
-daemon can bind its provider-owned staging directory. Set
+Engine API is reachable; the provider uses the Moby Go client directly and does
+not require a `docker` CLI binary. Configure a non-default daemon with
+`DOCKER_HOST` and the standard Docker TLS environment variables. The daemon
+must be able to bind the worker's provider-owned staging directory. Set
 `MANAGED_AGENT_SANDBOX_RESOURCE_DIR` to place that directory on a dedicated
 host volume; the default is `managed-agent-resources` beneath the process
 user's home directory. The API and every worker

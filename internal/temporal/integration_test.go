@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
@@ -892,24 +891,14 @@ const (
 
 func dockerProviderForTest(t *testing.T, requirement dockerRequirement) sandbox.Provider {
 	t.Helper()
-	dockerPath, err := exec.LookPath("docker")
+	provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{
+		DefaultImage: "alpine:latest",
+	})
 	if err != nil {
 		if requirement == dockerRequired {
-			t.Fatalf("docker CLI is required for live tool conformance: %v", err)
+			t.Fatalf("Docker Engine is required for live tool conformance: %v", err)
 		}
-		t.Skip("docker CLI not installed")
-	}
-	probeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := exec.CommandContext(probeCtx, dockerPath, "version", "--format", "{{.Server.Version}}").Run(); err != nil {
-		if requirement == dockerRequired {
-			t.Fatalf("docker daemon is required for live tool conformance: %v", err)
-		}
-		t.Skipf("docker daemon unreachable: %v", err)
-	}
-	provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{DockerPath: dockerPath, DefaultImage: "alpine:latest"})
-	if err != nil {
-		t.Fatalf("docker provider: %v", err)
+		t.Skipf("Docker Engine unreachable: %v", err)
 	}
 	return provider
 }

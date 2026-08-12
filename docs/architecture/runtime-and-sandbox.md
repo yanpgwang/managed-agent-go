@@ -95,12 +95,19 @@ untrusted input or in production.
 ### Docker provider
 
 Set `MANAGED_AGENT_SANDBOX=docker` to run each sandbox in a container. The
-provider uses a separate filesystem, Linux namespaces/cgroups, configurable
-resource limits, and `--network none` for direct provider calls. The Managed
-Agents cloud Environment path explicitly requests `bridge` networking because
-the public Environment default is unrestricted. This is the recommended
-sandbox for a real model, and it satisfies the startup guard without the unsafe
-override.
+provider talks directly to the Docker Engine API through the supported Moby Go
+client; it does not invoke the `docker` CLI. The client honors `DOCKER_HOST`,
+`DOCKER_API_VERSION`, and Docker TLS environment variables and negotiates a
+compatible API version by default. When an image is absent, the provider pulls
+it through the Engine API and resolves registry credentials from the standard
+Docker `config.json` selected by `DOCKER_CONFIG` or `~/.docker`. Inline `auths`,
+`credsStore`, and per-registry `credHelpers` are supported; a configured native
+credential helper must be installed on the worker. Containers use a separate
+filesystem, Linux namespaces/cgroups, configurable resource limits, and no
+networking for direct provider calls. The Managed Agents cloud Environment path
+explicitly requests `bridge` networking because the public Environment default
+is unrestricted. This is the recommended sandbox for a real model, and it
+satisfies the startup guard without the unsafe override.
 
 Containers share the host kernel. This provider has not been audited for
 hostile multi-tenant use; stronger isolation such as gVisor or a remote sandbox
