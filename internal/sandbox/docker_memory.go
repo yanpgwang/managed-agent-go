@@ -112,26 +112,9 @@ func (p *dockerProvider) inspectMemoryMounts(
 			"sandbox: Docker container has no provider-owned Memory Store root",
 		))
 	}
-	stdout, stderr, code, err := p.runDocker(
-		ctx, nil, "inspect", "--format", "{{json .Mounts}}", cid,
-	)
+	actual, err := p.inspectContainerMounts(ctx, cid)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: inspect Docker Memory Store mounts: %w", err)
-	}
-	if code != 0 {
-		return nil, fmt.Errorf(
-			"sandbox: inspect Docker Memory Store mounts failed (exit %d): %s",
-			code,
-			strings.TrimSpace(string(stderr)),
-		)
-	}
-	var actual []struct {
-		Source      string
-		Destination string
-		RW          bool
-	}
-	if err := json.Unmarshal(stdout, &actual); err != nil {
-		return nil, fmt.Errorf("sandbox: decode Docker Memory Store mounts: %w", err)
 	}
 	byDestination := make(map[string]struct {
 		Source string

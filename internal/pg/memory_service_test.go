@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -183,12 +182,6 @@ func TestMemoryService_PostgresOfficialSDKLifecycle(t *testing.T) {
 }
 
 func TestMemoryRuntime_DockerPostgresRoundTrip(t *testing.T) {
-	if _, err := exec.LookPath("docker"); err != nil {
-		t.Skip("docker not installed")
-	}
-	if err := exec.Command("docker", "version", "--format", "{{.Server.Version}}").Run(); err != nil {
-		t.Skip("docker daemon not reachable")
-	}
 	store := testStore(t)
 	ctx := context.Background()
 	ids := domain.NewSeqIDGen()
@@ -222,7 +215,7 @@ func TestMemoryRuntime_DockerPostgresRoundTrip(t *testing.T) {
 		DefaultImage: "alpine:latest", ResourceBaseDir: t.TempDir(),
 	})
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("Docker Engine not reachable: %v", err)
 	}
 	_, box, err := provider.Create(ctx, t.Name(), sandbox.Spec{MemoryStores: []sandbox.MemoryStoreMount{{
 		Identity: resource.ID, StoreID: memoryStore.ID,
