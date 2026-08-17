@@ -153,6 +153,9 @@ services:
     pull_policy: never
     container_name: managed-agent-worker
     command: ["orchestrate"]
+    # Keep the execution plane alive across Docker Desktop/daemon restarts. A
+    # stopped worker leaves accepted messages pending indefinitely.
+    restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
@@ -165,6 +168,18 @@ services:
       MANAGED_AGENT_TEMPORAL_HOSTPORT: temporal:7233
       MANAGED_AGENT_TEMPORAL_NAMESPACE: default
       MANAGED_AGENT_NATS_URL: nats://nats:4222
+      # Model credentials are supplied by scripts/with-dev-env through Compose
+      # interpolation. Empty values preserve the deterministic offline model.
+      MANAGED_AGENT_MODEL_BASE_URL: ${MANAGED_AGENT_MODEL_BASE_URL:-}
+      MANAGED_AGENT_MODEL_API_KEY: ${MANAGED_AGENT_MODEL_API_KEY:-}
+      MANAGED_AGENT_MODEL_ID: ${MANAGED_AGENT_MODEL_ID:-}
+      MANAGED_AGENT_MODEL_AUTH: ${MANAGED_AGENT_MODEL_AUTH:-x-api-key}
+      # The Compose worker is itself container-isolated. Running the nested
+      # Docker provider would require host-visible bind paths for its child
+      # sandboxes, so this local development service deliberately executes
+      # tools inside the worker container instead.
+      MANAGED_AGENT_SANDBOX: local
+      MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX: "1"
       MANAGED_AGENT_FILE_S3_ENDPOINT: http://minio:9000
       MANAGED_AGENT_FILE_S3_REGION: us-east-1
       MANAGED_AGENT_FILE_S3_BUCKET: managed-agent-files
@@ -174,6 +189,15 @@ services:
       MANAGED_AGENT_VAULT_KEYRING_FILE: /run/secrets/mango-vault-keyring.json
     volumes:
       - ./vault-keyring.json:/run/secrets/mango-vault-keyring.json:ro
+    healthcheck:
+      # There is no HTTP surface on the worker. The process being alive is the
+      # minimum useful Compose signal; an exited worker cannot consume Temporal
+      # tasks and must make local-health fail.
+      test: ["CMD-SHELL", "kill -0 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
 
 volumes:
   postgres-data:

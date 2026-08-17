@@ -51,6 +51,34 @@ func TestCompleteTurn_Idempotent(t *testing.T) {
 		t.Fatalf("expected 2 committed events, got %d", len(first.Events))
 	}
 
+	// The public event API orders by processed_at and then receipt sequence.
+	// Completion must therefore stamp the consumed input and its authoritative
+	// output with one boundary time; otherwise a reply can sort before the user
+	// message that caused it.
+	ordered, err := store.QueryEvents(ctx, sess.ID, app.EventQuery{Limit: 100})
+	if err != nil {
+		t.Fatalf("query processed ledger: %v", err)
+	}
+	var conversation []domain.Event
+	for _, event := range ordered {
+		if event.Type == domain.EvUserMessage || event.Type == domain.EvAgentMessage {
+			conversation = append(conversation, event)
+		}
+	}
+	if len(conversation) != 2 ||
+		conversation[0].Type != domain.EvUserMessage ||
+		conversation[1].Type != domain.EvAgentMessage {
+		t.Fatalf("conversation order = %+v, want user.message then agent.message", conversation)
+	}
+	if conversation[0].ProcessedAt == nil || conversation[1].ProcessedAt == nil ||
+		!conversation[0].ProcessedAt.Equal(*conversation[1].ProcessedAt) {
+		t.Fatalf(
+			"completion boundary timestamps = %v and %v, want equal non-nil values",
+			conversation[0].ProcessedAt,
+			conversation[1].ProcessedAt,
+		)
+	}
+
 	// Snapshot the full ledger after the first commit.
 	before, err := store.EventsAfter(ctx, sess.ID, 0, 1000)
 	if err != nil {

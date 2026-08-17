@@ -26,14 +26,19 @@ make local-up       # start everything in the background
 make local-health   # block until all services are healthy
 ```
 
+When `~/.config/mango/dev.env` exists, `make local-up` loads it via
+`scripts/with-dev-env`. When the model variables are configured, the Compose
+worker uses the real Messages endpoint. A missing file or empty model values
+keep the offline deterministic model.
+
 `make health` returns only once Postgres accepts connections, the Temporal
 frontend answers `cluster health`, NATS `/healthz` is green, MinIO answers its
-live probe, and the API answers `/readyz`.
+live probe, the API answers `/readyz`, and the worker process is alive.
 
 Without `make`:
 
 ```sh
-docker compose -f deployments/local/compose.yaml up -d --build
+scripts/with-dev-env docker compose -f deployments/local/compose.yaml up -d --build
 docker compose -f deployments/local/compose.yaml ps
 ```
 
@@ -90,6 +95,7 @@ Each service declares a Docker `healthcheck`:
 - **nats** — HTTP `GET /healthz` on the monitoring port
 - **minio** — HTTP `GET /minio/health/live`
 - **api** — HTTP `GET /readyz`
+- **worker** — its long-running orchestration process is alive
 
 `docker compose ps` shows `(healthy)` once each passes.
 

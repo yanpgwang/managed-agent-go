@@ -235,8 +235,8 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		if err != nil {
 			return err
 		}
-		childEvents, maxSeq, err := s.appendThreadDrafts(
-			ctx, q, sessionID, threadID, drafts, maxSeq, &triggerEventID,
+		childEvents, maxSeq, err := s.appendThreadDraftsAt(
+			ctx, q, sessionID, threadID, drafts, maxSeq, &triggerEventID, now,
 		)
 		if err != nil {
 			return err
@@ -267,9 +267,9 @@ func (s *Store) CompleteThreadWorkflowTurn(
 			})
 		}
 		if len(clientActionDrafts) > 0 {
-			projected, next, err := s.appendThreadDrafts(
+			projected, next, err := s.appendThreadDraftsAt(
 				ctx, q, sessionID, primaryID,
-				clientActionDrafts, maxSeq, &triggerEventID,
+				clientActionDrafts, maxSeq, &triggerEventID, now,
 			)
 			if err != nil {
 				return err
@@ -285,7 +285,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		}
 
 		if len(coordinatorReport) > 0 {
-			received, next, err := s.appendThreadDrafts(
+			received, next, err := s.appendThreadDraftsAt(
 				ctx, q, sessionID, primaryID,
 				[]domain.EventDraft{{
 					Type: domain.EvAgentThreadMessageReceived,
@@ -294,7 +294,7 @@ func (s *Store) CompleteThreadWorkflowTurn(
 						"from_agent_name":        thread.Agent.Name,
 						"content":                coordinatorReport,
 					},
-				}}, maxSeq, nil,
+				}}, maxSeq, nil, now,
 			)
 			if err != nil {
 				return err
@@ -308,9 +308,9 @@ func (s *Store) CompleteThreadWorkflowTurn(
 				continue
 			}
 			draft = projectChildLifecycleDraft(draft, clientActionEventIDs)
-			crossPosted, next, err := s.appendThreadDrafts(
+			crossPosted, next, err := s.appendThreadDraftsAt(
 				ctx, q, sessionID, primaryID,
-				[]domain.EventDraft{draft}, maxSeq, &triggerEventID,
+				[]domain.EventDraft{draft}, maxSeq, &triggerEventID, now,
 			)
 			if err != nil {
 				return err
@@ -449,9 +449,9 @@ func (s *Store) CompleteThreadWorkflowTurn(
 				}
 			}
 			if statusDraft != nil {
-				statusEvents, _, err := s.appendThreadDrafts(
+				statusEvents, _, err := s.appendThreadDraftsAt(
 					ctx, q, sessionID, primaryID,
-					[]domain.EventDraft{*statusDraft}, maxSeq, &triggerEventID,
+					[]domain.EventDraft{*statusDraft}, maxSeq, &triggerEventID, now,
 				)
 				if err != nil {
 					return err
