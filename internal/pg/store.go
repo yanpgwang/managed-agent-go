@@ -920,6 +920,24 @@ func (s *Store) appendDrafts(
 	startSeq int64,
 	turnEventID *string,
 ) ([]domain.Event, int64, error) {
+	return s.appendDraftsAt(
+		ctx, q, sessionID, drafts, startSeq, turnEventID, s.clock.Now().UTC(),
+	)
+}
+
+// appendDraftsAt is the completion-boundary variant of appendDrafts. A turn's
+// authoritative output and the input events it finishes share one processed_at
+// instant, so the public processed-time ledger falls back to receipt sequence
+// for causal ordering (input before output).
+func (s *Store) appendDraftsAt(
+	ctx context.Context,
+	q *pgstore.Queries,
+	sessionID string,
+	drafts []domain.EventDraft,
+	startSeq int64,
+	turnEventID *string,
+	eventTime time.Time,
+) ([]domain.Event, int64, error) {
 	threadID, err := q.GetPrimarySessionThreadID(ctx, sessionID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, 0, fmt.Errorf("pg: primary session thread is missing for %s", sessionID)
@@ -927,8 +945,8 @@ func (s *Store) appendDrafts(
 	if err != nil {
 		return nil, 0, err
 	}
-	return s.appendThreadDrafts(
-		ctx, q, sessionID, threadID, drafts, startSeq, turnEventID,
+	return s.appendThreadDraftsAt(
+		ctx, q, sessionID, threadID, drafts, startSeq, turnEventID, eventTime,
 	)
 }
 
@@ -944,8 +962,25 @@ func (s *Store) appendThreadDrafts(
 	startSeq int64,
 	turnEventID *string,
 ) ([]domain.Event, int64, error) {
+	return s.appendThreadDraftsAt(
+		ctx, q, sessionID, threadID, drafts, startSeq, turnEventID,
+		s.clock.Now().UTC(),
+	)
+}
+
+func (s *Store) appendThreadDraftsAt(
+	ctx context.Context,
+	q *pgstore.Queries,
+	sessionID string,
+	threadID string,
+	drafts []domain.EventDraft,
+	startSeq int64,
+	turnEventID *string,
+	eventTime time.Time,
+) ([]domain.Event, int64, error) {
 	seq := startSeq
 	out := make([]domain.Event, 0, len(drafts))
+	now := eventTime.UTC()
 	for _, d := range drafts {
 		seq++
 		id := d.ID
@@ -960,7 +995,6 @@ func (s *Store) appendThreadDrafts(
 		if err != nil {
 			return nil, 0, err
 		}
-		now := s.clock.Now().UTC()
 		var processedAt pgtype.Timestamptz
 		var processedPtr *time.Time
 		if domain.ProcessedOnReceipt(d.Type) {
@@ -2183,13 +2217,15 @@ func (s *Store) completeTurn(
 			}
 		}
 
-		events, finalMaxSeq, err := s.appendDrafts(
+		completionTime := s.clock.Now().UTC()
+		events, finalMaxSeq, err := s.appendDraftsAt(
 			ctx,
 			q,
 			sessionID,
 			drafts,
 			maxSeq,
 			&triggerEventID,
+			completionTime,
 		)
 		if err != nil {
 			return err
@@ -2209,7 +2245,7 @@ func (s *Store) completeTurn(
 		); err != nil {
 			return err
 		}
-		now := s.clock.Now().UTC()
+		now := completionTime
 		if transcriptDelta != nil {
 			representedEventIDs := resolutionEventIDs
 			if len(representedEventIDs) == 0 {
