@@ -9,11 +9,17 @@
 
 COMPOSE ?= docker compose
 FILE := $(dir $(lastword $(MAKEFILE_LIST)))compose.yaml
+WITH_DEV_ENV := ../../scripts/with-dev-env
+DEV_ENV_FILE = $(if $(strip $(MANGO_ENV_FILE)),$(MANGO_ENV_FILE),$(HOME)/.config/mango/dev.env)
 
 .PHONY: up down config health ps logs
 
 up:
-	$(COMPOSE) -f $(FILE) up -d --build
+	@if test -f "$(DEV_ENV_FILE)"; then \
+		$(WITH_DEV_ENV) $(COMPOSE) -f $(FILE) up -d --build; \
+	else \
+		$(COMPOSE) -f $(FILE) up -d --build; \
+	fi
 
 down:
 	$(COMPOSE) -f $(FILE) down $(if $(VOLUMES),--volumes,)
@@ -31,8 +37,8 @@ logs:
 # healthcheck, then confirms the Temporal frontend answers. It exits non-zero if
 # any service is not healthy within the compose-defined retry windows.
 health:
-	@echo "waiting for postgres, temporal, nats, minio, and api to become healthy..."
-	@for svc in managed-agent-postgres managed-agent-temporal managed-agent-nats managed-agent-minio managed-agent-api; do \
+	@echo "waiting for postgres, temporal, nats, minio, api, and worker to become healthy..."
+	@for svc in managed-agent-postgres managed-agent-temporal managed-agent-nats managed-agent-minio managed-agent-api managed-agent-worker; do \
 		printf "  %-28s " "$$svc"; \
 		for i in $$(seq 1 60); do \
 			state=$$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' $$svc 2>/dev/null || echo missing); \
