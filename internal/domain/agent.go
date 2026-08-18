@@ -106,7 +106,7 @@ type Multiagent struct {
 	legacyRaw json.RawMessage
 }
 
-// AgentReference accepts the three documented input forms while giving the
+// AgentReference accepts the documented roster input forms while giving the
 // application service one type to resolve. A new persisted reference is always
 // the object form with Type=agent and a positive Version. StringForm preserves
 // the string union variant until resolution and across legacy storage reads.
@@ -114,7 +114,18 @@ type AgentReference struct {
 	Type       string `json:"type"`
 	ID         string `json:"id,omitempty"`
 	Version    int    `json:"version,omitempty"`
+	Model      string `json:"model,omitempty"`
 	StringForm bool   `json:"-"`
+}
+
+const AdvisorAgentName = "anthropic.advisor"
+
+// Advisor is the resolved public form used by an automatically terminating
+// consultation Thread. It is deliberately not an Agent: it has no mutable
+// resource identity, tools, prompt, or coordinator messaging surface.
+type Advisor struct {
+	Type  string `json:"type"`
+	Model string `json:"model"`
 }
 
 func (r AgentReference) MarshalJSON() ([]byte, error) {
@@ -143,11 +154,6 @@ func (r *AgentReference) UnmarshalJSON(data []byte) error {
 	if value, ok := object["type"]; !ok || json.Unmarshal(value, &entryType) != nil {
 		return Validation("invalid multiagent roster entry type")
 	}
-	for field := range object {
-		if field != "type" && field != "id" && field != "version" {
-			return Validation("invalid multiagent roster entry field")
-		}
-	}
 	if entryType == "self" {
 		if len(object) != 1 {
 			return Validation("invalid multiagent self entry")
@@ -155,8 +161,27 @@ func (r *AgentReference) UnmarshalJSON(data []byte) error {
 		*r = AgentReference{Type: "self"}
 		return nil
 	}
+	if entryType == "advisor" {
+		for field := range object {
+			if field != "type" && field != "model" {
+				return Validation("invalid multiagent advisor entry field")
+			}
+		}
+		var model string
+		if value, ok := object["model"]; !ok || json.Unmarshal(value, &model) != nil ||
+			strings.TrimSpace(model) == "" {
+			return Validation("invalid multiagent advisor model")
+		}
+		*r = AgentReference{Type: "advisor", Model: model}
+		return nil
+	}
 	if entryType != "agent" {
 		return Validation("invalid multiagent roster entry type")
+	}
+	for field := range object {
+		if field != "type" && field != "id" && field != "version" {
+			return Validation("invalid multiagent roster entry field")
+		}
 	}
 	var id string
 	if value, ok := object["id"]; !ok || json.Unmarshal(value, &id) != nil || id == "" {
@@ -224,14 +249,26 @@ func (m *Multiagent) IsResolved() bool {
 		return false
 	}
 	seen := make(map[string]struct{}, len(m.Agents))
+	seenAdvisor := false
 	for _, reference := range m.Agents {
-		if reference.Type != "agent" || reference.ID == "" || reference.Version < 1 || reference.StringForm {
+		switch reference.Type {
+		case "agent":
+			if reference.ID == "" || reference.Version < 1 || reference.Model != "" || reference.StringForm {
+				return false
+			}
+			if _, duplicate := seen[reference.ID]; duplicate {
+				return false
+			}
+			seen[reference.ID] = struct{}{}
+		case "advisor":
+			if seenAdvisor || reference.ID != "" || reference.Version != 0 ||
+				strings.TrimSpace(reference.Model) == "" || reference.StringForm {
+				return false
+			}
+			seenAdvisor = true
+		default:
 			return false
 		}
-		if _, duplicate := seen[reference.ID]; duplicate {
-			return false
-		}
-		seen[reference.ID] = struct{}{}
 	}
 	return true
 }
@@ -272,6 +309,34 @@ func (m *Multiagent) HasExternalAgent(ownerID string) bool {
 	}
 	for _, reference := range m.Agents {
 		if reference.Type == "agent" && reference.ID != ownerID {
+			return true
+		}
+	}
+	return false
+}
+
+// Advisor returns the single resolved advisor roster entry, if configured.
+func (m *Multiagent) Advisor() *Advisor {
+	if m == nil {
+		return nil
+	}
+	for _, reference := range m.Agents {
+		if reference.Type == "advisor" {
+			return &Advisor{Type: "advisor", Model: reference.Model}
+		}
+	}
+	return nil
+}
+
+// HasCallableAgents reports whether the roster contains any ordinary Agent
+// that may be listed or messaged by the coordinator toolset. Advisors are
+// intentionally excluded from that private protocol.
+func (m *Multiagent) HasCallableAgents() bool {
+	if m == nil {
+		return false
+	}
+	for _, reference := range m.Agents {
+		if reference.Type == "agent" {
 			return true
 		}
 	}

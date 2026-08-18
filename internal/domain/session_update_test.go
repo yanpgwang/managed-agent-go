@@ -249,6 +249,29 @@ func TestResolvedAgentSnapshotJSON_ExpandsImmutableSessionRoster(t *testing.T) {
 	}
 }
 
+func TestResolvedAgentSnapshotJSON_AdvisorOnlyRosterIsPreserved(t *testing.T) {
+	session := Session{AgentSnapshot: Agent{
+		ID: "agent_primary", Version: 1, Name: "primary",
+		Model: Model{ID: "claude-sonnet-5"},
+		Multiagent: &Multiagent{Type: "coordinator", Agents: []AgentReference{{
+			Type: "advisor", Model: "claude-opus-5",
+		}}},
+	}}
+	projection := session.ResolvedAgentSnapshotJSON()
+	multiagent, ok := projection["multiagent"].(map[string]any)
+	if !ok {
+		t.Fatalf("multiagent projection = %#v", projection["multiagent"])
+	}
+	agents, ok := multiagent["agents"].([]any)
+	if !ok || len(agents) != 1 {
+		t.Fatalf("advisor roster = %#v", multiagent["agents"])
+	}
+	advisor, ok := agents[0].(*Advisor)
+	if !ok || advisor.Type != "advisor" || advisor.Model != "claude-opus-5" {
+		t.Fatalf("advisor projection = %#v", agents[0])
+	}
+}
+
 func TestSessionUpdate_AppliesAgentConfigurationToSelfRosterOnly(t *testing.T) {
 	session := updatableSession()
 	session.AgentSnapshot.Multiagent = &Multiagent{Type: "coordinator", Agents: []AgentReference{

@@ -74,6 +74,20 @@ func (s storeSource) AccountModelRequest(
 	)
 }
 
+func (s storeSource) CompleteAdvisorToolStep(
+	ctx context.Context,
+	sessionID string,
+	primaryThreadID string,
+	triggerEventID string,
+	stepID string,
+	result domain.ToolStepResult,
+	consultation domain.AdvisorConsultation,
+) error {
+	return s.store.CompleteAdvisorToolStep(
+		ctx, sessionID, primaryThreadID, triggerEventID, stepID, result, consultation,
+	)
+}
+
 func (s storeSource) AdmitModelRequest(
 	ctx context.Context,
 	sessionID string,

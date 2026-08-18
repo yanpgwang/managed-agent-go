@@ -3684,12 +3684,29 @@ components:
         type:
           type: string
           const: self
+    MultiagentAdvisor:
+      type: object
+      description: >-
+        Mango-managed advisor roster entry. At most one may appear in a roster;
+        it is echoed last and occupies the CMA-compatible reserved name
+        anthropic.advisor. Execution uses an ordinary private client tool and a
+        separate tool-free inference with the configured model.
+      additionalProperties: false
+      required: [type, model]
+      properties:
+        type:
+          type: string
+          const: advisor
+        model:
+          type: string
+          minLength: 1
     MultiagentRosterEntryInput:
       oneOf:
         - type: string
           minLength: 1
         - $ref: '#/components/schemas/MultiagentAgentReferenceInput'
         - $ref: '#/components/schemas/MultiagentSelfReferenceInput'
+        - $ref: '#/components/schemas/MultiagentAdvisor'
     MultiagentInput:
       type: [object, 'null']
       additionalProperties: false
@@ -3731,7 +3748,11 @@ components:
           minItems: 1
           maxItems: 20
           items:
-            $ref: '#/components/schemas/ResolvedAgentReference'
+            oneOf:
+              - $ref: '#/components/schemas/ResolvedAgentReference'
+              - $ref: '#/components/schemas/MultiagentAdvisor'
+            discriminator:
+              propertyName: type
     LegacyMultiagent:
       type: object
       description: >-
@@ -3952,7 +3973,7 @@ components:
             $ref: '#/components/schemas/SkillReferenceResponse'
         multiagent:
           $ref: '#/components/schemas/SessionMultiagent'
-    SessionThreadAgent:
+    ManagedAgentThreadAgent:
       type: object
       additionalProperties: false
       required: [id, type, version, name, model, system, description, tools, mcp_servers, skills]
@@ -3973,6 +3994,15 @@ components:
         skills:
           type: array
           items: {$ref: '#/components/schemas/SkillReferenceResponse'}
+    SessionThreadAgent:
+      description: >-
+        The immutable Agent snapshot executing this Thread, or the exact
+        platform advisor form for an automatically terminating consultation.
+      oneOf:
+        - $ref: '#/components/schemas/ManagedAgentThreadAgent'
+        - $ref: '#/components/schemas/MultiagentAdvisor'
+      discriminator:
+        propertyName: type
     AgentList:
       type: object
       additionalProperties: false

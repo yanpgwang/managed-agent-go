@@ -481,22 +481,26 @@ func (t *workflowTurnState) executeTool(
 	publicEventID string,
 	stepID string,
 	definition TurnTool,
+	advisorRequest model.Request,
+	advisorConsultation domain.AdvisorConsultation,
 ) (ExecuteToolResult, interruptibleActivityOutcome, error) {
 	t.attemptID = attemptID
 	input := ExecuteToolInput{
-		SessionID:        t.sessionID,
-		ThreadID:         t.threadID,
-		TriggerEventID:   t.triggerEventID,
-		AttemptID:        attemptID,
-		Ordinal:          t.ordinal,
-		ToolUseEventID:   publicEventID,
-		ToolStepID:       stepID,
-		ToolName:         use.ToolName,
-		ToolKind:         definition.Kind,
-		MCPServer:        definition.MCPServer,
-		MCPToolName:      definition.MCPToolName,
-		Input:            use.Input,
-		SkillRuntimeRoot: t.skillRuntimeRoot,
+		SessionID:           t.sessionID,
+		ThreadID:            t.threadID,
+		TriggerEventID:      t.triggerEventID,
+		AttemptID:           attemptID,
+		Ordinal:             t.ordinal,
+		ToolUseEventID:      publicEventID,
+		ToolStepID:          stepID,
+		ToolName:            use.ToolName,
+		ToolKind:            definition.Kind,
+		MCPServer:           definition.MCPServer,
+		MCPToolName:         definition.MCPToolName,
+		Input:               use.Input,
+		SkillRuntimeRoot:    t.skillRuntimeRoot,
+		AdvisorRequest:      advisorRequest,
+		AdvisorConsultation: advisorConsultation,
 	}
 	if definition.Kind == TurnToolRuntimeSkill {
 		if name, err := agentruntime.RuntimeSkillName(use.Input); err == nil {
@@ -815,6 +819,8 @@ func resumeWorkflowTurn(
 					action.ActionEventID,
 					action.ToolStepID,
 					definition,
+					model.Request{},
+					domain.AdvisorConsultation{},
 				)
 				if err != nil {
 					return nil, false, "", err
@@ -975,6 +981,14 @@ func planToolBatch(
 				"model requested a tool that is not enabled: " + use.ToolName,
 			)
 		}
+		if definition.Kind == TurnToolAdvisor {
+			if definition.Model == "" {
+				return toolBatchPlan{}, failTurn("advisor tool has no configured model")
+			}
+			if len(use.Input) != 0 {
+				return toolBatchPlan{}, failTurn("advisor tool does not accept input fields")
+			}
+		}
 		if definition.Kind == TurnToolBuiltin &&
 			definition.Permission.Type != "always_allow" &&
 			definition.Permission.Type != "always_ask" {
@@ -991,10 +1005,10 @@ func planToolBatch(
 	for _, use := range toolUses {
 		definition := toolsByName[use.ToolName]
 		planned := stepsByProviderID[use.ToolUseID]
-		if definition.Kind == TurnToolCoordinator {
-			// Coordinator primitives are private model tools. Their durable public
-			// projection is the official Thread lifecycle/message event set, never
-			// a generic agent.tool_use / agent.tool_result pair.
+		if definition.Kind == TurnToolCoordinator || definition.Kind == TurnToolAdvisor {
+			// Coordinator and Advisor primitives are private model tools. Their
+			// durable public projection is the official Thread lifecycle/message
+			// event set, never a generic agent.tool_use / agent.tool_result pair.
 			plan.executable = append(plan.executable, plannedToolUse{
 				use: use, publicEventID: planned.ToolUseEventID,
 				stepID: planned.ToolStepID, definition: definition,
@@ -1125,6 +1139,8 @@ func executeToolBatch(
 	turn *workflowTurnState,
 	attemptID string,
 	plan toolBatchPlan,
+	executorRequest model.Request,
+	assistantContent []domain.ContentBlock,
 ) (toolBatchExecution, bool, turnFailure, error) {
 	execution := toolBatchExecution{
 		resultDrafts: make([]domain.EventDraft, 0, len(plan.executable)),
@@ -1132,12 +1148,39 @@ func executeToolBatch(
 	}
 	injectedBlocks := make([]domain.ContentBlock, 0, len(plan.executable))
 	for _, planned := range plan.executable {
+		var advisorRequest model.Request
+		var consultation domain.AdvisorConsultation
+		if planned.definition.Kind == TurnToolAdvisor {
+			if turn.perRequestUsageAccounting {
+				if err := turn.flushOutput(); err != nil {
+					return toolBatchExecution{}, false, "", err
+				}
+				if err := turn.awaitModelRequestAdmission(); err != nil {
+					return toolBatchExecution{}, false, "", err
+				}
+			}
+			var err error
+			advisorRequest, consultation, err = advisorRequestForTool(
+				planned.definition,
+				executorRequest,
+				assistantContent,
+			)
+			if err != nil {
+				return toolBatchExecution{}, false, failTurn(err.Error()), nil
+			}
+			ids := advisorConsultationIDs(planned.stepID)
+			consultation.ThreadID = ids.ThreadID
+			consultation.UsageRequestID = ids.UsageRequestID
+			consultation.LifecycleIDs = ids.LifecycleIDs
+		}
 		executed, activityOutcome, err := turn.executeTool(
 			attemptID,
 			planned.use,
 			planned.publicEventID,
 			planned.stepID,
 			planned.definition,
+			advisorRequest,
+			consultation,
 		)
 		if err != nil {
 			return toolBatchExecution{}, false, "", err
@@ -1164,7 +1207,8 @@ func executeToolBatch(
 			), nil
 		}
 		execution.resultDrafts = append(execution.resultDrafts, executed.Events...)
-		if planned.definition.Kind != TurnToolCoordinator {
+		if planned.definition.Kind != TurnToolCoordinator &&
+			planned.definition.Kind != TurnToolAdvisor {
 			execution.resultDrafts = append(execution.resultDrafts, toolResultDraft(
 				planned.useEventType,
 				planned.publicEventID,

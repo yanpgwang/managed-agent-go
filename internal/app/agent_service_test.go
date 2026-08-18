@@ -375,6 +375,64 @@ func TestAgentService_MultiagentRejectsInvalidReferences(t *testing.T) {
 	}
 }
 
+func TestAgentService_AdvisorResolvesLastAndValidatesRoster(t *testing.T) {
+	s := newAgentService(t)
+	ctx := context.Background()
+	peer, err := s.Create(ctx, domain.Agent{
+		Name: "peer", Model: domain.Model{ID: "claude-sonnet-4-6"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	coordinator, err := s.Create(ctx, domain.Agent{
+		Name: "coordinator", Model: domain.Model{ID: "claude-sonnet-5"},
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{
+			{Type: "advisor", Model: "claude-opus-5"},
+			{Type: "agent", ID: peer.ID},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(coordinator.Multiagent.Agents) != 2 ||
+		coordinator.Multiagent.Agents[0].ID != peer.ID ||
+		coordinator.Multiagent.Agents[1].Type != "advisor" ||
+		coordinator.Multiagent.Agents[1].Model != "claude-opus-5" {
+		t.Fatalf("resolved advisor roster = %#v", coordinator.Multiagent)
+	}
+	portable, err := s.Create(ctx, domain.Agent{
+		Name: "portable-advisor", Model: domain.Model{ID: "router-executor"},
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{
+			Type: "advisor", Model: "router-reviewer",
+		}}},
+	})
+	if err != nil || portable.Multiagent.Advisor() == nil ||
+		portable.Multiagent.Advisor().Model != "router-reviewer" {
+		t.Fatalf("provider-neutral advisor = %#v, err=%v", portable.Multiagent, err)
+	}
+
+	cases := []domain.Agent{
+		{
+			Name: "duplicate", Model: domain.Model{ID: "claude-sonnet-5"},
+			Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{
+				{Type: "advisor", Model: "claude-opus-5"},
+				{Type: "advisor", Model: "claude-opus-5"},
+			}},
+		},
+		{
+			Name: domain.AdvisorAgentName, Model: domain.Model{ID: "claude-sonnet-5"},
+			Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{
+				Type: "advisor", Model: "claude-opus-5",
+			}}},
+		},
+	}
+	for _, candidate := range cases {
+		if _, err := s.Create(ctx, candidate); err == nil {
+			t.Fatalf("accepted invalid advisor Agent %q", candidate.Name)
+		}
+	}
+}
+
 func TestAgentService_LegacyMultiagentMustBeReplacedBeforeUpdate(t *testing.T) {
 	repo := newMemoryAgentRepository()
 	s := NewAgentService(repo, domain.NewSeqIDGen(), domain.FixedClock{T: time.Unix(1, 0).UTC()})

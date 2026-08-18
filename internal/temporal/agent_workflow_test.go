@@ -233,6 +233,115 @@ func TestWorkflowTurn_AdmitsAndAccountsEveryModelRequestBeforeCompletion(t *test
 	require.Equal(t, accounted.Usage, completed.Usage)
 }
 
+func TestWorkflowTurn_AdvisorIsPrivatePortableToolWithIndependentRequest(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	var mu sync.Mutex
+	modelCalls := 0
+	var advisorInput ExecuteToolInput
+	registerWorkflowTurnActivities(
+		env,
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{
+				AttemptID: "ratm_advisor_workflow", ThreadID: "sthr_primary",
+				Request: model.Request{
+					Model: "executor-model", InferenceGeo: "us",
+					System: "executor system",
+					Tools:  []model.ToolSchema{agentruntime.AdvisorToolSchema()},
+					Messages: []domain.Message{{
+						Role:    domain.RoleUser,
+						Content: []domain.ContentBlock{{Type: "text", Text: "design the shutdown path"}},
+					}},
+				},
+				Tools: []TurnTool{{
+					Name: agentruntime.AdvisorToolName, Kind: TurnToolAdvisor,
+					Permission: domain.PermissionPolicy{Type: "always_allow"},
+					Model:      "reviewer-model",
+				}},
+			}, nil
+		},
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			mu.Lock()
+			defer mu.Unlock()
+			modelCalls++
+			if modelCalls == 1 {
+				return CallModelResult{
+					ModelRequestStartID: in.ModelRequestStartID,
+					ModelRequestEndID:   in.ModelRequestEndID,
+					Response: model.Response{
+						StopReason: "tool_use",
+						Content: []domain.ContentBlock{{
+							Type: "tool_use", ToolUseID: "toolu_advisor",
+							ToolName: agentruntime.AdvisorToolName, Input: map[string]any{},
+						}},
+					},
+					ToolSteps: []PlannedToolStep{{
+						ToolUseEventID: "sevt_advisor_private", ProviderToolUseID: "toolu_advisor",
+						ToolStepID: "tstep_advisor_workflow",
+					}},
+				}, nil
+			}
+			last := in.Request.Messages[len(in.Request.Messages)-1]
+			require.Equal(t, domain.RoleUser, last.Role)
+			require.Equal(t, "tool_result", last.Content[0].Type)
+			require.Equal(t, "toolu_advisor", last.Content[0].ToolResultFor)
+			require.Contains(t, last.Content[0].Text, "shutdown race")
+			return CallModelResult{
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+				MessageEventID:      "sevt_final",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content:    []domain.ContentBlock{{Type: "text", Text: "final answer"}},
+				},
+			}, nil
+		},
+		func(_ context.Context, in ExecuteToolInput) (ExecuteToolResult, error) {
+			advisorInput = in
+			return ExecuteToolResult{Result: domain.ToolStepResult{
+				Content: []any{map[string]any{
+					"type": "text", "text": "check the shutdown race",
+				}},
+			}}, nil
+		},
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			for _, draft := range in.Output {
+				if draft.Type == domain.EvAgentToolUse || draft.Type == domain.EvAgentToolResult {
+					t.Fatalf("advisor leaked generic public tool event: %+v", draft)
+				}
+			}
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sesn_advisor_workflow", TriggerEventID: "sevt_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Equal(t, 2, modelCalls)
+	require.Equal(t, TurnToolAdvisor, advisorInput.ToolKind)
+	require.Equal(t, "reviewer-model", advisorInput.AdvisorRequest.Model)
+	require.Equal(t, "us", advisorInput.AdvisorRequest.InferenceGeo)
+	require.Empty(t, advisorInput.AdvisorRequest.Tools)
+	require.Contains(
+		t,
+		advisorInput.AdvisorRequest.Messages[0].Content[0].Text,
+		"design the shutdown path",
+	)
+	require.Contains(
+		t,
+		advisorInput.AdvisorRequest.Messages[0].Content[0].Text,
+		"toolu_advisor",
+	)
+	require.True(t, strings.HasPrefix(
+		advisorInput.AdvisorConsultation.ThreadID,
+		domain.PrefixSessionThread,
+	))
+	require.Len(t, advisorInput.AdvisorConsultation.LifecycleIDs, 9)
+}
+
 func TestWorkflowTurn_EmitsContextCompactionOnOwningThread(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

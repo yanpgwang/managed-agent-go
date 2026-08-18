@@ -7,10 +7,13 @@ import "time"
 // Session aggregates those projections; it is not the storage backing for the
 // primary Thread.
 type SessionThread struct {
-	ID                   string
-	SessionID            string
-	ParentThreadID       *string
-	Agent                Agent
+	ID             string
+	SessionID      string
+	ParentThreadID *string
+	Agent          Agent
+	// Advisor is non-nil only for a platform-spawned consultation Thread. Such a
+	// Thread never executes the ordinary child Workflow or exposes Agent fields.
+	Advisor              *Advisor
 	Status               Status
 	Usage                TokenUsage
 	ModelListCostNanoUSD int64
@@ -23,6 +26,37 @@ type SessionThread struct {
 	CreatedAt            time.Time
 	UpdatedAt            time.Time
 	ArchivedAt           *time.Time
+}
+
+// NewAdvisorSessionThread returns the final projection of one Mango-managed
+// consultation. The Thread is born and terminates within one private client-tool
+// execution; its lifecycle remains observable through the independent ledger.
+func NewAdvisorSessionThread(
+	id string,
+	sessionID string,
+	parentThreadID string,
+	advisor Advisor,
+	usage TokenUsage,
+	listCostNanoUSD int64,
+	listCostKnown bool,
+	now time.Time,
+) SessionThread {
+	now = now.UTC().Truncate(time.Microsecond)
+	parent := parentThreadID
+	terminatedAt := now
+	return SessionThread{
+		ID: id, SessionID: sessionID, ParentThreadID: &parent,
+		Advisor: &advisor, Status: StatusTerminated, Usage: usage,
+		ModelListCostNanoUSD: listCostNanoUSD, ListCostKnown: listCostKnown,
+		TerminatedAt: &terminatedAt, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func (t SessionThread) AgentName() string {
+	if t.Advisor != nil {
+		return AdvisorAgentName
+	}
+	return t.Agent.Name
 }
 
 // NewPrimarySessionThread captures the execution fields of a newly created

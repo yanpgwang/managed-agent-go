@@ -292,7 +292,8 @@ FOR UPDATE`, session.ID, parentThreadID).Scan(&parentKind); errors.Is(err, pgx.E
 		var count int
 		if err := tx.QueryRow(ctx, `
 SELECT COUNT(*) FROM session_threads
-WHERE session_id = $1 AND archived_at IS NULL`, session.ID).Scan(&count); err != nil {
+WHERE session_id = $1 AND kind != 'advisor'
+  AND archived_at IS NULL`, session.ID).Scan(&count); err != nil {
 			return domain.ToolStepResult{}, "", err
 		}
 		if count >= maxConcurrentSessionThreads {

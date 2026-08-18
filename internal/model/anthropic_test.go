@@ -85,6 +85,65 @@ func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 	}
 }
 
+func TestAnthropic_OrdinaryAdvisorToolUsesPortableWireContract(t *testing.T) {
+	var gotBody map[string]any
+	var gotBetas []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBetas = append([]string(nil), r.Header.Values("anthropic-beta")...)
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &gotBody)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"content":[{"type":"tool_use","id":"tool_advisor","name":"advisor","input":{}}],
+			"stop_reason":"tool_use",
+			"usage":{"input_tokens":11,"output_tokens":7}
+		}`))
+	}))
+	defer srv.Close()
+
+	client, err := NewAnthropic(AnthropicConfig{
+		BaseURL: srv.URL, APIKey: "sk-test", Model: "claude-sonnet-5",
+		HTTPClient: srv.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.CreateMessage(context.Background(), Request{
+		Model: "claude-sonnet-5",
+		Tools: []ToolSchema{{
+			Name: "advisor", Description: "Request an independent review.",
+			InputSchema: map[string]any{
+				"type": "object", "properties": map[string]any{},
+			},
+		}},
+		Messages: []domain.Message{{Role: domain.RoleUser, Content: []domain.ContentBlock{{
+			Type: "text", Text: "review this",
+		}}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(gotBetas, ","), "advisor-tool") {
+		t.Fatalf("ordinary advisor tool leaked native beta header: %#v", gotBetas)
+	}
+	tools, ok := gotBody["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("advisor tools body = %#v", gotBody["tools"])
+	}
+	tool := tools[0].(map[string]any)
+	if _, present := tool["type"]; present || tool["name"] != "advisor" ||
+		tool["description"] != "Request an independent review." {
+		t.Fatalf("advisor tool = %#v", tool)
+	}
+	if response.Usage.InputTokens != 11 || response.Usage.OutputTokens != 7 {
+		t.Fatalf("top-level usage = %#v", response.Usage)
+	}
+	if len(response.Content) != 1 || response.Content[0].Type != "tool_use" ||
+		response.Content[0].ToolName != "advisor" {
+		t.Fatalf("ordinary advisor tool response = %#v", response.Content)
+	}
+}
+
 func TestAnthropic_OmitsSemanticModelDefaults(t *testing.T) {
 	c, err := NewAnthropic(AnthropicConfig{
 		BaseURL: "https://example.com", APIKey: "sk-test", Model: "claude-x",

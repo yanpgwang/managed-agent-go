@@ -186,6 +186,12 @@ func (s *Store) ArchiveSessionThread(
 		if err != nil {
 			return err
 		}
+		var threadKind string
+		if err := tx.QueryRow(ctx, `
+SELECT kind FROM session_threads
+WHERE session_id = $1 AND id = $2`, sessionID, threadID).Scan(&threadKind); err != nil {
+			return err
+		}
 		if thread.ParentThreadID == nil {
 			return domain.Conflict("primary Thread archival follows the Session lifecycle")
 		}
@@ -196,14 +202,16 @@ func (s *Store) ArchiveSessionThread(
 			return err
 		}
 		if thread.ArchivedAt != nil {
-			if err := q.UpsertThreadTermination(
-				ctx,
-				pgstore.UpsertThreadTerminationParams{
-					SessionID: sessionID, ThreadID: threadID,
-					MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
-				},
-			); err != nil {
-				return err
+			if threadKind != "advisor" {
+				if err := q.UpsertThreadTermination(
+					ctx,
+					pgstore.UpsertThreadTerminationParams{
+						SessionID: sessionID, ThreadID: threadID,
+						MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
+					},
+				); err != nil {
+					return err
+				}
 			}
 			result = thread
 			return nil
@@ -313,14 +321,16 @@ WHERE session_id = $1 AND thread_id = $2 AND processed_at IS NULL`,
 				maxSeq = next
 			}
 		}
-		if err := q.UpsertThreadTermination(
-			ctx,
-			pgstore.UpsertThreadTerminationParams{
-				SessionID: sessionID, ThreadID: threadID,
-				MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
-			},
-		); err != nil {
-			return err
+		if threadKind != "advisor" {
+			if err := q.UpsertThreadTermination(
+				ctx,
+				pgstore.UpsertThreadTerminationParams{
+					SessionID: sessionID, ThreadID: threadID,
+					MaxEventSeq: maxSeq, EnqueuedAt: tsUTC(now),
+				},
+			); err != nil {
+				return err
+			}
 		}
 		result = thread
 		return nil

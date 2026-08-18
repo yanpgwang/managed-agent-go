@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
@@ -420,8 +421,20 @@ func parseMultiagentRosterEntry(raw json.RawMessage) (domain.AgentReference, err
 			}
 		}
 		return entry, nil
+	case "advisor":
+		for field := range object {
+			if field != "type" && field != "model" {
+				return domain.AgentReference{}, domain.Validation("multiagent advisor entry contains an unknown field: " + field)
+			}
+		}
+		var model string
+		if value, ok := object["model"]; !ok || json.Unmarshal(value, &model) != nil ||
+			strings.TrimSpace(model) == "" {
+			return domain.AgentReference{}, domain.Validation("multiagent advisor entry requires a non-empty model")
+		}
+		return domain.AgentReference{Type: "advisor", Model: model}, nil
 	default:
-		return domain.AgentReference{}, domain.Validation("multiagent roster entry type must be agent or self")
+		return domain.AgentReference{}, domain.Validation("multiagent roster entry type must be agent, self, or advisor")
 	}
 }
 

@@ -98,13 +98,14 @@ make local-down
 | Vaults | Thirteen encrypted Vault and Credential operations plus ordered Session attachment, live OAuth validation, and automatic token refresh; environment-variable egress remains in progress |
 | Deployments | Ten Deployment and Deployment Run operations, pinned Agent versions, manual runs, and PostgreSQL-leased cron scheduling |
 | Environment Work | Eight worker-protocol operations, transactional self-hosted Session activation, lease heartbeats, reclaim, and official Go `WorkPoller` interoperability |
-| Session Threads | Persistent coordinator delegation with independent child context, execution, usage, retries, reports, isolated event/preview streams, routed client-action waits, and global or targeted durable interrupts |
+| Session Threads | Persistent coordinator delegation plus Mango-managed Advisor consultations over ordinary client tool calls, with independent context, usage, lifecycle events, reports, isolated event/preview streams, routed client-action waits, and durable interrupts |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
 The [compatibility summary](https://yanpgwang.github.io/managed-agent-go/compatibility)
-states the user-visible boundary. Ordinary persistent child-Agent orchestration
-and shared Session budgets are implemented; advisors, Dreams,
-environment-variable secret egress, and production-platform hardening remain
+states the user-visible boundary. Persistent child-Agent orchestration,
+provider-neutral Advisor consultations, and shared Session budgets are
+implemented; Dreams, environment-variable secret egress, and
+production-platform hardening remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
 ## Architecture

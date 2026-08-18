@@ -147,4 +147,32 @@ func TestAgentReference_PreservesLegacyStringDuringStorageRoundTrip(t *testing.T
 	}
 }
 
+func TestAgentReference_AdvisorUsesExactResolvedShape(t *testing.T) {
+	var reference AgentReference
+	if err := json.Unmarshal([]byte(`{"type":"advisor","model":"claude-opus-5"}`), &reference); err != nil {
+		t.Fatal(err)
+	}
+	if reference.Type != "advisor" || reference.Model != "claude-opus-5" ||
+		reference.ID != "" || reference.Version != 0 {
+		t.Fatalf("advisor reference = %#v", reference)
+	}
+	topology := &Multiagent{Type: "coordinator", Agents: []AgentReference{
+		{Type: "agent", ID: "agent_peer", Version: 1},
+		reference,
+	}}
+	if !topology.IsResolved() || topology.HasCallableAgents() == false ||
+		topology.Advisor() == nil || topology.Advisor().Model != "claude-opus-5" {
+		t.Fatalf("resolved advisor topology = %#v", topology)
+	}
+	for _, raw := range []string{
+		`{"type":"advisor"}`,
+		`{"type":"advisor","model":""}`,
+		`{"type":"advisor","model":"claude-opus-5","max_uses":1}`,
+	} {
+		if err := json.Unmarshal([]byte(raw), &reference); err == nil {
+			t.Fatalf("accepted invalid advisor entry %s", raw)
+		}
+	}
+}
+
 func strPtr(s string) *string { return &s }

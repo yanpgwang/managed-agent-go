@@ -48,9 +48,16 @@ repository's HTTP, SDK, PostgreSQL, Temporal, and service test suites.
 | [Vaults](api/vaults.md) | Limited | Thirteen Vault/Credential operations, encrypted storage, ordered Session attachment, OAuth validation, expiry refresh, and token rotation. Environment-variable egress and refresh-failure webhooks are not implemented. |
 | [Deployments](api/deployments.md) | Limited | Ten Deployment/Run operations, pinned Agent Versions, Session budget templates, manual runs, cron scheduling, leases, and atomic success/failure records. GitHub resources and Agent-archive propagation remain open. |
 | [Environment Work](api/environment-work.md) | Limited | All eight self-hosted worker-protocol operations and official Go `WorkPoller` interoperability. Environment-key issuance, tenant-scoped authorization, Work secrets, and health-check Work remain open. |
-| [Multi-agent](guides/multi-agent.md) | Limited | Persistent ordinary child Agents, independent Workflows/transcripts/events/usage, shared Session list-cost budgets, reports, action routing, interrupts, retries, archive, deletion, and durable context-compaction checkpoints. Exact report-only preview behavior and advisors remain open. |
+| [Multi-agent](guides/multi-agent.md) | Limited | Persistent ordinary child Agents plus primary-only Mango-managed Advisor consultations over standard client tool calls, independent transcripts/events/usage, shared Session list-cost budgets, reports, routing, interrupts, retries, archive, deletion, and durable context-compaction checkpoints. Exact report-only preview behavior and live Advisor lifecycle timing/targeted interruption remain open. |
 | [Sandbox adapters](sandboxes.md) | Limited / Preview | Local and Docker are available. E2B, CubeSandbox, OpenSandbox, and Daytona have durable bindings but remain Preview pending repeated live conformance and production routing policy. |
 | Distributed operation | Limited | API and worker roles scale independently around PostgreSQL, Temporal, and NATS. Worker Versioning, heterogeneous-provider routing, distributed Files reconciliation, and production rollout evidence remain open. |
+
+Downgrading to a pre-Advisor schema requires an ordered maintenance window:
+drain or cancel active Sessions, run migration 33 Down with the current
+release, and only then deploy the older binary. The Down migration removes
+Advisor roster entries, private continuations, detailed Threads, and Advisor
+tool-journal rows while retaining the Session's already-billed aggregate usage
+and budget state.
 
 ## Explicitly outside the current claim
 

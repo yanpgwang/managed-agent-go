@@ -73,6 +73,10 @@ func TestWorkflowTurn_ContinuesPauseTurnWithExactProviderContent(t *testing.T) {
 		serverToolBlock,
 	}
 	secondPauseContent := []domain.ContentBlock{
+		{
+			Type: "web_search_tool_result",
+			Raw:  json.RawMessage(`{"type":"web_search_tool_result","tool_use_id":"srvtoolu_1","content":[{"type":"web_search_result","title":"evidence"}]}`),
+		},
 		{Type: "text", Text: "I am checking the remaining sources."},
 		{
 			Type: "server_tool_use",
@@ -158,8 +162,11 @@ func TestWorkflowTurn_ContinuesPauseTurnWithExactProviderContent(t *testing.T) {
 	}, requests[1].Messages)
 	require.Equal(t, []domain.Message{
 		initial[0],
-		{Role: domain.RoleAssistant, Content: secondPauseContent},
-	}, requests[2].Messages, "a repeated pause replaces the prior continuation content")
+		{Role: domain.RoleAssistant, Content: append(
+			append([]domain.ContentBlock(nil), pauseContent...),
+			secondPauseContent...,
+		)},
+	}, requests[2].Messages, "a repeated pause keeps the server-tool use/result chain paired")
 	require.Equal(t, domain.StatusIdle, completed.Status)
 	require.Equal(t, []string{
 		domain.EvAgentMessage,
@@ -173,7 +180,10 @@ func TestWorkflowTurn_ContinuesPauseTurnWithExactProviderContent(t *testing.T) {
 	require.Len(t, completed.TranscriptDelta, 2)
 	require.Equal(t, domain.RoleAssistant, completed.TranscriptDelta[1].Role)
 	require.Equal(t, append(
-		append([]domain.ContentBlock(nil), secondPauseContent...),
+		append(
+			append([]domain.ContentBlock(nil), pauseContent...),
+			secondPauseContent...,
+		),
 		domain.ContentBlock{Type: "text", Text: "Research complete."},
 	), completed.TranscriptDelta[1].Content)
 }

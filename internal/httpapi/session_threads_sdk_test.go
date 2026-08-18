@@ -155,6 +155,73 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	}
 }
 
+func TestOfficialGoSDKAdvisorSessionThreadAgentUnion(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 9, 9, 0, 0, 0, time.UTC)
+	primaryID := "sthr_primary_advisor_sdk"
+	advisor := domain.Advisor{Type: "advisor", Model: "claude-opus-5"}
+	thread := domain.NewAdvisorSessionThread(
+		"sthr_advisor_sdk", "sesn_advisor_sdk", primaryID, advisor,
+		domain.TokenUsage{InputTokens: 10, OutputTokens: 2}, 100, true, now,
+	)
+	adviceEvent := domain.Event{
+		ID: "sevt_advisor_advice_sdk", SessionID: thread.SessionID,
+		ThreadID: thread.ID, Sequence: 1, Type: domain.EvAgentThreadMessageSent,
+		Payload: map[string]any{
+			"to_session_thread_id": primaryID,
+			"to_agent_name":        "coordinator",
+			"content": []any{map[string]any{
+				"type": "text", "text": "check the shutdown race",
+			}},
+		},
+		CreatedAt: now, ProcessedAt: &now,
+	}
+	service := &sdkThreadService{thread: thread, next: thread}
+	server := httptest.NewServer(NewServer(Deps{
+		Sessions: &testSessionService{sessions: map[string]domain.Session{
+			thread.SessionID: {ID: thread.SessionID},
+		}},
+		Threads: service,
+		Events: &sdkThreadEvents{
+			event: adviceEvent, next: adviceEvent, child: adviceEvent,
+		},
+	}, Config{RequireBeta: true, RequireAuth: true, RequireVersion: true}).Handler())
+	t.Cleanup(server.Close)
+	client := anthropic.NewClient(
+		option.WithBaseURL(server.URL+"/"), option.WithAPIKey("test-key"),
+	)
+	got, err := client.Beta.Sessions.Threads.Get(
+		context.Background(), thread.ID,
+		anthropic.BetaSessionThreadGetParams{SessionID: thread.SessionID},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := got.Agent.AsAdvisor()
+	if got.Agent.Type != "advisor" || resolved.Model != "claude-opus-5" ||
+		resolved.Type != anthropic.BetaManagedAgentsAdvisorTypeAdvisor ||
+		got.ParentThreadID != primaryID ||
+		got.Status != anthropic.BetaManagedAgentsSessionThreadStatusTerminated {
+		t.Fatalf("Advisor Session Thread = %s", got.RawJSON())
+	}
+	if strings.Contains(got.Agent.RawJSON(), `"id"`) ||
+		strings.Contains(got.Agent.RawJSON(), `"name"`) {
+		t.Fatalf("Advisor union leaked Agent fields: %s", got.Agent.RawJSON())
+	}
+	events, err := client.Beta.Sessions.Threads.Events.List(
+		context.Background(), thread.ID,
+		anthropic.BetaSessionThreadEventListParams{SessionID: thread.SessionID},
+	)
+	if err != nil || len(events.Data) != 1 {
+		t.Fatalf("Advisor Thread Events = %+v, err=%v", events, err)
+	}
+	sent := events.Data[0].AsAgentThreadMessageSent()
+	if sent.ToSessionThreadID != primaryID || len(sent.Content) != 1 ||
+		sent.Content[0].AsText().Text != "check the shutdown race" {
+		t.Fatalf("Advisor advice Event = %s", sent.RawJSON())
+	}
+}
+
 type sdkThreadService struct {
 	thread domain.SessionThread
 	next   domain.SessionThread

@@ -218,7 +218,7 @@ func lockChildRetryOwner(
 func threadLifecyclePayload(thread domain.SessionThread) map[string]any {
 	return map[string]any{
 		"session_thread_id": thread.ID,
-		"agent_name":        thread.Agent.Name,
+		"agent_name":        thread.AgentName(),
 	}
 }
 
