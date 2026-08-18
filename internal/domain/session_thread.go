@@ -77,6 +77,22 @@ func (t *SessionThread) ApplyPrimarySessionProjection(session Session) {
 	}
 }
 
+// ApplyIndependentPrimarySessionProjection synchronizes Session-owned control
+// fields without replacing the primary Thread's execution projection. In a
+// multi-agent Session, usage, list cost, status, and timing are owned by each
+// Thread and must not be copied back from the Session aggregate.
+func (t *SessionThread) ApplyIndependentPrimarySessionProjection(session Session) {
+	t.Agent = session.AgentSnapshot
+	t.UpdatedAt = session.UpdatedAt.UTC()
+	if session.ArchivedAt == nil {
+		return
+	}
+	archivedAt := session.ArchivedAt.UTC()
+	t.TransitionStatus(StatusTerminated, archivedAt)
+	t.ArchivedAt = &archivedAt
+	t.UpdatedAt = session.UpdatedAt.UTC()
+}
+
 // ObservableStats returns the live timing projection for a thread. Duration
 // freezes when a thread is archived or terminated.
 func (t SessionThread) ObservableStats(now time.Time) (activeSeconds, durationSeconds float64) {

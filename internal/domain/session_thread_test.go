@@ -35,6 +35,45 @@ func TestPrimarySessionThreadOwnsIndependentProjection(t *testing.T) {
 	}
 }
 
+func TestIndependentPrimaryProjectionPreservesThreadExecution(t *testing.T) {
+	created := time.Date(2026, 8, 9, 8, 0, 0, 0, time.UTC)
+	updated := created.Add(time.Minute)
+	thread := SessionThread{
+		ID: "sthr_primary", SessionID: "sesn_projection",
+		Agent: Agent{ID: "agent_primary", Name: "before"}, Status: StatusIdle,
+		Usage: TokenUsage{InputTokens: 5}, ModelListCostNanoUSD: 7,
+		ListCostKnown: true, BudgetPaused: true, ActiveSeconds: 3,
+		CreatedAt: created, UpdatedAt: created,
+	}
+	session := Session{
+		ID: "sesn_projection", Status: StatusIdle,
+		AgentSnapshot: Agent{
+			ID: "agent_primary", Name: "after", Multiagent: &Multiagent{Type: "coordinator"},
+		},
+		Usage: TokenUsage{InputTokens: 11}, ModelListCostNanoUSD: 13,
+		ListCostKnown: false, ActiveSeconds: 17, UpdatedAt: updated,
+	}
+
+	thread.ApplyIndependentPrimarySessionProjection(session)
+	if thread.Agent.Name != "after" || thread.Usage.InputTokens != 5 ||
+		thread.ModelListCostNanoUSD != 7 || !thread.ListCostKnown ||
+		!thread.BudgetPaused || thread.ActiveSeconds != 3 ||
+		thread.Status != StatusIdle || !thread.UpdatedAt.Equal(updated) {
+		t.Fatalf("independent primary projection = %+v", thread)
+	}
+
+	archivedAt := updated.Add(time.Minute)
+	session.ArchivedAt = &archivedAt
+	session.UpdatedAt = archivedAt
+	thread.ApplyIndependentPrimarySessionProjection(session)
+	if thread.Status != StatusTerminated || thread.ArchivedAt == nil ||
+		!thread.ArchivedAt.Equal(archivedAt) || thread.TerminatedAt == nil ||
+		!thread.TerminatedAt.Equal(archivedAt) || thread.Usage.InputTokens != 5 ||
+		thread.ModelListCostNanoUSD != 7 || thread.ActiveSeconds != 3 {
+		t.Fatalf("archived independent primary projection = %+v", thread)
+	}
+}
+
 func TestNewChildSessionThreadCapturesIndependentAgentSnapshot(t *testing.T) {
 	now := time.Date(2026, 8, 9, 10, 0, 0, 123456789, time.UTC)
 	parent := "sthr_primary"

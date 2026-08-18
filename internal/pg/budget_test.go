@@ -186,6 +186,31 @@ func TestModelRequestUsageAggregatesAcrossIndependentThreads(t *testing.T) {
 		!child.ListCostKnown || child.ModelListCostNanoUSD != 3_000_000 {
 		t.Fatalf("Thread list costs: primary=%+v child=%+v", primary, child)
 	}
+
+	// Session-owned Agent and archive projections must not copy the aggregate
+	// usage or list cost back into the independently accounted primary Thread.
+	tools := []any{map[string]any{"type": domain.BuiltinToolsetType}}
+	if _, err := store.UpdateSession(ctx, session.ID, domain.SessionUpdate{
+		AgentTools: &tools,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ArchiveSession(ctx, session.ID); err != nil {
+		t.Fatal(err)
+	}
+	primary, err = store.GetSessionThread(ctx, session.ID, primaryID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err = store.GetSessionThread(ctx, session.ID, child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if primary.Status != domain.StatusTerminated || primary.Usage.InputTokens != 1_000 ||
+		primary.ModelListCostNanoUSD != 5_000_000 ||
+		child.Usage.InputTokens != 1_000 || child.ModelListCostNanoUSD != 3_000_000 {
+		t.Fatalf("projected Thread usage: primary=%+v child=%+v", primary, child)
+	}
 }
 
 func TestUnknownModelMakesListCostUnknownOnlyAfterItIsUsed(t *testing.T) {

@@ -652,7 +652,11 @@ func (s *Store) putPrimarySessionThreadProjection(
 	if err := json.Unmarshal(body, &thread); err != nil {
 		return fmt.Errorf("pg: decode primary session thread projection: %w", err)
 	}
-	thread.ApplyPrimarySessionProjection(session)
+	if session.AgentSnapshot.Multiagent == nil {
+		thread.ApplyPrimarySessionProjection(session)
+	} else {
+		thread.ApplyIndependentPrimarySessionProjection(session)
+	}
 	body, err = json.Marshal(thread)
 	if err != nil {
 		return err
