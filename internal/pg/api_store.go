@@ -21,10 +21,18 @@ func (s *Store) ListSessions(
 	ctx context.Context,
 	query app.ListPage,
 ) (app.SessionListPage, error) {
+	workspaceID, scoped, err := s.workspaceForRead(ctx)
+	if err != nil {
+		return app.SessionListPage{}, err
+	}
 	if query.Limit <= 0 {
 		query.Limit = 100
 	}
 	clauses, args := sessionListClauses(query)
+	if scoped {
+		args = append(args, workspaceID)
+		clauses = append(clauses, fmt.Sprintf(`workspace_id = $%d`, len(args)))
+	}
 	pageClauses := append([]string(nil), clauses...)
 	pageArgs := append([]any(nil), args...)
 
@@ -252,11 +260,19 @@ func (s *Store) ListAgents(
 	ctx context.Context,
 	query app.AgentListQuery,
 ) (app.AgentListPage, error) {
+	workspaceID, scoped, err := s.workspaceForRead(ctx)
+	if err != nil {
+		return app.AgentListPage{}, err
+	}
 	if query.Limit <= 0 {
 		query.Limit = app.DefaultAgentListLimit
 	}
 	var clauses []string
 	var args []any
+	if scoped {
+		args = append(args, workspaceID)
+		clauses = append(clauses, fmt.Sprintf(`workspace_id = $%d`, len(args)))
+	}
 	if !query.IncludeArchived {
 		clauses = append(clauses, `archived_at IS NULL`)
 	}
@@ -275,7 +291,7 @@ func (s *Store) ListAgents(
 	}
 
 	statement := `SELECT id, body, created_at, archived_at FROM (
-    SELECT DISTINCT ON (id) id, body, created_at, archived_at
+    SELECT DISTINCT ON (id) id, body, created_at, archived_at, workspace_id
     FROM agents
     ORDER BY id, version DESC
 ) AS latest`
@@ -326,11 +342,19 @@ func (s *Store) ListEnvironments(
 	ctx context.Context,
 	query app.EnvironmentListQuery,
 ) (app.EnvironmentListPage, error) {
+	workspaceID, scoped, err := s.workspaceForRead(ctx)
+	if err != nil {
+		return app.EnvironmentListPage{}, err
+	}
 	if query.Limit <= 0 {
 		query.Limit = app.DefaultEnvironmentListLimit
 	}
 	var clauses []string
 	var args []any
+	if scoped {
+		args = append(args, workspaceID)
+		clauses = append(clauses, fmt.Sprintf(`workspace_id = $%d`, len(args)))
+	}
 	if !query.IncludeArchived {
 		clauses = append(clauses, `archived_at IS NULL`)
 	}

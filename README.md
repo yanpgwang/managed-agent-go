@@ -40,8 +40,8 @@ production-oriented architecture is built in Go on PostgreSQL and Temporal.
   client-action waits survive API and worker restarts.
 - **Bring your own execution environment.** Choose local, Docker, E2B,
   CubeSandbox, OpenSandbox, or Daytona sandbox adapters.
-- **Run the whole stack locally.** Start a credential-free development stack
-  with an offline model, PostgreSQL, Temporal, NATS, and MinIO.
+- **Run the whole stack locally.** Start without external model credentials;
+  the Compose stack supplies a development-only Mango API key.
 - **Inspect every turn.** Query the persisted event history, stream live
   previews over SSE, and inspect active workflows in Temporal UI.
 
@@ -62,7 +62,9 @@ Verify that Mango is ready:
 curl -i http://localhost:8080/readyz
 ```
 
-The local stack uses a deterministic offline model, so no API key is required.
+The local stack uses a deterministic offline model, so no model API key is
+required. Protected Mango routes use the development key
+`sk-mango-local-development`; health and readiness remain public.
 Follow the [five-minute walkthrough](https://yanpgwang.github.io/managed-agent-go/getting-started)
 to create an Environment, Agent, and Session, then send and stream your first
 message.

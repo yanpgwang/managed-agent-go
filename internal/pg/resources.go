@@ -33,7 +33,11 @@ func NewAgentRepository(store *Store) *AgentRepository {
 }
 
 func (r *AgentRepository) PutVersion(ctx context.Context, agent domain.Agent) error {
-	params, err := agentInsertParams(agent)
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return err
+	}
+	params, err := agentInsertParams(workspaceID, agent)
 	if err != nil {
 		return err
 	}
@@ -41,7 +45,7 @@ func (r *AgentRepository) PutVersion(ctx context.Context, agent domain.Agent) er
 		if err := q.InsertAgentVersion(ctx, params); err != nil {
 			return err
 		}
-		return replaceAgentSkillVersions(ctx, tx, agent, true)
+		return replaceAgentSkillVersions(ctx, tx, workspaceID, agent, true)
 	})
 }
 
@@ -50,9 +54,15 @@ func (r *AgentRepository) UpdateVersion(
 	id string,
 	mutate func(domain.Agent) (domain.Agent, bool, error),
 ) (domain.Agent, error) {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.Agent{}, err
+	}
 	var result domain.Agent
-	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
-		row, err := q.LockLatestAgent(ctx, id)
+	err = r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+		row, err := q.LockLatestAgent(ctx, pgstore.LockLatestAgentParams{
+			ID: id, WorkspaceID: workspaceID,
+		})
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("agent not found")
 		}
@@ -77,7 +87,7 @@ func (r *AgentRepository) UpdateVersion(
 		next.CreatedAt = current.CreatedAt
 		next.ArchivedAt = nil
 		skillsChanged := !reflect.DeepEqual(current.Skills, next.Skills)
-		params, err := agentInsertParams(next)
+		params, err := agentInsertParams(workspaceID, next)
 		if err != nil {
 			return err
 		}
@@ -87,7 +97,7 @@ func (r *AgentRepository) UpdateVersion(
 			}
 			return err
 		}
-		if err := replaceAgentSkillVersions(ctx, tx, next, skillsChanged); err != nil {
+		if err := replaceAgentSkillVersions(ctx, tx, workspaceID, next, skillsChanged); err != nil {
 			return err
 		}
 		result = next
@@ -101,21 +111,28 @@ func (r *AgentRepository) Archive(
 	id string,
 	archivedAt time.Time,
 ) (domain.Agent, error) {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.Agent{}, err
+	}
 	var result domain.Agent
-	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+	err = r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		// Serialize archival with version creation before updating every Agent
 		// row. Without this fence, an UpdateVersion blocked inside ArchiveAgent's
 		// statement snapshot can commit a new active version and pin; the archive
 		// statement then misses that version while its later pin cleanup sees and
 		// deletes the new pin.
-		if _, err := q.LockLatestAgent(ctx, id); errors.Is(err, pgx.ErrNoRows) {
+		if _, err := q.LockLatestAgent(ctx, pgstore.LockLatestAgentParams{
+			ID: id, WorkspaceID: workspaceID,
+		}); errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("agent not found")
 		} else if err != nil {
 			return err
 		}
 		affected, err := q.ArchiveAgent(ctx, pgstore.ArchiveAgentParams{
-			ArchivedAt: tsUTC(archivedAt),
-			ID:         id,
+			ArchivedAt:  tsUTC(archivedAt),
+			ID:          id,
+			WorkspaceID: workspaceID,
 		})
 		if err != nil {
 			return err
@@ -123,10 +140,18 @@ func (r *AgentRepository) Archive(
 		if affected == 0 {
 			return domain.NotFound("agent not found")
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM agent_skill_versions WHERE agent_id = $1`, id); err != nil {
+		if _, err := tx.Exec(ctx, `
+DELETE FROM agent_skill_versions AS pin
+USING agents AS agent
+WHERE pin.agent_id = agent.id
+  AND pin.agent_version = agent.version
+  AND pin.agent_id = $1
+  AND agent.workspace_id = $2`, id, workspaceID); err != nil {
 			return err
 		}
-		row, err := q.GetLatestAgent(ctx, id)
+		row, err := q.GetLatestAgent(ctx, pgstore.GetLatestAgentParams{
+			ID: id, WorkspaceID: workspaceID,
+		})
 		if err != nil {
 			return err
 		}
@@ -139,6 +164,7 @@ func (r *AgentRepository) Archive(
 func replaceAgentSkillVersions(
 	ctx context.Context,
 	tx pgx.Tx,
+	workspaceID string,
 	agent domain.Agent,
 	strict bool,
 ) error {
@@ -153,7 +179,7 @@ func replaceAgentSkillVersions(
 			reference.SkillID == "" || reference.Version == "" || reference.Version == "latest" {
 			continue
 		}
-		locked, err := lockReadySkillVersion(ctx, tx, reference)
+		locked, err := lockReadySkillVersion(ctx, tx, workspaceID, reference)
 		if err != nil {
 			return err
 		}
@@ -179,7 +205,13 @@ INSERT INTO agent_skill_versions (
 }
 
 func (r *AgentRepository) Latest(ctx context.Context, id string) (domain.Agent, error) {
-	row, err := r.store.q.GetLatestAgent(ctx, id)
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.Agent{}, err
+	}
+	row, err := r.store.q.GetLatestAgent(ctx, pgstore.GetLatestAgentParams{
+		ID: id, WorkspaceID: workspaceID,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Agent{}, domain.NotFound("agent not found")
 	}
@@ -194,8 +226,12 @@ func (r *AgentRepository) GetVersion(
 	id string,
 	version int,
 ) (domain.Agent, error) {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.Agent{}, err
+	}
 	row, err := r.store.q.GetAgentVersion(ctx, pgstore.GetAgentVersionParams{
-		ID: id, Version: int32(version),
+		ID: id, Version: int32(version), WorkspaceID: workspaceID,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Agent{}, domain.NotFound("agent version not found")
@@ -211,11 +247,16 @@ func (r *AgentRepository) Versions(
 	id string,
 	query app.AgentVersionListQuery,
 ) (app.AgentVersionListPage, error) {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return app.AgentVersionListPage{}, err
+	}
 	if query.Limit <= 0 {
 		query.Limit = app.DefaultAgentListLimit
 	}
 	rows, err := r.store.q.ListAgentVersions(ctx, pgstore.ListAgentVersionsParams{
-		ID: id, AfterVersion: int32(query.AfterVersion), RowLimit: int32(query.Limit + 1),
+		ID: id, WorkspaceID: workspaceID,
+		AfterVersion: int32(query.AfterVersion), RowLimit: int32(query.Limit + 1),
 	})
 	if err != nil {
 		return app.AgentVersionListPage{}, err
@@ -239,19 +280,23 @@ func (r *AgentRepository) ListLatest(
 	return r.store.ListAgents(ctx, query)
 }
 
-func agentInsertParams(agent domain.Agent) (pgstore.InsertAgentVersionParams, error) {
+func agentInsertParams(
+	workspaceID string,
+	agent domain.Agent,
+) (pgstore.InsertAgentVersionParams, error) {
 	body, err := json.Marshal(agent)
 	if err != nil {
 		return pgstore.InsertAgentVersionParams{}, err
 	}
 	return pgstore.InsertAgentVersionParams{
-		ID:         agent.ID,
-		Version:    int32(agent.Version),
-		Name:       agent.Name,
-		Body:       body,
-		CreatedAt:  tsUTC(agent.CreatedAt),
-		UpdatedAt:  tsUTC(agent.UpdatedAt),
-		ArchivedAt: tsPtr(agent.ArchivedAt),
+		ID:          agent.ID,
+		Version:     int32(agent.Version),
+		Name:        agent.Name,
+		Body:        body,
+		CreatedAt:   tsUTC(agent.CreatedAt),
+		UpdatedAt:   tsUTC(agent.UpdatedAt),
+		ArchivedAt:  tsPtr(agent.ArchivedAt),
+		WorkspaceID: workspaceID,
 	}, nil
 }
 
@@ -288,19 +333,31 @@ func NewEnvironmentRepository(store *Store) *EnvironmentRepository {
 }
 
 func (r *EnvironmentRepository) Put(ctx context.Context, environment domain.Environment) error {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return err
+	}
 	body, err := json.Marshal(environment)
 	if err != nil {
 		return err
 	}
-	return r.store.q.UpsertEnvironment(ctx, pgstore.UpsertEnvironmentParams{
-		ID:         environment.ID,
-		Name:       environment.Name,
-		ConfigType: environment.ConfigType,
-		Body:       body,
-		CreatedAt:  tsUTC(environment.CreatedAt),
-		UpdatedAt:  tsUTC(environment.UpdatedAt),
-		ArchivedAt: tsPtr(environment.ArchivedAt),
+	affected, err := r.store.q.UpsertEnvironment(ctx, pgstore.UpsertEnvironmentParams{
+		ID:          environment.ID,
+		Name:        environment.Name,
+		ConfigType:  environment.ConfigType,
+		Body:        body,
+		CreatedAt:   tsUTC(environment.CreatedAt),
+		UpdatedAt:   tsUTC(environment.UpdatedAt),
+		ArchivedAt:  tsPtr(environment.ArchivedAt),
+		WorkspaceID: workspaceID,
 	})
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return domain.Conflict("environment already exists")
+	}
+	return nil
 }
 
 // Update replaces the mutable Environment projection only while the resource
@@ -310,6 +367,10 @@ func (r *EnvironmentRepository) Update(
 	ctx context.Context,
 	environment domain.Environment,
 ) (domain.Environment, error) {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.Environment{}, err
+	}
 	body, err := json.Marshal(environment)
 	if err != nil {
 		return domain.Environment{}, err
@@ -317,13 +378,14 @@ func (r *EnvironmentRepository) Update(
 	row := r.store.pool.QueryRow(ctx, `
 UPDATE environments
 SET name = $2, config_type = $3, body = $4, updated_at = $5
-WHERE id = $1 AND archived_at IS NULL
+WHERE id = $1 AND workspace_id = $6 AND archived_at IS NULL
 RETURNING id, name, config_type, body, created_at, updated_at, archived_at`,
 		environment.ID,
 		environment.Name,
 		environment.ConfigType,
 		body,
 		tsUTC(environment.UpdatedAt),
+		workspaceID,
 	)
 	var stored pgstore.Environment
 	if err := row.Scan(
@@ -335,7 +397,9 @@ RETURNING id, name, config_type, body, created_at, updated_at, archived_at`,
 		&stored.UpdatedAt,
 		&stored.ArchivedAt,
 	); errors.Is(err, pgx.ErrNoRows) {
-		exists, existsErr := r.store.q.EnvironmentExists(ctx, environment.ID)
+		exists, existsErr := r.store.q.EnvironmentExists(ctx, pgstore.EnvironmentExistsParams{
+			ID: environment.ID, WorkspaceID: workspaceID,
+		})
 		if existsErr != nil {
 			return domain.Environment{}, existsErr
 		}
@@ -357,14 +421,19 @@ func (r *EnvironmentRepository) Archive(
 	id string,
 	archivedAt time.Time,
 ) (domain.Environment, error) {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.Environment{}, err
+	}
 	row := r.store.pool.QueryRow(ctx, `
 UPDATE environments
 SET archived_at = COALESCE(archived_at, $2),
     updated_at = CASE WHEN archived_at IS NULL THEN $2 ELSE updated_at END
-WHERE id = $1
+WHERE id = $1 AND workspace_id = $3
 RETURNING id, name, config_type, body, created_at, updated_at, archived_at`,
 		id,
 		tsUTC(archivedAt),
+		workspaceID,
 	)
 	var stored pgstore.Environment
 	if err := row.Scan(
@@ -387,7 +456,13 @@ func (r *EnvironmentRepository) Get(
 	ctx context.Context,
 	id string,
 ) (domain.Environment, error) {
-	row, err := r.store.q.GetEnvironment(ctx, id)
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.Environment{}, err
+	}
+	row, err := r.store.q.GetEnvironment(ctx, pgstore.GetEnvironmentParams{
+		ID: id, WorkspaceID: workspaceID,
+	})
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Environment{}, domain.NotFound("environment not found")
 	}
@@ -405,15 +480,23 @@ func (r *EnvironmentRepository) List(
 }
 
 func (r *EnvironmentRepository) DeleteIfUnreferenced(ctx context.Context, id string) error {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return err
+	}
 	return r.store.withTx(ctx, func(q *pgstore.Queries) error {
-		affected, err := q.DeleteEnvironmentIfUnreferenced(ctx, id)
+		affected, err := q.DeleteEnvironmentIfUnreferenced(ctx, pgstore.DeleteEnvironmentIfUnreferencedParams{
+			ID: id, WorkspaceID: workspaceID,
+		})
 		if err != nil {
 			return err
 		}
 		if affected == 1 {
 			return nil
 		}
-		exists, err := q.EnvironmentExists(ctx, id)
+		exists, err := q.EnvironmentExists(ctx, pgstore.EnvironmentExistsParams{
+			ID: id, WorkspaceID: workspaceID,
+		})
 		if err != nil {
 			return err
 		}

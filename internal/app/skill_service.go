@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 const (
@@ -106,7 +107,7 @@ func (s *SkillService) Create(ctx context.Context, input SkillCreateInput) (doma
 		ID: s.ids.NewID(domain.PrefixSkill), CreatedAt: now, UpdatedAt: now,
 		DisplayTitle: title, Source: "custom", TitleExplicit: explicit,
 	}
-	version := s.newVersion(skill.ID, bundle, now, true)
+	version := s.newVersion(ctx, skill.ID, bundle, now, true)
 	if err := s.repo.BeginSkill(ctx, skill, version); err != nil {
 		return domain.Skill{}, err
 	}
@@ -131,7 +132,7 @@ func (s *SkillService) CreateVersion(
 		return domain.SkillVersion{}, err
 	}
 	now := s.clock.Now().UTC().Truncate(time.Microsecond)
-	version := s.newVersion(skillID, bundle, now, false)
+	version := s.newVersion(ctx, skillID, bundle, now, false)
 	if err := s.repo.BeginVersion(ctx, version); err != nil {
 		return domain.SkillVersion{}, err
 	}
@@ -168,6 +169,7 @@ func (s *SkillService) storeVersion(
 }
 
 func (s *SkillService) newVersion(
+	ctx context.Context,
 	skillID string,
 	bundle preparedSkillBundle,
 	now time.Time,
@@ -179,7 +181,9 @@ func (s *SkillService) newVersion(
 		ID: version, SkillID: skillID, Version: version,
 		CreatedAt: time.UnixMicro(epoch).UTC(),
 		Name:      bundle.Name, Description: bundle.Description, Directory: bundle.Directory,
-		BlobKey:               "skills/" + skillID + "/" + version + ".zip",
+		BlobKey: workspace.BlobKey(
+			ctx, "skills/"+skillID+"/"+version+".zip",
+		),
 		UncompressedSizeBytes: bundle.UncompressedSizeBytes,
 		State:                 domain.SkillVersionUploading,
 		Initial:               initial,

@@ -321,6 +321,7 @@ const (
 	envTemporalHostPort  = "MANAGED_AGENT_TEMPORAL_HOSTPORT"
 	envTemporalNamespace = "MANAGED_AGENT_TEMPORAL_NAMESPACE"
 	envNATSURL           = "MANAGED_AGENT_NATS_URL"
+	envAPIKey            = "MANAGED_AGENT_API_KEY"
 )
 
 // runOrchestrate boots the Temporal execution role: it runs PostgreSQL
@@ -346,7 +347,7 @@ func runOrchestrate() {
 	log.Printf("orchestrate: postgres connected and migrated")
 
 	ids := domain.NewRandomIDGen()
-	store := pg.NewStore(pool, ids, realClock{})
+	store := pg.NewSystemStore(pool, ids, realClock{})
 	vaults, err := resolveVaultService(store, ids, realClock{})
 	if err != nil {
 		log.Fatalf("orchestrate: Vault runtime keyring: %v", err)

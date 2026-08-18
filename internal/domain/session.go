@@ -24,6 +24,9 @@ var allowed = map[Status]map[Status]bool{
 func (s Status) CanTransitionTo(next Status) bool { return allowed[s][next] }
 
 type Session struct {
+	// WorkspaceID is Mango's internal tenant boundary. It is never serialized
+	// into the CMA projection or exposed on the public wire.
+	WorkspaceID   string `json:"-"`
 	ID            string
 	AgentID       string
 	AgentVersion  int

@@ -66,7 +66,7 @@ func newLiveTestFixture(t *testing.T) *liveTestFixture {
 	t.Cleanup(broker.Close)
 	ids := &liveIDs{}
 	clock := &liveClock{}
-	store := pg.NewStore(pool, ids, clock)
+	store := pg.NewDefaultWorkspaceStore(pool, ids, clock)
 	store.SetEventNotifier(broker)
 	return &liveTestFixture{
 		ctx: ctx, pool: pool, broker: broker, store: store,

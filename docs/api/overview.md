@@ -54,11 +54,12 @@ Resource-specific request shapes are covered in:
 
 ## Headers
 
-The default development server accepts requests without compatibility headers.
-Run with `-strict` to require them:
+Every protected route requires an API key. The default development stack uses
+`sk-mango-local-development`. Run with `-strict` to additionally require the
+CMA compatibility headers:
 
 ```http
-x-api-key: any-non-empty-value
+x-api-key: sk-mango-local-development
 anthropic-version: 2023-06-01
 anthropic-beta: managed-agents-2026-04-01
 content-type: application/json
@@ -79,8 +80,21 @@ continues to use the Managed Agents beta when attaching a Memory Store.
 Dreams require the separate `dreaming-2026-04-21` preview upstream. Mango does
 not currently serve `/v1/dreams` or claim the v1.63.1 `output_behavior` union.
 
-`authorization` may replace `x-api-key`. Strict mode currently validates header
-presence and version/beta values; it is not a production authentication system.
+`authorization: Bearer <key>` may replace `x-api-key`, but sending both is an
+authentication error. Each key resolves to exactly one Workspace, and every
+key for that Workspace can access the same resources. Workspace IDs are not
+added to CMA request or response bodies.
+
+Mango intentionally has no end-user or role model. A surrounding SaaS may map
+many users to a Workspace and apply its own RBAC before calling Mango. Use the
+operator CLI to manage the OSS boundary:
+
+```sh
+managed-agent workspace create -name acme
+managed-agent api-key create -workspace wrkspc_... -label production
+managed-agent api-key list -workspace wrkspc_...
+managed-agent api-key revoke -id key_...
+```
 
 Every response includes a `request-id` header. JSON request bodies are limited
 to 32 MiB and unknown top-level fields are rejected. A file upload is limited

@@ -31,6 +31,10 @@ When `~/.config/mango/dev.env` exists, `make local-up` loads it via
 worker uses the real Messages endpoint. A missing file or empty model values
 keep the offline deterministic model.
 
+The API bootstraps `sk-mango-local-development` for the default Workspace.
+Override it with `MANAGED_AGENT_API_KEY` before `make local-up`; never reuse the
+bundled value outside local development.
+
 `make health` returns only once Postgres accepts connections, the Temporal
 frontend answers `cluster health`, NATS `/healthz` is green, MinIO answers its
 live probe, the API answers `/readyz`, and the worker process is alive.
@@ -47,6 +51,7 @@ docker compose -f deployments/local/compose.yaml ps
 ```sh
 # Application database (pgx / goose / sqlc)
 export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
+export MANAGED_AGENT_API_KEY="sk-mango-local-development"
 
 # Temporal frontend (Go SDK client)
 export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
@@ -110,7 +115,7 @@ make local-down VOLUMES=1  # also delete the Postgres and MinIO volumes
 
 This stack is for local development and integration tests only. It already
 keeps API and worker process roles separate, but it is not a production
-deployment manifest: authentication, TLS, secrets, rolling worker versioning,
+deployment manifest: end-user authorization, TLS, secrets, rolling worker versioning,
 managed persistence, observability, resource limits, and production object
 storage remain deployment work. The bundled MinIO credentials and deterministic
 Vault keyring are not a production recommendation. Files startup reconciliation

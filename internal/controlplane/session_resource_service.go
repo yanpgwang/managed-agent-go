@@ -9,6 +9,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/pg"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 const MaxSessionResources = app.MaxSessionResources
@@ -134,7 +135,7 @@ func (s *SessionResourceService) Add(
 	sessionID string,
 	input app.FileSessionResourceInput,
 ) (domain.SessionResource, error) {
-	session, err := s.store.GetSession(ctx, sessionID)
+	session, err := s.store.GetSessionForWorkspace(ctx, sessionID)
 	if err != nil {
 		return domain.SessionResource{}, err
 	}
@@ -163,6 +164,9 @@ func (s *SessionResourceService) Get(
 	sessionID string,
 	resourceID string,
 ) (domain.SessionResource, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
+		return domain.SessionResource{}, err
+	}
 	return s.store.GetSessionResource(ctx, sessionID, resourceID)
 }
 
@@ -171,6 +175,9 @@ func (s *SessionResourceService) List(
 	sessionID string,
 	query app.SessionResourceListQuery,
 ) (app.SessionResourceListPage, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
+		return app.SessionResourceListPage{}, err
+	}
 	if query.Limit < 0 || query.Limit > 1000 {
 		return app.SessionResourceListPage{}, domain.Validation(
 			"limit must be between 1 and 1000",
@@ -188,6 +195,9 @@ func (s *SessionResourceService) Update(
 	resourceID string,
 	_ string,
 ) (domain.SessionResource, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
+		return domain.SessionResource{}, err
+	}
 	if _, err := s.store.GetSessionResource(ctx, sessionID, resourceID); err != nil {
 		return domain.SessionResource{}, err
 	}
@@ -201,6 +211,9 @@ func (s *SessionResourceService) Delete(
 	sessionID string,
 	resourceID string,
 ) (domain.SessionResource, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
+		return domain.SessionResource{}, err
+	}
 	resource, err := s.store.BeginSessionResourceDeletion(ctx, sessionID, resourceID)
 	if err != nil {
 		return domain.SessionResource{}, err
@@ -210,7 +223,14 @@ func (s *SessionResourceService) Delete(
 	// Desired-state deletion is already committed. Cleanup is idempotent and is
 	// retried by worker reconciliation; a transient object-store error must not
 	// turn the successful public delete into an unsafe client retry.
-	if err := s.blobs.Delete(cleanupCtx, "files/"+resource.FileID); err == nil {
+	blobKey := resource.BlobKey
+	if blobKey == "" {
+		blobKey = workspace.BlobKey(cleanupCtx, "files/"+resource.FileID)
+	}
+	if err := s.blobs.Delete(cleanupCtx, blobKey); err == nil {
+		if resource.BlobKey == "" {
+			_ = s.blobs.Delete(cleanupCtx, "files/"+resource.FileID)
+		}
 		_ = s.files.RemoveIncomplete(cleanupCtx, resource.FileID)
 	}
 	return resource, nil
@@ -258,7 +278,7 @@ func (s *SessionResourceService) prepareFileCopy(
 		Filename: source.Filename, MimeType: source.MimeType,
 		Downloadable: true,
 		Scope:        &domain.FileScope{ID: sessionID, Type: "session"},
-		BlobKey:      "files/" + fileID,
+		BlobKey:      workspace.BlobKey(ctx, "files/"+fileID),
 		State:        domain.FileStateUploading,
 	}
 	if err := s.files.BeginUpload(ctx, clone); err != nil {

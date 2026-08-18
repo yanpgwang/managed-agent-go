@@ -6,15 +6,17 @@
 -- name: InsertSession :exec
 INSERT INTO sessions (
     id, status, body, created_at, updated_at,
-    agent_id, agent_version, environment_id, deployment_id, archived_at
+    agent_id, agent_version, environment_id, deployment_id, archived_at,
+    workspace_id
 )
 VALUES (
     @id, @status, @body, @created_at, @updated_at,
-    @agent_id, @agent_version, @environment_id, @deployment_id, @archived_at
+    @agent_id, @agent_version, @environment_id, @deployment_id, @archived_at,
+    @workspace_id
 );
 
 -- name: GetSession :one
-SELECT id, status, body, created_at, updated_at
+SELECT id, status, body, created_at, updated_at, workspace_id
 FROM sessions
 WHERE id = @id;
 
@@ -22,7 +24,7 @@ WHERE id = @id;
 -- completion for a session serializes on this row, which is what makes receipt
 -- sequence assignment and the coalescing outbox upsert race-free.
 -- name: LockSession :one
-SELECT id, status, body, created_at, updated_at, deleting_at
+SELECT id, status, body, created_at, updated_at, deleting_at, workspace_id
 FROM sessions
 WHERE id = @id
 FOR UPDATE;

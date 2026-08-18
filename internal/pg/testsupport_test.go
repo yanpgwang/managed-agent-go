@@ -97,7 +97,7 @@ func testStoreWithOptions(t *testing.T, maxConns int32, migrationVersion int64) 
 		_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		pool.Close()
 	})
-	return NewStore(pool, &seqIDGen{}, fixedClock{})
+	return NewDefaultWorkspaceStore(pool, &seqIDGen{}, fixedClock{})
 }
 
 // sanitize keeps only characters safe for a schema identifier.

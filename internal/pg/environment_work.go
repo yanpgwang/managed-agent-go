@@ -30,6 +30,11 @@ func NewEnvironmentWorkRepository(store *Store) *EnvironmentWorkRepository {
 	return &EnvironmentWorkRepository{store: store}
 }
 
+func (r *EnvironmentWorkRepository) authorizeEnvironment(ctx context.Context, id string) error {
+	_, err := NewEnvironmentRepository(r.store).Get(ctx, id)
+	return err
+}
+
 type workScanner interface{ Scan(...any) error }
 
 func scanEnvironmentWork(row workScanner) (domain.EnvironmentWork, error) {
@@ -67,6 +72,9 @@ func (r *EnvironmentWorkRepository) GetWork(
 	ctx context.Context,
 	environmentID, workID string,
 ) (domain.EnvironmentWork, error) {
+	if err := r.authorizeEnvironment(ctx, environmentID); err != nil {
+		return domain.EnvironmentWork{}, err
+	}
 	work, err := scanEnvironmentWork(r.store.pool.QueryRow(ctx,
 		`SELECT `+environmentWorkColumns+` FROM environment_work
 WHERE environment_id = $1 AND id = $2`, environmentID, workID))
@@ -81,6 +89,9 @@ func (r *EnvironmentWorkRepository) UpdateWorkMetadata(
 	environmentID, workID string,
 	patch map[string]*string,
 ) (domain.EnvironmentWork, error) {
+	if err := r.authorizeEnvironment(ctx, environmentID); err != nil {
+		return domain.EnvironmentWork{}, err
+	}
 	var result domain.EnvironmentWork
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
 		current, err := scanEnvironmentWork(tx.QueryRow(ctx,
@@ -121,6 +132,9 @@ func (r *EnvironmentWorkRepository) ListWork(
 	environmentID string,
 	query app.EnvironmentWorkListQuery,
 ) (app.EnvironmentWorkListPage, error) {
+	if err := r.authorizeEnvironment(ctx, environmentID); err != nil {
+		return app.EnvironmentWorkListPage{}, err
+	}
 	clauses := []string{"environment_id = $1"}
 	args := []any{environmentID}
 	if query.After != nil {
@@ -163,6 +177,9 @@ func (r *EnvironmentWorkRepository) PollWork(
 	environmentID string,
 	input app.EnvironmentWorkPollInput,
 ) (*domain.EnvironmentWork, error) {
+	if err := r.authorizeEnvironment(ctx, environmentID); err != nil {
+		return nil, err
+	}
 	var result *domain.EnvironmentWork
 	now := r.store.clock.Now().UTC().Truncate(time.Microsecond)
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
@@ -235,6 +252,9 @@ func (r *EnvironmentWorkRepository) AckWork(
 	ctx context.Context,
 	environmentID, workID string,
 ) (domain.EnvironmentWork, error) {
+	if err := r.authorizeEnvironment(ctx, environmentID); err != nil {
+		return domain.EnvironmentWork{}, err
+	}
 	now := r.store.clock.Now().UTC().Truncate(time.Microsecond)
 	work, err := scanEnvironmentWork(r.store.pool.QueryRow(ctx, `
 UPDATE environment_work
@@ -256,6 +276,9 @@ func (r *EnvironmentWorkRepository) HeartbeatWork(
 	expected *string,
 	desiredTTL *int64,
 ) (domain.EnvironmentWorkHeartbeat, error) {
+	if err := r.authorizeEnvironment(ctx, environmentID); err != nil {
+		return domain.EnvironmentWorkHeartbeat{}, err
+	}
 	var response domain.EnvironmentWorkHeartbeat
 	now := r.store.clock.Now().UTC().Truncate(time.Microsecond)
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
@@ -318,6 +341,9 @@ func (r *EnvironmentWorkRepository) StopWork(
 	environmentID, workID string,
 	force bool,
 ) error {
+	if err := r.authorizeEnvironment(ctx, environmentID); err != nil {
+		return err
+	}
 	now := r.store.clock.Now().UTC().Truncate(time.Microsecond)
 	return r.store.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		var (
@@ -383,6 +409,9 @@ func (r *EnvironmentWorkRepository) WorkStats(
 	ctx context.Context,
 	environmentID string,
 ) (domain.EnvironmentWorkQueueStats, error) {
+	if err := r.authorizeEnvironment(ctx, environmentID); err != nil {
+		return domain.EnvironmentWorkQueueStats{}, err
+	}
 	var (
 		stats  domain.EnvironmentWorkQueueStats
 		oldest *time.Time

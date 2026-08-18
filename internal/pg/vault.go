@@ -24,16 +24,20 @@ func NewVaultRepository(store *Store) *VaultRepository {
 }
 
 func (r *VaultRepository) CreateVault(ctx context.Context, item domain.Vault) (domain.Vault, error) {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.Vault{}, err
+	}
 	normalizeVaultTimes(&item)
 	metadata, err := json.Marshal(item.Metadata)
 	if err != nil {
 		return domain.Vault{}, err
 	}
 	created, err := scanVault(r.store.pool.QueryRow(ctx, `
-INSERT INTO vaults (id, display_name, metadata, created_at, updated_at, archived_at)
-VALUES ($1, $2, $3, $4, $5, NULL)
+INSERT INTO vaults (id, workspace_id, display_name, metadata, created_at, updated_at, archived_at)
+VALUES ($1, $2, $3, $4, $5, $6, NULL)
 RETURNING id, display_name, metadata, created_at, updated_at, archived_at`,
-		item.ID, item.DisplayName, metadata, item.CreatedAt, item.UpdatedAt,
+		item.ID, workspaceID, item.DisplayName, metadata, item.CreatedAt, item.UpdatedAt,
 	))
 	if isUniqueViolation(err) {
 		return domain.Vault{}, domain.Conflict("vault already exists")
@@ -42,9 +46,19 @@ RETURNING id, display_name, metadata, created_at, updated_at, archived_at`,
 }
 
 func (r *VaultRepository) GetVault(ctx context.Context, id string) (domain.Vault, error) {
-	item, err := scanVault(r.store.pool.QueryRow(ctx, `
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.Vault{}, err
+	}
+	query := `
 SELECT id, display_name, metadata, created_at, updated_at, archived_at
-FROM vaults WHERE id = $1`, id))
+FROM vaults WHERE id = $1`
+	args := []any{id}
+	if scoped {
+		query += ` AND workspace_id = $2`
+		args = append(args, workspaceID)
+	}
+	item, err := scanVault(r.store.pool.QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Vault{}, domain.NotFound("vault not found")
 	}
@@ -52,11 +66,21 @@ FROM vaults WHERE id = $1`, id))
 }
 
 func (r *VaultRepository) UpdateVault(ctx context.Context, id string, patch app.VaultUpdateInput, clock domain.Clock) (domain.Vault, error) {
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.Vault{}, err
+	}
 	var updated domain.Vault
-	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
-		current, err := scanVault(tx.QueryRow(ctx, `
+	err = r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
+		query := `
 SELECT id, display_name, metadata, created_at, updated_at, archived_at
-FROM vaults WHERE id = $1 FOR UPDATE`, id))
+FROM vaults WHERE id = $1`
+		args := []any{id}
+		if scoped {
+			query += ` AND workspace_id = $2`
+			args = append(args, workspaceID)
+		}
+		current, err := scanVault(tx.QueryRow(ctx, query+` FOR UPDATE`, args...))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("vault not found")
 		}
@@ -96,12 +120,16 @@ FROM vaults WHERE id = $1 FOR UPDATE`, id))
 			return err
 		}
 		now := clock.Now().UTC().Truncate(time.Microsecond)
-		updated, err = scanVault(tx.QueryRow(ctx, `
+		updateQuery := `
 UPDATE vaults SET display_name = $2, metadata = $3, updated_at = $4
-WHERE id = $1
-RETURNING id, display_name, metadata, created_at, updated_at, archived_at`,
-			id, displayName, metadataJSON, now,
-		))
+WHERE id = $1`
+		updateArgs := []any{id, displayName, metadataJSON, now}
+		if scoped {
+			updateQuery += ` AND workspace_id = $5`
+			updateArgs = append(updateArgs, workspaceID)
+		}
+		updated, err = scanVault(tx.QueryRow(ctx, updateQuery+`
+RETURNING id, display_name, metadata, created_at, updated_at, archived_at`, updateArgs...))
 		return err
 	})
 	return updated, err
@@ -110,6 +138,14 @@ RETURNING id, display_name, metadata, created_at, updated_at, archived_at`,
 func (r *VaultRepository) ListVaults(ctx context.Context, query app.VaultListQuery) (app.VaultListPage, error) {
 	args := make([]any, 0, 4)
 	where := []string{"true"}
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return app.VaultListPage{}, err
+	}
+	if scoped {
+		args = append(args, workspaceID)
+		where = append(where, fmt.Sprintf("workspace_id = $%d", len(args)))
+	}
 	if !query.IncludeArchived {
 		where = append(where, "archived_at IS NULL")
 	}
@@ -146,11 +182,21 @@ ORDER BY created_at DESC, id DESC LIMIT $%d`, strings.Join(where, " AND "), len(
 }
 
 func (r *VaultRepository) ArchiveVault(ctx context.Context, id string, clock domain.Clock) (domain.Vault, error) {
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.Vault{}, err
+	}
 	var archived domain.Vault
-	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
-		current, err := scanVault(tx.QueryRow(ctx, `
+	err = r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
+		query := `
 SELECT id, display_name, metadata, created_at, updated_at, archived_at
-FROM vaults WHERE id = $1 FOR UPDATE`, id))
+FROM vaults WHERE id = $1`
+		args := []any{id}
+		if scoped {
+			query += ` AND workspace_id = $2`
+			args = append(args, workspaceID)
+		}
+		current, err := scanVault(tx.QueryRow(ctx, query+` FOR UPDATE`, args...))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("vault not found")
 		}
@@ -170,16 +216,31 @@ SET archived_at = $2, updated_at = $2, version = version + 1,
 WHERE vault_id = $1 AND archived_at IS NULL`, id, now); err != nil {
 			return err
 		}
-		archived, err = scanVault(tx.QueryRow(ctx, `
-UPDATE vaults SET archived_at = $2, updated_at = $2 WHERE id = $1
-RETURNING id, display_name, metadata, created_at, updated_at, archived_at`, id, now))
+		updateQuery := `UPDATE vaults SET archived_at = $2, updated_at = $2 WHERE id = $1`
+		updateArgs := []any{id, now}
+		if scoped {
+			updateQuery += ` AND workspace_id = $3`
+			updateArgs = append(updateArgs, workspaceID)
+		}
+		archived, err = scanVault(tx.QueryRow(ctx, updateQuery+`
+RETURNING id, display_name, metadata, created_at, updated_at, archived_at`, updateArgs...))
 		return err
 	})
 	return archived, err
 }
 
 func (r *VaultRepository) DeleteVault(ctx context.Context, id string) error {
-	tag, err := r.store.pool.Exec(ctx, `DELETE FROM vaults WHERE id = $1`, id)
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return err
+	}
+	query := `DELETE FROM vaults WHERE id = $1`
+	args := []any{id}
+	if scoped {
+		query += ` AND workspace_id = $2`
+		args = append(args, workspaceID)
+	}
+	tag, err := r.store.pool.Exec(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -190,6 +251,9 @@ func (r *VaultRepository) DeleteVault(ctx context.Context, id string) error {
 }
 
 func (r *VaultRepository) CreateCredential(ctx context.Context, item domain.VaultCredential, maxCredentials int) (domain.VaultCredential, error) {
+	if _, err := r.GetVault(ctx, item.VaultID); err != nil {
+		return domain.VaultCredential{}, err
+	}
 	normalizeCredentialTimes(&item)
 	if item.SecretEnvelope == nil {
 		return domain.VaultCredential{}, errors.New("credential secret envelope is required")
@@ -270,10 +334,21 @@ func (r *VaultRepository) ResolveSessionCredentials(
 	ctx context.Context,
 	sessionID string,
 ) ([]domain.VaultCredential, error) {
-	rows, err := r.store.pool.Query(ctx, credentialSelect+`
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return nil, err
+	}
+	query := credentialSelect + `
 JOIN session_vaults sv ON sv.vault_id = vault_credentials.vault_id
-WHERE sv.session_id = $1 AND vault_credentials.archived_at IS NULL
-ORDER BY sv.position ASC, vault_credentials.id ASC`, sessionID)
+JOIN sessions s ON s.id = sv.session_id
+WHERE sv.session_id = $1 AND vault_credentials.archived_at IS NULL`
+	args := []any{sessionID}
+	if scoped {
+		query += ` AND s.workspace_id = $2`
+		args = append(args, workspaceID)
+	}
+	rows, err := r.store.pool.Query(ctx, query+`
+ORDER BY sv.position ASC, vault_credentials.id ASC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -290,6 +365,9 @@ ORDER BY sv.position ASC, vault_credentials.id ASC`, sessionID)
 }
 
 func (r *VaultRepository) GetCredential(ctx context.Context, vaultID, credentialID string) (domain.VaultCredential, error) {
+	if _, err := r.GetVault(ctx, vaultID); err != nil {
+		return domain.VaultCredential{}, err
+	}
 	item, err := scanVaultCredential(r.store.pool.QueryRow(ctx, credentialSelect+`
 WHERE vault_id = $1 AND id = $2`, vaultID, credentialID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -299,6 +377,9 @@ WHERE vault_id = $1 AND id = $2`, vaultID, credentialID))
 }
 
 func (r *VaultRepository) UpdateCredential(ctx context.Context, vaultID, credentialID string, update func(domain.VaultCredential) (domain.VaultCredential, bool, error)) (domain.VaultCredential, error) {
+	if _, err := r.GetVault(ctx, vaultID); err != nil {
+		return domain.VaultCredential{}, err
+	}
 	var updated domain.VaultCredential
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
 		current, err := scanVaultCredential(tx.QueryRow(ctx, credentialSelect+`
@@ -387,6 +468,9 @@ WHERE %s ORDER BY created_at DESC, id DESC LIMIT $%d`, strings.Join(where, " AND
 }
 
 func (r *VaultRepository) ArchiveCredential(ctx context.Context, vaultID, credentialID string, clock domain.Clock) (domain.VaultCredential, error) {
+	if _, err := r.GetVault(ctx, vaultID); err != nil {
+		return domain.VaultCredential{}, err
+	}
 	now := clock.Now().UTC().Truncate(time.Microsecond)
 	item, err := scanVaultCredential(r.store.pool.QueryRow(ctx, `
 UPDATE vault_credentials SET
@@ -406,6 +490,9 @@ RETURNING id, vault_id, display_name, metadata, auth_type, credential_key, publi
 }
 
 func (r *VaultRepository) DeleteCredential(ctx context.Context, vaultID, credentialID string) error {
+	if _, err := r.GetVault(ctx, vaultID); err != nil {
+		return err
+	}
 	tag, err := r.store.pool.Exec(ctx, `DELETE FROM vault_credentials WHERE vault_id = $1 AND id = $2`, vaultID, credentialID)
 	if err != nil {
 		return err

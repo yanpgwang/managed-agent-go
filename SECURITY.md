@@ -29,8 +29,16 @@ maintainer contact without disclosing vulnerability details.
 - The Docker provider gives container isolation and disables networking by
   default, but containers share the host kernel and the provider has not been
   audited for hostile multi-tenant workloads.
-- `-strict` checks that authentication headers are present; it does not
-  validate credentials or implement authorization.
+- Every protected API request is authenticated by an opaque API key and scoped
+  to one Workspace. Top-level resources, child resources, scheduled work, and
+  object-store keys are isolated by that Workspace. Health, readiness, and the
+  embedded OpenAPI document remain public.
+- All keys for one Workspace have identical access to that Workspace. Mango
+  does not model end users, roles, per-resource grants, or user-level audit
+  identity; a SaaS or enterprise control plane must own those concerns and
+  issue or revoke Workspace keys.
+- `-strict` additionally validates CMA version, beta, and content-type headers;
+  it does not change authorization semantics.
 - PostgreSQL journals tool attempts, but an external side effect can still be
   ambiguous if execution succeeds and its durable result is lost. Exactly-once
   behavior requires idempotency from the external system.

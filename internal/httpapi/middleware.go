@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -10,13 +11,19 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
+
+type WorkspaceAuthenticator interface {
+	AuthenticateAPIKey(context.Context, string) (string, error)
+}
 
 type Config struct {
 	RequireBeta        bool
 	RequireAuth        bool
 	RequireVersion     bool
 	RequireContentType bool
+	Authenticator      WorkspaceAuthenticator
 }
 
 const betaValue = "managed-agents-2026-04-01"
@@ -33,6 +40,10 @@ const maxSkillRequestBytes = app.MaxSkillUploadBytes + (1 << 20)
 
 func betaMiddleware(cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isPublicRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		betaHeaders := strings.Join(r.Header.Values("anthropic-beta"), ",")
 		requiredBeta := betaValue
 		if isFilePath(r.URL.Path) {
@@ -58,17 +69,76 @@ func betaMiddleware(cfg Config, next http.Handler) http.Handler {
 
 func authMiddleware(cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if cfg.RequireAuth && r.Header.Get("x-api-key") == "" && r.Header.Get("authorization") == "" {
+		if isPublicRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		key, present, validShape := requestAPIKey(r)
+		if !validShape {
+			writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
+				"invalid authorization header")
+			return
+		}
+		if cfg.Authenticator != nil {
+			if !present {
+				writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
+					"missing x-api-key")
+				return
+			}
+			workspaceID, err := cfg.Authenticator.AuthenticateAPIKey(r.Context(), key)
+			if err != nil {
+				if !errors.Is(err, workspace.ErrInvalidAPIKey) {
+					writeError(w, err)
+					return
+				}
+				writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
+					"invalid API key")
+				return
+			}
+			r = r.WithContext(workspace.WithScope(r.Context(), workspaceID))
+		} else if cfg.RequireAuth && !present {
 			writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
 				"missing x-api-key")
 			return
+		} else if _, ok := workspace.FromContext(r.Context()); !ok {
+			// Embedders and wire-only tests that intentionally omit an
+			// Authenticator retain the historical single-tenant behavior.
+			r = r.WithContext(workspace.WithScope(r.Context(), workspace.DefaultID))
 		}
 		next.ServeHTTP(w, r)
 	})
 }
 
+func isPublicRequest(r *http.Request) bool {
+	return r.Method == http.MethodGet && (r.URL.Path == "/healthz" ||
+		r.URL.Path == "/readyz" || r.URL.Path == "/openapi.yaml")
+}
+
+func requestAPIKey(r *http.Request) (key string, present bool, valid bool) {
+	xAPIKey := strings.TrimSpace(r.Header.Get("x-api-key"))
+	authorization := strings.TrimSpace(r.Header.Get("authorization"))
+	if xAPIKey != "" {
+		if authorization != "" {
+			return "", true, false
+		}
+		return xAPIKey, true, true
+	}
+	if authorization == "" {
+		return "", false, true
+	}
+	scheme, value, ok := strings.Cut(authorization, " ")
+	if !ok || !strings.EqualFold(scheme, "bearer") || strings.TrimSpace(value) == "" {
+		return "", true, false
+	}
+	return strings.TrimSpace(value), true, true
+}
+
 func versionMiddleware(cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isPublicRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if cfg.RequireVersion && r.Header.Get("anthropic-version") != anthropicVersion {
 			writeErrorEnvelope(w, http.StatusBadRequest, "invalid_request_error",
 				"missing or invalid anthropic-version header")
@@ -80,6 +150,10 @@ func versionMiddleware(cfg Config, next http.Handler) http.Handler {
 
 func contentTypeMiddleware(cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isPublicRequest(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !cfg.RequireContentType || r.Body == nil || r.ContentLength == 0 {
 			next.ServeHTTP(w, r)
 			return

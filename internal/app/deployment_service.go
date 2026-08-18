@@ -150,6 +150,7 @@ type DeploymentRunListPage struct {
 }
 
 type DeploymentScheduleClaim struct {
+	WorkspaceID  string
 	DeploymentID string
 	ScheduledAt  time.Time
 }

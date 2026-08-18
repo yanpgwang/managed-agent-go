@@ -24,20 +24,26 @@ func NewFileRepository(store *Store) *FileRepository {
 }
 
 func (r *FileRepository) BeginUpload(ctx context.Context, file domain.File) error {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return err
+	}
 	file.CreatedAt = file.CreatedAt.UTC().Truncate(time.Microsecond)
 	file.UpdatedAt = file.UpdatedAt.UTC().Truncate(time.Microsecond)
 	var scopeID, scopeType *string
 	if file.Scope != nil {
 		scopeID, scopeType = &file.Scope.ID, &file.Scope.Type
 	}
-	_, err := r.store.pool.Exec(ctx, `
+	_, err = r.store.pool.Exec(ctx, `
 INSERT INTO files (
     id, created_at, updated_at, filename, mime_type, size_bytes,
-    downloadable, scope_id, scope_type, blob_key, checksum_sha256, state
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+    downloadable, scope_id, scope_type, blob_key, checksum_sha256, state,
+    workspace_id
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		file.ID, file.CreatedAt, file.UpdatedAt, file.Filename, file.MimeType,
 		file.SizeBytes, file.Downloadable, scopeID, scopeType, file.BlobKey,
 		file.ChecksumSHA256, string(file.State),
+		workspaceID,
 	)
 	if isUniqueViolation(err) {
 		return domain.Conflict("file id already exists")
@@ -50,16 +56,20 @@ func (r *FileRepository) CompleteUpload(
 	id string,
 	info app.BlobInfo,
 ) (domain.File, error) {
+	workspaceID, _, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.File{}, err
+	}
 	row := r.store.pool.QueryRow(ctx, `
 UPDATE files
 SET size_bytes = $2,
     checksum_sha256 = $3,
     state = 'ready',
     updated_at = now()
-WHERE id = $1 AND state = 'uploading'
+WHERE id = $1 AND ($4 = '' OR workspace_id = $4) AND state = 'uploading'
 RETURNING id, created_at, updated_at, filename, mime_type, size_bytes,
           downloadable, scope_id, scope_type, blob_key, checksum_sha256, state`,
-		id, info.SizeBytes, info.ChecksumSHA256,
+		id, info.SizeBytes, info.ChecksumSHA256, workspaceID,
 	)
 	file, err := scanFile(row)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -69,11 +79,15 @@ RETURNING id, created_at, updated_at, filename, mime_type, size_bytes,
 }
 
 func (r *FileRepository) Get(ctx context.Context, id string) (domain.File, error) {
+	workspaceID, _, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.File{}, err
+	}
 	row := r.store.pool.QueryRow(ctx, `
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
        downloadable, scope_id, scope_type, blob_key, checksum_sha256, state
 FROM files
-WHERE id = $1 AND state = 'ready'`, id)
+WHERE id = $1 AND ($2 = '' OR workspace_id = $2) AND state = 'ready'`, id, workspaceID)
 	file, err := scanFile(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.File{}, domain.NotFound("file not found")
@@ -85,8 +99,16 @@ func (r *FileRepository) List(
 	ctx context.Context,
 	query app.FileListQuery,
 ) (app.FileListPage, error) {
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return app.FileListPage{}, err
+	}
 	args := make([]any, 0, 5)
 	where := []string{"state = 'ready'"}
+	if scoped {
+		args = append(args, workspaceID)
+		where = append(where, fmt.Sprintf("workspace_id = $%d", len(args)))
+	}
 	if query.ScopeID != "" {
 		args = append(args, query.ScopeID)
 		where = append(where, fmt.Sprintf("scope_id = $%d", len(args)))
@@ -150,20 +172,30 @@ LIMIT $%d`, strings.Join(where, " AND "), order, len(args))
 }
 
 func (r *FileRepository) BeginDelete(ctx context.Context, id string) (domain.File, error) {
+	workspaceID, _, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.File{}, err
+	}
 	row := r.store.pool.QueryRow(ctx, `
 UPDATE files AS target
 SET state = 'deleting', updated_at = now()
-WHERE target.id = $1 AND target.state = 'ready'
+WHERE target.id = $1 AND ($2 = '' OR target.workspace_id = $2) AND target.state = 'ready'
   AND NOT EXISTS (
       SELECT 1 FROM session_resources WHERE file_id = target.id
   )
 RETURNING id, created_at, updated_at, filename, mime_type, size_bytes,
-          downloadable, scope_id, scope_type, blob_key, checksum_sha256, state`, id)
+          downloadable, scope_id, scope_type, blob_key, checksum_sha256, state`, id, workspaceID)
 	file, err := scanFile(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var protected bool
 		if queryErr := r.store.pool.QueryRow(ctx, `
-SELECT EXISTS (SELECT 1 FROM session_resources WHERE file_id = $1)`, id).Scan(&protected); queryErr != nil {
+SELECT EXISTS (
+    SELECT 1
+    FROM session_resources AS resource
+    JOIN sessions AS session ON session.id = resource.session_id
+    WHERE resource.file_id = $1
+      AND ($2 = '' OR session.workspace_id = $2)
+)`, id, workspaceID).Scan(&protected); queryErr != nil {
 			return domain.File{}, queryErr
 		}
 		if protected {
@@ -177,7 +209,13 @@ SELECT EXISTS (SELECT 1 FROM session_resources WHERE file_id = $1)`, id).Scan(&p
 }
 
 func (r *FileRepository) RemoveIncomplete(ctx context.Context, id string) error {
-	_, err := r.store.pool.Exec(ctx, `DELETE FROM files WHERE id = $1 AND state <> 'ready'`, id)
+	workspaceID, _, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = r.store.pool.Exec(ctx, `
+DELETE FROM files
+WHERE id = $1 AND ($2 = '' OR workspace_id = $2) AND state <> 'ready'`, id, workspaceID)
 	return err
 }
 

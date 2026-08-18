@@ -23,5 +23,8 @@ func (s *EventService) Query(
 	sessionID string,
 	query app.EventQuery,
 ) ([]domain.Event, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
+		return nil, err
+	}
 	return s.store.QueryEvents(ctx, sessionID, query)
 }

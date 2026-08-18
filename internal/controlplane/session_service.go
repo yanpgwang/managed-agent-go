@@ -411,7 +411,7 @@ func (s *SessionService) prepareMemoryStoreResources(
 }
 
 func (s *SessionService) Get(ctx context.Context, id string) (domain.Session, error) {
-	return s.store.GetSession(ctx, id)
+	return s.store.GetSessionForWorkspace(ctx, id)
 }
 
 func (s *SessionService) List(
@@ -426,6 +426,9 @@ func (s *SessionService) SendEvent(
 	id string,
 	drafts []domain.EventDraft,
 ) ([]domain.Event, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, id); err != nil {
+		return nil, err
+	}
 	for _, draft := range drafts {
 		switch draft.Type {
 		case domain.EvUserMessage,
@@ -459,14 +462,23 @@ func (s *SessionService) Update(
 	id string,
 	update domain.SessionUpdate,
 ) (domain.Session, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, id); err != nil {
+		return domain.Session{}, err
+	}
 	return s.store.UpdateSession(ctx, id, update)
 }
 
 func (s *SessionService) Archive(ctx context.Context, id string) (domain.Session, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, id); err != nil {
+		return domain.Session{}, err
+	}
 	return s.store.ArchiveSession(ctx, id)
 }
 
 func (s *SessionService) Delete(ctx context.Context, id string) error {
+	if err := s.store.AssertSessionWorkspace(ctx, id); err != nil {
+		return err
+	}
 	// Fence new admission before stopping orchestration and releasing the
 	// provider sandbox. Without this phase, an admission could make the session
 	// running in the gap before physical deletion.

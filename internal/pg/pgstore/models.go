@@ -9,13 +9,14 @@ import (
 )
 
 type Agent struct {
-	ID         string
-	Version    int32
-	Name       string
-	Body       []byte
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	ArchivedAt pgtype.Timestamptz
+	ID          string
+	Version     int32
+	Name        string
+	Body        []byte
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ArchivedAt  pgtype.Timestamptz
+	WorkspaceID string
 }
 
 type AgentSkillVersion struct {
@@ -24,6 +25,16 @@ type AgentSkillVersion struct {
 	Position     int32
 	SkillID      string
 	SkillVersion string
+}
+
+type ApiKey struct {
+	ID          string
+	WorkspaceID string
+	SecretHash  []byte
+	Label       string
+	CreatedAt   pgtype.Timestamptz
+	RevokedAt   pgtype.Timestamptz
+	LastUsedAt  pgtype.Timestamptz
 }
 
 type Deployment struct {
@@ -38,6 +49,7 @@ type Deployment struct {
 	CreatedAt         pgtype.Timestamptz
 	UpdatedAt         pgtype.Timestamptz
 	ArchivedAt        pgtype.Timestamptz
+	WorkspaceID       string
 }
 
 type DeploymentRun struct {
@@ -52,13 +64,14 @@ type DeploymentRun struct {
 }
 
 type Environment struct {
-	ID         string
-	Name       string
-	ConfigType string
-	Body       []byte
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	ArchivedAt pgtype.Timestamptz
+	ID          string
+	Name        string
+	ConfigType  string
+	Body        []byte
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ArchivedAt  pgtype.Timestamptz
+	WorkspaceID string
 }
 
 type EnvironmentWork struct {
@@ -111,6 +124,7 @@ type File struct {
 	BlobKey        string
 	ChecksumSha256 string
 	State          string
+	WorkspaceID    string
 }
 
 type McpDiscoverySnapshot struct {
@@ -142,6 +156,7 @@ type MemoryStore struct {
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
 	ArchivedAt  pgtype.Timestamptz
+	WorkspaceID string
 }
 
 type MemoryVersion struct {
@@ -159,6 +174,18 @@ type MemoryVersion struct {
 	RedactedAt       pgtype.Timestamptz
 	RedactedByType   *string
 	RedactedByID     *string
+}
+
+type ModelRequestUsage struct {
+	SessionID       string
+	ThreadID        string
+	RequestEventID  string
+	ModelID         string
+	InferenceGeo    string
+	StopReason      string
+	Usage           []byte
+	ListCostNanoUsd *int64
+	CreatedAt       pgtype.Timestamptz
 }
 
 type OrchestrationOutbox struct {
@@ -214,6 +241,7 @@ type Session struct {
 	ArchivedAt    pgtype.Timestamptz
 	DeletingAt    pgtype.Timestamptz
 	DeploymentID  *string
+	WorkspaceID   string
 }
 
 type SessionResource struct {
@@ -280,6 +308,7 @@ type Skill struct {
 	Source               string
 	DisplayTitleExplicit bool
 	Ready                bool
+	WorkspaceID          string
 }
 
 type SkillVersion struct {
@@ -357,6 +386,7 @@ type Vault struct {
 	CreatedAt   pgtype.Timestamptz
 	UpdatedAt   pgtype.Timestamptz
 	ArchivedAt  pgtype.Timestamptz
+	WorkspaceID string
 }
 
 type VaultCredential struct {
@@ -376,4 +406,11 @@ type VaultCredential struct {
 	CreatedAt        pgtype.Timestamptz
 	UpdatedAt        pgtype.Timestamptz
 	ArchivedAt       pgtype.Timestamptz
+}
+
+type Workspace struct {
+	ID        string
+	Name      string
+	CreatedAt pgtype.Timestamptz
+	UpdatedAt pgtype.Timestamptz
 }

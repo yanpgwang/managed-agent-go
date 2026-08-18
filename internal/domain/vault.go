@@ -7,9 +7,8 @@ const (
 	CredentialAuthStaticBearer = "static_bearer"
 )
 
-// Vault is a workspace-scoped container for credentials. Tenant ownership is
-// intentionally absent until the control plane has an authenticated workspace
-// principal.
+// Vault is a Workspace-scoped container for credentials. Ownership stays in
+// the relational root instead of leaking into the CMA wire representation.
 type Vault struct {
 	ID          string
 	DisplayName string

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 const (
@@ -60,8 +61,9 @@ func (r *DeploymentReconciler) reconcile(ctx context.Context) error {
 	}
 	var firstErr error
 	for _, claim := range claims {
+		claimCtx := workspace.WithScope(ctx, claim.WorkspaceID)
 		if _, err := r.runner.RunScheduled(
-			ctx, claim.DeploymentID, claim.ScheduledAt,
+			claimCtx, claim.DeploymentID, claim.ScheduledAt,
 		); err != nil {
 			// Claim a batch to amortize the database lock, but do not let one
 			// malformed Deployment strand every later claim until its lease

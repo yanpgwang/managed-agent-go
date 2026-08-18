@@ -78,20 +78,21 @@ func eventsFromRows(rows []pgstore.Event) ([]domain.Event, error) {
 	return out, nil
 }
 
-func sessionFromBody(id string, body []byte) (domain.Session, error) {
+func sessionFromBody(id string, workspaceID string, body []byte) (domain.Session, error) {
 	var session domain.Session
 	if err := json.Unmarshal(body, &session); err != nil {
 		return domain.Session{}, fmt.Errorf("pg: decode session body %s: %w", id, err)
 	}
+	session.WorkspaceID = workspaceID
 	return session, nil
 }
 
 func sessionFromGetRow(row pgstore.GetSessionRow) (domain.Session, error) {
-	return sessionFromBody(row.ID, row.Body)
+	return sessionFromBody(row.ID, row.WorkspaceID, row.Body)
 }
 
 func sessionFromLockRow(row pgstore.LockSessionRow) (domain.Session, error) {
-	return sessionFromBody(row.ID, row.Body)
+	return sessionFromBody(row.ID, row.WorkspaceID, row.Body)
 }
 
 func turnAttemptFromRow(row pgstore.TurnAttempt) TurnAttempt {
