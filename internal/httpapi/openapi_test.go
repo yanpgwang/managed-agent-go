@@ -130,7 +130,7 @@ func TestOpenAPISessionEventContract(t *testing.T) {
 		"system.message", "agent.message", "agent.thinking", "agent.custom_tool_use", "agent.tool_use",
 		"agent.tool_result", "agent.mcp_tool_use", "agent.mcp_tool_result",
 		"session.status_idle", "session.status_running", "session.status_terminated",
-		"session.status_rescheduled", "session.error", "session.updated", "session.deleted",
+		"session.status_rescheduled", "session.usage", "session.error", "session.updated", "session.deleted",
 		"session.thread_created", "session.thread_status_idle",
 		"session.thread_status_running", "session.thread_status_rescheduled",
 		"session.thread_status_terminated", "agent.thread_message_received",

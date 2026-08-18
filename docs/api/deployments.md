@@ -52,10 +52,10 @@ must immediately follow the user event it annotates. Schedules use five-field
 POSIX cron syntax and an IANA timezone. The response includes the next five
 occurrences in `schedule.upcoming_runs_at`.
 
-`budget: null` explicitly stores no Session spend ceiling. Non-null limits
-currently return `422` rather than being ignored; Deployment-created Sessions
-cannot enforce the template until provider list cost is aggregated across all
-of their Threads.
+`budget: null` explicitly stores no Session spend ceiling. A non-null limit uses
+the same integer-USD-cent shape and model-price validation as direct Session
+creation. Each Run copies the Deployment's current budget into its new Session;
+existing Run Sessions are unaffected by later Deployment updates.
 
 Deployment lists support `agent_id`, `status`, `include_archived`,
 `created_at[gte]`, `created_at[lte]`, `limit`, and a forward-only opaque `page`
@@ -73,8 +73,8 @@ POST /v1/deployments/{deployment_id}/archive
 Update can replace the Agent pin, Environment, initial events, resources,
 Vaults, or schedule. Metadata is a per-key patch; a null value deletes one key.
 Setting `schedule` to null removes the schedule.
-An explicit null budget is accepted as the existing no-ceiling state; a
-non-null budget returns `422` under the same boundary as create.
+Setting `budget` to null clears the template, while a non-null value replaces
+it for future Runs.
 
 Pause suppresses scheduled triggers but does not prevent a manual Run. Unpause
 resumes with the next future occurrence and does not backfill missed times.

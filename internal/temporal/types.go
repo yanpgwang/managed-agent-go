@@ -159,6 +159,7 @@ type EvaluateOutcomeResult struct {
 	Result       string            `json:"result"`
 	Explanation  string            `json:"explanation"`
 	Usage        domain.TokenUsage `json:"usage"`
+	StopReason   string            `json:"stop_reason,omitempty"`
 	FatalError   string            `json:"fatal_error,omitempty"`
 }
 
@@ -252,6 +253,24 @@ type CallModelResult struct {
 	RetryError          *ModelRetryError  `json:"retry_error,omitempty"`
 }
 
+type AccountModelRequestInput struct {
+	SessionID      string            `json:"session_id"`
+	ThreadID       string            `json:"thread_id,omitempty"`
+	RequestEventID string            `json:"request_event_id"`
+	Model          domain.Model      `json:"model"`
+	Usage          domain.TokenUsage `json:"usage"`
+	StopReason     string            `json:"stop_reason,omitempty"`
+}
+
+type AdmitModelRequestInput struct {
+	SessionID string `json:"session_id"`
+	ThreadID  string `json:"thread_id,omitempty"`
+}
+
+type AdmitModelRequestResult struct {
+	Allowed bool `json:"allowed"`
+}
+
 type RecordModelRetryInput struct {
 	SessionID      string          `json:"session_id"`
 	ThreadID       string          `json:"thread_id,omitempty"`
@@ -319,9 +338,10 @@ type CompleteWorkflowTurnInput struct {
 	ResolutionEventIDs []string `json:"resolution_event_ids,omitempty"`
 	// TranscriptDelta and ToolUseMappings are provider-private continuation
 	// state. PostgreSQL commits them atomically with Output when supported.
-	TranscriptDelta []domain.Message                `json:"transcript_delta,omitempty"`
-	ToolUseMappings []domain.ProviderToolUseMapping `json:"tool_use_mappings,omitempty"`
-	Usage           domain.TokenUsage               `json:"usage,omitempty"`
+	TranscriptDelta       []domain.Message                `json:"transcript_delta,omitempty"`
+	ToolUseMappings       []domain.ProviderToolUseMapping `json:"tool_use_mappings,omitempty"`
+	Usage                 domain.TokenUsage               `json:"usage,omitempty"`
+	UsageAlreadyAccounted bool                            `json:"usage_already_accounted,omitempty"`
 }
 
 // LoadEventsInput requests the ordered public events after a cursor.

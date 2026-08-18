@@ -258,6 +258,14 @@ func (w *turnInterruptWatcher) wait(delay time.Duration) (bool, error) {
 	}
 }
 
+// waitForWakeup blocks a budget-paused turn until durable state may have
+// changed. Interrupt wakeups are deliberately just wakeups here: PostgreSQL
+// keeps the trigger unprocessed, matching the budget-reached idle contract.
+func (w *turnInterruptWatcher) waitForWakeup() {
+	var signal WakeupSignal
+	w.wakeupCh.Receive(w.actx, &signal)
+}
+
 func loadInterruptAfter(
 	actx workflow.Context,
 	sessionID string,

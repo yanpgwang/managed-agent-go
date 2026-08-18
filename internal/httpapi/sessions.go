@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
@@ -18,9 +19,6 @@ import (
 // update field as reserved and rejects requests that set it.
 const vaultIDsUpdateRejectedMessage = "vault_ids is reserved for future use on session update and is " +
 	"rejected by the Managed Agents API; omit it"
-
-const sessionBudgetUnsupportedMessage = "session budgets require provider list-cost accounting across all " +
-	"session threads and are not available in this release"
 
 func (s *Server) registerSessionRoutes() {
 	s.mux.HandleFunc("POST /v1/sessions", s.createSession)
@@ -45,7 +43,8 @@ func (s *Server) registerSessionRoutes() {
 }
 
 func sessionToJSON(s domain.Session) map[string]any {
-	activeSeconds, durationSeconds := s.ObservableStats(time.Now())
+	now := time.Now()
+	activeSeconds, durationSeconds := s.ObservableStats(now)
 	outcomes := make([]any, 0, len(s.Outcomes))
 	for _, outcome := range s.Outcomes {
 		item := map[string]any{
@@ -71,7 +70,7 @@ func sessionToJSON(s domain.Session) map[string]any {
 	}
 	out := map[string]any{
 		"id": s.ID, "type": "session", "status": string(s.Status),
-		"budget":         nil,
+		"budget":         s.BudgetJSON(),
 		"agent":          s.ResolvedAgentSnapshotJSON(),
 		"environment_id": s.EnvironmentID, "title": s.Title, "metadata": orEmptyMap(s.Metadata),
 		"created_at": s.CreatedAt.Format(timeFmt), "updated_at": s.UpdatedAt.Format(timeFmt),
@@ -81,18 +80,7 @@ func sessionToJSON(s domain.Session) map[string]any {
 			"active_seconds":   activeSeconds,
 			"duration_seconds": durationSeconds,
 		},
-		"usage": map[string]any{
-			"active_seconds": activeSeconds,
-			"cache_creation": map[string]any{
-				"ephemeral_1h_input_tokens": s.Usage.CacheCreation.Ephemeral1hInputTokens,
-				"ephemeral_5m_input_tokens": s.Usage.CacheCreation.Ephemeral5mInputTokens,
-			},
-			"cache_read_input_tokens": s.Usage.CacheReadInputTokens,
-			"input_tokens":            s.Usage.InputTokens,
-			"list_cost":               nil,
-			"output_tokens":           s.Usage.OutputTokens,
-			"server_tool_use":         nil,
-		},
+		"usage":     s.UsageJSON(now),
 		"vault_ids": append([]string{}, s.VaultIDs...),
 	}
 	if s.DeploymentID != nil {
@@ -231,7 +219,8 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if err := rejectUnsupportedSessionBudget(in.Budget); err != nil {
+	budget, err := parseSessionBudget(in.Budget)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
@@ -288,6 +277,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		InitialEvents: drafts, Resources: resourceInputs,
 		MemoryResources: memoryResourceInputs,
 		VaultIDs:        sessionVaultIDs,
+		Budget:          budget,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -508,7 +498,8 @@ func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, domain.Unsupported(vaultIDsUpdateRejectedMessage))
 		return
 	}
-	if err := rejectUnsupportedSessionBudget(in.Budget); err != nil {
+	budgetUpdate, err := parseSessionBudgetUpdate(in.Budget)
+	if err != nil {
 		writeError(w, err)
 		return
 	}
@@ -517,7 +508,7 @@ func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	update := domain.SessionUpdate{Title: title}
+	update := domain.SessionUpdate{Title: title, Budget: budgetUpdate}
 	metadata, err := parseSessionMetadataPatch(in.Metadata)
 	if err != nil {
 		writeError(w, err)
@@ -543,16 +534,53 @@ func (s *Server) updateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, sessionToJSON(sess))
 }
 
-// rejectUnsupportedSessionBudget accepts omission and explicit null, both of
-// which mean that no spend ceiling is configured. A non-null limit is rejected
-// instead of being silently ignored: enforcing it requires durable list-cost
-// aggregation across every current and future Session Thread.
-func rejectUnsupportedSessionBudget(raw json.RawMessage) error {
+func parseSessionBudget(raw json.RawMessage) (*domain.SessionBudget, error) {
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
-		return nil
+		return nil, nil
 	}
-	return domain.Unsupported(sessionBudgetUnsupportedMessage)
+	var value struct {
+		Type        string `json:"type"`
+		MaxListCost struct {
+			Amount   string `json:"amount"`
+			Currency string `json:"currency"`
+		} `json:"max_list_cost"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(trimmed))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&value); err != nil {
+		return nil, domain.Validation("budget must be a valid limit object")
+	}
+	if value.Type != "limit" {
+		return nil, domain.Validation("budget type must be limit")
+	}
+	if value.MaxListCost.Currency != "USD" {
+		return nil, domain.Validation("budget max_list_cost currency must be USD")
+	}
+	if value.MaxListCost.Amount == "" ||
+		(value.MaxListCost.Amount != "0" && strings.HasPrefix(value.MaxListCost.Amount, "0")) {
+		return nil, domain.Validation("budget max_list_cost amount must be an integer string without leading zeros")
+	}
+	cents, err := strconv.ParseInt(value.MaxListCost.Amount, 10, 64)
+	if err != nil || cents < 0 || cents > int64(^uint64(0)>>1)/domain.NanoUSDPerCent {
+		return nil, domain.Validation("budget max_list_cost amount must be a non-negative integer string")
+	}
+	return &domain.SessionBudget{MaxListCostCents: cents}, nil
+}
+
+func parseSessionBudgetUpdate(raw json.RawMessage) (*domain.SessionBudgetUpdate, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return nil, nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return &domain.SessionBudgetUpdate{}, nil
+	}
+	budget, err := parseSessionBudget(trimmed)
+	if err != nil {
+		return nil, err
+	}
+	return &domain.SessionBudgetUpdate{Budget: budget}, nil
 }
 
 // parseSessionMetadataPatch decodes the session metadata patch. Omitted

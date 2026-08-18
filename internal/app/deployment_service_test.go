@@ -18,6 +18,7 @@ func TestDeploymentServicePinsAgentAndCreatesDeploymentSession(t *testing.T) {
 
 	item, err := service.Create(context.Background(), DeploymentCreateInput{
 		AgentID: "agent_test", EnvironmentID: "env_test", Name: "Hourly audit",
+		Budget: &domain.SessionBudget{MaxListCostCents: 500},
 		InitialEvents: []domain.EventDraft{{
 			Type: domain.EvUserMessage,
 			Payload: map[string]any{"content": []any{map[string]any{
@@ -33,6 +34,9 @@ func TestDeploymentServicePinsAgentAndCreatesDeploymentSession(t *testing.T) {
 	}
 	if item.AgentVersion != 2 {
 		t.Fatalf("pinned Agent version = %d, want 2", item.AgentVersion)
+	}
+	if item.Budget == nil || item.Budget.MaxListCostCents != 500 {
+		t.Fatalf("Deployment budget = %+v", item.Budget)
 	}
 	if len(item.Schedule.UpcomingRunsAt) != 5 ||
 		!item.Schedule.UpcomingRunsAt[0].After(now) {
@@ -73,7 +77,8 @@ func TestDeploymentServicePinsAgentAndCreatesDeploymentSession(t *testing.T) {
 	}
 	if sessions.last.DeploymentID == nil || *sessions.last.DeploymentID != item.ID ||
 		sessions.last.DeploymentRun == nil || sessions.last.AgentVersion == nil ||
-		*sessions.last.AgentVersion != 2 {
+		*sessions.last.AgentVersion != 2 || sessions.last.Budget == nil ||
+		sessions.last.Budget.MaxListCostCents != 500 {
 		t.Fatalf("Session create input = %+v", sessions.last)
 	}
 }

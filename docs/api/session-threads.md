@@ -97,8 +97,8 @@ Compacted child context projections are durably checkpointed, and
 remaining multi-agent boundary includes exact hosted preview suppression for
 report-only turns. The v1.62 `advisor` Thread is not represented as an ordinary
 child placeholder; it remains unsupported until its reserved, automatically
-terminating consultation lifecycle can be implemented end to end. Session
-budgets are also deferred until list cost is aggregated across all
-independently running Threads.
+terminating consultation lifecycle can be implemented end to end. Token and
+provider-native tool usage is owned by each independent Thread and also posted
+atomically to the shared Session list-cost budget.
 
 Start with the [multi-agent guide](../guides/multi-agent.md).

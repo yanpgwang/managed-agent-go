@@ -575,6 +575,32 @@ func (s *Store) admitLocked(
 			return Admission{}, domain.Validation("event type is not client-submittable: " + d.Type)
 		}
 	}
+	if session.BudgetReached(s.clock.Now().UTC()) {
+		interruptOnly := len(drafts) > 0
+		for _, draft := range drafts {
+			switch draft.Type {
+			case domain.EvUserMessage, domain.EvUserDefineOutcome:
+				return Admission{}, domain.Conflict(
+					"session budget has been reached; raise or remove the budget before submitting new work",
+				)
+			case domain.EvUserInterrupt:
+			default:
+				interruptOnly = false
+			}
+		}
+		if interruptOnly && session.Status == domain.StatusIdle {
+			pendingIDs, err := q.SessionPendingClientActionEventIDs(ctx, session.ID)
+			if err != nil {
+				return Admission{}, err
+			}
+			if len(pendingIDs) == 0 {
+				// A budget-idle Session with no requires_action barrier has no
+				// active provider/tool work to cancel. Accept the control request
+				// as an eventless no-op. Pending actions remain interruptible.
+				return Admission{Session: session}, nil
+			}
+		}
+	}
 
 	maxSeq, err := q.MaxEventSeq(ctx, session.ID)
 	if err != nil {
@@ -1708,6 +1734,7 @@ func isSessionProjectionEvent(eventType string) bool {
 		domain.EvSessionStatusRescheduling,
 		domain.EvSessionStatusTerminated,
 		domain.EvSessionUpdated,
+		domain.EvSessionUsage,
 		domain.EvSessionDeleted:
 		return true
 	default:
@@ -2196,6 +2223,7 @@ func (s *Store) completeTurn(
 				drafts = withoutTerminalIdle(drafts)
 			}
 		}
+		completionTime := s.clock.Now().UTC()
 		if effectiveStatus == domain.StatusIdle {
 			sessionPendingIDs, err := q.SessionPendingClientActionEventIDs(
 				ctx, sessionID,
@@ -2214,10 +2242,21 @@ func (s *Store) completeTurn(
 						"event_ids": sessionPendingIDs,
 					},
 				)
+			} else if session.BudgetReached(completionTime) {
+				drafts = rewriteTerminalSessionIdleStopReason(
+					drafts,
+					map[string]any{"type": "budget_reached"},
+				)
+				drafts = insertUsageBeforeTerminalIdle(
+					drafts,
+					domain.EventDraft{
+						Type:    domain.EvSessionUsage,
+						Payload: session.UsageEventPayload(completionTime),
+					},
+				)
 			}
 		}
 
-		completionTime := s.clock.Now().UTC()
 		events, finalMaxSeq, err := s.appendDraftsAt(
 			ctx,
 			q,
@@ -2436,6 +2475,25 @@ func rewriteTerminalSessionIdleStopReason(
 		payload["stop_reason"] = stopReason
 		out[index].Payload = payload
 		break
+	}
+	return out
+}
+
+func insertUsageBeforeTerminalIdle(
+	drafts []domain.EventDraft,
+	usage domain.EventDraft,
+) []domain.EventDraft {
+	out := make([]domain.EventDraft, 0, len(drafts)+1)
+	inserted := false
+	for _, draft := range drafts {
+		if !inserted && draft.Type == domain.EvSessionStatusIdle {
+			out = append(out, usage)
+			inserted = true
+		}
+		out = append(out, draft)
+	}
+	if !inserted {
+		out = append(out, usage)
 	}
 	return out
 }

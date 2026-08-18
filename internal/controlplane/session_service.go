@@ -182,6 +182,15 @@ func (s *SessionService) Create(
 	if err != nil {
 		return domain.Session{}, err
 	}
+	modelsPriceable := domain.HasAnthropicPublicListPrice(snapshot.Model)
+	for _, member := range roster {
+		modelsPriceable = modelsPriceable && domain.HasAnthropicPublicListPrice(member.Model)
+	}
+	if input.Budget != nil && !modelsPriceable {
+		return domain.Session{}, domain.Validation(
+			"budgeted sessions require every agent model to have a known Anthropic public list price",
+		)
+	}
 	hasCloudSkills := len(snapshot.Skills) > 0
 	for _, member := range roster {
 		hasCloudSkills = hasCloudSkills || len(member.Skills) > 0
@@ -230,6 +239,8 @@ func (s *SessionService) Create(
 		Metadata:          metadata,
 		AgentSnapshot:     snapshot,
 		MultiagentRoster:  roster,
+		ListCostKnown:     true,
+		Budget:            input.Budget,
 		VaultIDs:          append([]string(nil), input.VaultIDs...),
 		CreatedAt:         now,
 		UpdatedAt:         now,

@@ -23,6 +23,7 @@ type Deployment struct {
 	InitialEvents     []EventDraft
 	Resources         []DeploymentResource
 	VaultIDs          []string
+	Budget            *SessionBudget
 	Metadata          map[string]string
 	Schedule          *DeploymentSchedule
 	Status            string
@@ -69,6 +70,8 @@ type DeploymentPatch struct {
 	Metadata      map[string]*string
 	ScheduleSet   bool
 	Schedule      *DeploymentSchedule
+	BudgetSet     bool
+	Budget        *SessionBudget
 }
 
 type DeploymentRun struct {

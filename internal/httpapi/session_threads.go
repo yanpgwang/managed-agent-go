@@ -17,6 +17,10 @@ func sessionThreadToJSON(thread domain.SessionThread) map[string]any {
 	// The thread snapshot describes only the executing Agent. The coordinator's
 	// resolved roster remains available on Session.agent and is not repeated.
 	delete(agent, "multiagent")
+	listCost := any(nil)
+	if thread.ListCostKnown {
+		listCost = domain.MonetaryAmountJSON(thread.ModelListCostNanoUSD)
+	}
 	out := map[string]any{
 		"id": thread.ID, "type": "session_thread",
 		"session_id": thread.SessionID, "parent_thread_id": thread.ParentThreadID,
@@ -35,9 +39,12 @@ func sessionThreadToJSON(thread domain.SessionThread) map[string]any {
 			},
 			"cache_read_input_tokens": thread.Usage.CacheReadInputTokens,
 			"input_tokens":            thread.Usage.InputTokens,
-			"list_cost":               nil,
+			"list_cost":               listCost,
 			"output_tokens":           thread.Usage.OutputTokens,
-			"server_tool_use":         nil,
+			"server_tool_use": map[string]any{
+				"web_fetch_requests":  thread.Usage.ServerToolUse.WebFetchRequests,
+				"web_search_requests": thread.Usage.ServerToolUse.WebSearchRequests,
+			},
 		},
 	}
 	if thread.ArchivedAt == nil {

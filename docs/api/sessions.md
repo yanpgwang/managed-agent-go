@@ -85,9 +85,22 @@ Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.
 The optional `title`, `metadata`, `initial_events`, `resources`, and `vault_ids`
 fields must use their documented non-null shapes when present; omission supplies
-the empty/default value. `budget: null` explicitly selects no spend ceiling.
-A non-null budget currently returns `422`: the API does not claim enforcement
-until provider list cost can be aggregated durably across all Session Threads.
+the empty/default value. `budget: null` explicitly selects no spend ceiling. A
+non-null budget sets a Session-wide ceiling in integer USD cents:
+
+```json
+{
+  "budget": {
+    "type": "limit",
+    "max_list_cost": {"amount": "2500", "currency": "USD"}
+  }
+}
+```
+
+Budgeted Sessions require canonical Anthropic model IDs with known public list
+prices for the coordinator and every resolved roster member. A router may still
+forward those requests, but an opaque router-defined model alias is not assigned
+a guessed price.
 `resources` accepts File inputs and up to eight Memory Store inputs when the
 corresponding Docker sandbox capability is configured:
 
@@ -149,8 +162,10 @@ The update body accepts `agent`, `metadata`, `title`, and `budget`:
   a turn is in flight returns `409`; send an untargeted `user.interrupt` first.
   `title` and `metadata` carry no such precondition.
 - `vault_ids` is rejected on update, matching the official Update Session API.
-- `budget: null` is accepted as a no-op because this release has no configured
-  spend ceiling. A non-null limit returns `422` rather than being ignored.
+- A Session created with a budget may replace it or set `budget: null` to remove
+  it. A changed maximum must be strictly greater than the exact list cost already
+  consumed. A Session created without a budget cannot add one later, and a
+  removed budget cannot be re-added.
 
 Changed fields and their `session.updated` event commit together. The event
 carries only the fields the request actually changed; a request that changes
@@ -214,9 +229,22 @@ The response embeds the resolved agent snapshot and includes nullable `budget`,
 `outcome_evaluations` reflects each admitted outcome. `resources` embeds active
 File and Memory Store Resource objects. Ordered `vault_ids` are resolved at
 creation; update-time vault replacement is rejected, matching the official API.
-Until cost accounting is implemented, `budget`, `usage.list_cost`, and
-`usage.server_tool_use` are explicit null values; `usage.active_seconds` is the
-duration currently priced by the upstream contract.
+`usage` aggregates provider-reported token, prompt-cache, Web Fetch, and Web
+Search counters across every Session Thread. `usage.list_cost` is calculated
+from Anthropic public Messages rates, the Web Search request rate, and $0.08 per
+Session active hour, then rounded to the nearest cent for the public monetary
+projection. Thread list cost excludes Session runtime. Accounting remains exact
+internally, and model-request admission checks the shared ceiling before every
+request; an already in-flight request may take the Session over its limit.
+Provider-reported tokens remain visible even when a response-level billing rule
+makes their list cost zero, such as an unbilled Claude Fable 5 refusal.
+
+When the ceiling is reached, affected Threads become idle with
+`budget_reached`. If the whole Session becomes idle, `session.usage` is emitted
+immediately before `session.status_idle`. A pending client action takes
+precedence as `requires_action`; its result remains admissible, and the budget is
+checked before any subsequent model request. Raising or removing the budget
+resumes a turn that was paused at that check.
 `deployment_id` is null for direct Session creation and contains the parent
 Deployment ID for Deployment-created Sessions.
 See [Claude API coverage](../compatibility.md).

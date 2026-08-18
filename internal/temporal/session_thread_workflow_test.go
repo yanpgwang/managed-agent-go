@@ -17,6 +17,7 @@ import (
 )
 
 func registerNoThreadInterrupt(env *testsuite.TestWorkflowEnvironment) {
+	registerBudgetTestActivities(env)
 	env.RegisterActivityWithOptions(
 		func(context.Context, LoadInterruptInput) (LoadInterruptResult, error) {
 			return LoadInterruptResult{}, nil

@@ -217,6 +217,13 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		}
 
 		now := s.clock.Now().UTC()
+		if effectiveStatus == domain.StatusIdle && !gatedAfterCompletion &&
+			session.BudgetReached(now) {
+			effectiveDrafts = rewriteTerminalSessionIdleStopReason(
+				effectiveDrafts,
+				map[string]any{"type": "budget_reached"},
+			)
+		}
 		primaryID := *thread.ParentThreadID
 		finalReport := []any(nil)
 		if interrupt == nil && status == domain.StatusIdle &&
@@ -424,12 +431,12 @@ func (s *Store) CompleteThreadWorkflowTurn(
 		pendingBoundaryChanged := len(pendingActionEventIDs) > 0 || resolvedPending
 		if oldSessionStatus != aggregated ||
 			(aggregated == domain.StatusIdle && pendingBoundaryChanged) {
-			var statusDraft *domain.EventDraft
+			var statusDrafts []domain.EventDraft
 			switch aggregated {
 			case domain.StatusRunning:
-				statusDraft = &domain.EventDraft{
+				statusDrafts = []domain.EventDraft{{
 					Type: domain.EvSessionStatusRunning, Payload: map[string]any{},
-				}
+				}}
 			case domain.StatusIdle:
 				stopReason := map[string]any{"type": "end_turn"}
 				if len(pendingClientEventIDs) > 0 {
@@ -437,21 +444,27 @@ func (s *Store) CompleteThreadWorkflowTurn(
 						"type":      "requires_action",
 						"event_ids": pendingClientEventIDs,
 					}
+				} else if session.BudgetReached(now) {
+					stopReason = map[string]any{"type": "budget_reached"}
+					statusDrafts = append(statusDrafts, domain.EventDraft{
+						Type:    domain.EvSessionUsage,
+						Payload: session.UsageEventPayload(now),
+					})
 				}
-				statusDraft = &domain.EventDraft{
+				statusDrafts = append(statusDrafts, domain.EventDraft{
 					Type:    domain.EvSessionStatusIdle,
 					Payload: map[string]any{"stop_reason": stopReason},
-				}
+				})
 			case domain.StatusRescheduling:
-				statusDraft = &domain.EventDraft{
+				statusDrafts = []domain.EventDraft{{
 					Type:    domain.EvSessionStatusRescheduling,
 					Payload: map[string]any{},
-				}
+				}}
 			}
-			if statusDraft != nil {
+			if len(statusDrafts) > 0 {
 				statusEvents, _, err := s.appendThreadDraftsAt(
 					ctx, q, sessionID, primaryID,
-					[]domain.EventDraft{*statusDraft}, maxSeq, &triggerEventID, now,
+					statusDrafts, maxSeq, &triggerEventID, now,
 				)
 				if err != nil {
 					return err
