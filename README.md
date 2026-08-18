@@ -76,7 +76,9 @@ make local-down
 > [!IMPORTANT]
 > Mango is in alpha. It exposes the 90 operations in its pinned Managed Agents
 > contract, with capability-specific limitations, and is not an Anthropic
-> product or a drop-in replacement for every hosted behavior.
+> product or a drop-in replacement for every hosted behavior. The official Go
+> SDK is pinned at v1.63.1; its five separate Dreams research-preview operations
+> are not part of Mango's current HTTP surface.
 > Its architecture is designed for production operation, but the project does
 > not yet claim production readiness.
 > Review the [compatibility matrix](https://yanpgwang.github.io/managed-agent-go/compatibility)
@@ -99,8 +101,8 @@ make local-down
 
 The [compatibility summary](https://yanpgwang.github.io/managed-agent-go/compatibility)
 states the user-visible boundary. Ordinary persistent child-Agent orchestration
-is implemented; advisors, shared Session budgets, environment-variable secret
-egress, and production-platform hardening remain
+and shared Session budgets are implemented; advisors, Dreams,
+environment-variable secret egress, and production-platform hardening remain
 [roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
 
 ## Architecture
