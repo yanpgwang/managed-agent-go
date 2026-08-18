@@ -409,7 +409,7 @@ func (s *Store) UpdateSession(
 	update domain.SessionUpdate,
 ) (domain.Session, error) {
 	var result domain.Session
-	err := s.withTx(ctx, func(q *pgstore.Queries) error {
+	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
 		row, err := q.LockSession(ctx, sessionID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("session not found")
@@ -429,6 +429,20 @@ func (s *Store) UpdateSession(
 				"session must be idle to update agent configuration; interrupt it first",
 			)
 		}
+		if update.Budget != nil && update.Budget.Budget != nil &&
+			session.Budget != nil && *update.Budget.Budget != *session.Budget {
+			if !session.ListCostKnown {
+				return domain.Validation(
+					"budget cannot be changed while session list cost is unknown",
+				)
+			}
+			maximum := update.Budget.Budget.MaxListCostCents * domain.NanoUSDPerCent
+			if maximum <= session.ObservableListCostNanoUSD(s.clock.Now().UTC()) {
+				return domain.Validation(
+					"budget max_list_cost must be strictly greater than the session's consumed list cost",
+				)
+			}
+		}
 		next, change, err := session.ApplyUpdate(update)
 		if err != nil {
 			return err
@@ -442,11 +456,19 @@ func (s *Store) UpdateSession(
 		if err != nil {
 			return err
 		}
-		if _, _, err := s.appendDrafts(ctx, q, sessionID, []domain.EventDraft{{
+		if _, maxSeq, err = s.appendDrafts(ctx, q, sessionID, []domain.EventDraft{{
 			Type:    domain.EvSessionUpdated,
 			Payload: domain.SessionUpdatedPayload(next, change),
 		}}, maxSeq, nil); err != nil {
 			return err
+		}
+		if change.Budget {
+			_, err = s.resumeBudgetPausedThreadsLocked(
+				ctx, tx, q, &next, maxSeq,
+			)
+			if err != nil {
+				return err
+			}
 		}
 		if err := s.updateAPIProjection(ctx, q, next); err != nil {
 			return err

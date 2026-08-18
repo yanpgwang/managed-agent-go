@@ -2,8 +2,8 @@ package httpapi
 
 import (
 	"context"
-	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -80,7 +80,7 @@ func TestOfficialGoSDKDeploymentSurface(t *testing.T) {
 			Amount: "2500", Currency: anthropic.BetaCurrencyUsd,
 		},
 	}
-	_, err = client.Beta.Deployments.New(context.Background(), anthropic.BetaDeploymentNewParams{
+	budgeted, err := client.Beta.Deployments.New(context.Background(), anthropic.BetaDeploymentNewParams{
 		Agent:         anthropic.BetaDeploymentNewParamsAgentUnion{OfString: anthropic.String("agent_sdk")},
 		EnvironmentID: "env_sdk", Name: "Budgeted deployment", Budget: limit,
 		InitialEvents: []anthropic.BetaManagedAgentsDeploymentInitialEventParamsUnion{{
@@ -94,7 +94,9 @@ func TestOfficialGoSDKDeploymentSurface(t *testing.T) {
 			},
 		}},
 	})
-	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+	if err != nil || !strings.Contains(budgeted.RawJSON(), `"amount":"2500"`) {
+		t.Fatalf("create budgeted Deployment: deployment=%+v err=%v", budgeted, err)
+	}
 
 	if _, err := client.Beta.Deployments.Get(
 		context.Background(), service.item.ID, anthropic.BetaDeploymentGetParams{},
@@ -115,10 +117,12 @@ func TestOfficialGoSDKDeploymentSurface(t *testing.T) {
 	); err != nil {
 		t.Fatalf("null Deployment budget update through SDK: %v", err)
 	}
-	_, err = client.Beta.Deployments.Update(
+	updated, err := client.Beta.Deployments.Update(
 		context.Background(), service.item.ID, anthropic.BetaDeploymentUpdateParams{Budget: limit},
 	)
-	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+	if err != nil || !strings.Contains(updated.RawJSON(), `"amount":"2500"`) {
+		t.Fatalf("reset Deployment budget: deployment=%+v err=%v", updated, err)
+	}
 	listed, err := client.Beta.Deployments.List(
 		context.Background(), anthropic.BetaDeploymentListParams{Limit: anthropic.Int(20)},
 	)
@@ -167,9 +171,10 @@ type sdkDeploymentService struct {
 }
 
 func (s *sdkDeploymentService) Create(
-	context.Context,
-	app.DeploymentCreateInput,
+	_ context.Context,
+	in app.DeploymentCreateInput,
 ) (domain.Deployment, error) {
+	s.item.Budget = in.Budget
 	return s.item, nil
 }
 
@@ -178,10 +183,13 @@ func (s *sdkDeploymentService) Get(context.Context, string) (domain.Deployment, 
 }
 
 func (s *sdkDeploymentService) Update(
-	context.Context,
-	string,
-	domain.DeploymentPatch,
+	_ context.Context,
+	_ string,
+	patch domain.DeploymentPatch,
 ) (domain.Deployment, error) {
+	if patch.BudgetSet {
+		s.item.Budget = patch.Budget
+	}
 	return s.item, nil
 }
 

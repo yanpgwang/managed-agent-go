@@ -51,6 +51,7 @@ func registerWorkflowTurnActivities(
 		func(context.Context, StartModelRequestInput) error { return nil },
 		activity.RegisterOptions{Name: ActivityStartModelRequest},
 	)
+	registerBudgetTestActivities(env)
 	env.RegisterActivityWithOptions(
 		func(_ context.Context, in AppendWorkflowEventsInput) error {
 			flushedMu.Lock()
@@ -73,6 +74,19 @@ func registerWorkflowTurnActivities(
 			return complete(ctx, in)
 		},
 		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+}
+
+func registerBudgetTestActivities(env *testsuite.TestWorkflowEnvironment) {
+	env.RegisterActivityWithOptions(
+		func(context.Context, AdmitModelRequestInput) (AdmitModelRequestResult, error) {
+			return AdmitModelRequestResult{Allowed: true}, nil
+		},
+		activity.RegisterOptions{Name: ActivityAdmitModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, AccountModelRequestInput) error { return nil },
+		activity.RegisterOptions{Name: ActivityAccountModelRequest},
 	)
 }
 
@@ -113,6 +127,110 @@ func TestWorkflowTurn_PublishesPrimaryPreviewsOnSessionStream(t *testing.T) {
 		SessionID: "sesn_primary_preview", TriggerEventID: "sevt_user",
 	})
 	require.NoError(t, env.GetWorkflowError())
+}
+
+func TestWorkflowTurn_AdmitsAndAccountsEveryModelRequestBeforeCompletion(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	var mu sync.Mutex
+	var operations []string
+	var accounted AccountModelRequestInput
+	var completed CompleteWorkflowTurnInput
+	record := func(value string) {
+		mu.Lock()
+		defer mu.Unlock()
+		operations = append(operations, value)
+	}
+	env.RegisterActivityWithOptions(
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{
+				ThreadID: "sthr_usage",
+				Request: model.Request{
+					Model: "claude-opus-4-8", InferenceGeo: "us",
+				},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityPrepareTurn},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, AdmitModelRequestInput) (AdmitModelRequestResult, error) {
+			record("admit")
+			return AdmitModelRequestResult{Allowed: true}, nil
+		},
+		activity.RegisterOptions{Name: ActivityAdmitModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, StartModelRequestInput) error {
+			record("start")
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityStartModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			record("call")
+			return CallModelResult{
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+				MessageEventID:      "sevt_usage_message",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content:    []domain.ContentBlock{{Type: "text", Text: "done"}},
+					Usage: domain.TokenUsage{
+						InputTokens: 7, OutputTokens: 3,
+						ServerToolUse: domain.ServerToolUsage{WebSearchRequests: 1},
+					},
+				},
+			}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCallModel},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in AccountModelRequestInput) error {
+			mu.Lock()
+			operations = append(operations, "account")
+			accounted = in
+			mu.Unlock()
+			return nil
+		},
+		activity.RegisterOptions{Name: ActivityAccountModelRequest},
+	)
+	env.RegisterActivityWithOptions(
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{}, nil
+		},
+		activity.RegisterOptions{Name: ActivityExecuteTool},
+	)
+	env.RegisterActivityWithOptions(
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			mu.Lock()
+			operations = append(operations, "complete")
+			completed = in
+			mu.Unlock()
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+		activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sesn_usage", TriggerEventID: "sevt_usage_trigger",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{"admit", "start", "call", "account", "complete"}, operations)
+	require.Equal(t, "sesn_usage", accounted.SessionID)
+	require.Equal(t, "sthr_usage", accounted.ThreadID)
+	require.NotEmpty(t, accounted.RequestEventID)
+	require.Equal(t, "claude-opus-4-8", accounted.Model.ID)
+	require.Equal(t, "us", accounted.Model.InferenceGeo)
+	require.Equal(t, "end_turn", accounted.StopReason)
+	require.Equal(t, int64(7), accounted.Usage.InputTokens)
+	require.Equal(t, int64(1), accounted.Usage.ServerToolUse.WebSearchRequests)
+	require.True(t, completed.UsageAlreadyAccounted)
+	require.Equal(t, accounted.Usage, completed.Usage)
 }
 
 func TestWorkflowTurn_EmitsContextCompactionOnOwningThread(t *testing.T) {
@@ -224,6 +342,7 @@ func TestWorkflowTurn_PersistsEachModelStartBeforeCallAndPreservesRoundOrder(t *
 		},
 		activity.RegisterOptions{Name: ActivityStartModelRequest},
 	)
+	registerBudgetTestActivities(env)
 	env.RegisterActivityWithOptions(
 		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
 			record("call")
@@ -1014,6 +1133,7 @@ func TestWorkflowTurn_PublishesModelRetryLifecycleAndRecovers(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()
 	env.RegisterWorkflow(workflowTurnHarness)
+	registerBudgetTestActivities(env)
 
 	env.RegisterActivityWithOptions(
 		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {

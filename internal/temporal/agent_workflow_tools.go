@@ -2,12 +2,14 @@ package temporal
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/model"
 )
 
 const (
@@ -52,6 +54,7 @@ type workflowTurnState struct {
 	toolUseMappings                []domain.ProviderToolUseMapping
 	loadedSkills                   map[string]struct{}
 	usage                          domain.TokenUsage
+	perRequestUsageAccounting      bool
 	flushedEventCount              int
 }
 
@@ -65,6 +68,29 @@ func (t *workflowTurnState) startModelRequest(startID string) error {
 			ModelRequestStartID: startID,
 		},
 	).Get(t.actx, nil)
+}
+
+func (t *workflowTurnState) awaitModelRequestAdmission() error {
+	for {
+		var admitted AdmitModelRequestResult
+		if err := workflow.ExecuteActivity(
+			t.actx,
+			ActivityAdmitModelRequest,
+			AdmitModelRequestInput{
+				SessionID: t.sessionID,
+				ThreadID:  t.threadID,
+			},
+		).Get(t.actx, &admitted); err != nil {
+			return err
+		}
+		if admitted.Allowed {
+			return nil
+		}
+		if t.interrupts == nil {
+			return fmt.Errorf("budget-paused turn has no workflow wakeup channel")
+		}
+		t.interrupts.waitForWakeup()
+	}
 }
 
 func (t *workflowTurnState) flushOutput() error {
@@ -193,6 +219,9 @@ func (t *workflowTurnState) evaluateOutcome(
 				evaluated.StartEventID = input.StartEventID
 				evaluated.EndEventID = input.EndEventID
 				t.usage.Add(evaluated.Usage)
+				if t.perRequestUsageAccounting && hasTokenUsage(evaluated.Usage) {
+					err = t.accountOutcomeEvaluation(input, evaluated)
+				}
 			}
 			return evaluated, interruptibleActivityOutcome{Completed: err == nil}, err
 		}
@@ -207,6 +236,9 @@ func (t *workflowTurnState) evaluateOutcome(
 			evaluated.StartEventID = input.StartEventID
 			evaluated.EndEventID = input.EndEventID
 			t.usage.Add(evaluated.Usage)
+			if t.perRequestUsageAccounting && hasTokenUsage(evaluated.Usage) {
+				err = t.accountOutcomeEvaluation(input, evaluated)
+			}
 		}
 		return evaluated, outcome, err
 	}
@@ -218,6 +250,9 @@ func (t *workflowTurnState) evaluateOutcome(
 		).Get(t.actx, &evaluated)
 		if err == nil {
 			t.usage.Add(evaluated.Usage)
+			if t.perRequestUsageAccounting && hasTokenUsage(evaluated.Usage) {
+				err = t.accountOutcomeEvaluation(input, evaluated)
+			}
 		}
 		return evaluated, interruptibleActivityOutcome{Completed: err == nil}, err
 	}
@@ -228,8 +263,56 @@ func (t *workflowTurnState) evaluateOutcome(
 	)
 	if err == nil && outcome.Completed {
 		t.usage.Add(evaluated.Usage)
+		if t.perRequestUsageAccounting && hasTokenUsage(evaluated.Usage) {
+			err = t.accountOutcomeEvaluation(input, evaluated)
+		}
 	}
 	return evaluated, outcome, err
+}
+
+func (t *workflowTurnState) accountOutcomeEvaluation(
+	input EvaluateOutcomeInput,
+	evaluated EvaluateOutcomeResult,
+) error {
+	return t.accountModelRequest(
+		input.EndEventID,
+		model.Request{
+			Model: input.Model, Effort: input.Effort, Speed: input.Speed,
+			InferenceGeo: input.InferenceGeo,
+		},
+		evaluated.Usage,
+		evaluated.StopReason,
+	)
+}
+
+func (t *workflowTurnState) accountModelRequest(
+	requestEventID string,
+	request model.Request,
+	usage domain.TokenUsage,
+	stopReason string,
+) error {
+	return workflow.ExecuteActivity(
+		t.actx,
+		ActivityAccountModelRequest,
+		AccountModelRequestInput{
+			SessionID: t.sessionID, ThreadID: t.threadID,
+			RequestEventID: requestEventID,
+			Model: domain.Model{
+				ID: request.Model, Effort: request.Effort, Speed: request.Speed,
+				InferenceGeo: request.InferenceGeo,
+			},
+			Usage: usage, StopReason: stopReason,
+		},
+	).Get(t.actx, nil)
+}
+
+func hasTokenUsage(usage domain.TokenUsage) bool {
+	return usage.InputTokens != 0 || usage.OutputTokens != 0 ||
+		usage.CacheReadInputTokens != 0 ||
+		usage.CacheCreation.Ephemeral1hInputTokens != 0 ||
+		usage.CacheCreation.Ephemeral5mInputTokens != 0 ||
+		usage.ServerToolUse.WebFetchRequests != 0 ||
+		usage.ServerToolUse.WebSearchRequests != 0
 }
 
 func (t *workflowTurnState) evaluateOutcomeWithHeartbeats(
@@ -515,6 +598,7 @@ func (t *workflowTurnState) complete(
 		PendingActionEventIDs: pendingActionEventIDs,
 		ResolutionEventIDs:    t.resolutionEventIDs,
 		Usage:                 t.usage,
+		UsageAlreadyAccounted: t.perRequestUsageAccounting,
 	}
 	if t.usesProviderTranscript {
 		input.TranscriptDelta = t.transcriptDelta
@@ -550,15 +634,16 @@ func (t *workflowTurnState) exhaustModelRetries(
 		}},
 	)
 	input := CompleteWorkflowTurnInput{
-		SessionID:          t.sessionID,
-		ThreadID:           t.threadID,
-		IsChild:            t.isChild,
-		TriggerEventID:     t.triggerEventID,
-		Output:             output,
-		Status:             domain.StatusIdle,
-		AttemptID:          t.attemptID,
-		ResolutionEventIDs: t.resolutionEventIDs,
-		Usage:              t.usage,
+		SessionID:             t.sessionID,
+		ThreadID:              t.threadID,
+		IsChild:               t.isChild,
+		TriggerEventID:        t.triggerEventID,
+		Output:                output,
+		Status:                domain.StatusIdle,
+		AttemptID:             t.attemptID,
+		ResolutionEventIDs:    t.resolutionEventIDs,
+		Usage:                 t.usage,
+		UsageAlreadyAccounted: t.perRequestUsageAccounting,
 	}
 	if t.usesProviderTranscript {
 		input.TranscriptDelta = t.transcriptDelta
@@ -608,15 +693,16 @@ func (t *workflowTurnState) terminateTyped(
 		domain.EventDraft{Type: domain.EvSessionStatusTerminated, Payload: map[string]any{}},
 	)
 	input := CompleteWorkflowTurnInput{
-		SessionID:          t.sessionID,
-		ThreadID:           t.threadID,
-		IsChild:            t.isChild,
-		TriggerEventID:     t.triggerEventID,
-		Output:             output,
-		Status:             domain.StatusTerminated,
-		AttemptID:          t.attemptID,
-		ResolutionEventIDs: t.resolutionEventIDs,
-		Usage:              t.usage,
+		SessionID:             t.sessionID,
+		ThreadID:              t.threadID,
+		IsChild:               t.isChild,
+		TriggerEventID:        t.triggerEventID,
+		Output:                output,
+		Status:                domain.StatusTerminated,
+		AttemptID:             t.attemptID,
+		ResolutionEventIDs:    t.resolutionEventIDs,
+		Usage:                 t.usage,
+		UsageAlreadyAccounted: t.perRequestUsageAccounting,
 	}
 	if t.usesProviderTranscript {
 		input.TranscriptDelta = t.transcriptDelta

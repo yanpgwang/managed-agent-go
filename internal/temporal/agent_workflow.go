@@ -77,6 +77,9 @@ const (
 
 	providerStopReasonChangeID = "provider-stop-reason-state-machine"
 	providerStopReasonVersion  = 1
+
+	modelRequestAccountingChangeID = "per-model-request-usage-accounting"
+	modelRequestAccountingVersion  = 1
 )
 
 type providerResponseDisposition uint8
@@ -188,6 +191,12 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		providerStopReasonVersion,
 	) == providerStopReasonVersion
+	modelRequestAccounting := workflow.GetVersion(
+		actx,
+		modelRequestAccountingChangeID,
+		workflow.DefaultVersion,
+		modelRequestAccountingVersion,
+	) == modelRequestAccountingVersion
 	initialOutput := append([]domain.EventDraft(nil), prepared.PreludeEvents...)
 	if contextCompactionEvents && prepared.ContextProjection.Compacted {
 		initialOutput = append(initialOutput, domain.EventDraft{
@@ -214,7 +223,8 @@ func runWorkflowTurnInternal(
 			[]domain.Message(nil),
 			prepared.TranscriptDelta...,
 		),
-		loadedSkills: agentruntime.LoadedRuntimeSkills(prepared.Request.Messages),
+		loadedSkills:              agentruntime.LoadedRuntimeSkills(prepared.Request.Messages),
+		perRequestUsageAccounting: modelRequestAccounting,
 	}
 	if prepared.FatalError != "" {
 		return turn.terminate(failTurn(prepared.FatalError))
@@ -270,6 +280,11 @@ func runWorkflowTurnInternal(
 				round,
 				attempt,
 			)
+			if modelRequestAccounting {
+				if err := turn.awaitModelRequestAdmission(); err != nil {
+					return RunTurnResult{}, err
+				}
+			}
 			if liveModelSpanStarts {
 				if err := turn.startModelRequest(modelRequestStartID); err != nil {
 					return RunTurnResult{}, err
@@ -291,6 +306,16 @@ func runWorkflowTurnInternal(
 			})
 			if err != nil {
 				return RunTurnResult{}, err
+			}
+			if modelRequestAccounting && activityOutcome.Completed && hasTokenUsage(called.Response.Usage) {
+				if err := turn.accountModelRequest(
+					called.ModelRequestEndID,
+					request,
+					called.Response.Usage,
+					called.Response.StopReason,
+				); err != nil {
+					return RunTurnResult{}, err
+				}
 			}
 			if activityOutcome.Interrupted && !activityOutcome.Completed {
 				cancelled := CallModelResult{
@@ -536,6 +561,14 @@ func runWorkflowTurnInternal(
 				triggerEventID,
 				outcomeIteration,
 			)
+			if modelRequestAccounting {
+				if err := turn.flushOutput(); err != nil {
+					return RunTurnResult{}, err
+				}
+				if err := turn.awaitModelRequestAdmission(); err != nil {
+					return RunTurnResult{}, err
+				}
+			}
 			if outcomeEvaluationHeartbeats {
 				turn.output = append(turn.output, outcomeEvaluationStartDraft(
 					*prepared.Outcome,

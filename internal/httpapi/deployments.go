@@ -60,9 +60,14 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
+	var budget *domain.SessionBudget
+	var err error
 	if body.Budget.Present && !body.Budget.Null {
-		writeError(w, domain.Unsupported(sessionBudgetUnsupportedMessage))
-		return
+		budget, err = parseSessionBudget(body.Budget.Value)
+		if err != nil {
+			writeError(w, err)
+			return
+		}
 	}
 	ref, err := parseDeploymentAgent(body.Agent)
 	if err != nil {
@@ -104,6 +109,7 @@ func (s *Server) createDeployment(w http.ResponseWriter, r *http.Request) {
 		EnvironmentID: body.EnvironmentID, Name: body.Name,
 		Description: description, InitialEvents: toDrafts(body.InitialEvents),
 		Resources: resources, VaultIDs: vaultIDs, Metadata: metadata, Schedule: schedule,
+		Budget: budget,
 	})
 	if err != nil {
 		writeError(w, err)
@@ -133,11 +139,18 @@ func (s *Server) updateDeployment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	if body.Budget.Present && !body.Budget.Null {
-		writeError(w, domain.Unsupported(sessionBudgetUnsupportedMessage))
-		return
-	}
 	patch := domain.DeploymentPatch{}
+	if body.Budget.Present {
+		patch.BudgetSet = true
+		if !body.Budget.Null {
+			budget, err := parseSessionBudget(body.Budget.Value)
+			if err != nil {
+				writeError(w, err)
+				return
+			}
+			patch.Budget = budget
+		}
+	}
 	if body.Agent.Present {
 		if body.Agent.Null {
 			writeError(w, domain.Validation("agent cannot be null"))
@@ -450,9 +463,13 @@ func deploymentToJSON(item domain.Deployment) map[string]any {
 			resources = append(resources, value)
 		}
 	}
+	budget := any(nil)
+	if item.Budget != nil {
+		budget = item.Budget.JSON()
+	}
 	out := map[string]any{
 		"id": item.ID, "type": "deployment",
-		"budget": nil,
+		"budget": budget,
 		"agent": map[string]any{
 			"type": "agent", "id": item.AgentID, "version": item.AgentVersion,
 		},

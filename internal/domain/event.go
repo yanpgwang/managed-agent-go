@@ -37,6 +37,7 @@ const (
 	EvSessionStatusRescheduling = "session.status_rescheduled"
 	EvSessionError              = "session.error"
 	EvSessionUpdated            = "session.updated"
+	EvSessionUsage              = "session.usage"
 	EvSessionDeleted            = "session.deleted"
 
 	EvSessionThreadCreated           = "session.thread_created"

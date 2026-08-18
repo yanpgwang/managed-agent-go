@@ -28,7 +28,7 @@ func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 		b, _ := io.ReadAll(r.Body)
 		_ = json.Unmarshal(b, &gotBody)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"hi back"}],"stop_reason":"end_turn","usage":{"cache_creation":{"ephemeral_1h_input_tokens":3,"ephemeral_5m_input_tokens":4},"cache_read_input_tokens":5,"input_tokens":11,"output_tokens":7,"speed":"standard"}}`))
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"hi back"}],"stop_reason":"end_turn","usage":{"cache_creation":{"ephemeral_1h_input_tokens":3,"ephemeral_5m_input_tokens":4},"cache_read_input_tokens":5,"input_tokens":11,"output_tokens":7,"server_tool_use":{"web_fetch_requests":2,"web_search_requests":1},"speed":"standard"}}`))
 	}))
 	defer srv.Close()
 
@@ -78,6 +78,8 @@ func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {
 		resp.Usage.CacheReadInputTokens != 5 ||
 		resp.Usage.CacheCreation.Ephemeral1hInputTokens != 3 ||
 		resp.Usage.CacheCreation.Ephemeral5mInputTokens != 4 ||
+		resp.Usage.ServerToolUse.WebFetchRequests != 2 ||
+		resp.Usage.ServerToolUse.WebSearchRequests != 1 ||
 		resp.Usage.Speed != "standard" {
 		t.Fatalf("usage = %#v", resp.Usage)
 	}
@@ -120,7 +122,7 @@ func TestDecodeMessageStream_AccumulatesUsage(t *testing.T) {
 		"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"cache_creation\":{\"ephemeral_1h_input_tokens\":2,\"ephemeral_5m_input_tokens\":3},\"cache_read_input_tokens\":4,\"input_tokens\":10,\"output_tokens\":1}}}\n\n" +
 			"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n" +
 			"data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"ok\"}}\n\n" +
-			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":6}}\n\n" +
+			"data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":6,\"server_tool_use\":{\"web_fetch_requests\":2,\"web_search_requests\":1}}}\n\n" +
 			"data: {\"type\":\"message_stop\"}\n\n",
 	)
 	resp, err := decodeMessageStream(stream, nil)
@@ -130,7 +132,9 @@ func TestDecodeMessageStream_AccumulatesUsage(t *testing.T) {
 	if resp.Usage.InputTokens != 10 || resp.Usage.OutputTokens != 6 ||
 		resp.Usage.CacheReadInputTokens != 4 ||
 		resp.Usage.CacheCreation.Ephemeral1hInputTokens != 2 ||
-		resp.Usage.CacheCreation.Ephemeral5mInputTokens != 3 {
+		resp.Usage.CacheCreation.Ephemeral5mInputTokens != 3 ||
+		resp.Usage.ServerToolUse.WebFetchRequests != 2 ||
+		resp.Usage.ServerToolUse.WebSearchRequests != 1 {
 		t.Fatalf("stream usage = %#v", resp.Usage)
 	}
 }

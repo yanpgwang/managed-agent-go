@@ -60,6 +60,28 @@ func (s storeSource) GetSessionThread(
 // NewStoreSource wraps a PostgreSQL store as an Activity EventSource.
 func NewStoreSource(store *pg.Store) EventSource { return storeSource{store: store} }
 
+func (s storeSource) AccountModelRequest(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+	requestEventID string,
+	model domain.Model,
+	usage domain.TokenUsage,
+	stopReason string,
+) error {
+	return s.store.AccountModelRequest(
+		ctx, sessionID, threadID, requestEventID, model, usage, stopReason,
+	)
+}
+
+func (s storeSource) AdmitModelRequest(
+	ctx context.Context,
+	sessionID string,
+	threadID string,
+) (bool, error) {
+	return s.store.AdmitModelRequest(ctx, sessionID, threadID)
+}
+
 func (s storeSource) EventsAfter(ctx context.Context, sessionID string, cursor int64, limit int) ([]domain.Event, error) {
 	return s.store.EventsAfter(ctx, sessionID, cursor, limit)
 }

@@ -241,6 +241,7 @@ func registerCurrentTurnActivities(
 ) *turnRecorder {
 	acts := NewActivities(nil, source, nil, nil, &testIDGen{})
 	recorder := &turnRecorder{}
+	registerBudgetTestActivities(env)
 	env.RegisterActivityWithOptions(
 		acts.LoadEvents,
 		activity.RegisterOptions{Name: ActivityLoadEvents},
@@ -331,6 +332,7 @@ func TestSessionWorkflow_UsesWorkflowOwnedLoop(t *testing.T) {
 func TestSessionWorkflow_ParksUntilFullBarrierThenPreservesQueuedMessage(t *testing.T) {
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
+	registerBudgetTestActivities(env)
 
 	events := []EventRef{
 		{ID: "sevt_original", Seq: 1, Type: domain.EvUserMessage},

@@ -551,6 +551,8 @@ func TestWorkflowTurn_ToolResultWriteRetryDoesNotReexecute(t *testing.T) {
 	env.RegisterWorkflow(workflowTurnHarness)
 	env.RegisterActivityWithOptions(activities.PrepareTurn, activity.RegisterOptions{Name: ActivityPrepareTurn})
 	env.RegisterActivityWithOptions(activities.CallModel, activity.RegisterOptions{Name: ActivityCallModel})
+	env.RegisterActivityWithOptions(activities.AdmitModelRequest, activity.RegisterOptions{Name: ActivityAdmitModelRequest})
+	env.RegisterActivityWithOptions(activities.AccountModelRequest, activity.RegisterOptions{Name: ActivityAccountModelRequest})
 	env.RegisterActivityWithOptions(activities.StartModelRequest, activity.RegisterOptions{Name: ActivityStartModelRequest})
 	env.RegisterActivityWithOptions(activities.AppendWorkflowEvents, activity.RegisterOptions{Name: ActivityAppendWorkflowEvents})
 	env.RegisterActivityWithOptions(activities.ExecuteTool, activity.RegisterOptions{Name: ActivityExecuteTool})

@@ -55,8 +55,16 @@ type Session struct {
 	// Session overrides have been applied.
 	MultiagentRoster []Agent
 	Usage            TokenUsage
-	Outcomes         []OutcomeEvaluation
-	Resources        []SessionResource
+	// ModelListCostNanoUSD is the exact accumulated token and provider-native
+	// server-tool list cost. Session runtime is priced live from ActiveSeconds.
+	ModelListCostNanoUSD int64
+	// ListCostKnown is false when any used model lacks a canonical Anthropic
+	// public price, or when legacy usage predates per-request accounting.
+	// Budgeted Sessions validate their full roster up front so it remains true.
+	ListCostKnown bool
+	Budget        *SessionBudget
+	Outcomes      []OutcomeEvaluation
+	Resources     []SessionResource
 	// VaultIDs is the immutable, ordered Vault selection captured when the
 	// Session is created. Runtime credential resolution preserves this order.
 	VaultIDs []string
@@ -90,6 +98,7 @@ type SessionUpdate struct {
 	// Agent resource or its version.
 	AgentTools      *[]any
 	AgentMCPServers *[]any
+	Budget          *SessionBudgetUpdate
 }
 
 // TouchesAgent reports whether the update carries a mid-session agent
@@ -102,7 +111,7 @@ func (u SessionUpdate) TouchesAgent() bool {
 // IsEmpty reports whether the request carried no update fields at all. Such a
 // request is a plain read and never needs the session's admission lock.
 func (u SessionUpdate) IsEmpty() bool {
-	return u.Title == nil && u.Metadata == nil && !u.TouchesAgent()
+	return u.Title == nil && u.Metadata == nil && !u.TouchesAgent() && u.Budget == nil
 }
 
 // SessionChange records which public fields an update actually changed. The
@@ -111,9 +120,10 @@ type SessionChange struct {
 	Title    bool
 	Metadata bool
 	Agent    bool
+	Budget   bool
 }
 
-func (c SessionChange) Any() bool { return c.Title || c.Metadata || c.Agent }
+func (c SessionChange) Any() bool { return c.Title || c.Metadata || c.Agent || c.Budget }
 
 // ApplyUpdate returns the Session that results from an update request together
 // with the set of fields it changed. It is pure so the storage layer can run it
@@ -183,6 +193,24 @@ func (s Session) ApplyUpdate(u SessionUpdate) (Session, SessionChange, error) {
 		}
 	}
 
+	if u.Budget != nil {
+		switch {
+		case u.Budget.Budget == nil:
+			if s.Budget != nil {
+				next.Budget = nil
+				change.Budget = true
+			}
+		case s.Budget == nil:
+			return Session{}, SessionChange{}, Validation(
+				"a budget can only be changed while an existing session budget is active",
+			)
+		case *u.Budget.Budget != *s.Budget:
+			budget := *u.Budget.Budget
+			next.Budget = &budget
+			change.Budget = true
+		}
+	}
+
 	return next, change, nil
 }
 
@@ -218,7 +246,21 @@ func SessionUpdatedPayload(s Session, change SessionChange) map[string]any {
 	if change.Title {
 		payload["title"] = s.Title
 	}
+	if change.Budget {
+		if s.Budget == nil {
+			payload["budget"] = nil
+		} else {
+			payload["budget"] = s.Budget.JSON()
+		}
+	}
 	return payload
+}
+
+// ObservableListCostNanoUSD returns the live Session list cost, including the
+// de-duplicated runtime suffix while the aggregate Session is running.
+func (s Session) ObservableListCostNanoUSD(now time.Time) int64 {
+	activeSeconds, _ := s.ObservableStats(now)
+	return s.ModelListCostNanoUSD + RuntimeListCostNanoUSD(activeSeconds)
 }
 
 // ResolvedAgentSnapshotJSON returns the public Session Agent projection. Agent

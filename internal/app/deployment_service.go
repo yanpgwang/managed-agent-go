@@ -102,6 +102,7 @@ type DeploymentCreateInput struct {
 	InitialEvents []domain.EventDraft
 	Resources     []domain.DeploymentResource
 	VaultIDs      []string
+	Budget        *domain.SessionBudget
 	Metadata      map[string]string
 	Schedule      *domain.DeploymentSchedule
 }
@@ -169,6 +170,7 @@ func (s *DeploymentService) Create(
 		InitialEvents: cloneEventDrafts(input.InitialEvents),
 		Resources:     cloneDeploymentResources(input.Resources),
 		VaultIDs:      append([]string(nil), input.VaultIDs...),
+		Budget:        cloneSessionBudget(input.Budget),
 		Metadata:      cloneDeploymentStringMap(input.Metadata), Schedule: cloneDeploymentSchedule(input.Schedule),
 		Status: domain.DeploymentStatusActive, CreatedAt: now, UpdatedAt: now,
 	}
@@ -255,6 +257,9 @@ func (s *DeploymentService) Update(
 	}
 	if patch.ScheduleSet {
 		next.Schedule = cloneDeploymentSchedule(patch.Schedule)
+	}
+	if patch.BudgetSet {
+		next.Budget = cloneSessionBudget(patch.Budget)
 	}
 	if err := s.validate(ctx, next); err != nil {
 		return domain.Deployment{}, err
@@ -400,6 +405,7 @@ func (s *DeploymentService) run(
 		InitialEvents: cloneEventDrafts(item.InitialEvents),
 		Resources:     files, MemoryResources: memories,
 		VaultIDs:     append([]string(nil), item.VaultIDs...),
+		Budget:       cloneSessionBudget(item.Budget),
 		DeploymentID: &item.ID, DeploymentRun: &run,
 	})
 	if createErr == nil {
@@ -569,8 +575,20 @@ func (s *DeploymentService) validate(ctx context.Context, item domain.Deployment
 	if item.Status != domain.DeploymentStatusActive && item.Status != domain.DeploymentStatusPaused {
 		return domain.Validation("deployment status is invalid")
 	}
-	if _, err := s.resolveAgent(ctx, item.AgentID, &item.AgentVersion); err != nil {
+	agent, err := s.resolveAgent(ctx, item.AgentID, &item.AgentVersion)
+	if err != nil {
 		return err
+	}
+	if item.Budget != nil {
+		priceable, err := s.deploymentModelsPriceable(ctx, agent)
+		if err != nil {
+			return err
+		}
+		if !priceable {
+			return domain.Validation(
+				"budgeted deployments require every agent model to have a known Anthropic public list price",
+			)
+		}
 	}
 	environment, err := s.environments.Get(ctx, item.EnvironmentID)
 	if err != nil {
@@ -750,11 +768,48 @@ func cloneDeployment(item domain.Deployment) domain.Deployment {
 	item.VaultIDs = append([]string(nil), item.VaultIDs...)
 	item.Metadata = cloneDeploymentStringMap(item.Metadata)
 	item.Schedule = cloneDeploymentSchedule(item.Schedule)
+	item.Budget = cloneSessionBudget(item.Budget)
 	if item.PausedReason != nil {
 		reason := *item.PausedReason
 		item.PausedReason = &reason
 	}
 	return item
+}
+
+func cloneSessionBudget(input *domain.SessionBudget) *domain.SessionBudget {
+	if input == nil {
+		return nil
+	}
+	out := *input
+	return &out
+}
+
+func (s *DeploymentService) deploymentModelsPriceable(
+	ctx context.Context,
+	agent domain.Agent,
+) (bool, error) {
+	if !domain.HasAnthropicPublicListPrice(agent.Model) {
+		return false, nil
+	}
+	if agent.Multiagent == nil {
+		return true, nil
+	}
+	if !agent.Multiagent.IsResolved() {
+		return false, nil
+	}
+	for _, reference := range agent.Multiagent.Agents {
+		if reference.Type == "self" || reference.ID == agent.ID {
+			continue
+		}
+		member, err := s.agents.GetVersion(ctx, reference.ID, reference.Version)
+		if err != nil {
+			return false, domain.Validation("multiagent roster member not found")
+		}
+		if !domain.HasAnthropicPublicListPrice(member.Model) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func cloneEventDrafts(events []domain.EventDraft) []domain.EventDraft {

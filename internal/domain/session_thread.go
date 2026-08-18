@@ -7,19 +7,22 @@ import "time"
 // Session aggregates those projections; it is not the storage backing for the
 // primary Thread.
 type SessionThread struct {
-	ID             string
-	SessionID      string
-	ParentThreadID *string
-	Agent          Agent
-	Status         Status
-	Usage          TokenUsage
-	ActiveSeconds  float64
-	RunningSince   *time.Time
-	TerminatedAt   *time.Time
-	StartupSeconds float64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
-	ArchivedAt     *time.Time
+	ID                   string
+	SessionID            string
+	ParentThreadID       *string
+	Agent                Agent
+	Status               Status
+	Usage                TokenUsage
+	ModelListCostNanoUSD int64
+	ListCostKnown        bool
+	BudgetPaused         bool
+	ActiveSeconds        float64
+	RunningSince         *time.Time
+	TerminatedAt         *time.Time
+	StartupSeconds       float64
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
+	ArchivedAt           *time.Time
 }
 
 // NewPrimarySessionThread captures the execution fields of a newly created
@@ -48,7 +51,8 @@ func NewChildSessionThread(
 	agent.Multiagent = nil
 	return SessionThread{
 		ID: id, SessionID: sessionID, ParentThreadID: &parent,
-		Agent: agent, Status: StatusIdle, CreatedAt: now, UpdatedAt: now,
+		Agent: agent, Status: StatusIdle, ListCostKnown: true,
+		CreatedAt: now, UpdatedAt: now,
 	}
 }
 
@@ -60,6 +64,8 @@ func (t *SessionThread) ApplyPrimarySessionProjection(session Session) {
 	t.Agent = session.AgentSnapshot
 	t.Status = session.Status
 	t.Usage = session.Usage
+	t.ModelListCostNanoUSD = session.ModelListCostNanoUSD
+	t.ListCostKnown = session.ListCostKnown
 	t.ActiveSeconds = session.ActiveSeconds
 	t.RunningSince = utcTimePtr(session.RunningSince)
 	t.TerminatedAt = utcTimePtr(session.TerminatedAt)
@@ -69,6 +75,22 @@ func (t *SessionThread) ApplyPrimarySessionProjection(session Session) {
 		t.Status = StatusTerminated
 		t.TerminatedAt = utcTimePtr(t.ArchivedAt)
 	}
+}
+
+// ApplyIndependentPrimarySessionProjection synchronizes Session-owned control
+// fields without replacing the primary Thread's execution projection. In a
+// multi-agent Session, usage, list cost, status, and timing are owned by each
+// Thread and must not be copied back from the Session aggregate.
+func (t *SessionThread) ApplyIndependentPrimarySessionProjection(session Session) {
+	t.Agent = session.AgentSnapshot
+	t.UpdatedAt = session.UpdatedAt.UTC()
+	if session.ArchivedAt == nil {
+		return
+	}
+	archivedAt := session.ArchivedAt.UTC()
+	t.TransitionStatus(StatusTerminated, archivedAt)
+	t.ArchivedAt = &archivedAt
+	t.UpdatedAt = session.UpdatedAt.UTC()
 }
 
 // ObservableStats returns the live timing projection for a thread. Duration

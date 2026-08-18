@@ -33,11 +33,13 @@ const (
 	ActivityLoadInterrupt        = "LoadInterrupt"
 	ActivityLoadPendingActions   = "LoadPendingActions"
 	ActivityPrepareTurn          = "PrepareTurn"
+	ActivityAdmitModelRequest    = "AdmitModelRequest"
 	ActivityStartModelRequest    = "StartModelRequest"
 	ActivityAppendWorkflowEvents = "AppendWorkflowEvents"
 	ActivityRecordModelRetry     = "RecordModelRetry"
 	ActivityResumeModelRetry     = "ResumeModelRetry"
 	ActivityCallModel            = "CallModel"
+	ActivityAccountModelRequest  = "AccountModelRequest"
 	ActivityEvaluateOutcome      = "EvaluateOutcome"
 	ActivityExecuteTool          = "ExecuteTool"
 	ActivityCompleteWorkflowTurn = "CompleteWorkflowTurn"
@@ -127,6 +129,22 @@ type UsageCompletionSource interface {
 		resolutionEventIDs []string,
 		usage domain.TokenUsage,
 	) (TurnCompletionResult, error)
+}
+
+type ModelRequestUsageSource interface {
+	AccountModelRequest(
+		context.Context,
+		string,
+		string,
+		string,
+		domain.Model,
+		domain.TokenUsage,
+		string,
+	) error
+}
+
+type ModelRequestAdmissionSource interface {
+	AdmitModelRequest(context.Context, string, string) (bool, error)
 }
 
 // ProviderTranscriptSource is the optional private-context capability supplied
@@ -1405,6 +1423,7 @@ func (a *Activities) EvaluateOutcome(
 	if err != nil {
 		return EvaluateOutcomeResult{
 			Usage:      response.Usage,
+			StopReason: response.StopReason,
 			FatalError: "grader returned an invalid verdict: " + err.Error(),
 		}, nil
 	}
@@ -1422,7 +1441,8 @@ func (a *Activities) EvaluateOutcome(
 	return EvaluateOutcomeResult{
 		StartEventID: startEventID,
 		EndEventID:   endEventID,
-		Result:       verdict, Explanation: explanation, Usage: response.Usage,
+		Result:       verdict, Explanation: explanation,
+		Usage: response.Usage, StopReason: response.StopReason,
 	}, nil
 }
 
@@ -1778,6 +1798,42 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 		result.ThinkingEventID = thinkingEventID
 	}
 	return result, nil
+}
+
+// AccountModelRequest commits provider usage independently of public turn
+// completion. This preserves billed usage when a later tool, grader, interrupt,
+// or terminal error prevents the turn itself from completing.
+func (a *Activities) AccountModelRequest(
+	ctx context.Context,
+	in AccountModelRequestInput,
+) error {
+	source, ok := a.source.(ModelRequestUsageSource)
+	if !ok {
+		return fmt.Errorf("temporal: model request usage accounting is not configured")
+	}
+	return source.AccountModelRequest(
+		ctx,
+		in.SessionID,
+		in.ThreadID,
+		in.RequestEventID,
+		in.Model,
+		in.Usage,
+		in.StopReason,
+	)
+}
+
+func (a *Activities) AdmitModelRequest(
+	ctx context.Context,
+	in AdmitModelRequestInput,
+) (AdmitModelRequestResult, error) {
+	source, ok := a.source.(ModelRequestAdmissionSource)
+	if !ok {
+		return AdmitModelRequestResult{}, fmt.Errorf(
+			"temporal: model request budget admission is not configured",
+		)
+	}
+	allowed, err := source.AdmitModelRequest(ctx, in.SessionID, in.ThreadID)
+	return AdmitModelRequestResult{Allowed: allowed}, err
 }
 
 func terminalModelErrorType(kind model.ErrorKind) string {
@@ -2477,6 +2533,10 @@ func (a *Activities) CompleteWorkflowTurn(
 	defer cancel()
 	var completion TurnCompletionResult
 	var err error
+	usage := in.Usage
+	if in.UsageAlreadyAccounted {
+		usage = domain.TokenUsage{}
+	}
 	if in.IsChild {
 		source, ok := a.source.(ThreadCompletionSource)
 		if !ok {
@@ -2489,7 +2549,7 @@ func (a *Activities) CompleteWorkflowTurn(
 			in.Output, in.Status, in.AttemptID, in.AttemptState,
 			in.AttemptError, in.PendingActionEventIDs,
 			in.ResolutionEventIDs, in.TranscriptDelta,
-			in.ToolUseMappings, in.Usage,
+			in.ToolUseMappings, usage,
 		)
 	} else if source, ok := a.source.(ProviderTranscriptUsageCompletionSource); ok {
 		completion, err = source.CompleteWorkflowTurnWithTranscriptAndUsage(
@@ -2505,7 +2565,7 @@ func (a *Activities) CompleteWorkflowTurn(
 			in.ResolutionEventIDs,
 			in.TranscriptDelta,
 			in.ToolUseMappings,
-			in.Usage,
+			usage,
 		)
 	} else if source, ok := a.source.(ProviderTranscriptCompletionSource); ok {
 		completion, err = source.CompleteWorkflowTurnWithTranscript(
@@ -2534,7 +2594,7 @@ func (a *Activities) CompleteWorkflowTurn(
 			in.AttemptError,
 			in.PendingActionEventIDs,
 			in.ResolutionEventIDs,
-			in.Usage,
+			usage,
 		)
 	} else {
 		completion, err = a.source.CompleteWorkflowTurn(

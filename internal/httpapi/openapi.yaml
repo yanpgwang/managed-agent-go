@@ -2647,7 +2647,7 @@ components:
           items: {type: string, pattern: '^vlt_'}
         budget:
           $ref: '#/components/schemas/NullableSessionBudget'
-          description: Explicit null is accepted; non-null limits currently return 422.
+          description: Session-wide public-list-cost ceiling copied into every Run's Session.
     DeploymentUpdateRequest:
       type: object
       additionalProperties: false
@@ -2687,7 +2687,7 @@ components:
             - type: 'null'
         budget:
           $ref: '#/components/schemas/NullableSessionBudget'
-          description: Explicit null is accepted; non-null limits currently return 422.
+          description: Replaces or clears the Session budget template for future Runs.
     DeploymentPausedReason:
       type: object
       additionalProperties: false
@@ -4558,8 +4558,8 @@ components:
         budget:
           $ref: '#/components/schemas/NullableSessionBudget'
           description: >-
-            Explicit null means no ceiling. Non-null limits are currently rejected
-            with 422 until list-cost accounting is available across all Session Threads.
+            Optional Session-wide public-list-cost ceiling. Every model in the resolved
+            multiagent roster must have a known Anthropic public list price.
     SessionAgentUpdate:
       type: object
       additionalProperties: false
@@ -4596,8 +4596,9 @@ components:
         budget:
           $ref: '#/components/schemas/NullableSessionBudget'
           description: >-
-            Explicit null is accepted as a no-op. Non-null limits are currently
-            rejected with 422 until cross-Thread list-cost accounting is available.
+            A budget can be changed or removed only when the Session was created with
+            one. After removal it cannot be added again. A changed maximum must be
+            strictly greater than the exact list cost already consumed.
     SessionStatus:
       type: string
       enum: [idle, running, rescheduling, terminated]
@@ -4776,13 +4777,19 @@ components:
           type: integer
           minimum: 0
         server_tool_use:
-          anyOf:
-            - type: object
-              additionalProperties: false
-              properties:
-                web_fetch_requests: {type: integer, minimum: 0}
-                web_search_requests: {type: integer, minimum: 0}
-            - type: 'null'
+          type: object
+          additionalProperties: false
+          required: [web_fetch_requests, web_search_requests]
+          properties:
+            web_fetch_requests: {type: integer, minimum: 0}
+            web_search_requests: {type: integer, minimum: 0}
+    SessionUsageSnapshot:
+      description: Budget-event usage snapshot; list cost is always measurable and non-null.
+      allOf:
+        - $ref: '#/components/schemas/SessionUsage'
+        - type: object
+          properties:
+            list_cost: {$ref: '#/components/schemas/MonetaryAmount'}
     OutcomeEvaluation:
       type: object
       additionalProperties: false
@@ -5126,6 +5133,7 @@ components:
         - session.status_running
         - session.status_terminated
         - session.status_rescheduled
+        - session.usage
         - session.error
         - session.updated
         - session.deleted
@@ -5433,11 +5441,18 @@ components:
       required: [type]
       properties:
         type: {type: string, const: retries_exhausted}
+    SessionBudgetReached:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, const: budget_reached}
     SessionStopReason:
       oneOf:
         - $ref: '#/components/schemas/SessionEndTurn'
         - $ref: '#/components/schemas/SessionRequiresAction'
         - $ref: '#/components/schemas/SessionRetriesExhausted'
+        - $ref: '#/components/schemas/SessionBudgetReached'
       discriminator:
         propertyName: type
     SessionStatusIdleEvent:
@@ -5517,8 +5532,19 @@ components:
           properties:
             type: {type: string, const: session.updated}
             agent: {$ref: '#/components/schemas/AgentSnapshot'}
+            budget: {$ref: '#/components/schemas/NullableSessionBudget'}
             metadata: {$ref: '#/components/schemas/Metadata'}
             title: {type: string}
+      unevaluatedProperties: false
+    SessionUsageEvent:
+      allOf:
+        - $ref: '#/components/schemas/PersistedSessionEventBase'
+        - type: object
+          required: [type, budget, usage]
+          properties:
+            type: {type: string, const: session.usage}
+            budget: {$ref: '#/components/schemas/NullableSessionBudget'}
+            usage: {$ref: '#/components/schemas/SessionUsageSnapshot'}
       unevaluatedProperties: false
     SessionDeletedEvent:
       allOf:
@@ -5640,6 +5666,7 @@ components:
         - $ref: '#/components/schemas/SessionStatusRunningEvent'
         - $ref: '#/components/schemas/SessionStatusTerminatedEvent'
         - $ref: '#/components/schemas/SessionStatusRescheduledEvent'
+        - $ref: '#/components/schemas/SessionUsageEvent'
         - $ref: '#/components/schemas/SessionErrorEvent'
         - $ref: '#/components/schemas/SessionUpdatedEvent'
         - $ref: '#/components/schemas/SessionDeletedEvent'

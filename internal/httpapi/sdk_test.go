@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -841,6 +842,10 @@ func TestSDK_SessionLifecycleAndSnapshot(t *testing.T) {
 	assertRawObjectHasFields(t, session.Usage.RawJSON(),
 		"active_seconds", "cache_creation", "cache_read_input_tokens", "input_tokens",
 		"list_cost", "output_tokens", "server_tool_use")
+	if session.Usage.ListCost.Amount != "0" ||
+		session.Usage.ServerToolUse.WebSearchRequests != 0 {
+		t.Fatalf("new Session usage = %s", session.Usage.RawJSON())
+	}
 	if session.Agent.JSON.Multiagent.Raw() == "" {
 		t.Fatal("session agent snapshot omitted multiagent")
 	}
@@ -902,8 +907,8 @@ func TestSDK_SessionLifecycleAndSnapshot(t *testing.T) {
 	}
 }
 
-func TestSDK_SessionBudgetBoundaryIsExplicit(t *testing.T) {
-	client, ts := sdkClientAndServer(t)
+func TestSDK_SessionBudgetLifecycle(t *testing.T) {
+	client, ts, sessions := sdkClientServerAndSessions(t)
 	ctx := context.Background()
 	agent := mustAgent(t, client, "budget", "sys")
 	environmentID := mustEnv(t, ts.URL)
@@ -925,12 +930,38 @@ func TestSDK_SessionBudgetBoundaryIsExplicit(t *testing.T) {
 			Amount: "2500", Currency: anthropic.BetaCurrencyUsd,
 		},
 	}
-	_, err = client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+	budgeted, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
 		Agent:         anthropic.BetaSessionNewParamsAgentUnion{OfString: anthropic.String(agent.ID)},
 		EnvironmentID: environmentID,
 		Budget:        limit,
 	})
-	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+	if err != nil {
+		t.Fatalf("create budgeted session: %v", err)
+	}
+	if !strings.Contains(budgeted.RawJSON(), `"amount":"2500"`) {
+		t.Fatalf("budgeted session JSON = %s", budgeted.RawJSON())
+	}
+	sessions.mu.Lock()
+	stored := sessions.sessions[budgeted.ID]
+	sessions.appendEventLocked(budgeted.ID, domain.EventDraft{
+		Type:    domain.EvSessionUsage,
+		Payload: stored.UsageEventPayload(time.Now()),
+	})
+	sessions.mu.Unlock()
+	usageEvents, err := client.Beta.Sessions.Events.List(
+		ctx, budgeted.ID, anthropic.BetaSessionEventListParams{
+			Types: []string{domain.EvSessionUsage},
+		},
+	)
+	if err != nil || len(usageEvents.Data) != 1 {
+		t.Fatalf("list session.usage = %+v, err=%v", usageEvents, err)
+	}
+	usageEvent := usageEvents.Data[0].AsSessionUsage()
+	if usageEvent.Type != anthropic.BetaManagedAgentsSessionUsageEventTypeSessionUsage ||
+		usageEvent.Budget.MaxListCost.Amount != "2500" ||
+		usageEvent.Usage.ListCost.Amount != "0" {
+		t.Fatalf("decoded session.usage = %s", usageEvent.RawJSON())
+	}
 
 	if _, err := client.Beta.Sessions.Update(ctx, session.ID, anthropic.BetaSessionUpdateParams{
 		Budget: param.NullStruct[anthropic.BetaManagedAgentsBudgetLimitParam](),
@@ -938,7 +969,25 @@ func TestSDK_SessionBudgetBoundaryIsExplicit(t *testing.T) {
 		t.Fatalf("explicit null budget update should remain a no-op: %v", err)
 	}
 	_, err = client.Beta.Sessions.Update(ctx, session.ID, anthropic.BetaSessionUpdateParams{Budget: limit})
-	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+	assertAPIStatus(t, err, http.StatusBadRequest)
+
+	higher := limit
+	higher.MaxListCost.Amount = "3000"
+	updated, err := client.Beta.Sessions.Update(
+		ctx, budgeted.ID, anthropic.BetaSessionUpdateParams{Budget: higher},
+	)
+	if err != nil || !strings.Contains(updated.RawJSON(), `"amount":"3000"`) {
+		t.Fatalf("raise session budget: session=%+v err=%v", updated, err)
+	}
+	if _, err := client.Beta.Sessions.Update(ctx, budgeted.ID, anthropic.BetaSessionUpdateParams{
+		Budget: param.NullStruct[anthropic.BetaManagedAgentsBudgetLimitParam](),
+	}); err != nil {
+		t.Fatalf("remove session budget: %v", err)
+	}
+	_, err = client.Beta.Sessions.Update(
+		ctx, budgeted.ID, anthropic.BetaSessionUpdateParams{Budget: higher},
+	)
+	assertAPIStatus(t, err, http.StatusBadRequest)
 }
 
 func TestSDK_SessionPinnedVersion(t *testing.T) {

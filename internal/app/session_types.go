@@ -24,6 +24,7 @@ type CreateSessionInput struct {
 	Resources       []FileSessionResourceInput
 	MemoryResources []MemorySessionResourceInput
 	VaultIDs        []string
+	Budget          *domain.SessionBudget
 	DeploymentID    *string
 	DeploymentRun   *domain.DeploymentRun
 }

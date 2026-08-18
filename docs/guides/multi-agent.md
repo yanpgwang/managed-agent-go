@@ -143,7 +143,9 @@ child. Include a child ID to interrupt only that Thread.
 - Child transcripts are durable and independently compacted. Compacted message
   projections are stored as immutable internal snapshots, and compaction is
   observable through `agent.thread_context_compacted` on the owning Thread.
-- Shared Session list-cost budgets are not enforced across concurrent Threads.
+- Provider usage is recorded per model request on the owning Thread and charged
+  atomically to the shared Session list-cost budget. Concurrent requests may
+  overshoot because each is admitted before it starts.
 - Exact hosted preview suppression for report-only coordinator turns remains a
   compatibility boundary.
 

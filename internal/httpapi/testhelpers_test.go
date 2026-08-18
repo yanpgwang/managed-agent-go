@@ -445,6 +445,15 @@ func (s *testSessionService) Create(
 			roster = append(roster, member)
 		}
 	}
+	modelsPriceable := domain.HasAnthropicPublicListPrice(snapshot.Model)
+	for _, member := range roster {
+		modelsPriceable = modelsPriceable && domain.HasAnthropicPublicListPrice(member.Model)
+	}
+	if input.Budget != nil && !modelsPriceable {
+		return domain.Session{}, domain.Validation(
+			"budgeted sessions require every agent model to have a known Anthropic public list price",
+		)
+	}
 	metadata := input.Metadata
 	if metadata == nil {
 		metadata = map[string]any{}
@@ -457,7 +466,8 @@ func (s *testSessionService) Create(
 		EnvironmentConfig: environment.SessionConfig(),
 		Status:            domain.StatusIdle,
 		Title:             input.Title, Metadata: metadata, CreatedAt: now, UpdatedAt: now,
-		VaultIDs: append([]string(nil), input.VaultIDs...),
+		VaultIDs: append([]string(nil), input.VaultIDs...), ListCostKnown: true,
+		Budget: input.Budget,
 	}
 	for _, inputResource := range input.Resources {
 		mountPath, err := domain.NormalizeSessionFileMountPath(

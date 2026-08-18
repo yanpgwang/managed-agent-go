@@ -127,7 +127,28 @@ type wireUsage struct {
 	CacheReadInputTokens int64                  `json:"cache_read_input_tokens"`
 	InputTokens          int64                  `json:"input_tokens"`
 	OutputTokens         int64                  `json:"output_tokens"`
+	ServerToolUse        wireServerToolUsage    `json:"server_tool_use"`
 	Speed                string                 `json:"speed"`
+}
+type wireServerToolUsage struct {
+	WebFetchRequests  int64 `json:"web_fetch_requests"`
+	WebSearchRequests int64 `json:"web_search_requests"`
+}
+type wireCacheCreationUsagePatch struct {
+	Ephemeral1hInputTokens *int64 `json:"ephemeral_1h_input_tokens"`
+	Ephemeral5mInputTokens *int64 `json:"ephemeral_5m_input_tokens"`
+}
+type wireServerToolUsagePatch struct {
+	WebFetchRequests  *int64 `json:"web_fetch_requests"`
+	WebSearchRequests *int64 `json:"web_search_requests"`
+}
+type wireUsagePatch struct {
+	CacheCreation        *wireCacheCreationUsagePatch `json:"cache_creation"`
+	CacheReadInputTokens *int64                       `json:"cache_read_input_tokens"`
+	InputTokens          *int64                       `json:"input_tokens"`
+	OutputTokens         *int64                       `json:"output_tokens"`
+	ServerToolUse        *wireServerToolUsagePatch    `json:"server_tool_use"`
+	Speed                *string                      `json:"speed"`
 }
 type wireResponse struct {
 	Content    []json.RawMessage `json:"content"`
@@ -384,7 +405,7 @@ type sseEvent struct {
 	Message struct {
 		Usage wireUsage `json:"usage"`
 	} `json:"message"`
-	Usage wireUsage `json:"usage"`
+	Usage wireUsagePatch `json:"usage"`
 }
 
 // decodeMessageStream reads an Anthropic Messages-API SSE body and assembles the
@@ -500,9 +521,11 @@ func decodeMessageStreamWithCallbacks(body io.Reader, callbacks StreamCallbacks)
 			if ev.Delta.StopReason != "" {
 				stopReason = ev.Delta.StopReason
 			}
-			// Streaming message_delta usage is the latest cumulative output
-			// token count for this request; it is not an additive delta.
-			usage.OutputTokens = ev.Usage.OutputTokens
+			// message_delta usage is a cumulative snapshot, but compatible
+			// endpoints do not all include the same fields. Merge fields that
+			// are actually present so final server-tool counts are captured
+			// without erasing input/cache usage reported at message_start.
+			applyWireUsagePatch(&usage, ev.Usage)
 		case "message_stop":
 			// End of stream; loop exits when the body is drained.
 		}
@@ -553,6 +576,39 @@ func decodeMessageStreamWithCallbacks(body io.Reader, callbacks StreamCallbacks)
 	return out, nil
 }
 
+func applyWireUsagePatch(usage *wireUsage, patch wireUsagePatch) {
+	if patch.CacheCreation != nil {
+		if patch.CacheCreation.Ephemeral1hInputTokens != nil {
+			usage.CacheCreation.Ephemeral1hInputTokens =
+				*patch.CacheCreation.Ephemeral1hInputTokens
+		}
+		if patch.CacheCreation.Ephemeral5mInputTokens != nil {
+			usage.CacheCreation.Ephemeral5mInputTokens =
+				*patch.CacheCreation.Ephemeral5mInputTokens
+		}
+	}
+	if patch.CacheReadInputTokens != nil {
+		usage.CacheReadInputTokens = *patch.CacheReadInputTokens
+	}
+	if patch.InputTokens != nil {
+		usage.InputTokens = *patch.InputTokens
+	}
+	if patch.OutputTokens != nil {
+		usage.OutputTokens = *patch.OutputTokens
+	}
+	if patch.ServerToolUse != nil {
+		if patch.ServerToolUse.WebFetchRequests != nil {
+			usage.ServerToolUse.WebFetchRequests = *patch.ServerToolUse.WebFetchRequests
+		}
+		if patch.ServerToolUse.WebSearchRequests != nil {
+			usage.ServerToolUse.WebSearchRequests = *patch.ServerToolUse.WebSearchRequests
+		}
+	}
+	if patch.Speed != nil {
+		usage.Speed = *patch.Speed
+	}
+}
+
 func usageFromWire(usage wireUsage) domain.TokenUsage {
 	return domain.TokenUsage{
 		CacheCreation: domain.CacheCreationUsage{
@@ -562,7 +618,11 @@ func usageFromWire(usage wireUsage) domain.TokenUsage {
 		CacheReadInputTokens: usage.CacheReadInputTokens,
 		InputTokens:          usage.InputTokens,
 		OutputTokens:         usage.OutputTokens,
-		Speed:                usage.Speed,
+		ServerToolUse: domain.ServerToolUsage{
+			WebFetchRequests:  usage.ServerToolUse.WebFetchRequests,
+			WebSearchRequests: usage.ServerToolUse.WebSearchRequests,
+		},
+		Speed: usage.Speed,
 	}
 }
 
