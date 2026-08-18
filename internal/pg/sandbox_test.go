@@ -158,7 +158,7 @@ func TestSandboxBindingPersistsAndFencesSessionDeletion(t *testing.T) {
 
 	// A fresh Store instance (standing in for a restarted worker) reads the same
 	// opaque provider identity from PostgreSQL.
-	restarted := NewStore(store.pool, &seqIDGen{}, fixedClock{})
+	restarted := NewSystemStore(store.pool, &seqIDGen{}, fixedClock{})
 	got, found, err := restarted.GetSandboxBinding(ctx, session.ID)
 	if err != nil || !found || got != first {
 		t.Fatalf("restarted GetSandboxBinding = %+v, found=%v, err=%v", got, found, err)

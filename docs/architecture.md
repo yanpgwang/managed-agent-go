@@ -17,6 +17,11 @@ Provider sandbox bindings and File/Skill lifecycle intents are persisted in
 PostgreSQL; File bytes and immutable custom Skill archives live in object
 storage when those optional surfaces are enabled.
 
+The HTTP edge authenticates opaque API keys into a single Workspace tenant
+scope. PostgreSQL roots, asynchronous execution, and object keys preserve that
+scope; end-user identity and enterprise RBAC remain outside Mango. See
+[Workspace tenancy](architecture/workspace-tenancy.md).
+
 ```mermaid
 flowchart LR
   Client["Managed Agents client"] --> API["HTTP API"]
@@ -188,8 +193,9 @@ The strongest current risks are semantic rather than structural:
    create-before-binding crash window and workers autonomously resume fenced
    deletions. Provider-aware routing for heterogeneous workers, quotas, and
    eviction are not implemented.
-3. Worker Versioning, observability, authentication, large-payload offload, and
-   production manifests remain open.
+3. Worker Versioning, observability, enterprise identity/RBAC, large-payload
+   offload, and production manifests remain open. The OSS Workspace API-key
+   and tenant-isolation boundary is implemented.
 4. Provider Transcript, native Web Search/Fetch, sandbox result
    materialization, and unauthenticated MCP tools are implemented. Context
    Snapshots, provider-round records, deployment-managed MCP authentication, and

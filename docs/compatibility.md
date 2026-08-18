@@ -57,7 +57,9 @@ repository's HTTP, SDK, PostgreSQL, Temporal, and service test suites.
 Mango does not currently claim:
 
 - hosted-infrastructure equivalence or undocumented error wording;
-- production authentication, authorization, or tenant isolation;
+- end-user identity, roles, per-resource authorization, or enterprise key
+  lifecycle (the OSS server provides Workspace-scoped API keys and tenant data
+  isolation);
 - quota, billing, audit, backup, or observability completeness;
 - a supported Kubernetes or production Compose distribution;
 - safe hostile multi-tenant execution on the local or Docker sandbox;

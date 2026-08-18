@@ -9,6 +9,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 func TestPostgresResourcesAndSessionDependencies(t *testing.T) {
@@ -318,9 +319,12 @@ func TestActiveResourceLocksFenceConcurrentArchival(t *testing.T) {
 		t.Fatal(err)
 	}
 	agentQueries := pgstore.New(agentTx)
+	defer agentTx.Rollback(ctx) //nolint:errcheck // best-effort cleanup on test failure
 	if _, err := agentQueries.LockActiveAgentVersion(
 		ctx,
-		pgstore.LockActiveAgentVersionParams{ID: agent.ID, Version: int32(agent.Version)},
+		pgstore.LockActiveAgentVersionParams{
+			ID: agent.ID, Version: int32(agent.Version), WorkspaceID: workspace.DefaultID,
+		},
 	); err != nil {
 		t.Fatalf("lock active agent: %v", err)
 	}
@@ -349,7 +353,10 @@ func TestActiveResourceLocksFenceConcurrentArchival(t *testing.T) {
 		t.Fatal(err)
 	}
 	environmentQueries := pgstore.New(environmentTx)
-	if _, err := environmentQueries.LockActiveEnvironment(ctx, environment.ID); err != nil {
+	defer environmentTx.Rollback(ctx) //nolint:errcheck // best-effort cleanup on test failure
+	if _, err := environmentQueries.LockActiveEnvironment(ctx, pgstore.LockActiveEnvironmentParams{
+		ID: environment.ID, WorkspaceID: workspace.DefaultID,
+	}); err != nil {
 		t.Fatalf("lock active environment: %v", err)
 	}
 	archiveCtx, cancelArchive = context.WithTimeout(ctx, 100*time.Millisecond)

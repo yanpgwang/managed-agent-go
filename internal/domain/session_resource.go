@@ -41,6 +41,7 @@ type SessionResource struct {
 	ResourceType           string
 	SourceFileID           string
 	FileID                 string
+	BlobKey                string `json:"-"`
 	MemoryStoreID          string
 	MemoryAccess           string
 	MemoryInstructions     string

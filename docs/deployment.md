@@ -33,6 +33,19 @@ managed-agent serve -addr :8080
 managed-agent orchestrate
 ```
 
+The API refuses to start without an active Workspace key. Set
+`MANAGED_AGENT_API_KEY` to bootstrap or rotate the default Workspace key, or
+manage additional Workspaces and keys through the operator CLI:
+
+```sh
+managed-agent workspace create -name acme
+managed-agent api-key create -workspace wrkspc_... -label production
+```
+
+The plaintext generated key is printed only by `api-key create`; PostgreSQL
+stores its SHA-256 digest. API and worker processes share Workspace ownership
+through PostgreSQL, but only the API needs request credentials.
+
 The API owns HTTP resources, SSE, event admission, and Files metadata/object
 coordination. The worker owns Temporal Workflow/Activity execution, model
 calls, sandbox tools, File Resource materialization, and the outbox relay. They

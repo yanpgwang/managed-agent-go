@@ -41,7 +41,7 @@ func integrationStore(t *testing.T, url string) (*pg.Store, func()) {
 		pool.Close()
 		t.Fatalf("migrate: %v", err)
 	}
-	store := pg.NewStore(pool, domain.NewRandomIDGen(), realClock{})
+	store := pg.NewDefaultWorkspaceStore(pool, domain.NewRandomIDGen(), realClock{})
 	cleanup := func() {
 		_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		pool.Close()

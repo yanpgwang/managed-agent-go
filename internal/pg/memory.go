@@ -25,16 +25,20 @@ func NewMemoryRepository(store *Store) *MemoryRepository {
 }
 
 func (r *MemoryRepository) CreateStore(ctx context.Context, item domain.MemoryStore) (domain.MemoryStore, error) {
+	workspaceID, err := r.store.workspaceForWrite(ctx)
+	if err != nil {
+		return domain.MemoryStore{}, err
+	}
 	normalizeMemoryStoreTimes(&item)
 	metadata, err := json.Marshal(item.Metadata)
 	if err != nil {
 		return domain.MemoryStore{}, err
 	}
 	created, err := scanMemoryStore(r.store.pool.QueryRow(ctx, `
-INSERT INTO memory_stores (id, name, description, metadata, created_at, updated_at, archived_at)
-VALUES ($1, $2, $3, $4, $5, $6, NULL)
+INSERT INTO memory_stores (id, workspace_id, name, description, metadata, created_at, updated_at, archived_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
 RETURNING id, name, description, metadata, created_at, updated_at, archived_at`,
-		item.ID, item.Name, item.Description, metadata, item.CreatedAt, item.UpdatedAt,
+		item.ID, workspaceID, item.Name, item.Description, metadata, item.CreatedAt, item.UpdatedAt,
 	))
 	if isUniqueViolation(err) {
 		return domain.MemoryStore{}, domain.Conflict("memory store already exists")
@@ -43,9 +47,19 @@ RETURNING id, name, description, metadata, created_at, updated_at, archived_at`,
 }
 
 func (r *MemoryRepository) GetStore(ctx context.Context, id string) (domain.MemoryStore, error) {
-	item, err := scanMemoryStore(r.store.pool.QueryRow(ctx, `
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.MemoryStore{}, err
+	}
+	query := `
 SELECT id, name, description, metadata, created_at, updated_at, archived_at
-FROM memory_stores WHERE id = $1`, id))
+FROM memory_stores WHERE id = $1`
+	args := []any{id}
+	if scoped {
+		query += ` AND workspace_id = $2`
+		args = append(args, workspaceID)
+	}
+	item, err := scanMemoryStore(r.store.pool.QueryRow(ctx, query, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.MemoryStore{}, domain.NotFound("memory store not found")
 	}
@@ -58,11 +72,21 @@ func (r *MemoryRepository) UpdateStore(
 	patch app.MemoryStoreUpdateInput,
 	clock domain.Clock,
 ) (domain.MemoryStore, error) {
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.MemoryStore{}, err
+	}
 	var updated domain.MemoryStore
-	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
-		current, err := scanMemoryStore(tx.QueryRow(ctx, `
+	err = r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
+		query := `
 SELECT id, name, description, metadata, created_at, updated_at, archived_at
-FROM memory_stores WHERE id = $1 FOR UPDATE`, id))
+FROM memory_stores WHERE id = $1`
+		args := []any{id}
+		if scoped {
+			query += ` AND workspace_id = $2`
+			args = append(args, workspaceID)
+		}
+		current, err := scanMemoryStore(tx.QueryRow(ctx, query+` FOR UPDATE`, args...))
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("memory store not found")
 		}
@@ -99,13 +123,17 @@ FROM memory_stores WHERE id = $1 FOR UPDATE`, id))
 			return err
 		}
 		updatedAt := clock.Now().UTC().Truncate(time.Microsecond)
-		updated, err = scanMemoryStore(tx.QueryRow(ctx, `
+		updateQuery := `
 UPDATE memory_stores
-SET name = $2, description = $3, metadata = $4, updated_at = $5
-WHERE id = $1
-RETURNING id, name, description, metadata, created_at, updated_at, archived_at`,
-			id, name, description, metadataJSON, updatedAt,
-		))
+		SET name = $2, description = $3, metadata = $4, updated_at = $5
+		WHERE id = $1`
+		updateArgs := []any{id, name, description, metadataJSON, updatedAt}
+		if scoped {
+			updateQuery += ` AND workspace_id = $6`
+			updateArgs = append(updateArgs, workspaceID)
+		}
+		updated, err = scanMemoryStore(tx.QueryRow(ctx, updateQuery+`
+RETURNING id, name, description, metadata, created_at, updated_at, archived_at`, updateArgs...))
 		return err
 	})
 	return updated, err
@@ -114,6 +142,14 @@ RETURNING id, name, description, metadata, created_at, updated_at, archived_at`,
 func (r *MemoryRepository) ListStores(ctx context.Context, query app.MemoryStoreListQuery) (app.MemoryStoreListPage, error) {
 	args := make([]any, 0, 7)
 	where := []string{"true"}
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return app.MemoryStoreListPage{}, err
+	}
+	if scoped {
+		args = append(args, workspaceID)
+		where = append(where, fmt.Sprintf("workspace_id = $%d", len(args)))
+	}
 	if !query.IncludeArchived {
 		where = append(where, "archived_at IS NULL")
 	}
@@ -160,13 +196,23 @@ LIMIT $%d`, strings.Join(where, " AND "), len(args)), args...)
 }
 
 func (r *MemoryRepository) ArchiveStore(ctx context.Context, id string, clock domain.Clock) (domain.MemoryStore, error) {
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return domain.MemoryStore{}, err
+	}
 	now := clock.Now().UTC().Truncate(time.Microsecond)
-	item, err := scanMemoryStore(r.store.pool.QueryRow(ctx, `
+	query := `
 UPDATE memory_stores
 SET archived_at = COALESCE(archived_at, $2),
     updated_at = CASE WHEN archived_at IS NULL THEN $2 ELSE updated_at END
-WHERE id = $1
-RETURNING id, name, description, metadata, created_at, updated_at, archived_at`, id, now))
+WHERE id = $1`
+	args := []any{id, now}
+	if scoped {
+		query += ` AND workspace_id = $3`
+		args = append(args, workspaceID)
+	}
+	item, err := scanMemoryStore(r.store.pool.QueryRow(ctx, query+`
+RETURNING id, name, description, metadata, created_at, updated_at, archived_at`, args...))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.MemoryStore{}, domain.NotFound("memory store not found")
 	}
@@ -174,7 +220,17 @@ RETURNING id, name, description, metadata, created_at, updated_at, archived_at`,
 }
 
 func (r *MemoryRepository) DeleteStore(ctx context.Context, id string) error {
-	tag, err := r.store.pool.Exec(ctx, `DELETE FROM memory_stores WHERE id = $1`, id)
+	workspaceID, scoped, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return err
+	}
+	query := `DELETE FROM memory_stores WHERE id = $1`
+	args := []any{id}
+	if scoped {
+		query += ` AND workspace_id = $2`
+		args = append(args, workspaceID)
+	}
+	tag, err := r.store.pool.Exec(ctx, query, args...)
 	if isForeignKeyViolation(err) {
 		return domain.Validation("memory store is attached to a session")
 	}
@@ -188,6 +244,9 @@ func (r *MemoryRepository) DeleteStore(ctx context.Context, id string) error {
 }
 
 func (r *MemoryRepository) CreateMemory(ctx context.Context, item domain.Memory, version domain.MemoryVersion) (domain.Memory, error) {
+	if _, err := r.GetStore(ctx, item.MemoryStoreID); err != nil {
+		return domain.Memory{}, err
+	}
 	normalizeMemoryTimes(&item, &version)
 	var created domain.Memory
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
@@ -230,6 +289,9 @@ RETURNING id, memory_store_id, memory_version_id, path, content,
 }
 
 func (r *MemoryRepository) GetMemory(ctx context.Context, storeID, memoryID string) (domain.Memory, error) {
+	if _, err := r.GetStore(ctx, storeID); err != nil {
+		return domain.Memory{}, err
+	}
 	item, err := scanMemory(r.store.pool.QueryRow(ctx, `
 SELECT id, memory_store_id, memory_version_id, path, content,
        content_size_bytes, content_sha256, created_at, updated_at
@@ -272,6 +334,9 @@ func (r *MemoryRepository) UpdateMemory(
 	versionID string,
 	clock domain.Clock,
 ) (domain.Memory, error) {
+	if _, err := r.GetStore(ctx, storeID); err != nil {
+		return domain.Memory{}, err
+	}
 	var updated domain.Memory
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
 		var storeArchivedAt *time.Time
@@ -351,6 +416,9 @@ func (r *MemoryRepository) DeleteMemory(
 	versionID string,
 	clock domain.Clock,
 ) (domain.Memory, error) {
+	if _, err := r.GetStore(ctx, storeID); err != nil {
+		return domain.Memory{}, err
+	}
 	var deleted domain.Memory
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
 		var storeArchivedAt *time.Time
@@ -412,6 +480,9 @@ func (r *MemoryRepository) SyncMemoryStore(
 	ids domain.IDGenerator,
 	clock domain.Clock,
 ) ([]domain.Memory, error) {
+	if _, err := r.GetStore(ctx, storeID); err != nil {
+		return nil, err
+	}
 	var result []domain.Memory
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
 		var archivedAt *time.Time
@@ -609,6 +680,9 @@ FROM memories WHERE memory_store_id = $1 ORDER BY path`, storeID)
 }
 
 func (r *MemoryRepository) GetMemoryVersion(ctx context.Context, storeID, versionID string) (domain.MemoryVersion, error) {
+	if _, err := r.GetStore(ctx, storeID); err != nil {
+		return domain.MemoryVersion{}, err
+	}
 	item, err := scanMemoryVersion(r.store.pool.QueryRow(ctx, memoryVersionSelect+`
 WHERE memory_store_id = $1 AND id = $2`, storeID, versionID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -683,6 +757,9 @@ func (r *MemoryRepository) RedactMemoryVersion(
 	actor domain.MemoryActor,
 	clock domain.Clock,
 ) (domain.MemoryVersion, error) {
+	if _, err := r.GetStore(ctx, storeID); err != nil {
+		return domain.MemoryVersion{}, err
+	}
 	var redacted domain.MemoryVersion
 	err := r.store.withPGXTx(ctx, func(tx pgx.Tx, _ *pgstore.Queries) error {
 		current, err := scanMemoryVersion(tx.QueryRow(ctx, memoryVersionSelect+`

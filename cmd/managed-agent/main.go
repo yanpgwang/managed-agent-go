@@ -391,28 +391,153 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("usage: managed-agent <serve|orchestrate> [flags]")
+		log.Fatal("usage: managed-agent <serve|orchestrate|workspace|api-key> [flags]")
 	}
 	switch os.Args[1] {
 	case "serve":
 		runServe()
 	case "orchestrate":
 		runOrchestrate()
+	case "workspace":
+		runWorkspaceCommand()
+	case "api-key":
+		runAPIKeyCommand()
 	default:
-		log.Fatal("usage: managed-agent <serve|orchestrate> [flags]")
+		log.Fatal("usage: managed-agent <serve|orchestrate|workspace|api-key> [flags]")
 	}
 }
 
 func runServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "listen address (default binds to loopback; use e.g. :8080 to expose on all interfaces)")
-	strict := fs.Bool("strict", false, "require Claude API wire headers (auth, version, beta, content-type) to be present and valid; this is header validation, NOT authentication")
+	strict := fs.Bool("strict", false, "require Claude API version, beta, and content-type headers; API-key authentication is always enforced")
 	_ = fs.Parse(os.Args[2:])
 
 	cfg := httpapi.Config{
-		RequireBeta: *strict, RequireAuth: *strict, RequireVersion: *strict, RequireContentType: *strict,
+		RequireBeta: *strict, RequireVersion: *strict, RequireContentType: *strict,
 	}
 	runPostgresAPI(*addr, cfg)
+}
+
+func runWorkspaceCommand() {
+	if len(os.Args) < 3 {
+		log.Fatal("usage: managed-agent workspace <create|list> [flags]")
+	}
+	switch os.Args[2] {
+	case "create":
+		fs := flag.NewFlagSet("workspace create", flag.ExitOnError)
+		name := fs.String("name", "", "workspace display name")
+		_ = fs.Parse(os.Args[3:])
+		if err := withOperatorStore(func(ctx context.Context, store *pg.Store) error {
+			item, err := store.CreateWorkspace(ctx, *name)
+			if err != nil {
+				return err
+			}
+			fmt.Printf("%s\t%s\n", item.ID, item.Name)
+			return nil
+		}); err != nil {
+			log.Fatalf("workspace create: %v", err)
+		}
+	case "list":
+		fs := flag.NewFlagSet("workspace list", flag.ExitOnError)
+		_ = fs.Parse(os.Args[3:])
+		if err := withOperatorStore(func(ctx context.Context, store *pg.Store) error {
+			items, err := store.ListWorkspaces(ctx)
+			if err != nil {
+				return err
+			}
+			for _, item := range items {
+				fmt.Printf("%s\t%s\t%s\n", item.ID, item.Name, item.CreatedAt.Format(time.RFC3339))
+			}
+			return nil
+		}); err != nil {
+			log.Fatalf("workspace list: %v", err)
+		}
+	default:
+		log.Fatal("usage: managed-agent workspace <create|list> [flags]")
+	}
+}
+
+func runAPIKeyCommand() {
+	if len(os.Args) < 3 {
+		log.Fatal("usage: managed-agent api-key <create|list|revoke> [flags]")
+	}
+	switch os.Args[2] {
+	case "create":
+		fs := flag.NewFlagSet("api-key create", flag.ExitOnError)
+		workspaceID := fs.String("workspace", "", "workspace ID")
+		label := fs.String("label", "", "operator-visible key label")
+		_ = fs.Parse(os.Args[3:])
+		if strings.TrimSpace(*workspaceID) == "" {
+			log.Fatal("api-key create: -workspace is required")
+		}
+		if err := withOperatorStore(func(ctx context.Context, store *pg.Store) error {
+			item, secret, err := store.CreateAPIKey(ctx, *workspaceID, *label)
+			if err != nil {
+				return err
+			}
+			// The plaintext secret is intentionally emitted only at creation.
+			fmt.Printf("id\t%s\nworkspace\t%s\napi_key\t%s\n", item.ID, item.WorkspaceID, secret)
+			return nil
+		}); err != nil {
+			log.Fatalf("api-key create: %v", err)
+		}
+	case "list":
+		fs := flag.NewFlagSet("api-key list", flag.ExitOnError)
+		workspaceID := fs.String("workspace", "", "workspace ID")
+		_ = fs.Parse(os.Args[3:])
+		if strings.TrimSpace(*workspaceID) == "" {
+			log.Fatal("api-key list: -workspace is required")
+		}
+		if err := withOperatorStore(func(ctx context.Context, store *pg.Store) error {
+			items, err := store.ListAPIKeys(ctx, *workspaceID)
+			if err != nil {
+				return err
+			}
+			for _, item := range items {
+				status := "active"
+				if item.RevokedAt != nil {
+					status = "revoked"
+				}
+				fmt.Printf("%s\t%s\t%s\t%s\n", item.ID, item.Label, status, item.CreatedAt.Format(time.RFC3339))
+			}
+			return nil
+		}); err != nil {
+			log.Fatalf("api-key list: %v", err)
+		}
+	case "revoke":
+		fs := flag.NewFlagSet("api-key revoke", flag.ExitOnError)
+		id := fs.String("id", "", "API key ID")
+		_ = fs.Parse(os.Args[3:])
+		if strings.TrimSpace(*id) == "" {
+			log.Fatal("api-key revoke: -id is required")
+		}
+		if err := withOperatorStore(func(ctx context.Context, store *pg.Store) error {
+			return store.RevokeAPIKey(ctx, *id)
+		}); err != nil {
+			log.Fatalf("api-key revoke: %v", err)
+		}
+		fmt.Printf("revoked\t%s\n", *id)
+	default:
+		log.Fatal("usage: managed-agent api-key <create|list|revoke> [flags]")
+	}
+}
+
+func withOperatorStore(run func(context.Context, *pg.Store) error) error {
+	databaseURL := strings.TrimSpace(os.Getenv(envDatabaseURL))
+	if databaseURL == "" {
+		return fmt.Errorf("%s is required", envDatabaseURL)
+	}
+	ctx := context.Background()
+	pool, err := pg.Pool(ctx, databaseURL)
+	if err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
+	defer pool.Close()
+	if err := pg.Migrate(ctx, pool); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+	return run(ctx, pg.NewSystemStore(pool, domain.NewRandomIDGen(), realClock{}))
 }
 
 func runPostgresAPI(addr string, cfg httpapi.Config) {
@@ -433,6 +558,20 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	ids := domain.NewRandomIDGen()
 	clock := realClock{}
 	pgStore := pg.NewStore(pool, ids, clock)
+	if bootstrapKey := strings.TrimSpace(os.Getenv(envAPIKey)); bootstrapKey != "" {
+		if err := pgStore.BootstrapAPIKey(ctx, bootstrapKey); err != nil {
+			log.Fatalf("serve: bootstrap API key: %v", err)
+		}
+	}
+	keyCount, err := pgStore.CountActiveAPIKeys(ctx)
+	if err != nil {
+		log.Fatalf("serve: count API keys: %v", err)
+	}
+	if keyCount == 0 {
+		log.Fatalf("serve: no active API key; set %s or run managed-agent api-key create", envAPIKey)
+	}
+	cfg.Authenticator = pgStore
+	systemStore := pg.NewSystemStore(pool, ids, clock)
 	memory := app.NewMemoryService(pg.NewMemoryRepository(pgStore), ids, clock)
 	vaults, err := resolveVaultService(pgStore, ids, clock)
 	if err != nil {
@@ -468,14 +607,22 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 			LimitedNetwork: providerCapabilities.LimitedNetwork,
 		},
 	)
-	fileRuntime, err := resolveFiles(ctx, pgStore, ids, clock, true)
+	fileRuntime, err := resolveFiles(ctx, pgStore, ids, clock, false)
 	if err != nil {
 		log.Printf("serve: Files API disabled: %v", err)
 		fileRuntime = nil
 	} else if fileRuntime == nil {
 		log.Printf("serve: Files API disabled; %s is not configured", fileS3BucketEnv)
 	} else {
-		log.Printf("serve: Files API object store connected and reconciled")
+		fileReconciler := app.NewFileService(
+			pg.NewFileRepository(systemStore), fileRuntime.blobs, ids, clock,
+		)
+		if err := fileReconciler.Reconcile(ctx); err != nil {
+			log.Printf("serve: Files API disabled: reconcile incomplete operations: %v", err)
+			fileRuntime = nil
+		} else {
+			log.Printf("serve: Files API object store connected and reconciled")
+		}
 	}
 	var files *app.FileService
 	var skills *app.SkillService
@@ -486,7 +633,10 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		skills = app.NewSkillService(
 			pg.NewSkillRepository(pgStore), fileRuntime.blobs, ids, clock,
 		)
-		if err := skills.Reconcile(ctx); err != nil {
+		skillReconciler := app.NewSkillService(
+			pg.NewSkillRepository(systemStore), fileRuntime.blobs, ids, clock,
+		)
+		if err := skillReconciler.Reconcile(ctx); err != nil {
 			log.Printf("serve: Skills API disabled: reconcile incomplete operations: %v", err)
 			skills = nil
 		} else {

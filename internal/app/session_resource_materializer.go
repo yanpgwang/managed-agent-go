@@ -8,6 +8,7 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 type SessionResourceMountRepository interface {
@@ -131,8 +132,15 @@ func (m *SessionResourceMaterializer) Reconcile(
 					return err
 				}
 			}
-			if err := m.blobs.Delete(ctx, "files/"+resource.FileID); err != nil {
+			blobKey := resource.BlobKey
+			if blobKey == "" {
+				blobKey = workspace.BlobKey(ctx, "files/"+resource.FileID)
+			}
+			if err := m.blobs.Delete(ctx, blobKey); err != nil {
 				return err
+			}
+			if resource.BlobKey == "" {
+				_ = m.blobs.Delete(ctx, "files/"+resource.FileID)
 			}
 			if err := m.files.RemoveIncomplete(ctx, resource.FileID); err != nil {
 				return err
@@ -191,8 +199,15 @@ func CleanupSessionResourceFiles(
 			}
 			continue
 		}
-		if err := blobs.Delete(ctx, "files/"+resource.FileID); err != nil {
+		blobKey := resource.BlobKey
+		if blobKey == "" {
+			blobKey = workspace.BlobKey(ctx, "files/"+resource.FileID)
+		}
+		if err := blobs.Delete(ctx, blobKey); err != nil {
 			return err
+		}
+		if resource.BlobKey == "" {
+			_ = blobs.Delete(ctx, "files/"+resource.FileID)
 		}
 		if err := files.RemoveIncomplete(ctx, resource.FileID); err != nil {
 			return err

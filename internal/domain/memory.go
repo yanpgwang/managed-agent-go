@@ -2,9 +2,9 @@ package domain
 
 import "time"
 
-// MemoryStore is the durable, workspace-scoped container exposed by the
-// Managed Agents Memory API. Tenant ownership is intentionally absent until
-// the control plane has a real authenticated workspace principal.
+// MemoryStore is the durable, Workspace-scoped container exposed by the
+// Managed Agents Memory API. Ownership stays in the relational root instead of
+// leaking into the CMA wire representation.
 type MemoryStore struct {
 	ID          string
 	Name        string

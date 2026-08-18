@@ -12,6 +12,7 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 func TestSkillRepository_ImmutableLifecyclePagingAndDeleteGuard(t *testing.T) {
@@ -525,9 +526,9 @@ func TestLegacyAgentSkillsSurviveReadAndUnrelatedUpdate(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.pool.Exec(ctx, `
-INSERT INTO agents (id, version, name, body, created_at, updated_at)
-VALUES ($1, 1, $2, $3, $4, $4)`,
-		"agent_legacy_skills", "legacy", encoded, base,
+	INSERT INTO agents (id, version, name, body, created_at, updated_at, workspace_id)
+	VALUES ($1, 1, $2, $3, $4, $4, $5)`,
+		"agent_legacy_skills", "legacy", encoded, base, workspace.DefaultID,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -575,9 +576,10 @@ func TestLegacySessionSkillsRemainReadableAndDeletable(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.pool.Exec(ctx, `
-INSERT INTO sessions (id, status, body, created_at, updated_at)
-VALUES ($1, $2, $3, $4, $5)`,
+	INSERT INTO sessions (id, status, body, created_at, updated_at, workspace_id)
+	VALUES ($1, $2, $3, $4, $5, $6)`,
 		session.ID, session.Status, body, session.CreatedAt, session.UpdatedAt,
+		workspace.DefaultID,
 	); err != nil {
 		t.Fatal(err)
 	}

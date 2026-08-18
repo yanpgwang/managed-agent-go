@@ -23,6 +23,9 @@ func (s *SessionThreadService) Get(
 	sessionID string,
 	threadID string,
 ) (domain.SessionThread, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
+		return domain.SessionThread{}, err
+	}
 	return s.store.GetSessionThread(ctx, sessionID, threadID)
 }
 
@@ -31,6 +34,9 @@ func (s *SessionThreadService) List(
 	sessionID string,
 	query app.SessionThreadListQuery,
 ) ([]domain.SessionThread, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
+		return nil, err
+	}
 	return s.store.ListSessionThreads(ctx, sessionID, query)
 }
 
@@ -42,6 +48,9 @@ func (s *SessionThreadService) Archive(
 	sessionID string,
 	threadID string,
 ) (domain.SessionThread, error) {
+	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
+		return domain.SessionThread{}, err
+	}
 	thread, err := s.store.GetSessionThread(ctx, sessionID, threadID)
 	if err != nil {
 		return domain.SessionThread{}, err

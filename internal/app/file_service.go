@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 const (
@@ -107,7 +108,7 @@ func (s *FileService) Upload(ctx context.Context, input FileUploadInput) (domain
 	file := domain.File{
 		ID: id, CreatedAt: now, UpdatedAt: now,
 		Filename: filename, MimeType: mimeType,
-		BlobKey: "files/" + id, State: domain.FileStateUploading,
+		BlobKey: workspace.BlobKey(ctx, "files/"+id), State: domain.FileStateUploading,
 	}
 	if err := s.repo.BeginUpload(ctx, file); err != nil {
 		return domain.File{}, err

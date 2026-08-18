@@ -14,16 +14,17 @@ import (
 const archiveAgent = `-- name: ArchiveAgent :execrows
 UPDATE agents
 SET archived_at = COALESCE(archived_at, $1)
-WHERE id = $2
+WHERE id = $2 AND workspace_id = $3
 `
 
 type ArchiveAgentParams struct {
-	ArchivedAt pgtype.Timestamptz
-	ID         string
+	ArchivedAt  pgtype.Timestamptz
+	ID          string
+	WorkspaceID string
 }
 
 func (q *Queries) ArchiveAgent(ctx context.Context, arg ArchiveAgentParams) (int64, error) {
-	result, err := q.db.Exec(ctx, archiveAgent, arg.ArchivedAt, arg.ID)
+	result, err := q.db.Exec(ctx, archiveAgent, arg.ArchivedAt, arg.ID, arg.WorkspaceID)
 	if err != nil {
 		return 0, err
 	}
@@ -33,20 +34,28 @@ func (q *Queries) ArchiveAgent(ctx context.Context, arg ArchiveAgentParams) (int
 const deleteEnvironmentIfUnreferenced = `-- name: DeleteEnvironmentIfUnreferenced :execrows
 DELETE FROM environments AS environment
 WHERE environment.id = $1
+  AND environment.workspace_id = $2
   AND NOT EXISTS (
       SELECT 1
       FROM sessions
       WHERE sessions.environment_id = environment.id
+        AND sessions.workspace_id = environment.workspace_id
   )
   AND NOT EXISTS (
       SELECT 1
       FROM deployments
       WHERE deployments.environment_id = environment.id
+        AND deployments.workspace_id = environment.workspace_id
   )
 `
 
-func (q *Queries) DeleteEnvironmentIfUnreferenced(ctx context.Context, id string) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEnvironmentIfUnreferenced, id)
+type DeleteEnvironmentIfUnreferencedParams struct {
+	ID          string
+	WorkspaceID string
+}
+
+func (q *Queries) DeleteEnvironmentIfUnreferenced(ctx context.Context, arg DeleteEnvironmentIfUnreferencedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteEnvironmentIfUnreferenced, arg.ID, arg.WorkspaceID)
 	if err != nil {
 		return 0, err
 	}
@@ -67,29 +76,38 @@ func (q *Queries) DeleteMarkedSession(ctx context.Context, id string) (int64, er
 }
 
 const environmentExists = `-- name: EnvironmentExists :one
-SELECT EXISTS(SELECT 1 FROM environments WHERE id = $1)
+SELECT EXISTS(
+    SELECT 1 FROM environments
+    WHERE id = $1 AND workspace_id = $2
+)
 `
 
-func (q *Queries) EnvironmentExists(ctx context.Context, id string) (bool, error) {
-	row := q.db.QueryRow(ctx, environmentExists, id)
+type EnvironmentExistsParams struct {
+	ID          string
+	WorkspaceID string
+}
+
+func (q *Queries) EnvironmentExists(ctx context.Context, arg EnvironmentExistsParams) (bool, error) {
+	row := q.db.QueryRow(ctx, environmentExists, arg.ID, arg.WorkspaceID)
 	var exists bool
 	err := row.Scan(&exists)
 	return exists, err
 }
 
 const getAgentVersion = `-- name: GetAgentVersion :one
-SELECT id, version, name, body, created_at, updated_at, archived_at
+SELECT agents.id, agents.version, agents.name, agents.body, agents.created_at, agents.updated_at, agents.archived_at, agents.workspace_id
 FROM agents
-WHERE id = $1 AND version = $2
+WHERE id = $1 AND version = $2 AND workspace_id = $3
 `
 
 type GetAgentVersionParams struct {
-	ID      string
-	Version int32
+	ID          string
+	Version     int32
+	WorkspaceID string
 }
 
 func (q *Queries) GetAgentVersion(ctx context.Context, arg GetAgentVersionParams) (Agent, error) {
-	row := q.db.QueryRow(ctx, getAgentVersion, arg.ID, arg.Version)
+	row := q.db.QueryRow(ctx, getAgentVersion, arg.ID, arg.Version, arg.WorkspaceID)
 	var i Agent
 	err := row.Scan(
 		&i.ID,
@@ -99,18 +117,24 @@ func (q *Queries) GetAgentVersion(ctx context.Context, arg GetAgentVersionParams
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getEnvironment = `-- name: GetEnvironment :one
-SELECT id, name, config_type, body, created_at, updated_at, archived_at
+SELECT environments.id, environments.name, environments.config_type, environments.body, environments.created_at, environments.updated_at, environments.archived_at, environments.workspace_id
 FROM environments
-WHERE id = $1
+WHERE id = $1 AND workspace_id = $2
 `
 
-func (q *Queries) GetEnvironment(ctx context.Context, id string) (Environment, error) {
-	row := q.db.QueryRow(ctx, getEnvironment, id)
+type GetEnvironmentParams struct {
+	ID          string
+	WorkspaceID string
+}
+
+func (q *Queries) GetEnvironment(ctx context.Context, arg GetEnvironmentParams) (Environment, error) {
+	row := q.db.QueryRow(ctx, getEnvironment, arg.ID, arg.WorkspaceID)
 	var i Environment
 	err := row.Scan(
 		&i.ID,
@@ -120,20 +144,26 @@ func (q *Queries) GetEnvironment(ctx context.Context, id string) (Environment, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const getLatestAgent = `-- name: GetLatestAgent :one
-SELECT id, version, name, body, created_at, updated_at, archived_at
+SELECT agents.id, agents.version, agents.name, agents.body, agents.created_at, agents.updated_at, agents.archived_at, agents.workspace_id
 FROM agents
-WHERE id = $1
+WHERE id = $1 AND workspace_id = $2
 ORDER BY version DESC
 LIMIT 1
 `
 
-func (q *Queries) GetLatestAgent(ctx context.Context, id string) (Agent, error) {
-	row := q.db.QueryRow(ctx, getLatestAgent, id)
+type GetLatestAgentParams struct {
+	ID          string
+	WorkspaceID string
+}
+
+func (q *Queries) GetLatestAgent(ctx context.Context, arg GetLatestAgentParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, getLatestAgent, arg.ID, arg.WorkspaceID)
 	var i Agent
 	err := row.Scan(
 		&i.ID,
@@ -143,24 +173,30 @@ func (q *Queries) GetLatestAgent(ctx context.Context, id string) (Agent, error) 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
 
 const insertAgentVersion = `-- name: InsertAgentVersion :exec
 
-INSERT INTO agents (id, version, name, body, created_at, updated_at, archived_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+INSERT INTO agents (
+    id, version, name, body, created_at, updated_at, archived_at, workspace_id
+)
+VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8
+)
 `
 
 type InsertAgentVersionParams struct {
-	ID         string
-	Version    int32
-	Name       string
-	Body       []byte
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	ArchivedAt pgtype.Timestamptz
+	ID          string
+	Version     int32
+	Name        string
+	Body        []byte
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ArchivedAt  pgtype.Timestamptz
+	WorkspaceID string
 }
 
 // Typed resource queries for the PostgreSQL HTTP control plane.
@@ -173,26 +209,33 @@ func (q *Queries) InsertAgentVersion(ctx context.Context, arg InsertAgentVersion
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.ArchivedAt,
+		arg.WorkspaceID,
 	)
 	return err
 }
 
 const listAgentVersions = `-- name: ListAgentVersions :many
-SELECT id, version, name, body, created_at, updated_at, archived_at
+SELECT agents.id, agents.version, agents.name, agents.body, agents.created_at, agents.updated_at, agents.archived_at, agents.workspace_id
 FROM agents
-WHERE id = $1 AND version > $2
+WHERE id = $1 AND version > $2 AND workspace_id = $3
 ORDER BY version
-LIMIT $3
+LIMIT $4
 `
 
 type ListAgentVersionsParams struct {
 	ID           string
 	AfterVersion int32
+	WorkspaceID  string
 	RowLimit     int32
 }
 
 func (q *Queries) ListAgentVersions(ctx context.Context, arg ListAgentVersionsParams) ([]Agent, error) {
-	rows, err := q.db.Query(ctx, listAgentVersions, arg.ID, arg.AfterVersion, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listAgentVersions,
+		arg.ID,
+		arg.AfterVersion,
+		arg.WorkspaceID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -208,6 +251,7 @@ func (q *Queries) ListAgentVersions(ctx context.Context, arg ListAgentVersionsPa
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ArchivedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -248,7 +292,7 @@ func (q *Queries) ListDeletingSessionIDs(ctx context.Context, rowLimit int32) ([
 }
 
 const listEnvironments = `-- name: ListEnvironments :many
-SELECT id, name, config_type, body, created_at, updated_at, archived_at
+SELECT environments.id, environments.name, environments.config_type, environments.body, environments.created_at, environments.updated_at, environments.archived_at, environments.workspace_id
 FROM environments
 ORDER BY id
 `
@@ -270,6 +314,7 @@ func (q *Queries) ListEnvironments(ctx context.Context) ([]Environment, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ArchivedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -283,7 +328,7 @@ func (q *Queries) ListEnvironments(ctx context.Context) ([]Environment, error) {
 
 const listLatestAgents = `-- name: ListLatestAgents :many
 SELECT DISTINCT ON (id)
-    id, version, name, body, created_at, updated_at, archived_at
+    agents.id, agents.version, agents.name, agents.body, agents.created_at, agents.updated_at, agents.archived_at, agents.workspace_id
 FROM agents
 ORDER BY id, version DESC
 `
@@ -305,6 +350,7 @@ func (q *Queries) ListLatestAgents(ctx context.Context) ([]Agent, error) {
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.ArchivedAt,
+			&i.WorkspaceID,
 		); err != nil {
 			return nil, err
 		}
@@ -319,17 +365,20 @@ func (q *Queries) ListLatestAgents(ctx context.Context) ([]Agent, error) {
 const lockActiveAgentVersion = `-- name: LockActiveAgentVersion :one
 SELECT id
 FROM agents
-WHERE id = $1 AND version = $2 AND archived_at IS NULL
+WHERE id = $1 AND version = $2
+  AND workspace_id = $3
+  AND archived_at IS NULL
 FOR SHARE
 `
 
 type LockActiveAgentVersionParams struct {
-	ID      string
-	Version int32
+	ID          string
+	Version     int32
+	WorkspaceID string
 }
 
 func (q *Queries) LockActiveAgentVersion(ctx context.Context, arg LockActiveAgentVersionParams) (string, error) {
-	row := q.db.QueryRow(ctx, lockActiveAgentVersion, arg.ID, arg.Version)
+	row := q.db.QueryRow(ctx, lockActiveAgentVersion, arg.ID, arg.Version, arg.WorkspaceID)
 	var id string
 	err := row.Scan(&id)
 	return id, err
@@ -338,27 +387,38 @@ func (q *Queries) LockActiveAgentVersion(ctx context.Context, arg LockActiveAgen
 const lockActiveEnvironment = `-- name: LockActiveEnvironment :one
 SELECT id
 FROM environments
-WHERE id = $1 AND archived_at IS NULL
+WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
 FOR SHARE
 `
 
-func (q *Queries) LockActiveEnvironment(ctx context.Context, id string) (string, error) {
-	row := q.db.QueryRow(ctx, lockActiveEnvironment, id)
+type LockActiveEnvironmentParams struct {
+	ID          string
+	WorkspaceID string
+}
+
+func (q *Queries) LockActiveEnvironment(ctx context.Context, arg LockActiveEnvironmentParams) (string, error) {
+	row := q.db.QueryRow(ctx, lockActiveEnvironment, arg.ID, arg.WorkspaceID)
+	var id string
 	err := row.Scan(&id)
 	return id, err
 }
 
 const lockLatestAgent = `-- name: LockLatestAgent :one
-SELECT id, version, name, body, created_at, updated_at, archived_at
+SELECT agents.id, agents.version, agents.name, agents.body, agents.created_at, agents.updated_at, agents.archived_at, agents.workspace_id
 FROM agents
-WHERE id = $1
+WHERE id = $1 AND workspace_id = $2
 ORDER BY version DESC
 LIMIT 1
 FOR UPDATE
 `
 
-func (q *Queries) LockLatestAgent(ctx context.Context, id string) (Agent, error) {
-	row := q.db.QueryRow(ctx, lockLatestAgent, id)
+type LockLatestAgentParams struct {
+	ID          string
+	WorkspaceID string
+}
+
+func (q *Queries) LockLatestAgent(ctx context.Context, arg LockLatestAgentParams) (Agent, error) {
+	row := q.db.QueryRow(ctx, lockLatestAgent, arg.ID, arg.WorkspaceID)
 	var i Agent
 	err := row.Scan(
 		&i.ID,
@@ -368,6 +428,7 @@ func (q *Queries) LockLatestAgent(ctx context.Context, id string) (Agent, error)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.ArchivedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
@@ -416,33 +477,29 @@ func (q *Queries) UpdateSessionProjection(ctx context.Context, arg UpdateSession
 	return err
 }
 
-const upsertEnvironment = `-- name: UpsertEnvironment :exec
+const upsertEnvironment = `-- name: UpsertEnvironment :execrows
 INSERT INTO environments (
-    id, name, config_type, body, created_at, updated_at, archived_at
+    id, name, config_type, body, created_at, updated_at, archived_at, workspace_id
 )
 VALUES (
-    $1, $2, $3, $4, $5, $6, $7
+    $1, $2, $3, $4, $5, $6, $7, $8
 )
-ON CONFLICT (id) DO UPDATE SET
-    name = EXCLUDED.name,
-    config_type = EXCLUDED.config_type,
-    body = EXCLUDED.body,
-    updated_at = EXCLUDED.updated_at,
-    archived_at = EXCLUDED.archived_at
+ON CONFLICT (id) DO NOTHING
 `
 
 type UpsertEnvironmentParams struct {
-	ID         string
-	Name       string
-	ConfigType string
-	Body       []byte
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	ArchivedAt pgtype.Timestamptz
+	ID          string
+	Name        string
+	ConfigType  string
+	Body        []byte
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	ArchivedAt  pgtype.Timestamptz
+	WorkspaceID string
 }
 
-func (q *Queries) UpsertEnvironment(ctx context.Context, arg UpsertEnvironmentParams) error {
-	_, err := q.db.Exec(ctx, upsertEnvironment,
+func (q *Queries) UpsertEnvironment(ctx context.Context, arg UpsertEnvironmentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, upsertEnvironment,
 		arg.ID,
 		arg.Name,
 		arg.ConfigType,
@@ -450,6 +507,10 @@ func (q *Queries) UpsertEnvironment(ctx context.Context, arg UpsertEnvironmentPa
 		arg.CreatedAt,
 		arg.UpdatedAt,
 		arg.ArchivedAt,
+		arg.WorkspaceID,
 	)
-	return err
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

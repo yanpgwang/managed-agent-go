@@ -15,6 +15,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/app"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
 	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 // Store is the primary PostgreSQL control-plane store. It owns the event-admission
@@ -29,10 +30,62 @@ type Store struct {
 	ids      domain.IDGenerator
 	clock    domain.Clock
 	notifier EventNotifier
+	// systemAccess is enabled only for the worker role and integration tests.
+	// Public API stores fail closed when a repository call lacks HTTP scope.
+	systemAccess bool
+	// defaultWorkspace pins an explicitly single-tenant Store to the bootstrap
+	// Workspace. Keeping this separate from systemAccess prevents a missing
+	// worker scope from silently writing tenant data into wrkspc_default.
+	defaultWorkspace bool
 }
 
 func NewStore(pool *pgxpool.Pool, ids domain.IDGenerator, clock domain.Clock) *Store {
 	return &Store{pool: pool, q: pgstore.New(pool), ids: ids, clock: clock}
+}
+
+// NewSystemStore creates the explicitly unscoped persistence view required by
+// reconcilers and Temporal workers. It must never back public HTTP handlers.
+func NewSystemStore(pool *pgxpool.Pool, ids domain.IDGenerator, clock domain.Clock) *Store {
+	store := NewStore(pool, ids, clock)
+	store.systemAccess = true
+	return store
+}
+
+// NewDefaultWorkspaceStore creates an explicitly single-tenant Store pinned to
+// the bootstrap Workspace. It exists for embedders and compatibility tests;
+// multi-tenant workers must use NewSystemStore and attach a Workspace scope
+// before reading dependencies or creating tenant-owned resources.
+func NewDefaultWorkspaceStore(
+	pool *pgxpool.Pool,
+	ids domain.IDGenerator,
+	clock domain.Clock,
+) *Store {
+	store := NewStore(pool, ids, clock)
+	store.defaultWorkspace = true
+	return store
+}
+
+func (s *Store) workspaceForRead(ctx context.Context) (string, bool, error) {
+	if scope, ok := workspace.FromContext(ctx); ok {
+		return scope.ID, true, nil
+	}
+	if s.defaultWorkspace {
+		return workspace.DefaultID, true, nil
+	}
+	if s.systemAccess {
+		return "", false, nil
+	}
+	return "", false, workspace.ErrMissingScope
+}
+
+func (s *Store) workspaceForWrite(ctx context.Context) (string, error) {
+	if scope, ok := workspace.FromContext(ctx); ok {
+		return scope.ID, nil
+	}
+	if s.defaultWorkspace {
+		return workspace.DefaultID, nil
+	}
+	return "", workspace.ErrMissingScope
 }
 
 // EventNotifier wakes live-event subscribers after a PostgreSQL commit. It is a
@@ -152,9 +205,14 @@ func (s *Store) createSession(
 	resources []app.PreparedSessionResource,
 	deploymentRun *domain.DeploymentRun,
 ) (Admission, error) {
+	workspaceID, err := s.workspaceForWrite(ctx)
+	if err != nil {
+		return Admission{}, err
+	}
 	if len(resources) > app.MaxSessionResources {
 		return Admission{}, domain.Validation("resources must contain at most 500 entries")
 	}
+	session.WorkspaceID = workspaceID
 	var resourceBytes int64
 	for _, resource := range resources {
 		if resource.Blob.SizeBytes > app.MaxSessionResourceBytes-resourceBytes {
@@ -190,24 +248,29 @@ func (s *Store) createSession(
 		if checkDependencies {
 			if _, err := q.LockActiveAgentVersion(ctx, pgstore.LockActiveAgentVersionParams{
 				ID: session.AgentID, Version: int32(session.AgentVersion),
+				WorkspaceID: workspaceID,
 			}); errors.Is(err, pgx.ErrNoRows) {
 				return domain.Validation("agent is missing or archived")
 			} else if err != nil {
 				return err
 			}
-			if err := lockActiveSessionRoster(ctx, q, session); err != nil {
+			if err := lockActiveSessionRoster(ctx, q, workspaceID, session); err != nil {
 				return err
 			}
-			if _, err := q.LockActiveEnvironment(ctx, session.EnvironmentID); errors.Is(err, pgx.ErrNoRows) {
+			if _, err := q.LockActiveEnvironment(ctx, pgstore.LockActiveEnvironmentParams{
+				ID: session.EnvironmentID, WorkspaceID: workspaceID,
+			}); errors.Is(err, pgx.ErrNoRows) {
 				return domain.Validation("environment is missing or archived")
 			} else if err != nil {
 				return err
 			}
-			if err := lockActiveSessionVaults(ctx, tx, session.VaultIDs); err != nil {
+			if err := lockActiveSessionVaults(ctx, tx, workspaceID, session.VaultIDs); err != nil {
 				return err
 			}
 		}
-		if err := q.InsertSession(ctx, insertSessionParams(session, body)); err != nil {
+		params := insertSessionParams(session, body)
+		params.WorkspaceID = workspaceID
+		if err := q.InsertSession(ctx, params); err != nil {
 			return err
 		}
 		if err := s.insertPrimarySessionThread(ctx, tx, session); err != nil {
@@ -219,7 +282,9 @@ func (s *Store) createSession(
 		if err := insertSessionVaults(ctx, tx, session); err != nil {
 			return err
 		}
-		if err := insertPreparedSessionResources(ctx, tx, session.ID, resources); err != nil {
+		if err := insertPreparedSessionResources(
+			ctx, tx, workspaceID, session.ID, resources,
+		); err != nil {
 			return err
 		}
 		admission = Admission{Session: session}
@@ -245,6 +310,7 @@ func (s *Store) createSession(
 func lockActiveSessionRoster(
 	ctx context.Context,
 	q *pgstore.Queries,
+	workspaceID string,
 	session domain.Session,
 ) error {
 	type pin struct {
@@ -270,6 +336,7 @@ func lockActiveSessionRoster(
 	for _, candidate := range pins {
 		if _, err := q.LockActiveAgentVersion(ctx, pgstore.LockActiveAgentVersionParams{
 			ID: candidate.id, Version: int32(candidate.version),
+			WorkspaceID: workspaceID,
 		}); errors.Is(err, pgx.ErrNoRows) {
 			return domain.Validation("multiagent roster member is missing or archived")
 		} else if err != nil {
@@ -332,7 +399,12 @@ INSERT INTO deployment_runs (
 	return err
 }
 
-func lockActiveSessionVaults(ctx context.Context, tx pgx.Tx, vaultIDs []string) error {
+func lockActiveSessionVaults(
+	ctx context.Context,
+	tx pgx.Tx,
+	workspaceID string,
+	vaultIDs []string,
+) error {
 	if len(vaultIDs) == 0 {
 		return nil
 	}
@@ -340,9 +412,9 @@ func lockActiveSessionVaults(ctx context.Context, tx pgx.Tx, vaultIDs []string) 
 	sort.Strings(ordered)
 	rows, err := tx.Query(ctx, `
 SELECT id FROM vaults
-WHERE id = ANY($1) AND archived_at IS NULL
+WHERE id = ANY($1) AND workspace_id = $2 AND archived_at IS NULL
 ORDER BY id
-FOR SHARE`, ordered)
+FOR SHARE`, ordered, workspaceID)
 	if err != nil {
 		return err
 	}
@@ -394,7 +466,7 @@ func insertSessionSkillVersions(ctx context.Context, tx pgx.Tx, session domain.S
 	}
 	for _, agent := range agents {
 		if err := insertSessionAgentSkillVersions(
-			ctx, tx, session.ID, agent,
+			ctx, tx, session.WorkspaceID, session.ID, agent,
 		); err != nil {
 			return err
 		}
@@ -405,6 +477,7 @@ func insertSessionSkillVersions(ctx context.Context, tx pgx.Tx, session domain.S
 func insertSessionAgentSkillVersions(
 	ctx context.Context,
 	tx pgx.Tx,
+	workspaceID string,
 	sessionID string,
 	agent domain.Agent,
 ) error {
@@ -418,7 +491,7 @@ func insertSessionAgentSkillVersions(
 				"Session Agent Skill references must use concrete custom Versions",
 			)
 		}
-		locked, err := lockReadySkillVersion(ctx, tx, reference)
+		locked, err := lockReadySkillVersion(ctx, tx, workspaceID, reference)
 		if err != nil {
 			return err
 		}
@@ -448,6 +521,7 @@ INSERT INTO session_skill_versions (
 func lockReadySkillVersion(
 	ctx context.Context,
 	tx pgx.Tx,
+	workspaceID string,
 	reference domain.SkillReference,
 ) (bool, error) {
 	var locked int
@@ -455,8 +529,10 @@ func lockReadySkillVersion(
 SELECT 1
 FROM skill_versions AS version
 JOIN skills AS skill ON skill.id = version.skill_id AND skill.ready
-WHERE version.skill_id = $1 AND version.version = $2 AND version.state = 'ready'
-FOR SHARE OF version`, reference.SkillID, reference.Version).Scan(&locked)
+WHERE version.skill_id = $1 AND version.version = $2
+  AND skill.workspace_id = $3
+  AND version.state = 'ready'
+FOR SHARE OF version`, reference.SkillID, reference.Version, workspaceID).Scan(&locked)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
 	}
@@ -1156,6 +1232,42 @@ func (s *Store) GetSession(ctx context.Context, id string) (domain.Session, erro
 		return domain.Session{}, err
 	}
 	return sessionFromGetRow(row)
+}
+
+// GetSessionForWorkspace is the public authorization boundary. Internal
+// Temporal activities use GetSession after the HTTP/Deployment admission path
+// has already bound the globally unique Session ID to a Workspace.
+func (s *Store) GetSessionForWorkspace(
+	ctx context.Context,
+	id string,
+) (domain.Session, error) {
+	workspaceID, scoped, err := s.workspaceForRead(ctx)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	if !scoped {
+		return s.GetSession(ctx, id)
+	}
+	var body []byte
+	if err := s.pool.QueryRow(ctx, `
+SELECT body
+FROM sessions
+WHERE id = $1 AND workspace_id = $2`, id, workspaceID).Scan(&body); errors.Is(err, pgx.ErrNoRows) {
+		return domain.Session{}, domain.NotFound("session not found")
+	} else if err != nil {
+		return domain.Session{}, err
+	}
+	var session domain.Session
+	if err := json.Unmarshal(body, &session); err != nil {
+		return domain.Session{}, fmt.Errorf("pg: decode session %s: %w", id, err)
+	}
+	session.WorkspaceID = workspaceID
+	return session, nil
+}
+
+func (s *Store) AssertSessionWorkspace(ctx context.Context, id string) error {
+	_, err := s.GetSessionForWorkspace(ctx, id)
+	return err
 }
 
 // GetEvent returns a single public event by id.

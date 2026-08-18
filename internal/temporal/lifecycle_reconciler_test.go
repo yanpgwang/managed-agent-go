@@ -6,6 +6,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 type fakeDeletionStore struct {
@@ -13,6 +16,10 @@ type fakeDeletionStore struct {
 	pending     []string
 	finalized   []string
 	finalizeErr map[string]error
+}
+
+func (s *fakeDeletionStore) GetSession(_ context.Context, sessionID string) (domain.Session, error) {
+	return domain.Session{ID: sessionID, WorkspaceID: workspace.DefaultID}, nil
 }
 
 func (s *fakeDeletionStore) ListDeletingSessionIDs(

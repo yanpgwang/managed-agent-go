@@ -60,8 +60,9 @@ earlier when it is a prerequisite for a higher-tier slice.
 ### Make self-hosting production-ready
 
 Production use requires security and operational work beyond API alignment.
-The principal themes are identity and tenant isolation, policy and quotas,
-safe worker and database upgrades, observability, backup and recovery, and
+The OSS runtime now isolates data by Workspace. The remaining themes are
+end-user identity and enterprise policy above that boundary, quotas, safe
+worker and database upgrades, observability, backup and recovery, and
 production deployment guidance.
 
 ### Broaden infrastructure support

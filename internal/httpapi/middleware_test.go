@@ -1,14 +1,23 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
+
+type workspaceAuthenticatorFunc func(context.Context, string) (string, error)
+
+func (f workspaceAuthenticatorFunc) AuthenticateAPIKey(ctx context.Context, key string) (string, error) {
+	return f(ctx, key)
+}
 
 func TestWriteError_MapsKinds(t *testing.T) {
 	cases := map[error]int{
@@ -173,6 +182,87 @@ func TestAuthMiddleware_Strict(t *testing.T) {
 	hNoAuth.ServeHTTP(rec3, req3)
 	if rec3.Code != 200 {
 		t.Fatalf("expected 200 when RequireAuth=false and no key, got %d", rec3.Code)
+	}
+}
+
+func TestAuthMiddleware_AuthenticatesAndScopesWorkspace(t *testing.T) {
+	authenticator := workspaceAuthenticatorFunc(func(_ context.Context, key string) (string, error) {
+		if key != "sk-valid" {
+			return "", workspace.ErrInvalidAPIKey
+		}
+		return "wrkspc_team", nil
+	})
+	h := authMiddleware(Config{Authenticator: authenticator}, http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			scope, err := workspace.Require(r.Context())
+			if err != nil || scope.ID != "wrkspc_team" {
+				t.Fatalf("scope = %+v, %v", scope, err)
+			}
+			w.WriteHeader(http.StatusNoContent)
+		},
+	))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("authorization", "Bearer sk-valid")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rec.Code)
+	}
+
+	invalid := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	invalid.Header.Set("x-api-key", "sk-invalid")
+	invalidRec := httptest.NewRecorder()
+	h.ServeHTTP(invalidRec, invalid)
+	if invalidRec.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid status = %d, want 401", invalidRec.Code)
+	}
+}
+
+func TestAuthMiddleware_DistinguishesStoreFailureAndPublicHealth(t *testing.T) {
+	calls := 0
+	authenticator := workspaceAuthenticatorFunc(func(context.Context, string) (string, error) {
+		calls++
+		return "", errors.New("database unavailable")
+	})
+	h := authMiddleware(Config{Authenticator: authenticator}, http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) },
+	))
+
+	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
+	req.Header.Set("x-api-key", "sk-any")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("store failure status = %d, want 500", rec.Code)
+	}
+
+	health := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	healthRec := httptest.NewRecorder()
+	h.ServeHTTP(healthRec, health)
+	if healthRec.Code != http.StatusNoContent || calls != 1 {
+		t.Fatalf("health status/calls = %d/%d, want 204/1", healthRec.Code, calls)
+	}
+}
+
+func TestStrictCompatibilityHeadersDoNotProtectPublicRoutes(t *testing.T) {
+	cfg := Config{
+		RequireBeta: true, RequireVersion: true, RequireContentType: true,
+		Authenticator: workspaceAuthenticatorFunc(func(context.Context, string) (string, error) {
+			return "", errors.New("authenticator must not be called")
+		}),
+	}
+	h := authMiddleware(cfg, versionMiddleware(cfg,
+		contentTypeMiddleware(cfg, betaMiddleware(cfg, http.HandlerFunc(
+			func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) },
+		)))),
+	)
+	for _, path := range []string{"/healthz", "/readyz", "/openapi.yaml"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("GET %s status = %d, want 204", path, rec.Code)
+		}
 	}
 }
 

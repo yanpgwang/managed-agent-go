@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 const lifecycleDrainDelay = 100 * time.Millisecond
@@ -15,6 +18,7 @@ const lifecycleDrainDelay = 100 * time.Millisecond
 // cleanup and finalization that a crashed API process may have left unfinished.
 type DeletionStore interface {
 	ListDeletingSessionIDs(ctx context.Context, limit int) ([]string, error)
+	GetSession(ctx context.Context, sessionID string) (domain.Session, error)
 	FinalizeSessionDeletion(ctx context.Context, sessionID string) error
 }
 
@@ -177,6 +181,15 @@ func (r *LifecycleReconciler) RunOnce(
 		}
 		if r.resources != nil {
 			cleanupCtx, cancel := context.WithTimeout(ctx, r.cfg.AttemptTimeout)
+			session, loadErr := r.store.GetSession(cleanupCtx, sessionID)
+			if loadErr != nil {
+				cancel()
+				errs = append(errs, fmt.Errorf(
+					"load deleting session %s: %w", sessionID, loadErr,
+				))
+				continue
+			}
+			cleanupCtx = workspace.WithScope(cleanupCtx, session.WorkspaceID)
 			err = r.resources.CleanupSession(cleanupCtx, sessionID)
 			cancel()
 			if err != nil {

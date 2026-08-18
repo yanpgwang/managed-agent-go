@@ -33,6 +33,13 @@ In another shell, verify readiness:
 curl -i http://localhost:8080/readyz
 ```
 
+The Compose API bootstraps one development-only Workspace key. Export it once
+for the protected examples below:
+
+```bash
+export MANGO_API_KEY=sk-mango-local-development
+```
+
 ## Create an environment
 
 Environment records identify where sandbox-routed tools run. A `cloud` record
@@ -41,6 +48,7 @@ routes them to the Temporal worker:
 ```bash
 ENV_ID=$(
   curl -sS http://localhost:8080/v1/environments \
+    -H "x-api-key: $MANGO_API_KEY" \
     -H 'content-type: application/json' \
     -d '{"name":"local","config":{"type":"cloud"}}' |
   jq -r .id
@@ -55,6 +63,7 @@ With `{"type":"self_hosted"}`, built-in calls instead park for a client
 ```bash
 AGENT_ID=$(
   curl -sS http://localhost:8080/v1/agents \
+    -H "x-api-key: $MANGO_API_KEY" \
     -H 'content-type: application/json' \
     -d '{
       "name": "Example agent",
@@ -73,6 +82,7 @@ resolved version and configuration captured at creation time.
 ```bash
 SESSION_ID=$(
   curl -sS http://localhost:8080/v1/sessions \
+    -H "x-api-key: $MANGO_API_KEY" \
     -H 'content-type: application/json' \
     -d "{
       \"agent\": \"$AGENT_ID\",
@@ -87,6 +97,7 @@ SESSION_ID=$(
 
 ```bash
 curl -sS "http://localhost:8080/v1/sessions/$SESSION_ID/events" \
+  -H "x-api-key: $MANGO_API_KEY" \
   -H 'content-type: application/json' \
   -d '{
     "events": [{
@@ -101,6 +112,7 @@ agent response is asynchronous. Poll history:
 
 ```bash
 curl -sS \
+  -H "x-api-key: $MANGO_API_KEY" \
   "http://localhost:8080/v1/sessions/$SESSION_ID/events?order=asc" |
   jq
 ```
@@ -114,6 +126,7 @@ Open the stream before sending the next message:
 
 ```bash
 curl -N \
+  -H "x-api-key: $MANGO_API_KEY" \
   "http://localhost:8080/v1/sessions/$SESSION_ID/events/stream?event_deltas%5B%5D=agent.message"
 ```
 

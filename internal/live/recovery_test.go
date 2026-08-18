@@ -51,7 +51,7 @@ func TestNATSStreamReconnectsAfterProcessReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(replacementBroker.Close)
-	replacementStore := pg.NewStore(fixture.pool, fixture.ids, fixture.clock)
+	replacementStore := pg.NewDefaultWorkspaceStore(fixture.pool, fixture.ids, fixture.clock)
 	replacementStore.SetEventNotifier(replacementBroker)
 	fixture.store = replacementStore
 	replacementStream := NewStream(

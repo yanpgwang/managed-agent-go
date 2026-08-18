@@ -366,17 +366,18 @@ func (q *Queries) GetPrimarySessionThreadProjection(ctx context.Context, session
 }
 
 const getSession = `-- name: GetSession :one
-SELECT id, status, body, created_at, updated_at
+SELECT id, status, body, created_at, updated_at, workspace_id
 FROM sessions
 WHERE id = $1
 `
 
 type GetSessionRow struct {
-	ID        string
-	Status    string
-	Body      []byte
-	CreatedAt pgtype.Timestamptz
-	UpdatedAt pgtype.Timestamptz
+	ID          string
+	Status      string
+	Body        []byte
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	WorkspaceID string
 }
 
 func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, error) {
@@ -388,6 +389,7 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, err
 		&i.Body,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }
@@ -454,11 +456,13 @@ const insertSession = `-- name: InsertSession :exec
 
 INSERT INTO sessions (
     id, status, body, created_at, updated_at,
-    agent_id, agent_version, environment_id, deployment_id, archived_at
+    agent_id, agent_version, environment_id, deployment_id, archived_at,
+    workspace_id
 )
 VALUES (
     $1, $2, $3, $4, $5,
-    $6, $7, $8, $9, $10
+    $6, $7, $8, $9, $10,
+    $11
 )
 `
 
@@ -473,6 +477,7 @@ type InsertSessionParams struct {
 	EnvironmentID *string
 	DeploymentID  *string
 	ArchivedAt    pgtype.Timestamptz
+	WorkspaceID   string
 }
 
 // Typed queries for the Temporal/PostgreSQL session path, compiled by sqlc into
@@ -491,6 +496,7 @@ func (q *Queries) InsertSession(ctx context.Context, arg InsertSessionParams) er
 		arg.EnvironmentID,
 		arg.DeploymentID,
 		arg.ArchivedAt,
+		arg.WorkspaceID,
 	)
 	return err
 }
@@ -683,19 +689,20 @@ func (q *Queries) ListOutboxBatch(ctx context.Context, rowLimit int32) ([]Orches
 }
 
 const lockSession = `-- name: LockSession :one
-SELECT id, status, body, created_at, updated_at, deleting_at
+SELECT id, status, body, created_at, updated_at, deleting_at, workspace_id
 FROM sessions
 WHERE id = $1
 FOR UPDATE
 `
 
 type LockSessionRow struct {
-	ID         string
-	Status     string
-	Body       []byte
-	CreatedAt  pgtype.Timestamptz
-	UpdatedAt  pgtype.Timestamptz
-	DeletingAt pgtype.Timestamptz
+	ID          string
+	Status      string
+	Body        []byte
+	CreatedAt   pgtype.Timestamptz
+	UpdatedAt   pgtype.Timestamptz
+	DeletingAt  pgtype.Timestamptz
+	WorkspaceID string
 }
 
 // LockSession takes the per-session admission lock. Every admission and
@@ -711,6 +718,7 @@ func (q *Queries) LockSession(ctx context.Context, id string) (LockSessionRow, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.DeletingAt,
+		&i.WorkspaceID,
 	)
 	return i, err
 }

@@ -14,7 +14,26 @@ func TestMCPDiscoverySnapshotMigrationBackfillsPrimaryThread(t *testing.T) {
 	store := testStoreWithOptions(t, 1, 24)
 	ctx := context.Background()
 	session := newSession("sess_mcp_snapshot_backfill")
-	if _, err := store.CreateSession(ctx, session, nil); err != nil {
+	body, err := json.Marshal(session)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.pool.Exec(ctx, `
+INSERT INTO sessions (id, status, body, created_at, updated_at)
+VALUES ($1, $2, $3, $4, $5)`,
+		session.ID, session.Status, body, session.CreatedAt, session.UpdatedAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.insertPrimarySessionThread(ctx, tx, session); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	if err := tx.Commit(ctx); err != nil {
 		t.Fatal(err)
 	}
 	tools, err := json.Marshal([]mcpclient.Tool{{Name: "legacy_tool"}})

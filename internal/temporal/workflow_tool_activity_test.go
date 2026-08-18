@@ -50,7 +50,7 @@ func newToolTestStore(t *testing.T) *pg.Store {
 		_, _ = pool.Exec(context.Background(), "DROP SCHEMA IF EXISTS "+schema+" CASCADE")
 		pool.Close()
 	})
-	return pg.NewStore(pool, domain.NewRandomIDGen(), toolClock{})
+	return pg.NewDefaultWorkspaceStore(pool, domain.NewRandomIDGen(), toolClock{})
 }
 
 type toolClock struct{}

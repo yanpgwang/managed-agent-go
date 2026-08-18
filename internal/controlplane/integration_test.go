@@ -71,7 +71,7 @@ func newPostgresFixture(t *testing.T) postgresFixture {
 
 	ids := &testIDs{suffix: fixtureSuffix}
 	clock := &testClock{}
-	store := pg.NewStore(pool, ids, clock)
+	store := pg.NewDefaultWorkspaceStore(pool, ids, clock)
 	agentRepo := pg.NewAgentRepository(store)
 	environmentRepo := pg.NewEnvironmentRepository(store)
 	return postgresFixture{

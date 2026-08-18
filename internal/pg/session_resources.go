@@ -15,6 +15,7 @@ import (
 func insertPreparedSessionResources(
 	ctx context.Context,
 	tx pgx.Tx,
+	workspaceID string,
 	sessionID string,
 	prepared []app.PreparedSessionResource,
 ) error {
@@ -31,8 +32,8 @@ func insertPreparedSessionResources(
 			var active int
 			if err := tx.QueryRow(ctx, `
 SELECT 1 FROM memory_stores
-WHERE id = $1 AND archived_at IS NULL
-FOR SHARE`, resource.MemoryStoreID).Scan(&active); errors.Is(err, pgx.ErrNoRows) {
+WHERE id = $1 AND workspace_id = $2 AND archived_at IS NULL
+FOR SHARE`, resource.MemoryStoreID, workspaceID).Scan(&active); errors.Is(err, pgx.ErrNoRows) {
 				return domain.Validation("memory store is missing or archived")
 			} else if err != nil {
 				return err
@@ -75,11 +76,12 @@ SET size_bytes = $2,
     checksum_sha256 = $3,
     state = 'ready',
     updated_at = $4
-WHERE id = $1 AND state = 'uploading'`,
+WHERE id = $1 AND workspace_id = $5 AND state = 'uploading'`,
 			file.ID,
 			item.Blob.SizeBytes,
 			item.Blob.ChecksumSHA256,
 			resource.UpdatedAt.UTC(),
+			workspaceID,
 		)
 		if err != nil {
 			return err
@@ -143,6 +145,13 @@ func (s *Store) AddSessionResource(
 		if err != nil {
 			return err
 		}
+		workspaceID, scoped, err := s.workspaceForRead(ctx)
+		if err != nil {
+			return err
+		}
+		if scoped && session.WorkspaceID != workspaceID {
+			return domain.NotFound("session not found")
+		}
 		if session.ArchivedAt != nil {
 			return domain.Conflict("cannot add a resource to an archived session")
 		}
@@ -193,7 +202,7 @@ WHERE sr.session_id = $1 AND sr.state = 'active'`, resource.SessionID).Scan(&act
 			}
 		}
 		if err := insertPreparedSessionResources(
-			ctx, tx, resource.SessionID, []app.PreparedSessionResource{prepared},
+			ctx, tx, session.WorkspaceID, resource.SessionID, []app.PreparedSessionResource{prepared},
 		); err != nil {
 			return err
 		}
@@ -310,14 +319,15 @@ func (s *Store) BeginSessionResourceDeletion(
 			return err
 		}
 		resourceRow := tx.QueryRow(ctx, `
-SELECT id, session_id, resource_type, source_file_id, file_id,
+SELECT resource.id, resource.session_id, resource.resource_type, resource.source_file_id, resource.file_id,
        memory_store_id, memory_access, memory_instructions,
-       memory_store_name, memory_store_description, mount_path, state,
-       created_at, updated_at
-FROM session_resources
-WHERE session_id = $1 AND id = $2 AND state = 'active'
-FOR UPDATE`, sessionID, resourceID)
-		deleted, err = scanSessionResource(resourceRow)
+       memory_store_name, memory_store_description, mount_path, resource.state,
+       resource.created_at, resource.updated_at, file.blob_key
+FROM session_resources AS resource
+LEFT JOIN files AS file ON file.id = resource.file_id
+WHERE resource.session_id = $1 AND resource.id = $2 AND resource.state = 'active'
+FOR UPDATE OF resource`, sessionID, resourceID)
+		deleted, err = scanSessionResourceWithBlob(resourceRow)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.NotFound("session resource not found")
 		}
@@ -336,8 +346,9 @@ WHERE session_id = $1 AND id = $2`, sessionID, resourceID, now); err != nil {
 			return err
 		}
 		_, err = tx.Exec(ctx, `
-UPDATE files SET state = 'deleting', updated_at = $2
-WHERE id = $1 AND state = 'ready'`, deleted.FileID, now)
+		UPDATE files SET state = 'deleting', updated_at = $2
+		WHERE id = $1 AND workspace_id = $3 AND state = 'ready'`,
+			deleted.FileID, now, session.WorkspaceID)
 		if err != nil {
 			return err
 		}
@@ -365,20 +376,23 @@ func (s *Store) SessionResourcesForReconcile(
 	sessionID string,
 ) ([]domain.SessionResource, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, session_id, resource_type, source_file_id, file_id,
+	SELECT resource.id, resource.session_id, resource.resource_type,
+	       resource.source_file_id, resource.file_id,
        memory_store_id, memory_access, memory_instructions,
-       memory_store_name, memory_store_description, mount_path, state,
-       created_at, updated_at
-FROM session_resources
-WHERE session_id = $1
-ORDER BY CASE state WHEN 'deleting' THEN 0 ELSE 1 END, created_at, id`, sessionID)
+       memory_store_name, memory_store_description, mount_path, resource.state,
+	       resource.created_at, resource.updated_at, file.blob_key
+	FROM session_resources AS resource
+	LEFT JOIN files AS file ON file.id = resource.file_id
+	WHERE resource.session_id = $1
+	ORDER BY CASE resource.state WHEN 'deleting' THEN 0 ELSE 1 END,
+	         resource.created_at, resource.id`, sessionID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	resources := make([]domain.SessionResource, 0)
 	for rows.Next() {
-		resource, scanErr := scanSessionResource(rows)
+		resource, scanErr := scanSessionResourceWithBlob(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
@@ -411,10 +425,22 @@ WHERE session_id = $1 AND resource_type = 'memory_store' AND state = 'deleting'`
 }
 
 func scanSessionResource(row interface{ Scan(...any) error }) (domain.SessionResource, error) {
+	return scanSessionResourceFields(row, false)
+}
+
+func scanSessionResourceWithBlob(row interface{ Scan(...any) error }) (domain.SessionResource, error) {
+	return scanSessionResourceFields(row, true)
+}
+
+func scanSessionResourceFields(
+	row interface{ Scan(...any) error },
+	includeBlob bool,
+) (domain.SessionResource, error) {
 	var resource domain.SessionResource
 	var sourceFileID, fileID, memoryStoreID, memoryAccess, memoryInstructions *string
 	var memoryStoreName, memoryStoreDescription *string
-	err := row.Scan(
+	var blobKey *string
+	destinations := []any{
 		&resource.ID,
 		&resource.SessionID,
 		&resource.ResourceType,
@@ -429,7 +455,11 @@ func scanSessionResource(row interface{ Scan(...any) error }) (domain.SessionRes
 		&resource.State,
 		&resource.CreatedAt,
 		&resource.UpdatedAt,
-	)
+	}
+	if includeBlob {
+		destinations = append(destinations, &blobKey)
+	}
+	err := row.Scan(destinations...)
 	if sourceFileID != nil {
 		resource.SourceFileID = *sourceFileID
 	}
@@ -450,6 +480,9 @@ func scanSessionResource(row interface{ Scan(...any) error }) (domain.SessionRes
 	}
 	if memoryStoreDescription != nil {
 		resource.MemoryStoreDescription = *memoryStoreDescription
+	}
+	if blobKey != nil {
+		resource.BlobKey = *blobKey
 	}
 	resource.CreatedAt = resource.CreatedAt.UTC()
 	resource.UpdatedAt = resource.UpdatedAt.UTC()

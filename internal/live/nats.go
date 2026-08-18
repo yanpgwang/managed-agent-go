@@ -150,6 +150,9 @@ func (s *Stream) subscribeContext(
 	threadID string,
 	deltaOptIn map[string]bool,
 ) (<-chan app.Frame, func(), error) {
+	if err := s.store.AssertSessionWorkspace(parent, sessionID); err != nil {
+		return nil, nil, err
+	}
 	var cursor int64
 	var err error
 	if threadID == "" {

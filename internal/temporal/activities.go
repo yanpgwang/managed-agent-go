@@ -24,6 +24,7 @@ import (
 	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
 	"github.com/yanpgwang/managed-agent-go/internal/model"
 	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/managed-agent-go/internal/workspace"
 )
 
 // Registered activity names. Referenced by the workflow through the exported
@@ -1977,6 +1978,7 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	if err != nil {
 		return ExecuteToolResult{}, err
 	}
+	ctx = workspace.WithScope(ctx, session.WorkspaceID)
 	spec, err := sandboxSpecForSession(session)
 	if err != nil {
 		return ExecuteToolResult{}, err

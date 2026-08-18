@@ -59,10 +59,10 @@ object store are configured.
 ## Security boundary
 
 The official worker sends an Environment key as a bearer credential for Work,
-Session, event, and Skill requests. Mango strict mode currently checks only
-that an API key or bearer header is present; it does not issue Environment keys
-or scope them to one Environment. Work `secret` is therefore returned as
-`null`. Put authentication, tenant isolation, and environment-scoped
-authorization in front of this surface before production exposure.
+Session, event, and Skill requests. Mango authenticates that credential as a
+Workspace API key and limits all of those resources to the same Workspace. It
+does not issue narrower Environment-worker credentials, so Work `secret`
+remains `null`. A surrounding control plane should add Environment-specific
+policy before exposing this surface to untrusted workers.
 
 See [API compatibility](../compatibility.md) for the current support boundary.

@@ -43,7 +43,7 @@ func TestSessionPrimaryThreadIsDurableAndOwnsIndependentProjection(t *testing.T)
 	if err != nil || got.ID != primary.ID {
 		t.Fatalf("get primary = %+v, err=%v", got, err)
 	}
-	reopened := NewStore(store.pool, &seqIDGen{}, fixedClock{})
+	reopened := NewSystemStore(store.pool, &seqIDGen{}, fixedClock{})
 	got, err = reopened.GetSessionThread(ctx, session.ID, primary.ID)
 	if err != nil || got.ID != primary.ID {
 		t.Fatalf("get primary after store reattachment = %+v, err=%v", got, err)
