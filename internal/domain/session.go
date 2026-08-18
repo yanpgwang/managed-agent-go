@@ -280,14 +280,19 @@ func (s Session) ResolvedAgentSnapshotJSON() map[string]any {
 	// Sessions written before resolved rosters were introduced retain their
 	// pinned reference projection if a legacy configuration could not be safely
 	// backfilled. New executable coordinators always have a non-empty roster.
-	if len(s.MultiagentRoster) == 0 {
+	if len(s.MultiagentRoster) == 0 && s.AgentSnapshot.Multiagent.Advisor() == nil {
 		return out
 	}
-	agents := make([]any, 0, len(s.MultiagentRoster))
+	agents := make([]any, 0, len(s.MultiagentRoster)+1)
 	for _, agent := range s.MultiagentRoster {
 		snapshot := agent.SessionSnapshotJSON()
 		delete(snapshot, "multiagent")
 		agents = append(agents, snapshot)
+	}
+	// The platform always echoes the reserved advisor entry last, regardless of
+	// where it appeared in the Agent write request.
+	if advisor := s.AgentSnapshot.Multiagent.Advisor(); advisor != nil {
+		agents = append(agents, advisor)
 	}
 	out["multiagent"] = map[string]any{
 		"type": "coordinator", "agents": agents,

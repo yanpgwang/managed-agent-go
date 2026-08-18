@@ -61,6 +61,7 @@ func eventFromRow(row pgstore.Event) (domain.Event, error) {
 		Sequence:    row.Seq,
 		Type:        row.Type,
 		Payload:     payload,
+		TurnEventID: row.TurnEventID,
 		CreatedAt:   row.CreatedAt.Time.UTC(),
 		ProcessedAt: timePtr(row.ProcessedAt),
 	}, nil

@@ -1,10 +1,14 @@
 package agentruntime
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/model"
 )
 
 func TestCoordinatorToolSchemasMatchManagedAgentsRuntimeSurface(t *testing.T) {
@@ -13,6 +17,50 @@ func TestCoordinatorToolSchemasMatchManagedAgentsRuntimeSurface(t *testing.T) {
 	require.Equal(t, ListAgentsToolName, schemas[0].Name)
 	require.Equal(t, SendToAgentToolName, schemas[1].Name)
 	require.Equal(t, []any{"agent_name", "message"}, schemas[1].InputSchema["required"])
+}
+
+func TestAdvisorRequestQuotesExecutorContextWithoutReplayingReasoning(t *testing.T) {
+	schema := AdvisorToolSchema()
+	require.Empty(t, schema.Type)
+	require.Equal(t, AdvisorToolName, schema.Name)
+	require.Equal(t, false, schema.InputSchema["additionalProperties"])
+
+	executor := model.Request{
+		Model: "executor-model", InferenceGeo: "us", System: "executor system",
+		Tools: []model.ToolSchema{{
+			Name: "read", Description: "Read a file.",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+		Messages: []domain.Message{{
+			Role: domain.RoleAssistant,
+			Content: []domain.ContentBlock{
+				{Type: "thinking", Text: "private-reasoning-sentinel"},
+				{Type: "text", Text: "visible plan"},
+			},
+		}},
+	}
+	request, err := AdvisorRequest(
+		"advisor-model",
+		executor,
+		[]domain.ContentBlock{{
+			Type: "tool_use", ToolUseID: "toolu_advisor",
+			ToolName: AdvisorToolName, Input: map[string]any{},
+		}},
+	)
+	require.NoError(t, err)
+	require.Equal(t, "advisor-model", request.Model)
+	require.Equal(t, "us", request.InferenceGeo)
+	require.Empty(t, request.Tools)
+	require.Equal(t, 2048, request.MaxTokens)
+	require.Len(t, request.Messages, 1)
+
+	payload := request.Messages[0].Content[0].Text
+	require.Contains(t, payload, "visible plan")
+	require.Contains(t, payload, "reasoning_omitted")
+	require.Contains(t, payload, "toolu_advisor")
+	require.NotContains(t, payload, "private-reasoning-sentinel")
+	var quoted map[string]any
+	require.NoError(t, json.Unmarshal([]byte(strings.SplitN(payload, "\n\n", 2)[1]), &quoted))
 }
 
 func TestProjectCoordinatorSystemContext(t *testing.T) {

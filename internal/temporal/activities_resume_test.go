@@ -494,8 +494,13 @@ func TestPrepareTurn_AttachesPrivateCoordinatorToolsOnlyToPrimary(t *testing.T) 
 			ID: "sess_coordinate", Status: domain.StatusRunning,
 			AgentSnapshot: domain.Agent{
 				ID: "agent_coordinator", Version: 1, Name: "coordinator",
-				Model:      domain.Model{ID: "model"},
-				Multiagent: &domain.Multiagent{Type: "coordinator"},
+				Model: domain.Model{ID: "model"},
+				Multiagent: &domain.Multiagent{
+					Type: "coordinator",
+					Agents: []domain.AgentReference{{
+						Type: "agent", ID: "agent_reviewer", Version: 1,
+					}},
+				},
 			},
 		},
 	}
@@ -515,6 +520,106 @@ func TestPrepareTurn_AttachesPrivateCoordinatorToolsOnlyToPrimary(t *testing.T) 
 		Name: agentruntime.SendToAgentToolName, Kind: TurnToolCoordinator,
 		Permission: domain.PermissionPolicy{Type: "always_allow"},
 	})
+}
+
+func TestPrepareTurn_AttachesAdvisorOnlyToPrimary(t *testing.T) {
+	base := newFakeSource([]domain.Event{{
+		ID: "sevt_advisor", SessionID: "sess_advisor", Sequence: 1,
+		Type: domain.EvUserMessage,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "review the plan"},
+		}},
+	}})
+	primaryAgent := domain.Agent{
+		ID: "agent_primary", Version: 1, Name: "coordinator",
+		Model: domain.Model{ID: "claude-sonnet-5"},
+		Multiagent: &domain.Multiagent{Type: "coordinator", Agents: []domain.AgentReference{{
+			Type: "advisor", Model: "claude-opus-5",
+		}}},
+	}
+	primarySource := &configuredTranscriptFakeSource{
+		transcriptFakeSource: &transcriptFakeSource{fakeSource: base},
+		session: domain.Session{
+			ID: "sess_advisor", Status: domain.StatusRunning,
+			AgentSnapshot: primaryAgent,
+		},
+	}
+	prepared, err := NewActivities(
+		nil, primarySource, nil, nil, &testIDGen{},
+	).PrepareTurn(context.Background(), PrepareTurnInput{
+		SessionID: "sess_advisor", TriggerEventID: "sevt_advisor",
+	})
+	require.NoError(t, err)
+	require.False(t, prepared.IsChild)
+	require.NotContains(t, prepared.Request.System, "<managed-agents-coordinator>")
+	require.Contains(t, prepared.Request.System, "<managed-advisor>")
+	require.Len(t, prepared.Request.Tools, 1)
+	require.Empty(t, prepared.Request.Tools[0].Type)
+	require.Equal(t, agentruntime.AdvisorToolName, prepared.Request.Tools[0].Name)
+	require.NotEmpty(t, prepared.Request.Tools[0].Description)
+	require.Len(t, prepared.Tools, 1)
+	require.Equal(t, TurnToolAdvisor, prepared.Tools[0].Kind)
+	require.Equal(t, "claude-opus-5", prepared.Tools[0].Model)
+
+	primaryID := "sthr_primary"
+	childID := "sthr_child"
+	childBase := newFakeSource([]domain.Event{{
+		ID: "sevt_child_advisor", SessionID: "sess_advisor", ThreadID: childID,
+		Sequence: 2, Type: domain.EvAgentThreadMessageReceived,
+		Payload: map[string]any{"content": []any{
+			map[string]any{"type": "text", "text": "do the work"},
+		}},
+	}})
+	childSource := &threadConfiguredTranscriptFakeSource{
+		configuredTranscriptFakeSource: &configuredTranscriptFakeSource{
+			transcriptFakeSource: &transcriptFakeSource{fakeSource: childBase},
+			session: domain.Session{
+				ID: "sess_advisor", Status: domain.StatusRunning,
+				AgentSnapshot: primaryAgent,
+			},
+		},
+		thread: domain.SessionThread{
+			ID: childID, SessionID: "sess_advisor", ParentThreadID: &primaryID,
+			Agent: domain.Agent{
+				ID: "agent_child", Version: 1, Name: "worker",
+				Model: domain.Model{ID: "claude-haiku-4-5"},
+			},
+			Status: domain.StatusRunning,
+		},
+	}
+	childPrepared, err := NewActivities(
+		nil, childSource, nil, nil, &testIDGen{},
+	).PrepareTurn(context.Background(), PrepareTurnInput{
+		SessionID: "sess_advisor", TriggerEventID: "sevt_child_advisor",
+	})
+	require.NoError(t, err)
+	require.True(t, childPrepared.IsChild)
+	for _, tool := range childPrepared.Request.Tools {
+		require.NotEqual(t, agentruntime.AdvisorToolName, tool.Name)
+	}
+}
+
+func TestTranscriptCoverageIgnoresInternallyConsumedAdvisorOutput(t *testing.T) {
+	priorID := "sevt_prior_user"
+	currentID := "sevt_current_user"
+	advisorID := "sevt_advisor_received"
+	history := []domain.Event{
+		{ID: priorID, Type: domain.EvUserMessage},
+		{
+			ID: advisorID, Type: domain.EvAgentThreadMessageReceived,
+			TurnEventID: &priorID,
+		},
+		{ID: currentID, Type: domain.EvUserMessage},
+	}
+	transcript := domain.ProviderTranscript{TriggerEventIDs: []string{priorID}}
+	if !transcriptCoversPriorTurns(transcript, history, currentID, nil) {
+		t.Fatal("internally consumed Advisor output invalidated private transcript coverage")
+	}
+
+	history[1].TurnEventID = nil
+	if transcriptCoversPriorTurns(transcript, history, currentID, nil) {
+		t.Fatal("independent child report was accepted without its own transcript turn")
+	}
 }
 
 func TestPrepareTurn_LedgerFallbackPreservesSentThreadMessages(t *testing.T) {

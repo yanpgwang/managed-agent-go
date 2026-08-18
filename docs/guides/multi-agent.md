@@ -74,6 +74,32 @@ coordinator Version is written. Session creation then expands those pins into
 complete Session-owned Agent snapshots, so later Agent updates cannot drift a
 running Session.
 
+## Add an optional Advisor
+
+A coordinator may contain one Mango-managed Advisor entry in addition to
+ordinary Agents:
+
+```json
+{
+  "multiagent": {
+    "type": "coordinator",
+    "agents": [
+      {"type":"agent","id":"agent_...","version":1},
+      {"type":"advisor","model":"claude-opus-5"}
+    ]
+  }
+}
+```
+
+The Advisor is primary-only and invisible to `list_agents` and `send_to_agent`;
+the executor decides when to call the ordinary private `advisor({})` tool.
+Mango quotes the executor's current system prompt, tool definitions, transcript,
+and partial response into a separate tool-free request to the configured model.
+Every consultation appears afterward as an automatically terminating
+`anthropic.advisor` Thread with its own events and usage. The reserved name is
+kept for CMA wire compatibility; the inference itself is not tied to
+Anthropic's provider-native Advisor beta.
+
 ## Start and prompt the Session
 
 Create a cloud Environment and Session as in the quick start, using
@@ -138,8 +164,9 @@ child. Include a child ID to interrupt only that Thread.
 
 ## Current limits
 
-- Ordinary roster Agents are supported; the distinct upstream `advisor`
-  consultation lifecycle is not.
+- Advisor consultations are recorded after the independent Advisor request returns, so a
+  live Advisor Thread and targeted Advisor-only interrupt are not available
+  during the quiet inference window.
 - Child transcripts are durable and independently compacted. Compacted message
   projections are stored as immutable internal snapshots, and compaction is
   observable through `agent.thread_context_compacted` on the owning Thread.

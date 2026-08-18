@@ -46,6 +46,7 @@ func (s *AgentService) Create(ctx context.Context, a domain.Agent) (domain.Agent
 		ctx,
 		a.ID,
 		a.Version,
+		a.Name,
 		a.Model,
 		a.Multiagent,
 	)
@@ -101,10 +102,14 @@ func (s *AgentService) Update(ctx context.Context, id string, patch domain.Agent
 		// owner version implicitly when the client omitted one: roster admission
 		// depends on the coordinator model and must not race a concurrent update.
 		ownerModel := current.Model
+		ownerName := current.Name
 		if patch.Model != nil {
 			ownerModel = domain.NormalizeModel(*patch.Model)
 		}
-		resolved, err := s.resolveMultiagent(ctx, id, 1, ownerModel, patch.Multiagent.Value)
+		if patch.Name != nil {
+			ownerName = *patch.Name
+		}
+		resolved, err := s.resolveMultiagent(ctx, id, 1, ownerName, ownerModel, patch.Multiagent.Value)
 		if err != nil {
 			return domain.Agent{}, err
 		}
@@ -186,6 +191,13 @@ func validateAgent(a domain.Agent) error {
 	if err := validateMultiagentShape(a.Multiagent); err != nil {
 		return err
 	}
+	if advisor := a.Multiagent.Advisor(); advisor != nil {
+		if a.Name == domain.AdvisorAgentName {
+			return domain.Validation(
+				"multiagent advisor conflicts with the reserved agent name anthropic.advisor",
+			)
+		}
+	}
 	return validateMetadata(a.Metadata)
 }
 
@@ -205,18 +217,22 @@ func validateMultiagentShape(topology *domain.Multiagent) error {
 	for _, reference := range topology.Agents {
 		switch reference.Type {
 		case "self":
-			if reference.ID != "" || reference.Version != 0 {
+			if reference.ID != "" || reference.Version != 0 || reference.Model != "" {
 				return domain.Validation("multiagent self entry only accepts type")
 			}
 		case "agent":
-			if reference.ID == "" {
+			if reference.ID == "" || reference.Model != "" {
 				return domain.Validation("multiagent agent entry requires a non-empty id")
 			}
 			if reference.Version < 0 {
 				return domain.Validation("multiagent agent version must be at least 1")
 			}
+		case "advisor":
+			if reference.ID != "" || reference.Version != 0 || reference.Model == "" {
+				return domain.Validation("multiagent advisor entry requires a non-empty model")
+			}
 		default:
-			return domain.Validation("multiagent roster entry type must be agent or self")
+			return domain.Validation("multiagent roster entry type must be agent, self, or advisor")
 		}
 	}
 	return nil
@@ -230,6 +246,7 @@ func (s *AgentService) resolveMultiagent(
 	ctx context.Context,
 	ownerID string,
 	ownerVersion int,
+	ownerName string,
 	ownerModel domain.Model,
 	topology *domain.Multiagent,
 ) (*domain.Multiagent, error) {
@@ -245,14 +262,26 @@ func (s *AgentService) resolveMultiagent(
 	resolved := &domain.Multiagent{Type: "coordinator", Agents: make([]domain.AgentReference, 0, len(topology.Agents))}
 	seen := make(map[string]struct{}, len(topology.Agents))
 	seenSelf := false
+	var advisor *domain.AgentReference
+	reservedNameFound := false
 	for _, reference := range topology.Agents {
+		if reference.Type == "advisor" {
+			if advisor != nil {
+				return nil, domain.Validation("multiagent.agents may contain at most one advisor entry")
+			}
+			entry := domain.AgentReference{Type: "advisor", Model: reference.Model}
+			advisor = &entry
+			continue
+		}
 		var target domain.Agent
 		if reference.Type == "self" {
 			if seenSelf {
 				return nil, domain.Validation("multiagent.agents may contain at most one self entry")
 			}
 			seenSelf = true
-			target = domain.Agent{ID: ownerID, Version: ownerVersion, Model: ownerModel}
+			target = domain.Agent{
+				ID: ownerID, Version: ownerVersion, Name: ownerName, Model: ownerModel,
+			}
 		} else {
 			if reference.ID == ownerID {
 				return nil, domain.Validation("multiagent must use a self entry to reference its coordinator")
@@ -285,10 +314,19 @@ func (s *AgentService) resolveMultiagent(
 		if _, duplicate := seen[target.ID]; duplicate {
 			return nil, domain.Validation("multiagent.agents must reference distinct agents")
 		}
+		reservedNameFound = reservedNameFound || target.Name == domain.AdvisorAgentName
 		seen[target.ID] = struct{}{}
 		resolved.Agents = append(resolved.Agents, domain.AgentReference{
 			Type: "agent", ID: target.ID, Version: target.Version,
 		})
+	}
+	if advisor != nil {
+		if reservedNameFound {
+			return nil, domain.Validation(
+				"multiagent advisor conflicts with the reserved agent name anthropic.advisor",
+			)
+		}
+		resolved.Agents = append(resolved.Agents, *advisor)
 	}
 	return resolved, nil
 }

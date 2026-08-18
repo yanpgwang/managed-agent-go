@@ -10,6 +10,7 @@ import (
 
 	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
 	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/managed-agent-go/internal/model"
 )
 
 const (
@@ -80,6 +81,9 @@ const (
 
 	modelRequestAccountingChangeID = "per-model-request-usage-accounting"
 	modelRequestAccountingVersion  = 1
+
+	cumulativePauseContinuationChangeID = "cumulative-pause-turn-continuations"
+	cumulativePauseContinuationVersion  = 1
 )
 
 type providerResponseDisposition uint8
@@ -197,6 +201,12 @@ func runWorkflowTurnInternal(
 		workflow.DefaultVersion,
 		modelRequestAccountingVersion,
 	) == modelRequestAccountingVersion
+	cumulativePauseContinuations := workflow.GetVersion(
+		actx,
+		cumulativePauseContinuationChangeID,
+		workflow.DefaultVersion,
+		cumulativePauseContinuationVersion,
+	) == cumulativePauseContinuationVersion
 	initialOutput := append([]domain.EventDraft(nil), prepared.PreludeEvents...)
 	if contextCompactionEvents && prepared.ContextProjection.Compacted {
 		initialOutput = append(initialOutput, domain.EventDraft{
@@ -398,7 +408,8 @@ func runWorkflowTurnInternal(
 		}
 
 		if prepared.UsesProviderTranscript {
-			if providerStopReasons && disposition == providerResponseContinuePause {
+			if !cumulativePauseContinuations && providerStopReasons &&
+				disposition == providerResponseContinuePause {
 				if pauseChainActive {
 					turn.transcriptDelta = append(
 						[]domain.Message(nil),
@@ -430,10 +441,11 @@ func runWorkflowTurnInternal(
 					called.Response.Content,
 					providerID,
 				)
-				if toolsByName[toolName].Kind == TurnToolCoordinator {
-					// Coordinator tools have no public tool-use event. Their provider
-					// ids are already preserved in the private transcript and must not
-					// be represented by a mapping to a synthetic public id.
+				kind := toolsByName[toolName].Kind
+				if kind == TurnToolCoordinator || kind == TurnToolAdvisor {
+					// Private runtime tools have no generic public tool-use event. Their
+					// provider ids are already preserved in the private transcript and
+					// must not map to a synthetic public id.
 					continue
 				}
 				turn.toolUseMappings = append(
@@ -446,7 +458,8 @@ func runWorkflowTurnInternal(
 				)
 			}
 		}
-		if providerStopReasons && disposition != providerResponseContinuePause {
+		if !cumulativePauseContinuations && providerStopReasons &&
+			disposition != providerResponseContinuePause {
 			pauseChainActive = false
 		}
 		if called.ThinkingEventID != "" {
@@ -500,16 +513,20 @@ func runWorkflowTurnInternal(
 					)
 				}
 				pauseTurnContinuations++
-				if pauseChainActive {
-					messages = append([]domain.Message(nil), pauseMessagesBase...)
-				} else {
-					pauseMessagesBase = append([]domain.Message(nil), messages...)
+				if !cumulativePauseContinuations {
+					if pauseChainActive {
+						messages = append([]domain.Message(nil), pauseMessagesBase...)
+					} else {
+						pauseMessagesBase = append([]domain.Message(nil), messages...)
+					}
 				}
 				messages = agentruntime.AppendMerging(messages, []domain.Message{{
 					Role:    domain.RoleAssistant,
 					Content: called.Response.Content,
 				}})
-				pauseChainActive = true
+				if !cumulativePauseContinuations {
+					pauseChainActive = true
+				}
 				continue
 			case providerResponseContinueOutput:
 				if end := modelRequestEndDraft(called, false); end != nil {
@@ -728,6 +745,8 @@ func runWorkflowTurnInternal(
 			turn,
 			prepared.AttemptID,
 			plan,
+			request,
+			called.Response.Content,
 		)
 		if err != nil {
 			return RunTurnResult{}, err
@@ -831,6 +850,38 @@ func modelRequestSpanIDs(sessionID, triggerEventID string, round int) (string, s
 		return domain.PrefixEvent + hex.EncodeToString(sum[:12])
 	}
 	return makeID("model_start"), makeID("model_end")
+}
+
+func advisorConsultationIDs(stepID string) domain.AdvisorConsultation {
+	makeID := func(prefix, kind string) string {
+		sum := sha256.Sum256([]byte(stepID + "\x00advisor\x00" + kind))
+		return prefix + hex.EncodeToString(sum[:12])
+	}
+	consultation := domain.AdvisorConsultation{
+		ThreadID:       makeID(domain.PrefixSessionThread, "thread"),
+		UsageRequestID: makeID(domain.PrefixEvent, "usage"),
+		LifecycleIDs:   make([]string, 9),
+	}
+	for index := range consultation.LifecycleIDs {
+		consultation.LifecycleIDs[index] = makeID(
+			domain.PrefixEvent,
+			"lifecycle_"+strconv.Itoa(index),
+		)
+	}
+	return consultation
+}
+
+func advisorRequestForTool(
+	definition TurnTool,
+	executor model.Request,
+	assistant []domain.ContentBlock,
+) (model.Request, domain.AdvisorConsultation, error) {
+	request, err := agentruntime.AdvisorRequest(
+		definition.Model,
+		executor,
+		assistant,
+	)
+	return request, domain.AdvisorConsultation{Model: definition.Model}, err
 }
 
 func modelRequestAttemptSpanIDs(

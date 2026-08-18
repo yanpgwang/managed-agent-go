@@ -1124,6 +1124,7 @@ func (s *Store) appendThreadDraftsAt(
 			Sequence:    seq,
 			Type:        d.Type,
 			Payload:     payload,
+			TurnEventID: turnEventID,
 			CreatedAt:   now,
 			ProcessedAt: processedPtr,
 		})
@@ -1359,6 +1360,7 @@ WHERE event.session_id = $1
       'user.tool_result', 'agent.thread_message_received'
   )
   AND event.processed_at IS NOT NULL
+	AND event.turn_event_id IS NULL
   AND event.seq < $3
 ORDER BY event.seq`, sessionID, threadID, beforeSeq)
 	if err != nil {

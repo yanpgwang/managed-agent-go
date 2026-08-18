@@ -21,13 +21,13 @@ evolve.
 
 ### Extend advanced orchestration before the first preview
 
-The immediate focus is the current official Go SDK contract and the two
-high-value advanced orchestration gaps: advisor consultations within a running
-multi-agent Session, and asynchronous Dreams that consolidate Session
-transcripts into durable Memory Stores. These features should reuse ordinary
-Thread, Session, usage, budget, transcript, Memory, and Temporal primitives
-where their public semantics match, while preserving their distinct lifecycle
-and redaction rules.
+The immediate focus is asynchronous Dreams that consolidate Session transcripts
+into durable Memory Stores, followed by deeper multi-agent and context-quality
+work. Mango-managed Advisor consultations now reuse the ordinary client-tool,
+Thread, Session, usage, budget, transcript, and Temporal primitives while
+preserving their distinct identity, lifecycle, and billing behavior. The
+provider receives only standard tool calls; exact live sub-inference timing
+remains a focused conformance gap rather than a blocker for Dreams.
 
 The first packaged developer preview remains a later integration boundary, not
 the current feature cutoff.
@@ -40,8 +40,8 @@ earlier when it is a prerequisite for a higher-tier slice.
 | Tier | Capability | Next concrete boundary |
 | --- | --- | --- |
 | 0 | Contract tracking | Keep the official Go SDK and documented unions pinned to a reviewed version; classify new research-preview surfaces explicitly instead of folding them into the stable operation count. |
-| 0 | Multi-agent | Implement the reserved `advisor` roster form, primary-only consultation tool, automatically terminating Thread lifecycle, redacted result delivery, interrupts, and Session usage/budget aggregation. Resolve exact report-only preview suppression separately. |
 | 0 | Dreams | Add the five Dream operations and durable asynchronous lifecycle, then implement transcript-plus-Memory consolidation with `create_new` and `update_existing` output behavior. |
+| 1 | Multi-agent conformance | Add live Advisor lifecycle timing and targeted in-flight interruption around the Mango-owned inference Activity; resolve exact report-only preview suppression separately. |
 | 1 | Model and context runtime | Add complete per-provider-request audit recipes, model context profiles, and compaction quality/evaluation evidence before pursuing provider-private tokenizer parity. |
 | 1 | Webhooks | Emit compact, signed, retryable lifecycle notifications from a transactional outbox, covering Session/Thread first and the remaining documented resources incrementally. |
 | 1 | Vaults | Implement environment-variable credential egress with injection-location policy and publish refresh-failure lifecycle events through Webhooks. |

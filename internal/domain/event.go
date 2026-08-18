@@ -90,10 +90,14 @@ type Event struct {
 	SessionID string
 	// ThreadID is the ledger that owns this event. Sequence remains Session-wide
 	// so aggregate ordering and cross-post causality have one durable cursor.
-	ThreadID    string
-	Sequence    int64
-	Type        string
-	Payload     map[string]any
+	ThreadID string
+	Sequence int64
+	Type     string
+	Payload  map[string]any
+	// TurnEventID is internal causal metadata. A non-nil value means this event
+	// was output of that model-driving turn, not a second independent trigger.
+	// HTTP projections intentionally omit it.
+	TurnEventID *string `json:"-"`
 	CreatedAt   time.Time
 	ProcessedAt *time.Time
 }

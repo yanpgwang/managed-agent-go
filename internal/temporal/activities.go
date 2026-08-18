@@ -144,6 +144,18 @@ type ModelRequestUsageSource interface {
 	) error
 }
 
+type AdvisorToolSource interface {
+	CompleteAdvisorToolStep(
+		context.Context,
+		string,
+		string,
+		string,
+		string,
+		domain.ToolStepResult,
+		domain.AdvisorConsultation,
+	) error
+}
+
 type ModelRequestAdmissionSource interface {
 	AdmitModelRequest(context.Context, string, string) (bool, error)
 }
@@ -877,7 +889,7 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			Tools:        toolSchemas,
 		},
 	}
-	if executionAgent.Multiagent != nil && !result.IsChild {
+	if executionAgent.Multiagent.HasCallableAgents() && !result.IsChild {
 		result.Request.System = agentruntime.ProjectCoordinatorSystemContext(
 			result.Request.System,
 		)
@@ -894,6 +906,17 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 				Permission: domain.PermissionPolicy{Type: "always_allow"},
 			})
 		}
+	}
+	if advisor := executionAgent.Multiagent.Advisor(); advisor != nil && !result.IsChild {
+		result.Request.System = agentruntime.ProjectAdvisorSystemContext(
+			result.Request.System,
+		)
+		result.Request.Tools = append(result.Request.Tools, agentruntime.AdvisorToolSchema())
+		result.Tools = append(result.Tools, TurnTool{
+			Name: agentruntime.AdvisorToolName, Kind: TurnToolAdvisor,
+			Permission: domain.PermissionPolicy{Type: "always_allow"},
+			Model:      advisor.Model,
+		})
 	}
 	if trigger.Type == domain.EvUserDefineOutcome {
 		outcomeID, _ := trigger.Payload["outcome_id"].(string)
@@ -1360,6 +1383,13 @@ func transcriptCoversPriorTurns(
 	}
 	for _, event := range history {
 		if _, ok := current[event.ID]; ok {
+			continue
+		}
+		if event.TurnEventID != nil {
+			// A model-driving event can also be an internally consumed output of a
+			// prior turn. Advisor advice uses this shape because the ordinary private
+			// tool_result already delivered it to that turn. It therefore does not
+			// require a separate provider transcript trigger row.
 			continue
 		}
 		if !drivesPreparedModelTurn(event.Type) {
@@ -1883,6 +1913,10 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		return ExecuteToolResult{}, err
 	}
 	out := ExecuteToolResult{}
+	kind := in.ToolKind
+	if kind == "" {
+		kind = TurnToolBuiltin
+	}
 	retrySafeStarted := false
 	switch step.State {
 	case domain.ToolStepCompleted:
@@ -1896,6 +1930,25 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		out.Ambiguous = true
 		return out, nil
 	case domain.ToolStepStarted:
+		if kind == TurnToolAdvisor {
+			result := advisorErrorResult(
+				"Advisor execution was interrupted after the model request began; " +
+					"the request will not be repeated to avoid duplicate usage.",
+			)
+			consultation := in.AdvisorConsultation
+			consultation.StopReason = "interrupted"
+			consultation.UsageKnown = false
+			if err := a.completeAdvisorToolStep(
+				ctx,
+				in,
+				result,
+				consultation,
+			); err != nil {
+				return ExecuteToolResult{}, err
+			}
+			out.Result = workflowToolResult(result)
+			return out, nil
+		}
 		if in.ToolKind == TurnToolRuntimeSkill {
 			// Skill activation is a read-only, deterministic context load. If the
 			// worker disappeared after crossing Start but before persisting the
@@ -1918,10 +1971,6 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 		return ExecuteToolResult{}, fmt.Errorf("temporal: invalid tool step state %q", step.State)
 	}
 
-	kind := in.ToolKind
-	if kind == "" {
-		kind = TurnToolBuiltin
-	}
 	if kind == TurnToolCoordinator {
 		source, ok := a.source.(CoordinatorToolSource)
 		if !ok {
@@ -1937,6 +1986,9 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 			return ExecuteToolResult{}, err
 		}
 		return ExecuteToolResult{Result: workflowToolResult(result)}, nil
+	}
+	if kind == TurnToolAdvisor {
+		return a.executeAdvisorTool(ctx, in, step.ID)
 	}
 	if a.sandboxes == nil {
 		return ExecuteToolResult{}, fmt.Errorf(
@@ -2225,6 +2277,111 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 	}
 	out.Result = workflowToolResult(out.Result)
 	return out, nil
+}
+
+func (a *Activities) executeAdvisorTool(
+	ctx context.Context,
+	in ExecuteToolInput,
+	stepID string,
+) (ExecuteToolResult, error) {
+	if a.modelClient == nil {
+		return ExecuteToolResult{}, fmt.Errorf("temporal: advisor requires a model client")
+	}
+	if strings.TrimSpace(in.AdvisorRequest.Model) == "" ||
+		strings.TrimSpace(in.AdvisorConsultation.ThreadID) == "" ||
+		len(in.AdvisorConsultation.LifecycleIDs) != 9 {
+		return ExecuteToolResult{}, domain.Validation(
+			"advisor execution metadata is incomplete",
+		)
+	}
+	dctx, cancel := durableCtx(ctx)
+	err := a.journal.StartToolStep(dctx, stepID)
+	cancel()
+	if err != nil {
+		return ExecuteToolResult{}, err
+	}
+
+	response, err := a.modelClient.CreateMessage(ctx, in.AdvisorRequest)
+	consultation := in.AdvisorConsultation
+	consultation.Model = in.AdvisorRequest.Model
+	consultation.UsageModel = in.AdvisorRequest.Model
+	var result domain.ToolStepResult
+	if err != nil && ctx.Err() != nil {
+		result = advisorErrorResult(
+			"Advisor execution was interrupted after the model request began; " +
+				"the request will not be repeated to avoid duplicate usage.",
+		)
+		consultation.StopReason = "interrupted"
+		consultation.UsageKnown = false
+	} else if err != nil {
+		result = advisorErrorResult("Advisor request failed: " + err.Error())
+		consultation.StopReason = "error"
+		consultation.UsageKnown = false
+	} else {
+		consultation.Usage = response.Usage
+		consultation.UsageKnown = true
+		consultation.StopReason = response.StopReason
+		consultation.PublicContent = agentruntime.TextBlocksToContent(response.Content)
+		advice := agentruntime.FlattenResultText(consultation.PublicContent)
+		if strings.TrimSpace(advice) == "" {
+			result = advisorErrorResult("Advisor returned no review text.")
+		} else {
+			consultation.AdviceDelivered = true
+			result = domain.ToolStepResult{Content: consultation.PublicContent}
+		}
+	}
+	if err := a.completeAdvisorToolStep(ctx, in, result, consultation); err != nil {
+		return ExecuteToolResult{}, err
+	}
+	return ExecuteToolResult{Result: workflowToolResult(result)}, nil
+}
+
+func (a *Activities) completeAdvisorToolStep(
+	ctx context.Context,
+	in ExecuteToolInput,
+	result domain.ToolStepResult,
+	consultation domain.AdvisorConsultation,
+) error {
+	source, ok := a.source.(AdvisorToolSource)
+	if !ok {
+		return fmt.Errorf("temporal: advisor persistence is not configured")
+	}
+	dctx, cancel := durableCtx(ctx)
+	defer cancel()
+	var lastErr error
+	for attempt := 0; attempt < toolResultWriteAttempts; attempt++ {
+		if err := source.CompleteAdvisorToolStep(
+			dctx,
+			in.SessionID,
+			in.ThreadID,
+			in.TriggerEventID,
+			in.ToolStepID,
+			result,
+			consultation,
+		); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if attempt+1 == toolResultWriteAttempts {
+			break
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-dctx.Done():
+			timer.Stop()
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+func advisorErrorResult(message string) domain.ToolStepResult {
+	return domain.ToolStepResult{
+		Content: []any{map[string]any{"type": "text", "text": message}},
+		IsError: true,
+	}
 }
 
 func sandboxSpecForSession(session domain.Session) (sandbox.Spec, error) {

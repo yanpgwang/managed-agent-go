@@ -13,10 +13,18 @@ import (
 
 func sessionThreadToJSON(thread domain.SessionThread) map[string]any {
 	activeSeconds, durationSeconds := thread.ObservableStats(time.Now())
-	agent := agentSnapshotJSON(thread.Agent)
-	// The thread snapshot describes only the executing Agent. The coordinator's
-	// resolved roster remains available on Session.agent and is not repeated.
-	delete(agent, "multiagent")
+	var agent any
+	if thread.Advisor != nil {
+		agent = map[string]any{
+			"type": "advisor", "model": thread.Advisor.Model,
+		}
+	} else {
+		snapshot := agentSnapshotJSON(thread.Agent)
+		// The thread snapshot describes only the executing Agent. The coordinator's
+		// resolved roster remains available on Session.agent and is not repeated.
+		delete(snapshot, "multiagent")
+		agent = snapshot
+	}
 	listCost := any(nil)
 	if thread.ListCostKnown {
 		listCost = domain.MonetaryAmountJSON(thread.ModelListCostNanoUSD)

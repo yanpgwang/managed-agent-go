@@ -92,13 +92,37 @@ active child ledger; providing it targets and wakes only the named Thread.
 Every Thread independently applies the same PostgreSQL finish-vs-interrupt
 ordering fence, active-Activity cancellation, and idle no-op behavior.
 
+## Advisor consultations
+
+When the primary model invokes Mango's private Advisor client tool, Mango runs
+the configured model as an independent, tool-free inference and records
+each consultation as an automatically terminating child Thread named
+`anthropic.advisor`. The Thread contains the configured
+`{"type":"advisor","model":"..."}` identity, has the primary Thread as its
+parent, and is visible through the same Thread list, get, and event endpoints.
+It is not a persistent callable Agent, does not appear in `list_agents`, cannot
+receive `send_to_agent`, and is excluded from the concurrent persistent-Thread
+limit.
+
+Successful consultations project created, running, message, idle, and
+terminated events onto the Advisor and primary ledgers. A failed consultation
+still records its lifecycle, returns an error tool result to the executor, and
+does not invent a delivered message. Advisor token usage and list cost belong
+to the Advisor Thread and are also added atomically to the shared Session usage
+and budget. The Advisor projection and private tool result commit in one
+transaction, so an Activity retry cannot repeat a billed inference whose result
+was already recorded.
+
+The runtime currently commits the consultation lifecycle after the Advisor
+request returns. It therefore does not expose a live Advisor Thread during the
+quiet inference window or support a targeted in-flight Advisor-only interrupt.
+A global interrupt still cancels the active tool Activity.
+
 Compacted child context projections are durably checkpointed, and
 `agent.thread_context_compacted` is emitted on the owning Thread ledger. The
 remaining multi-agent boundary includes exact hosted preview suppression for
-report-only turns. The pinned SDK's `advisor` Thread is not represented as an
-ordinary child placeholder; it remains unsupported until its reserved,
-automatically terminating consultation lifecycle can be implemented end to
-end. Token and provider-native tool usage is owned by each independent Thread
-and also posted atomically to the shared Session list-cost budget.
+report-only turns and the live Advisor timing/interrupt boundary above. Token
+and provider-native Web tool usage is owned by each independent Thread and also
+posted atomically to the shared Session list-cost budget.
 
 Start with the [multi-agent guide](../guides/multi-agent.md).

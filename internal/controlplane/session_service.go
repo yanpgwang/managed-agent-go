@@ -186,6 +186,11 @@ func (s *SessionService) Create(
 	for _, member := range roster {
 		modelsPriceable = modelsPriceable && domain.HasAnthropicPublicListPrice(member.Model)
 	}
+	if advisor := agent.Multiagent.Advisor(); advisor != nil {
+		modelsPriceable = modelsPriceable && domain.HasAnthropicPublicListPrice(
+			domain.Model{ID: advisor.Model},
+		)
+	}
 	if input.Budget != nil && !modelsPriceable {
 		return domain.Session{}, domain.Validation(
 			"budgeted sessions require every agent model to have a known Anthropic public list price",
@@ -309,6 +314,9 @@ func (s *SessionService) resolveSessionMultiagentRoster(
 	}
 	roster := make([]domain.Agent, 0, len(coordinator.Multiagent.Agents))
 	for _, reference := range coordinator.Multiagent.Agents {
+		if reference.Type == "advisor" {
+			continue
+		}
 		var member domain.Agent
 		if reference.ID == coordinator.ID {
 			member = snapshot

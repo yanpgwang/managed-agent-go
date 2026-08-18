@@ -547,6 +547,43 @@ func TestSDK_AgentMultiagentSelfResolvesAndTracksCoordinatorVersion(t *testing.T
 	}
 }
 
+func TestSDK_AgentAdvisorRosterRoundTripsLast(t *testing.T) {
+	client, _ := sdkClientAndServer(t)
+	ctx := context.Background()
+	selfEntry := anthropic.BetaManagedAgentsMultiagentRosterEntryParamsOfBetaManagedAgentsMultiagentSelfs(
+		anthropic.BetaManagedAgentsMultiagentSelfParamsTypeSelf,
+	)
+	advisorEntry := anthropic.BetaManagedAgentsMultiagentRosterEntryParamsOfBetaManagedAgentsAdvisors(
+		"claude-opus-5", anthropic.BetaManagedAgentsAdvisorParamsTypeAdvisor,
+	)
+	agent, err := client.Beta.Agents.New(ctx, anthropic.BetaAgentNewParams{
+		Name: "Advisor coordinator",
+		Model: anthropic.BetaManagedAgentsModelConfigParams{
+			ID: anthropic.BetaManagedAgentsModelClaudeSonnet5,
+		},
+		Multiagent: anthropic.BetaManagedAgentsMultiagentParams{
+			Type: anthropic.BetaManagedAgentsMultiagentParamsTypeCoordinator,
+			Agents: []anthropic.BetaManagedAgentsMultiagentRosterEntryParamsUnion{
+				advisorEntry, selfEntry,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create Advisor coordinator: %v", err)
+	}
+	if len(agent.Multiagent.Agents) != 2 {
+		t.Fatalf("Advisor roster = %s", agent.Multiagent.RawJSON())
+	}
+	if self := agent.Multiagent.Agents[0].AsAgent(); self.ID != agent.ID || self.Version != 1 || self.Type != "agent" {
+		t.Fatalf("resolved self = %s", agent.Multiagent.Agents[0].RawJSON())
+	}
+	advisor := agent.Multiagent.Agents[1].AsAdvisor()
+	if advisor.Type != anthropic.BetaManagedAgentsAdvisorTypeAdvisor ||
+		advisor.Model != "claude-opus-5" {
+		t.Fatalf("Advisor response = %s", agent.Multiagent.Agents[1].RawJSON())
+	}
+}
+
 func TestSDK_SessionMultiagentRosterExpandsAndFreezesAgentSnapshots(t *testing.T) {
 	client, server := sdkClientAndServer(t)
 	ctx := context.Background()
