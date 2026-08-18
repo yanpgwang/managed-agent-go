@@ -5,9 +5,11 @@ slug: /api
 
 # API overview
 
-The server exposes the 90 operations in its pinned Claude Managed Agents,
-Files, Skills, and Memory HTTP contract under `/v1`. Operation presence does
-not imply unrestricted support for every hosted behavior.
+The server exposes 90 operations from its pinned Claude Managed Agents, Files,
+Skills, Memory, Vault, Deployment, Environment Work, and Session Thread HTTP
+contract under `/v1`. Operation presence does not imply unrestricted support
+for every hosted behavior. The official Go SDK is pinned at v1.63.1; its five
+Dreams research-preview operations are not currently exposed.
 
 :::info
 
@@ -73,6 +75,9 @@ than 30 MB.
 Memory routes require `anthropic-beta: agent-memory-2026-07-22`. Do not combine
 that header with `managed-agents-2026-04-01` on Memory routes. Session creation
 continues to use the Managed Agents beta when attaching a Memory Store.
+
+Dreams require the separate `dreaming-2026-04-21` preview upstream. Mango does
+not currently serve `/v1/dreams` or claim the v1.63.1 `output_behavior` union.
 
 `authorization` may replace `x-api-key`. Strict mode currently validates header
 presence and version/beta values; it is not a production authentication system.
@@ -160,6 +165,7 @@ list envelopes, and shared error responses. The Session Event
 contract includes the seven client-submittable variants, the 25 persisted core
 variants, and the ephemeral SSE `event_start` and `event_delta` preview frames.
 
-Together these are the 90 HTTP operations exposed by the pinned official Go
-SDK. Repository tests keep all local references resolvable and lock both the
-core operation inventory and the event unions.
+Together these are Mango's 90 pinned HTTP operations. Repository tests keep all
+local references resolvable and lock both the core operation inventory and the
+event unions. The five SDK Dreams operations remain an explicitly separate,
+unsupported research-preview surface.

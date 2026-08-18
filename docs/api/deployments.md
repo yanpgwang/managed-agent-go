@@ -8,7 +8,7 @@ slug: /api/deployments
 A Deployment is a durable template for creating autonomous Sessions. It pins a
 specific Agent Version and stores the Environment, initial events, resources,
 ordered Vault references, metadata, and an optional cron schedule used for each
-Run. The v1.62 response also carries a nullable Session budget template.
+Run. The pinned SDK response also carries a nullable Session budget template.
 
 ## Create and inspect
 

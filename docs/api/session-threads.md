@@ -95,10 +95,10 @@ ordering fence, active-Activity cancellation, and idle no-op behavior.
 Compacted child context projections are durably checkpointed, and
 `agent.thread_context_compacted` is emitted on the owning Thread ledger. The
 remaining multi-agent boundary includes exact hosted preview suppression for
-report-only turns. The v1.62 `advisor` Thread is not represented as an ordinary
-child placeholder; it remains unsupported until its reserved, automatically
-terminating consultation lifecycle can be implemented end to end. Token and
-provider-native tool usage is owned by each independent Thread and also posted
-atomically to the shared Session list-cost budget.
+report-only turns. The pinned SDK's `advisor` Thread is not represented as an
+ordinary child placeholder; it remains unsupported until its reserved,
+automatically terminating consultation lifecycle can be implemented end to
+end. Token and provider-native tool usage is owned by each independent Thread
+and also posted atomically to the shared Session list-cost budget.
 
 Start with the [multi-agent guide](../guides/multi-agent.md).

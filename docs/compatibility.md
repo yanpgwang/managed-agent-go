@@ -19,11 +19,13 @@ Use this page to decide whether a workflow is ready for your deployment:
   yet strong enough for a compatibility commitment.
 - **Not supported** — rejected explicitly rather than silently accepted.
 
-Mango exposes all 90 operations represented by the pinned official Go SDK.
-Operation count is not a parity claim: accepted fields, durable behavior,
-provider capabilities, and deployment constraints still matter. Compatibility
-claims are enforced by the repository's HTTP, SDK, PostgreSQL, Temporal, and
-service test suites.
+Mango exposes 90 operations from the Managed Agents, Files, Skills, Memory,
+Vault, Deployment, Environment Work, and Session Thread surfaces represented
+by the pinned official Go SDK v1.63.1. The SDK's five separate Dreams
+research-preview operations are not currently exposed. Operation count is not
+a parity claim: accepted fields, durable behavior, provider capabilities, and
+deployment constraints still matter. Compatibility claims are enforced by the
+repository's HTTP, SDK, PostgreSQL, Temporal, and service test suites.
 
 ## Capability summary
 
@@ -34,6 +36,7 @@ service test suites.
 | Sessions | Supported | Create from immutable Agent snapshots, get/list/update/archive/delete, metadata, filters, exact shared public-list-cost budgets, usage, timing, and resource projections. Deletion fences admission and durably releases the Workflow and sandbox. |
 | Events and client actions | Supported | All documented client input variants, system context, messages, thinking, tool events, confirmation/custom/self-hosted result barriers, outcomes, retries, interrupts, and the budget-boundary `session.usage`/`budget_reached` idle sequence. |
 | Event streaming | Supported | PostgreSQL-authoritative Session and Thread streams with NATS wakeups, cursor repair, bounded backpressure, and opt-in ephemeral text previews. Streams do not replay history or interpret `Last-Event-ID`. |
+| Webhooks | Not supported | Managed Agents lifecycle webhook delivery and endpoint management remain external to Mango. The pinned SDK can verify received Standard Webhooks payloads, but Mango does not emit the documented Session, Thread, Agent, Environment, Memory, Vault, or Deployment notifications. |
 | Model and context runtime | Limited | Durable provider-native transcripts, conservative token projection, extractive compaction, rich content, and immutable per-Thread compacted projections are implemented. Provider-exact tokenizers, model context profiles, and complete per-request audit snapshots remain open. |
 | Sandbox tools | Limited | `bash`, `read`, `write`, `edit`, `glob`, and `grep`, plus provider-native Web Search/Fetch. Local is development-only; Docker is the current mount-capable isolated backend. |
 | MCP tools | Limited | Streamable HTTP discovery/execution, permissions, journaled calls, large-result materialization, and Vault bearer/OAuth authentication. Private-network connectivity, deprecated SSE, MCP resources, and prompts are not supported. |
@@ -41,6 +44,7 @@ service test suites.
 | [Session Resources](api/session-resources.md) | Limited | Five operations, independent File copies, and create-time Memory attachments. Runtime File attach/detach works. Mount execution currently requires Docker; GitHub repository resources are not supported. |
 | [Skills](api/skills.md) | Limited | Nine custom resource operations, immutable Version pins, strict bundle validation, Docker materialization, and on-demand Claude Code-style instruction injection. Anthropic-managed, GitHub, self-hosted, and remote-sandbox activation remain open. |
 | [Memory](api/memory.md) | Limited | Fourteen Store/Memory/Version operations, immutable history, SHA-256 preconditions, Docker read/write mounts, and deletion-time writeback. Non-Docker mounts and automatic retention are not implemented. |
+| Dreams | Not supported | The pinned SDK exposes five `dreaming-2026-04-21` research-preview operations, including the v1.63.1 `output_behavior` union. Mango does not yet run the asynchronous transcript-to-Memory consolidation pipeline or expose Dream resources. |
 | [Vaults](api/vaults.md) | Limited | Thirteen Vault/Credential operations, encrypted storage, ordered Session attachment, OAuth validation, expiry refresh, and token rotation. Environment-variable egress and refresh-failure webhooks are not implemented. |
 | [Deployments](api/deployments.md) | Limited | Ten Deployment/Run operations, pinned Agent Versions, Session budget templates, manual runs, cron scheduling, leases, and atomic success/failure records. GitHub resources and Agent-archive propagation remain open. |
 | [Environment Work](api/environment-work.md) | Limited | All eight self-hosted worker-protocol operations and official Go `WorkPoller` interoperability. Environment-key issuance, tenant-scoped authorization, Work secrets, and health-check Work remain open. |

@@ -71,10 +71,11 @@ independent context, events, usage, and Workflow state. See the
 [multi-agent guide](../guides/multi-agent.md) for an end-to-end example and
 [Session Threads](session-threads.md) for the public observation API.
 
-Anthropic Go SDK v1.62 also exposes an `advisor` roster entry. Mango rejects
-that variant rather than treating it as an ordinary Agent: advisor
-consultations have a reserved identity, a distinct ephemeral Thread lifecycle,
-redaction rules, and separate usage semantics that are not implemented yet.
+The pinned Anthropic Go SDK v1.63.1 also exposes an `advisor` roster entry.
+Mango rejects that variant rather than treating it as an ordinary Agent:
+advisor consultations have a reserved identity, a distinct ephemeral Thread
+lifecycle, redaction rules, and separate usage semantics that are not
+implemented yet.
 
 Agents written by releases that accepted opaque `multiagent` objects remain
 readable without inventing historical version pins. An unresolved legacy
