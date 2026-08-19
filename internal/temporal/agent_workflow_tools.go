@@ -55,6 +55,7 @@ type workflowTurnState struct {
 	loadedSkills                   map[string]struct{}
 	usage                          domain.TokenUsage
 	perRequestUsageAccounting      bool
+	sessionOutputsEnabled          bool
 	flushedEventCount              int
 }
 
@@ -569,6 +570,11 @@ func (t *workflowTurnState) rememberLoadedSkill(
 func (t *workflowTurnState) complete(
 	pendingActionEventIDs []string,
 ) (RunTurnResult, error) {
+	if fatal, err := t.publishSessionOutputs(); err != nil {
+		return RunTurnResult{}, err
+	} else if fatal != "" {
+		return t.terminate(failTurn("invalid Session output: " + fatal))
+	}
 	stopReason := map[string]any{"type": "end_turn"}
 	if len(pendingActionEventIDs) > 0 {
 		stopReason = map[string]any{
@@ -623,6 +629,11 @@ func (t *workflowTurnState) complete(
 func (t *workflowTurnState) exhaustModelRetries(
 	retry ModelRetryError,
 ) (RunTurnResult, error) {
+	if fatal, err := t.publishSessionOutputs(); err != nil {
+		return RunTurnResult{}, err
+	} else if fatal != "" {
+		return t.terminate(failTurn("invalid Session output: " + fatal))
+	}
 	output := append(t.output,
 		domain.EventDraft{Type: domain.EvSessionError, Payload: map[string]any{
 			"error": map[string]any{
@@ -665,6 +676,22 @@ func (t *workflowTurnState) exhaustModelRetries(
 		input,
 	).Get(t.actx, &result)
 	return result, err
+}
+
+func (t *workflowTurnState) publishSessionOutputs() (string, error) {
+	if !t.sessionOutputsEnabled || t.isChild {
+		return "", nil
+	}
+	options := workflow.GetActivityOptions(t.actx)
+	options.StartToCloseTimeout = resourceMaterializationToolTimeout
+	outputActx := workflow.WithActivityOptions(t.actx, options)
+	var published PublishSessionOutputsResult
+	err := workflow.ExecuteActivity(
+		outputActx,
+		ActivityPublishSessionOutputs,
+		PublishSessionOutputsInput{SessionID: t.sessionID},
+	).Get(outputActx, &published)
+	return published.FatalError, err
 }
 
 func (t *workflowTurnState) terminate(

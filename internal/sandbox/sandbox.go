@@ -179,6 +179,24 @@ type LimitedNetworkSandbox interface {
 // Agents for File-backed Session Resources.
 const SessionUploadsRoot = domain.SessionUploadsRoot
 
+// SessionOutputsRoot is the writable runtime directory whose regular files
+// become downloadable Session-scoped Files at an idle boundary.
+const SessionOutputsRoot = domain.SessionOutputsRoot
+
+// SessionOutputProvider declares support for the Managed Agents deliverable
+// directory. Providers opt in because exporting an arbitrary workspace is not
+// equivalent to confining and streaming /mnt/session/outputs.
+type SessionOutputProvider interface {
+	SupportsSessionOutputs() bool
+}
+
+// SessionOutputSandbox streams a tar archive containing the current children
+// of SessionOutputsRoot. An absent or empty directory returns an empty archive.
+// Consumers must still validate every archive entry before publishing it.
+type SessionOutputSandbox interface {
+	OpenSessionOutputs(context.Context) (io.ReadCloser, error)
+}
+
 // ReadOnlyFileMount describes one immutable File copy expected inside a
 // sandbox. RuntimePath must be a child of SessionUploadsRoot.
 type ReadOnlyFileMount struct {

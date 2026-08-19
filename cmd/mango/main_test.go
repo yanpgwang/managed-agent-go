@@ -132,6 +132,15 @@ func TestSandboxProviderRegistry_AdvertisesRuntimeCapabilities(t *testing.T) {
 				wantLimitedNetwork,
 			)
 		}
+		wantSessionOutputs := name == sandbox.DockerProviderName
+		if capabilities.SessionOutputs != wantSessionOutputs {
+			t.Errorf(
+				"%s SessionOutputs = %v, want %v",
+				name,
+				capabilities.SessionOutputs,
+				wantSessionOutputs,
+			)
+		}
 	}
 }
 

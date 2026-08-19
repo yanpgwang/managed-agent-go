@@ -30,9 +30,10 @@ type retryingSessionResourceReconciler struct {
 	store   *pg.Store
 	resolve func(context.Context) (*resolvedFiles, error)
 
-	mu           sync.Mutex
-	materializer *app.SessionRuntimeMaterializer
-	memory       *app.SessionMemoryMaterializer
+	mu             sync.Mutex
+	materializer   *app.SessionRuntimeMaterializer
+	memory         *app.SessionMemoryMaterializer
+	sessionOutputs bool
 }
 
 func (r *retryingSessionResourceReconciler) resolveMaterializer(
@@ -58,8 +59,27 @@ func (r *retryingSessionResourceReconciler) resolveMaterializer(
 		),
 		app.NewSessionSkillMaterializer(r.store, runtime.blobs),
 		r.memory,
-	)
+	).WithSessionOutputPublisher(runtime.outputs)
 	return r.materializer, nil
+}
+
+func (r *retryingSessionResourceReconciler) SupportsSessionOutputs() bool {
+	return r.sessionOutputs
+}
+
+func (r *retryingSessionResourceReconciler) PublishSessionOutputs(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	if !r.sessionOutputs {
+		return sandbox.Permanent(errors.New("session output publication is disabled"))
+	}
+	materializer, err := r.resolveMaterializer(ctx)
+	if err != nil {
+		return err
+	}
+	return materializer.PublishSessionOutputs(ctx, sessionID, box)
 }
 
 func (r *retryingSessionResourceReconciler) Reconcile(
@@ -166,10 +186,14 @@ func (r *retryingSessionResourceReconciler) CleanupSession(
 	sessionID string,
 ) error {
 	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
-	if err != nil || len(resources) == 0 {
+	if err != nil {
 		return err
 	}
-	needsObjectStore := false
+	hasOutputs, err := r.store.SessionOutputFilesExist(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	needsObjectStore := hasOutputs
 	for _, resource := range resources {
 		if resource.Type() == domain.SessionResourceTypeFile {
 			needsObjectStore = true
@@ -295,13 +319,23 @@ func (r unavailableSessionResourceReconciler) CleanupSession(
 	sessionID string,
 ) error {
 	resources, err := r.store.SessionResourcesForReconcile(ctx, sessionID)
-	if err != nil || len(resources) == 0 {
+	if err != nil {
+		return err
+	}
+	hasOutputs, err := r.store.SessionOutputFilesExist(ctx, sessionID)
+	if err != nil || len(resources) == 0 && !hasOutputs {
 		return err
 	}
 	if r.memory != nil {
 		if err := r.memory.CleanupSession(ctx, sessionID); err != nil {
 			return err
 		}
+	}
+	if hasOutputs {
+		return fmt.Errorf(
+			"session output Files are unavailable on this worker: %w",
+			r.cause,
+		)
 	}
 	for _, resource := range resources {
 		if resource.Type() == domain.SessionResourceTypeFile {
@@ -397,8 +431,9 @@ func runOrchestrate() {
 	case err != nil:
 		log.Printf("orchestrate: object store unavailable; File/Skill turns will retry connection: %v", err)
 		resourceReconciler = &retryingSessionResourceReconciler{
-			store:  store,
-			memory: memoryMaterializer,
+			store:          store,
+			memory:         memoryMaterializer,
+			sessionOutputs: providerCapabilities.SessionOutputs,
 			resolve: func(resolveCtx context.Context) (*resolvedFiles, error) {
 				return resolveFiles(resolveCtx, store, ids, realClock{}, false)
 			},
@@ -410,14 +445,16 @@ func runOrchestrate() {
 		}
 		log.Printf("orchestrate: Session File Resources and custom Skill runtime disabled: %v", cause)
 	default:
-		resourceReconciler = app.NewSessionRuntimeMaterializer(
+		materializer := app.NewSessionRuntimeMaterializer(
 			app.NewSessionResourceMaterializer(
 				store, fileRuntime.repository, fileRuntime.blobs,
 			),
 			app.NewSessionSkillMaterializer(store, fileRuntime.blobs),
 			memoryMaterializer,
 		)
-		log.Printf("orchestrate: Session File Resource and custom Skill materializers enabled")
+		materializer.WithSessionOutputPublisher(fileRuntime.outputs)
+		resourceReconciler = materializer
+		log.Printf("orchestrate: Session File Resource, output, and custom Skill materializers enabled")
 	}
 
 	client, err := temporalpkg.Dial(temporalpkg.ClientConfig{

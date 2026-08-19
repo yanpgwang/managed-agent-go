@@ -14,7 +14,7 @@ const (
 )
 
 // FileScope identifies the resource that produced a file. Client uploads have
-// no scope; session-scoped output files are reserved for a later runtime slice.
+// no scope; Session Resource copies and runtime outputs use Session scope.
 type FileScope struct {
 	ID   string
 	Type string
@@ -34,5 +34,9 @@ type File struct {
 	Scope          *FileScope
 	BlobKey        string
 	ChecksumSHA256 string
-	State          FileState
+	// OutputPath is the normalized path relative to /mnt/session/outputs for a
+	// runtime-produced deliverable. It is internal and never crosses the Files
+	// wire contract.
+	OutputPath string
+	State      FileState
 }

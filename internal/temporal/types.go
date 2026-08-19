@@ -64,6 +64,14 @@ type ReleaseSandboxInput struct {
 	SessionID string `json:"session_id"`
 }
 
+type PublishSessionOutputsInput struct {
+	SessionID string `json:"session_id"`
+}
+
+type PublishSessionOutputsResult struct {
+	FatalError string `json:"fatal_error,omitempty"`
+}
+
 // RunTurnResult reports whether the workflow-owned turn completed, parked on a
 // client-action barrier, or terminated the session.
 type RunTurnResult struct {
@@ -116,16 +124,17 @@ type PrepareTurnInput struct {
 // The projected messages and tool definitions are Activity output, so Temporal
 // records them in history and deterministic replay never rereads PostgreSQL.
 type PrepareTurnResult struct {
-	AlreadyCompleted bool           `json:"already_completed"`
-	Terminated       bool           `json:"terminated"`
-	FatalError       string         `json:"fatal_error,omitempty"`
-	AttemptID        string         `json:"attempt_id,omitempty"`
-	ThreadID         string         `json:"thread_id,omitempty"`
-	IsChild          bool           `json:"is_child,omitempty"`
-	SkillRuntimeRoot string         `json:"skill_runtime_root,omitempty"`
-	Request          model.Request  `json:"request"`
-	Tools            []TurnTool     `json:"tools,omitempty"`
-	ResumeActions    []ResumeAction `json:"resume_actions,omitempty"`
+	AlreadyCompleted      bool           `json:"already_completed"`
+	Terminated            bool           `json:"terminated"`
+	FatalError            string         `json:"fatal_error,omitempty"`
+	SessionOutputsEnabled bool           `json:"session_outputs_enabled,omitempty"`
+	AttemptID             string         `json:"attempt_id,omitempty"`
+	ThreadID              string         `json:"thread_id,omitempty"`
+	IsChild               bool           `json:"is_child,omitempty"`
+	SkillRuntimeRoot      string         `json:"skill_runtime_root,omitempty"`
+	Request               model.Request  `json:"request"`
+	Tools                 []TurnTool     `json:"tools,omitempty"`
+	ResumeActions         []ResumeAction `json:"resume_actions,omitempty"`
 	// PreludeEvents are recoverable setup diagnostics, such as one unavailable
 	// MCP server. The Workflow commits them with the turn while continuing with
 	// the remaining tool surface.

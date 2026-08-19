@@ -10,6 +10,7 @@ import (
 
 const (
 	SessionUploadsRoot                = "/mnt/session/uploads"
+	SessionOutputsRoot                = "/mnt/session/outputs"
 	SessionMemoryRoot                 = "/mnt/memory"
 	MaxSessionFileMountPathBytes      = 1024
 	MaxSessionFileMountComponentBytes = 255

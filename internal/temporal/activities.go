@@ -30,21 +30,22 @@ import (
 // Registered activity names. Referenced by the workflow through the exported
 // symbols; named explicitly so a rename cannot silently break replay.
 const (
-	ActivityLoadEvents           = "LoadEvents"
-	ActivityLoadInterrupt        = "LoadInterrupt"
-	ActivityLoadPendingActions   = "LoadPendingActions"
-	ActivityPrepareTurn          = "PrepareTurn"
-	ActivityAdmitModelRequest    = "AdmitModelRequest"
-	ActivityStartModelRequest    = "StartModelRequest"
-	ActivityAppendWorkflowEvents = "AppendWorkflowEvents"
-	ActivityRecordModelRetry     = "RecordModelRetry"
-	ActivityResumeModelRetry     = "ResumeModelRetry"
-	ActivityCallModel            = "CallModel"
-	ActivityAccountModelRequest  = "AccountModelRequest"
-	ActivityEvaluateOutcome      = "EvaluateOutcome"
-	ActivityExecuteTool          = "ExecuteTool"
-	ActivityCompleteWorkflowTurn = "CompleteWorkflowTurn"
-	ActivityReleaseSandbox       = "ReleaseSandbox"
+	ActivityLoadEvents            = "LoadEvents"
+	ActivityLoadInterrupt         = "LoadInterrupt"
+	ActivityLoadPendingActions    = "LoadPendingActions"
+	ActivityPrepareTurn           = "PrepareTurn"
+	ActivityAdmitModelRequest     = "AdmitModelRequest"
+	ActivityStartModelRequest     = "StartModelRequest"
+	ActivityAppendWorkflowEvents  = "AppendWorkflowEvents"
+	ActivityRecordModelRetry      = "RecordModelRetry"
+	ActivityResumeModelRetry      = "ResumeModelRetry"
+	ActivityCallModel             = "CallModel"
+	ActivityAccountModelRequest   = "AccountModelRequest"
+	ActivityEvaluateOutcome       = "EvaluateOutcome"
+	ActivityExecuteTool           = "ExecuteTool"
+	ActivityPublishSessionOutputs = "PublishSessionOutputs"
+	ActivityCompleteWorkflowTurn  = "CompleteWorkflowTurn"
+	ActivityReleaseSandbox        = "ReleaseSandbox"
 
 	sandboxPermanentErrorType = "SandboxPermanentError"
 )
@@ -329,6 +330,14 @@ type SandboxLease interface {
 	Release(ctx context.Context, sessionID string) error
 }
 
+type ExistingSandboxLease interface {
+	AcquireExisting(
+		ctx context.Context,
+		sessionID string,
+		spec sandbox.Spec,
+	) (sandbox.Sandbox, bool, error)
+}
+
 type SandboxResourceReconciler interface {
 	Reconcile(context.Context, string, sandbox.Sandbox) error
 }
@@ -348,6 +357,11 @@ type SandboxResourceReleaseReconciler interface {
 
 type SkillRuntimeReconciler interface {
 	SupportsSkillRuntime() bool
+}
+
+type SessionOutputPublisher interface {
+	SupportsSessionOutputs() bool
+	PublishSessionOutputs(context.Context, string, sandbox.Sandbox) error
 }
 
 type SessionSkillSource interface {
@@ -417,6 +431,7 @@ type Activities struct {
 	journal               JournalStore
 	sandboxes             SandboxLease
 	resources             SandboxResourceReconciler
+	outputs               SessionOutputPublisher
 	ids                   domain.IDGenerator
 	previews              PreviewPublisher
 	mcp                   mcpclient.Client
@@ -467,6 +482,13 @@ func (a *Activities) WithSandboxResourceReconciler(
 	reconciler SandboxResourceReconciler,
 ) *Activities {
 	a.resources = reconciler
+	return a
+}
+
+func (a *Activities) WithSessionOutputPublisher(
+	publisher SessionOutputPublisher,
+) *Activities {
+	a.outputs = publisher
 	return a
 }
 
@@ -885,6 +907,8 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 			Tools:        toolSchemas,
 		},
 	}
+	result.SessionOutputsEnabled = !selfHosted && !result.IsChild &&
+		a.outputs != nil && a.outputs.SupportsSessionOutputs()
 	if executionAgent.Multiagent.HasCallableAgents() && !result.IsChild {
 		result.Request.System = agentruntime.ProjectCoordinatorSystemContext(
 			result.Request.System,
@@ -2607,6 +2631,63 @@ func workflowToolResult(result domain.ToolStepResult) domain.ToolStepResult {
 	result.RawPath = ""
 	result.Events = nil
 	return result
+}
+
+// PublishSessionOutputs snapshots an already-provisioned Session sandbox. It
+// deliberately never provisions one just because a text-only turn became idle.
+func (a *Activities) PublishSessionOutputs(
+	ctx context.Context,
+	in PublishSessionOutputsInput,
+) (PublishSessionOutputsResult, error) {
+	if a.outputs == nil || !a.outputs.SupportsSessionOutputs() {
+		return PublishSessionOutputsResult{FatalError: "session output publication is unavailable"}, nil
+	}
+	lease, ok := a.sandboxes.(ExistingSandboxLease)
+	if !ok {
+		return PublishSessionOutputsResult{FatalError: "sandbox manager cannot attach existing Session outputs"}, nil
+	}
+	session, err := a.source.GetSession(ctx, in.SessionID)
+	if err != nil {
+		return PublishSessionOutputsResult{}, err
+	}
+	ctx = workspace.WithScope(ctx, session.WorkspaceID)
+	spec, err := sandboxSpecForSession(session)
+	if err != nil {
+		return PublishSessionOutputsResult{}, err
+	}
+	box, found, err := lease.AcquireExisting(ctx, in.SessionID, spec)
+	if err != nil {
+		if sandbox.IsPermanent(err) {
+			return PublishSessionOutputsResult{FatalError: err.Error()}, nil
+		}
+		return PublishSessionOutputsResult{}, err
+	}
+	if !found {
+		return PublishSessionOutputsResult{}, nil
+	}
+	stopHeartbeat := heartbeatActivity(ctx)
+	defer stopHeartbeat()
+	var unlock func()
+	if locker, ok := box.(sandbox.ResourceSynchronizationSandbox); ok {
+		unlock, err = locker.LockResourceOperation(ctx)
+		if err != nil {
+			if sandbox.IsPermanent(err) {
+				return PublishSessionOutputsResult{FatalError: err.Error()}, nil
+			}
+			return PublishSessionOutputsResult{}, err
+		}
+		defer unlock()
+	}
+	if err := a.outputs.PublishSessionOutputs(ctx, in.SessionID, box); err != nil {
+		var domainErr *domain.DomainError
+		if sandbox.IsPermanent(err) ||
+			(errors.As(err, &domainErr) &&
+				(domainErr.Kind == domain.KindValidation || domainErr.Kind == domain.KindTooLarge)) {
+			return PublishSessionOutputsResult{FatalError: err.Error()}, nil
+		}
+		return PublishSessionOutputsResult{}, err
+	}
+	return PublishSessionOutputsResult{}, nil
 }
 
 // ReleaseSandbox completes the provider side of session deletion. It is a

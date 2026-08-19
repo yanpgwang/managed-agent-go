@@ -23,6 +23,7 @@ type SessionResourceService struct {
 	blobs            app.FileBlobStore
 	ids              domain.IDGenerator
 	clock            domain.Clock
+	outputs          *app.SessionOutputPublisher
 	admissionEnabled bool
 }
 
@@ -34,10 +35,16 @@ func NewSessionResourceService(
 	clock domain.Clock,
 	admissionEnabled bool,
 ) *SessionResourceService {
-	return &SessionResourceService{
+	service := &SessionResourceService{
 		store: store, files: files, blobs: blobs, ids: ids, clock: clock,
 		admissionEnabled: admissionEnabled,
 	}
+	if outputFiles, ok := files.(app.SessionOutputRepository); ok {
+		service.outputs = app.NewSessionOutputPublisher(
+			outputFiles, blobs, ids, clock,
+		)
+	}
+	return service
 }
 
 func (s *SessionResourceService) PrepareForSession(
@@ -240,6 +247,11 @@ func (s *SessionResourceService) CleanupSession(
 	ctx context.Context,
 	sessionID string,
 ) error {
+	if s.outputs != nil {
+		if err := s.outputs.CleanupSession(ctx, sessionID); err != nil {
+			return err
+		}
+	}
 	return app.CleanupSessionResourceFiles(
 		ctx, s.store, s.files, s.blobs, sessionID,
 	)

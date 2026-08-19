@@ -235,6 +235,7 @@ func runWorkflowTurnInternal(
 		),
 		loadedSkills:              agentruntime.LoadedRuntimeSkills(prepared.Request.Messages),
 		perRequestUsageAccounting: modelRequestAccounting,
+		sessionOutputsEnabled:     prepared.SessionOutputsEnabled,
 	}
 	if prepared.FatalError != "" {
 		return turn.terminate(failTurn(prepared.FatalError))

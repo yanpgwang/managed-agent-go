@@ -13,6 +13,7 @@ type registryTestProvider struct {
 	packageSetup   bool
 	limitedNetwork bool
 	fileResources  bool
+	sessionOutputs bool
 	skillBundles   bool
 }
 
@@ -23,8 +24,9 @@ func (p *registryTestProvider) SupportsPackageSetup() bool {
 func (p *registryTestProvider) SupportsLimitedNetwork() bool {
 	return p.limitedNetwork
 }
-func (p *registryTestProvider) SupportsFileResources() bool { return p.fileResources }
-func (p *registryTestProvider) SupportsSkillBundles() bool  { return p.skillBundles }
+func (p *registryTestProvider) SupportsFileResources() bool  { return p.fileResources }
+func (p *registryTestProvider) SupportsSessionOutputs() bool { return p.sessionOutputs }
+func (p *registryTestProvider) SupportsSkillBundles() bool   { return p.skillBundles }
 
 func (*registryTestProvider) Create(
 	context.Context,
@@ -227,6 +229,23 @@ func TestProviderRegistryRejectsFileResourceCapabilityDrift(t *testing.T) {
 	if _, err := registry.Open("isolated"); err == nil ||
 		!strings.Contains(err.Error(), "file resource capability is registered as true but reports false") {
 		t.Fatalf("file resource capability drift error = %v", err)
+	}
+}
+
+func TestProviderRegistryRejectsSessionOutputCapabilityDrift(t *testing.T) {
+	registry, err := NewProviderRegistry(ProviderRegistration{
+		Name:         "isolated",
+		Capabilities: ProviderCapabilities{SessionOutputs: true},
+		Factory: func() (Provider, error) {
+			return &registryTestProvider{name: "isolated"}, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Open("isolated"); err == nil ||
+		!strings.Contains(err.Error(), "Session output capability is registered as true but reports false") {
+		t.Fatalf("Session output capability drift error = %v", err)
 	}
 }
 

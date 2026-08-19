@@ -33,7 +33,30 @@ cannot be combined.
 
 Client uploads have `scope: null` and `downloadable: false`; their content
 endpoint is intentionally unavailable. File-backed Session Resources create
-independent, downloadable Session-scoped copies.
+independent, downloadable Session-scoped copies. Mango-managed Docker Sessions
+also publish agent deliverables written beneath `/mnt/session/outputs` as
+downloadable Files with `scope.id` equal to the Session ID.
+
+## Session outputs
+
+The output directory is writable inside a Docker sandbox. At every primary
+Session idle boundary, the worker recursively streams its regular files into
+the configured object store before committing `session.status_idle`. A client
+that observes the idle event can therefore immediately list and download the
+deliverables with `GET /v1/files?scope_id={session_id}`.
+
+Each output is subject to the 500 MB per-file limit. One Session may publish at
+most 500 files from the output tree. Directories are traversed but are not
+Files; symbolic links, hard links, devices, path traversal, and other
+non-regular archive entries are rejected. An unchanged retry preserves the
+already-visible File; rewriting the same relative output path with new bytes
+atomically replaces its visible File metadata and object.
+
+Publishing requires both configured Files storage and a Docker sandbox. It is
+not enabled for the CMA `self_hosted` Environment mode, where the client owns
+tool execution, nor for the local-process sandbox or current remote adapters.
+A text-only Session that never provisioned a sandbox does not create one merely
+to check for outputs.
 
 ## Lifecycle and limits
 
@@ -41,8 +64,9 @@ independent, downloadable Session-scoped copies.
 - Delete hides metadata before deleting bytes; startup reconciliation finishes
   interrupted operations.
 - Top-level Files are not yet accepted as message content or outcome rubrics.
-- Arbitrary sandbox-output export is not implemented.
-- Files storage remains single-tenant, and startup reconciliation currently
-  assumes one Files-enabled API process.
+- Only `/mnt/session/outputs` is exported; arbitrary workspace files remain
+  private to the sandbox.
+- File metadata and object keys are Workspace-scoped. Startup reconciliation
+  currently assumes one Files-enabled API process.
 
 See [Session Resources](session-resources.md) to mount a File in a Session.

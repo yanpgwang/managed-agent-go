@@ -175,6 +175,8 @@ func (*dockerProvider) SupportsPackageSetup() bool { return true }
 
 func (*dockerProvider) SupportsFileResources() bool { return true }
 
+func (*dockerProvider) SupportsSessionOutputs() bool { return true }
+
 func (*dockerProvider) SupportsSkillBundles() bool { return true }
 
 func (*dockerProvider) SupportsMemoryStores() bool { return true }
@@ -203,7 +205,8 @@ func (p *dockerProvider) Create(
 	if network == "" {
 		network = "none"
 	}
-	resourceRoot, resourceFiles, resourceSkills, resourceMemory, err := p.ensureResourceRoot(sessionKey)
+	resourceRoot, resourceFiles, resourceOutputs, resourceSkills, resourceMemory, err :=
+		p.ensureResourceRoot(sessionKey)
 	if err != nil {
 		return Ref{}, nil, err
 	}
@@ -217,6 +220,10 @@ func (p *dockerProvider) Create(
 		{
 			Type: mount.TypeBind, Source: resourceFiles,
 			Target: SessionUploadsRoot, ReadOnly: true,
+		},
+		{
+			Type: mount.TypeBind, Source: resourceOutputs,
+			Target: SessionOutputsRoot,
 		},
 		{
 			Type: mount.TypeBind, Source: resourceSkills,
@@ -331,6 +338,7 @@ func (p *dockerProvider) Create(
 		fileRoots:          dockerToolFileRoots(spec),
 		resourceRoot:       resourceRoot,
 		resourceMountReady: true,
+		outputMountReady:   true,
 		skillMountReady:    true,
 		memoryMounts:       memoryMounts,
 	}, nil
@@ -479,6 +487,10 @@ func (p *dockerProvider) attachTarget(
 	if err != nil {
 		return nil, err
 	}
+	outputMountReady, err := p.inspectOutputMount(ctx, inspected.ID, resourceRoot)
+	if err != nil {
+		return nil, err
+	}
 	memoryMounts, err := p.inspectMemoryMounts(
 		ctx, inspected.ID, resourceRoot, spec.MemoryStores,
 	)
@@ -492,6 +504,7 @@ func (p *dockerProvider) attachTarget(
 		fileRoots:          dockerToolFileRoots(spec),
 		resourceRoot:       resourceRoot,
 		resourceMountReady: resourceMountReady,
+		outputMountReady:   outputMountReady,
 		skillMountReady:    skillMountReady,
 		memoryMounts:       memoryMounts,
 	}, nil
@@ -526,6 +539,7 @@ type dockerSandbox struct {
 
 	resourceRoot       string
 	resourceMountReady bool
+	outputMountReady   bool
 	skillMountReady    bool
 	memoryMounts       map[string]string
 
@@ -686,6 +700,7 @@ func dockerToolFileRoots(spec Spec) []dockerToolFileRoot {
 	roots := []dockerToolFileRoot{
 		{path: domain.SessionSkillsRoot},
 		{path: SessionUploadsRoot},
+		{path: SessionOutputsRoot, writable: true},
 	}
 	for _, mount := range spec.MemoryStores {
 		roots = append(roots, dockerToolFileRoot{
@@ -761,6 +776,35 @@ func (s *dockerSandbox) ReadFile(ctx context.Context, path string) ([]byte, erro
 		return nil, fmt.Errorf("sandbox: read Docker file content: %w", err)
 	}
 	return content, nil
+}
+
+// OpenSessionOutputs snapshots the provider-owned writable output mount as a
+// stream. Docker serializes the directory through its archive API, so worker
+// memory never scales with deliverable size. The application layer validates
+// every tar entry before publishing it.
+func (s *dockerSandbox) OpenSessionOutputs(
+	ctx context.Context,
+) (io.ReadCloser, error) {
+	if s.isDead() {
+		return nil, errDead
+	}
+	if !s.outputMountReady {
+		// Preserve compatibility for a durable sandbox created before the output
+		// mount existed. New sandboxes always expose the capability.
+		return io.NopCloser(bytes.NewReader(nil)), nil
+	}
+	copied, err := s.provider.engine.CopyFromContainer(
+		ctx,
+		s.cid,
+		client.CopyFromContainerOptions{SourcePath: SessionOutputsRoot + "/."},
+	)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return io.NopCloser(bytes.NewReader(nil)), nil
+		}
+		return nil, fmt.Errorf("sandbox: export Docker Session outputs: %w", err)
+	}
+	return copied.Content, nil
 }
 
 // WriteFile creates the parent directory through Engine exec, then streams one

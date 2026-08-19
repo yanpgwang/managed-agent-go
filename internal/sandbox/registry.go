@@ -27,6 +27,7 @@ type ProviderCapabilities struct {
 	PackageSetup   bool
 	LimitedNetwork bool
 	FileResources  bool
+	SessionOutputs bool
 	SkillBundles   bool
 	MemoryStores   bool
 }
@@ -160,6 +161,17 @@ func (r *ProviderRegistry) Open(name string) (Provider, error) {
 			name,
 			declaredFiles,
 			actualFiles,
+		)
+	}
+	declaredOutputs := r.capabilities[name].SessionOutputs
+	outputCapability, implementsOutputCapability := provider.(SessionOutputProvider)
+	actualOutputs := implementsOutputCapability && outputCapability.SupportsSessionOutputs()
+	if declaredOutputs != actualOutputs {
+		return nil, fmt.Errorf(
+			"sandbox: provider %q Session output capability is registered as %t but reports %t",
+			name,
+			declaredOutputs,
+			actualOutputs,
 		)
 	}
 	declaredSkills := r.capabilities[name].SkillBundles
