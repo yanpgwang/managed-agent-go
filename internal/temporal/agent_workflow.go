@@ -252,7 +252,7 @@ func runWorkflowTurnInternal(
 		return RunTurnResult{}, err
 	}
 	if interrupted {
-		return turn.complete(nil)
+		return turn.completeInterrupted()
 	}
 	if failure != "" {
 		return turn.terminate(failure)
@@ -353,7 +353,7 @@ func runWorkflowTurnInternal(
 				if end := modelRequestEndDraft(cancelled, true); end != nil {
 					turn.output = append(turn.output, *end)
 				}
-				return turn.complete(nil)
+				return turn.completeInterrupted()
 			}
 			if !liveModelSpanStarts {
 				if start := modelRequestStartDraft(called); start != nil {
@@ -365,7 +365,7 @@ func runWorkflowTurnInternal(
 					turn.output = append(turn.output, *end)
 				}
 				if activityOutcome.Interrupted {
-					return turn.complete(nil)
+					return turn.completeInterrupted()
 				}
 				if recoveredContextOverflow {
 					message := called.ContextOverflowError
@@ -397,7 +397,7 @@ func runWorkflowTurnInternal(
 					turn.output = append(turn.output, *end)
 				}
 				if activityOutcome.Interrupted {
-					return turn.complete(nil)
+					return turn.completeInterrupted()
 				}
 				return turn.terminateTyped(called.FatalErrorType, called.FatalError)
 			}
@@ -408,7 +408,7 @@ func runWorkflowTurnInternal(
 				turn.output = append(turn.output, *end)
 			}
 			if activityOutcome.Interrupted {
-				return turn.complete(nil)
+				return turn.completeInterrupted()
 			}
 			if attempt+1 >= maxModelRequestAttempts {
 				return turn.exhaustModelRetries(*called.RetryError)
@@ -431,7 +431,7 @@ func runWorkflowTurnInternal(
 				return RunTurnResult{}, err
 			}
 			if interrupted {
-				return turn.complete(nil)
+				return turn.completeInterrupted()
 			}
 			if err := turn.resumeModelRetry(runningEventID); err != nil {
 				return RunTurnResult{}, err
@@ -515,7 +515,7 @@ func runWorkflowTurnInternal(
 		if content := agentruntime.TextBlocksToContent(called.Response.Content); len(content) > 0 {
 			if called.MessageEventID == "" {
 				if activityOutcome.Interrupted {
-					return turn.complete(nil)
+					return turn.completeInterrupted()
 				}
 				return turn.terminate(failTurn(
 					"model response text has no durable public event id",
@@ -533,7 +533,7 @@ func runWorkflowTurnInternal(
 				turn.output = append(turn.output, *end)
 			}
 			if activityOutcome.Interrupted {
-				return turn.complete(nil)
+				return turn.completeInterrupted()
 			}
 			return turn.terminateTyped(
 				"model_request_failed_error",
@@ -547,7 +547,7 @@ func runWorkflowTurnInternal(
 					turn.output = append(turn.output, *end)
 				}
 				if activityOutcome.Interrupted {
-					return turn.complete(nil)
+					return turn.completeInterrupted()
 				}
 				if pauseTurnContinuations >= maxPauseTurnContinuations {
 					return turn.terminateTyped(
@@ -575,7 +575,7 @@ func runWorkflowTurnInternal(
 					turn.output = append(turn.output, *end)
 				}
 				if activityOutcome.Interrupted {
-					return turn.complete(nil)
+					return turn.completeInterrupted()
 				}
 				if outputContinuations >= maxOutputContinuations {
 					return turn.terminateTyped(
@@ -659,11 +659,11 @@ func runWorkflowTurnInternal(
 				return RunTurnResult{}, err
 			}
 			if evaluationOutcome.Interrupted && !evaluationOutcome.Completed {
-				return turn.complete(nil)
+				return turn.completeInterrupted()
 			}
 			if evaluated.FatalError != "" {
 				if evaluationOutcome.Interrupted {
-					return turn.complete(nil)
+					return turn.completeInterrupted()
 				}
 				if outcomeEvaluationHeartbeats {
 					turn.output = append(turn.output, outcomeEvaluationFailureDraft(
@@ -697,7 +697,7 @@ func runWorkflowTurnInternal(
 				)
 			}
 			if evaluationOutcome.Interrupted {
-				return turn.complete(nil)
+				return turn.completeInterrupted()
 			}
 			switch evaluated.Result {
 			case "satisfied", "failed":
@@ -738,7 +738,7 @@ func runWorkflowTurnInternal(
 					nil,
 					mappingCheckpoint,
 				)
-				return turn.complete(nil)
+				return turn.completeInterrupted()
 			}
 			return turn.terminate(failTurn("tool-using turn has no durable attempt id"))
 		}
@@ -768,7 +768,7 @@ func runWorkflowTurnInternal(
 					nil,
 					mappingCheckpoint,
 				)
-				return turn.complete(nil)
+				return turn.completeInterrupted()
 			}
 			return turn.terminate(failure)
 		}
@@ -780,7 +780,7 @@ func runWorkflowTurnInternal(
 				nil,
 				mappingCheckpoint,
 			)
-			return turn.complete(nil)
+			return turn.completeInterrupted()
 		}
 
 		executed, interrupted, failure, err := executeToolBatch(
@@ -801,7 +801,7 @@ func runWorkflowTurnInternal(
 				executed.resultBlocks,
 				mappingCheckpoint,
 			)
-			return turn.complete(nil)
+			return turn.completeInterrupted()
 		}
 		if failure != "" {
 			return turn.terminate(failure)

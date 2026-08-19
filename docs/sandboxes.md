@@ -88,7 +88,11 @@ publishes regular files to Mango's S3-compatible Files store. The worker never
 creates a sandbox solely for output discovery. The mount and publication
 capabilities are separate from File Resource input mounts: local and current
 remote adapters advertise neither output export nor an equivalent writable
-absolute-path boundary.
+absolute-path boundary. A provider must also pass the shared output conformance
+suite: built-in file tools and shell commands must see the same durable root,
+export must be streaming and repeatable under the resource lock, and an adapter
+without that proof remains fail-closed. Docker sandboxes created before this
+mount existed must be recreated rather than silently producing an empty export.
 
 ## Custom Skill mounts
 

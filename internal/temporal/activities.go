@@ -2667,17 +2667,20 @@ func (a *Activities) PublishSessionOutputs(
 	}
 	stopHeartbeat := heartbeatActivity(ctx)
 	defer stopHeartbeat()
-	var unlock func()
-	if locker, ok := box.(sandbox.ResourceSynchronizationSandbox); ok {
-		unlock, err = locker.LockResourceOperation(ctx)
-		if err != nil {
-			if sandbox.IsPermanent(err) {
-				return PublishSessionOutputsResult{FatalError: err.Error()}, nil
-			}
-			return PublishSessionOutputsResult{}, err
-		}
-		defer unlock()
+	locker, ok := box.(sandbox.ResourceSynchronizationSandbox)
+	if !ok {
+		return PublishSessionOutputsResult{
+			FatalError: "sandbox does not provide the resource lock required for Session outputs",
+		}, nil
 	}
+	unlock, err := locker.LockResourceOperation(ctx)
+	if err != nil {
+		if sandbox.IsPermanent(err) {
+			return PublishSessionOutputsResult{FatalError: err.Error()}, nil
+		}
+		return PublishSessionOutputsResult{}, err
+	}
+	defer unlock()
 	if err := a.outputs.PublishSessionOutputs(ctx, in.SessionID, box); err != nil {
 		var domainErr *domain.DomainError
 		if sandbox.IsPermanent(err) ||

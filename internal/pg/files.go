@@ -392,6 +392,24 @@ FOR UPDATE`, workspaceID, pending.Scope.ID, pending.OutputPath)
 			File: *current, Garbage: garbage, Duplicate: true,
 		}, nil
 	}
+	if current == nil {
+		var readyCount int
+		if err := tx.QueryRow(ctx, `
+SELECT count(*)
+FROM files
+WHERE ($1 = '' OR workspace_id = $1)
+  AND scope_type = 'session' AND scope_id = $2
+  AND output_path IS NOT NULL AND state = 'ready'`,
+			workspaceID, pending.Scope.ID,
+		).Scan(&readyCount); err != nil {
+			return app.SessionOutputCompletion{}, err
+		}
+		if readyCount >= app.MaxSessionOutputFiles {
+			return app.SessionOutputCompletion{}, domain.TooLarge(
+				"session outputs exceed 500 file limit",
+			)
+		}
+	}
 	if current != nil {
 		if _, err := tx.Exec(ctx, `
 UPDATE files SET state = 'deleting', updated_at = now()
@@ -420,6 +438,89 @@ RETURNING id, created_at, updated_at, filename, mime_type, size_bytes,
 		return app.SessionOutputCompletion{}, err
 	}
 	return app.SessionOutputCompletion{File: completed, Garbage: garbage}, nil
+}
+
+// PrepareSessionOutputSnapshot makes the visible File set match the paths in a
+// validated provider snapshot before new bytes are uploaded. The Session lock
+// gives completion and deletion the same ordering and makes the 500-file limit
+// apply across turns, not just within one tar stream.
+func (r *FileRepository) PrepareSessionOutputSnapshot(
+	ctx context.Context,
+	sessionID string,
+	outputPaths []string,
+) (app.SessionOutputSnapshot, error) {
+	if len(outputPaths) > app.MaxSessionOutputFiles {
+		return app.SessionOutputSnapshot{}, domain.TooLarge("session outputs exceed 500 file limit")
+	}
+	workspaceID, _, err := r.store.workspaceForRead(ctx)
+	if err != nil {
+		return app.SessionOutputSnapshot{}, err
+	}
+	tx, err := r.store.pool.Begin(ctx)
+	if err != nil {
+		return app.SessionOutputSnapshot{}, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var deletingAt *time.Time
+	if err := tx.QueryRow(ctx, `
+SELECT deleting_at
+FROM sessions
+WHERE id = $1 AND ($2 = '' OR workspace_id = $2)
+FOR UPDATE`, sessionID, workspaceID).Scan(&deletingAt); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return app.SessionOutputSnapshot{}, domain.NotFound("session not found")
+		}
+		return app.SessionOutputSnapshot{}, err
+	}
+	if deletingAt != nil {
+		return app.SessionOutputSnapshot{}, domain.Conflict("session deletion is in progress")
+	}
+	if _, err := tx.Exec(ctx, `
+UPDATE files
+SET state = 'deleting', updated_at = now()
+WHERE ($1 = '' OR workspace_id = $1)
+  AND scope_type = 'session' AND scope_id = $2
+  AND output_path IS NOT NULL AND state = 'ready'
+  AND NOT (output_path = ANY($3::text[]))`,
+		workspaceID, sessionID, outputPaths,
+	); err != nil {
+		return app.SessionOutputSnapshot{}, err
+	}
+	rows, err := tx.Query(ctx, `
+SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
+       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+FROM files
+WHERE ($1 = '' OR workspace_id = $1)
+  AND scope_type = 'session' AND scope_id = $2
+  AND output_path IS NOT NULL AND state IN ('ready', 'deleting')
+ORDER BY id
+FOR UPDATE`, workspaceID, sessionID)
+	if err != nil {
+		return app.SessionOutputSnapshot{}, err
+	}
+	current := make(map[string]domain.File)
+	garbage := make([]domain.File, 0)
+	for rows.Next() {
+		file, scanErr := scanFile(rows)
+		if scanErr != nil {
+			rows.Close()
+			return app.SessionOutputSnapshot{}, scanErr
+		}
+		if file.State == domain.FileStateReady {
+			current[file.OutputPath] = file
+		} else {
+			garbage = append(garbage, file)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return app.SessionOutputSnapshot{}, err
+	}
+	rows.Close()
+	if err := tx.Commit(ctx); err != nil {
+		return app.SessionOutputSnapshot{}, err
+	}
+	return app.SessionOutputSnapshot{Current: current, Garbage: garbage}, nil
 }
 
 func (r *FileRepository) PrepareSessionOutputDeletion(

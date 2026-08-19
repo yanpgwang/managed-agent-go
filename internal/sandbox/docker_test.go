@@ -535,6 +535,35 @@ func TestDocker_OpenSessionOutputsStreamsProviderArchive(t *testing.T) {
 	}
 }
 
+func TestDocker_OpenSessionOutputsRejectsLegacySandboxWithoutMount(t *testing.T) {
+	box := &dockerSandbox{outputMountReady: false}
+	_, err := box.OpenSessionOutputs(context.Background())
+	if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), "predates") {
+		t.Fatalf("legacy Session output error = %v", err)
+	}
+}
+
+func TestDocker_OpenSessionOutputsDoesNotTreatMissingMountAsEmpty(t *testing.T) {
+	engine := &stubDockerEngine{
+		copyFromFn: func(
+			context.Context,
+			string,
+			dockerclient.CopyFromContainerOptions,
+		) (dockerclient.CopyFromContainerResult, error) {
+			return dockerclient.CopyFromContainerResult{},
+				containerderrdefs.ErrNotFound.WithMessage("missing")
+		},
+	}
+	box := &dockerSandbox{
+		provider: &dockerProvider{engine: engine}, cid: "container-id",
+		outputMountReady: true,
+	}
+	_, err := box.OpenSessionOutputs(context.Background())
+	if err == nil || IsPermanent(err) || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing Session output mount error = %v", err)
+	}
+}
+
 func TestDocker_ExecAndExitCode(t *testing.T) {
 	sb := newDockerSB(t, Spec{})
 	res, err := sb.Exec(context.Background(), Command{Path: "sh", Args: []string{"-c", "echo hi"}})

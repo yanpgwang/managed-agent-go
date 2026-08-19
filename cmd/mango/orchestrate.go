@@ -323,8 +323,11 @@ func (r unavailableSessionResourceReconciler) CleanupSession(
 		return err
 	}
 	hasOutputs, err := r.store.SessionOutputFilesExist(ctx, sessionID)
-	if err != nil || len(resources) == 0 && !hasOutputs {
+	if err != nil {
 		return err
+	}
+	if len(resources) == 0 && !hasOutputs {
+		return nil
 	}
 	if r.memory != nil {
 		if err := r.memory.CleanupSession(ctx, sessionID); err != nil {

@@ -18,7 +18,7 @@ func TestLocalProviderConformance(t *testing.T) {
 }
 
 func TestDockerProviderConformance(t *testing.T) {
-	sandboxtest.Run(t, sandboxtest.Config{
+	cfg := sandboxtest.Config{
 		NewProvider: func(t *testing.T) sandbox.Provider {
 			t.Helper()
 			provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{
@@ -30,5 +30,7 @@ func TestDockerProviderConformance(t *testing.T) {
 			return provider
 		},
 		Spec: sandbox.Spec{Timeout: 30 * time.Second},
-	})
+	}
+	sandboxtest.Run(t, cfg)
+	sandboxtest.RunSessionOutputs(t, cfg)
 }

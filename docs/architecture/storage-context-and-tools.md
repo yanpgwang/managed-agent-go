@@ -207,8 +207,13 @@ Temporal runs a retryable Activity that attaches only to an existing sandbox,
 streams the output tree, rejects non-regular or escaping entries, and publishes
 each accepted file through the same PostgreSQL-intent/S3-byte split. Relative
 output path plus Session scope is the durable identity: an unchanged retry
-reuses the visible File, while changed bytes replace it in one metadata
-transaction and leave the old object as a crash-recoverable deletion intent.
+reuses the visible File without another object upload, changed bytes replace it
+in one metadata transaction, and paths absent from the validated snapshot are
+hidden before their old objects are cleaned. A database-side count guard keeps
+the visible set within 500 files across turns. Invalid entries become a
+recoverable `session.error` plus idle instead of terminating the Session; an
+explicit interrupt skips the snapshot so it cannot wait behind large output
+publication. Changed files leave the old object as a crash-recoverable deletion intent.
 Arbitrary workspace files and tool-result spill files outside the documented
 output root do not automatically become public Files.
 

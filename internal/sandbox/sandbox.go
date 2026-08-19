@@ -192,7 +192,9 @@ type SessionOutputProvider interface {
 
 // SessionOutputSandbox streams a tar archive containing the current children
 // of SessionOutputsRoot. An absent or empty directory returns an empty archive.
-// Consumers must still validate every archive entry before publishing it.
+// OpenSessionOutputs must be repeatable while the caller holds the Sandbox's
+// ResourceSynchronizationSandbox lock. Consumers must still validate every
+// archive entry before publishing it.
 type SessionOutputSandbox interface {
 	OpenSessionOutputs(context.Context) (io.ReadCloser, error)
 }

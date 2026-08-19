@@ -320,6 +320,20 @@ func (r *memoryFileRepository) CompleteSessionOutput(
 			File: *current, Garbage: garbage, Duplicate: true,
 		}, nil
 	}
+	if current == nil {
+		readyCount := 0
+		for _, file := range r.files {
+			if file.Scope != nil && file.Scope.ID == pending.Scope.ID &&
+				file.OutputPath != "" && file.State == domain.FileStateReady {
+				readyCount++
+			}
+		}
+		if readyCount >= MaxSessionOutputFiles {
+			return SessionOutputCompletion{}, domain.TooLarge(
+				"session outputs exceed 500 file limit",
+			)
+		}
+	}
 	if current != nil {
 		current.State = domain.FileStateDeleting
 		r.files[current.ID] = *current
@@ -352,8 +366,43 @@ func (r *memoryFileRepository) PrepareSessionOutputDeletion(
 	return files, nil
 }
 
+func (r *memoryFileRepository) PrepareSessionOutputSnapshot(
+	_ context.Context,
+	sessionID string,
+	outputPaths []string,
+) (SessionOutputSnapshot, error) {
+	wanted := make(map[string]struct{}, len(outputPaths))
+	for _, outputPath := range outputPaths {
+		wanted[outputPath] = struct{}{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := make(map[string]domain.File)
+	garbage := make([]domain.File, 0)
+	for id, file := range r.files {
+		if file.Scope == nil || file.Scope.ID != sessionID || file.OutputPath == "" {
+			continue
+		}
+		if _, present := wanted[file.OutputPath]; present {
+			if file.State == domain.FileStateReady {
+				current[file.OutputPath] = file
+			}
+			continue
+		}
+		if file.State == domain.FileStateReady {
+			file.State = domain.FileStateDeleting
+			r.files[id] = file
+		}
+		if file.State == domain.FileStateDeleting {
+			garbage = append(garbage, file)
+		}
+	}
+	return SessionOutputSnapshot{Current: current, Garbage: garbage}, nil
+}
+
 type memoryBlobStore struct {
 	objects               map[string][]byte
+	putCalls              int
 	putErr                error
 	rejectCanceledCleanup bool
 }
@@ -369,6 +418,7 @@ func (s *memoryBlobStore) Put(
 	body io.Reader,
 	maxBytes int64,
 ) (BlobInfo, error) {
+	s.putCalls++
 	if s.putErr != nil {
 		return BlobInfo{}, s.putErr
 	}

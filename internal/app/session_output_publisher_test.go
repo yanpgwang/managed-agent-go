@@ -33,6 +33,9 @@ func TestSessionOutputPublisher_PublishesAndIdempotentlyReplaces(t *testing.T) {
 	if len(repo.files) != 2 || len(blobs.objects) != 2 {
 		t.Fatalf("initial publication rows=%d blobs=%d", len(repo.files), len(blobs.objects))
 	}
+	if blobs.putCalls != 2 {
+		t.Fatalf("initial blob puts = %d, want 2", blobs.putCalls)
+	}
 
 	if err := publisher.Publish(context.Background(), "sesn_1", box); err != nil {
 		t.Fatalf("idempotent Publish: %v", err)
@@ -40,17 +43,22 @@ func TestSessionOutputPublisher_PublishesAndIdempotentlyReplaces(t *testing.T) {
 	if len(repo.files) != 2 || len(blobs.objects) != 2 {
 		t.Fatalf("retry rows=%d blobs=%d, want 2/2", len(repo.files), len(blobs.objects))
 	}
+	if blobs.putCalls != 2 {
+		t.Fatalf("idempotent blob puts = %d, want 2", blobs.putCalls)
+	}
 
 	box.archive = outputArchive(t, []outputArchiveEntry{
 		{name: "reports/final.txt", body: "second"},
-		{name: "data.json", body: "{}"},
 	})
 	if err := publisher.Publish(context.Background(), "sesn_1", box); err != nil {
 		t.Fatalf("replacement Publish: %v", err)
 	}
 	assertReadySessionOutput(t, repo, blobs, "sesn_1", "reports/final.txt", "second")
-	if len(repo.files) != 2 || len(blobs.objects) != 2 {
-		t.Fatalf("replacement rows=%d blobs=%d, want 2/2", len(repo.files), len(blobs.objects))
+	if len(repo.files) != 1 || len(blobs.objects) != 1 {
+		t.Fatalf("replacement rows=%d blobs=%d, want 1/1", len(repo.files), len(blobs.objects))
+	}
+	if blobs.putCalls != 3 {
+		t.Fatalf("replacement blob puts = %d, want 3", blobs.putCalls)
 	}
 
 	if err := publisher.CleanupSession(context.Background(), "sesn_1"); err != nil {
@@ -111,6 +119,32 @@ func TestSessionOutputPublisher_EnforcesFileCount(t *testing.T) {
 	var domainErr *domain.DomainError
 	if !errors.As(err, &domainErr) || domainErr.Kind != domain.KindTooLarge {
 		t.Fatalf("Publish error = %v, want too large", err)
+	}
+}
+
+func TestSessionOutputPublisher_EnforcesFileCountAcrossSnapshots(t *testing.T) {
+	repo := newMemoryFileRepository()
+	publisher := NewSessionOutputPublisher(
+		repo, newMemoryBlobStore(), domain.NewSeqIDGen(), domain.FixedClock{},
+	)
+	first := make([]outputArchiveEntry, MaxSessionOutputFiles)
+	second := make([]outputArchiveEntry, MaxSessionOutputFiles)
+	for index := range first {
+		first[index] = outputArchiveEntry{name: "old-" + strconv.Itoa(index)}
+		second[index] = outputArchiveEntry{name: "new-" + strconv.Itoa(index)}
+	}
+	if err := publisher.Publish(context.Background(), "sesn_1", outputArchiveSandbox{
+		archive: outputArchive(t, first),
+	}); err != nil {
+		t.Fatalf("first Publish: %v", err)
+	}
+	if err := publisher.Publish(context.Background(), "sesn_1", outputArchiveSandbox{
+		archive: outputArchive(t, second),
+	}); err != nil {
+		t.Fatalf("second Publish: %v", err)
+	}
+	if len(repo.files) != MaxSessionOutputFiles {
+		t.Fatalf("ready output rows = %d, want %d", len(repo.files), MaxSessionOutputFiles)
 	}
 }
 

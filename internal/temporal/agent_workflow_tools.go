@@ -570,10 +570,26 @@ func (t *workflowTurnState) rememberLoadedSkill(
 func (t *workflowTurnState) complete(
 	pendingActionEventIDs []string,
 ) (RunTurnResult, error) {
-	if fatal, err := t.publishSessionOutputs(); err != nil {
-		return RunTurnResult{}, err
-	} else if fatal != "" {
-		return t.terminate(failTurn("invalid Session output: " + fatal))
+	return t.completeTurn(pendingActionEventIDs, true)
+}
+
+// completeInterrupted commits the interrupt promptly. Session output
+// publication is an idle-transition side effect for completed work; it must not
+// make an explicit interrupt wait behind a potentially long sandbox snapshot.
+func (t *workflowTurnState) completeInterrupted() (RunTurnResult, error) {
+	return t.completeTurn(nil, false)
+}
+
+func (t *workflowTurnState) completeTurn(
+	pendingActionEventIDs []string,
+	publishSessionOutputs bool,
+) (RunTurnResult, error) {
+	if publishSessionOutputs {
+		if fatal, err := t.publishSessionOutputs(); err != nil {
+			return RunTurnResult{}, err
+		} else if fatal != "" {
+			t.output = append(t.output, sessionOutputErrorDraft(fatal))
+		}
 	}
 	stopReason := map[string]any{"type": "end_turn"}
 	if len(pendingActionEventIDs) > 0 {
@@ -632,7 +648,7 @@ func (t *workflowTurnState) exhaustModelRetries(
 	if fatal, err := t.publishSessionOutputs(); err != nil {
 		return RunTurnResult{}, err
 	} else if fatal != "" {
-		return t.terminate(failTurn("invalid Session output: " + fatal))
+		t.output = append(t.output, sessionOutputErrorDraft(fatal))
 	}
 	output := append(t.output,
 		domain.EventDraft{Type: domain.EvSessionError, Payload: map[string]any{
@@ -692,6 +708,18 @@ func (t *workflowTurnState) publishSessionOutputs() (string, error) {
 		PublishSessionOutputsInput{SessionID: t.sessionID},
 	).Get(outputActx, &published)
 	return published.FatalError, err
+}
+
+func sessionOutputErrorDraft(message string) domain.EventDraft {
+	return domain.EventDraft{Type: domain.EvSessionError, Payload: map[string]any{
+		"error": map[string]any{
+			"type":    "unknown_error",
+			"message": "Session output publication failed: " + message,
+			"retry_status": map[string]any{
+				"type": "exhausted",
+			},
+		},
+	}}
 }
 
 func (t *workflowTurnState) terminate(

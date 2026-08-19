@@ -74,6 +74,11 @@ type SessionOutputCompletion struct {
 	Duplicate bool
 }
 
+type SessionOutputSnapshot struct {
+	Current map[string]domain.File
+	Garbage []domain.File
+}
+
 // SessionOutputRepository extends the ordinary Files intent boundary with the
 // atomic replacement semantics required for runtime-produced deliverables.
 // Object-store I/O still happens outside its transactions.
@@ -84,6 +89,7 @@ type SessionOutputRepository interface {
 		string,
 		BlobInfo,
 	) (SessionOutputCompletion, error)
+	PrepareSessionOutputSnapshot(context.Context, string, []string) (SessionOutputSnapshot, error)
 	PrepareSessionOutputDeletion(context.Context, string) ([]domain.File, error)
 }
 

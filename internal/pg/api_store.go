@@ -652,8 +652,8 @@ func (s *Store) FinalizeSessionDeletion(ctx context.Context, sessionID string) e
 SELECT EXISTS (
     SELECT 1 FROM files
     WHERE scope_type = 'session' AND scope_id = $1
-      AND output_path IS NOT NULL
-)`, sessionID).Scan(&outputsRemain); err != nil {
+      AND output_path IS NOT NULL AND workspace_id = $2
+)`, sessionID, row.WorkspaceID).Scan(&outputsRemain); err != nil {
 			return err
 		}
 		if outputsRemain {

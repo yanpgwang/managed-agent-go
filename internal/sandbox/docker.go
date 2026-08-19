@@ -789,9 +789,9 @@ func (s *dockerSandbox) OpenSessionOutputs(
 		return nil, errDead
 	}
 	if !s.outputMountReady {
-		// Preserve compatibility for a durable sandbox created before the output
-		// mount existed. New sandboxes always expose the capability.
-		return io.NopCloser(bytes.NewReader(nil)), nil
+		return nil, Permanent(errors.New(
+			"sandbox: Docker Session predates the output mount; recreate the Session sandbox",
+		))
 	}
 	copied, err := s.provider.engine.CopyFromContainer(
 		ctx,
@@ -799,9 +799,6 @@ func (s *dockerSandbox) OpenSessionOutputs(
 		client.CopyFromContainerOptions{SourcePath: SessionOutputsRoot + "/."},
 	)
 	if err != nil {
-		if errdefs.IsNotFound(err) {
-			return io.NopCloser(bytes.NewReader(nil)), nil
-		}
 		return nil, fmt.Errorf("sandbox: export Docker Session outputs: %w", err)
 	}
 	return copied.Content, nil

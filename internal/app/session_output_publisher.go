@@ -10,6 +10,7 @@ import (
 	"io"
 	"mime"
 	"path"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -64,10 +65,99 @@ func (p *SessionOutputPublisher) Publish(
 	if err != nil {
 		return err
 	}
-	defer func() { _ = archive.Close() }()
+	entries, inspectErr := inspectSessionOutputArchive(archive)
+	closeErr := archive.Close()
+	if inspectErr != nil {
+		return inspectErr
+	}
+	if closeErr != nil {
+		return fmt.Errorf("session outputs: close archive: %w", closeErr)
+	}
+	paths := make([]string, 0, len(entries))
+	for outputPath := range entries {
+		paths = append(paths, outputPath)
+	}
+	sort.Strings(paths)
+	snapshot, err := p.repo.PrepareSessionOutputSnapshot(ctx, sessionID, paths)
+	if err != nil {
+		return err
+	}
+	if err := p.cleanupFiles(ctx, snapshot.Garbage); err != nil {
+		return err
+	}
+	unchanged := make(map[string]struct{})
+	for outputPath, current := range snapshot.Current {
+		entry, present := entries[outputPath]
+		if present && current.SizeBytes == entry.size &&
+			current.ChecksumSHA256 == entry.checksumSHA256 {
+			unchanged[outputPath] = struct{}{}
+		}
+	}
 
+	archive, err = exporter.OpenSessionOutputs(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = archive.Close() }()
+	return p.publishArchive(ctx, sessionID, tar.NewReader(archive), entries, unchanged)
+}
+
+type sessionOutputEntry struct {
+	path           string
+	size           int64
+	checksumSHA256 string
+}
+
+func inspectSessionOutputArchive(archive io.Reader) (map[string]sessionOutputEntry, error) {
 	reader := tar.NewReader(archive)
-	count := 0
+	entries := make(map[string]sessionOutputEntry)
+	for {
+		header, nextErr := reader.Next()
+		if errors.Is(nextErr, io.EOF) {
+			return entries, nil
+		}
+		if nextErr != nil {
+			return nil, fmt.Errorf("session outputs: read archive: %w", nextErr)
+		}
+		entry, include, err := validatedSessionOutputEntry(header)
+		if err != nil {
+			return nil, err
+		}
+		if !include {
+			continue
+		}
+		if _, duplicate := entries[entry.path]; duplicate {
+			return nil, domain.Validation(fmt.Sprintf(
+				"session output archive contains duplicate path %q", entry.path,
+			))
+		}
+		if len(entries) >= MaxSessionOutputFiles {
+			return nil, domain.TooLarge("session outputs exceed 500 file limit")
+		}
+		hasher := sha256.New()
+		read, err := io.Copy(hasher, reader)
+		if err != nil {
+			return nil, fmt.Errorf("session outputs: inspect %q: %w", entry.path, err)
+		}
+		if read != entry.size {
+			return nil, fmt.Errorf(
+				"session outputs: %q archive size changed: read %d bytes, expected %d",
+				entry.path, read, entry.size,
+			)
+		}
+		entry.checksumSHA256 = hex.EncodeToString(hasher.Sum(nil))
+		entries[entry.path] = entry
+	}
+}
+
+func (p *SessionOutputPublisher) publishArchive(
+	ctx context.Context,
+	sessionID string,
+	reader *tar.Reader,
+	expected map[string]sessionOutputEntry,
+	unchanged map[string]struct{},
+) error {
+	seen := make(map[string]struct{}, len(expected))
 	for {
 		header, nextErr := reader.Next()
 		if errors.Is(nextErr, io.EOF) {
@@ -76,40 +166,71 @@ func (p *SessionOutputPublisher) Publish(
 		if nextErr != nil {
 			return fmt.Errorf("session outputs: read archive: %w", nextErr)
 		}
-		relativePath, pathErr := normalizeSessionOutputPath(header.Name)
-		if pathErr != nil {
-			return pathErr
+		entry, include, err := validatedSessionOutputEntry(header)
+		if err != nil {
+			return err
 		}
-		if relativePath == "." {
-			if header.Typeflag == tar.TypeDir {
-				continue
-			}
-			return domain.Validation("session output archive root is not a directory")
-		}
-		switch header.Typeflag {
-		case tar.TypeDir:
+		if !include {
 			continue
-		case tar.TypeReg, 0:
-			// Continue below.
-		default:
-			return domain.Validation(fmt.Sprintf(
-				"session output %q is not a regular file", relativePath,
-			))
 		}
-		count++
-		if count > MaxSessionOutputFiles {
-			return domain.TooLarge("session outputs exceed 500 file limit")
+		inspected, present := expected[entry.path]
+		_, duplicate := seen[entry.path]
+		if !present || duplicate || inspected.size != entry.size {
+			return domain.Validation("session output archive changed while publishing")
 		}
-		if header.Size < 0 || header.Size > MaxFileBytes {
-			return domain.TooLarge(fmt.Sprintf(
-				"session output %q exceeds 500 MB limit", relativePath,
-			))
+		seen[entry.path] = struct{}{}
+		if _, skipUpload := unchanged[entry.path]; skipUpload {
+			hasher := sha256.New()
+			read, hashErr := io.Copy(hasher, reader)
+			if hashErr != nil {
+				return fmt.Errorf("session outputs: verify %q: %w", entry.path, hashErr)
+			}
+			if read != inspected.size ||
+				hex.EncodeToString(hasher.Sum(nil)) != inspected.checksumSHA256 {
+				return domain.Validation("session output archive changed while publishing")
+			}
+			continue
 		}
-		if err := p.publishOne(ctx, sessionID, relativePath, header.Size, reader); err != nil {
+		if err := p.publishOne(
+			ctx, sessionID, entry.path, entry.size, inspected.checksumSHA256, reader,
+		); err != nil {
 			return err
 		}
 	}
+	if len(seen) != len(expected) {
+		return domain.Validation("session output archive changed while publishing")
+	}
 	return nil
+}
+
+func validatedSessionOutputEntry(header *tar.Header) (sessionOutputEntry, bool, error) {
+	relativePath, err := normalizeSessionOutputPath(header.Name)
+	if err != nil {
+		return sessionOutputEntry{}, false, err
+	}
+	if relativePath == "." {
+		if header.Typeflag == tar.TypeDir {
+			return sessionOutputEntry{}, false, nil
+		}
+		return sessionOutputEntry{}, false,
+			domain.Validation("session output archive root is not a directory")
+	}
+	switch header.Typeflag {
+	case tar.TypeDir:
+		return sessionOutputEntry{}, false, nil
+	case tar.TypeReg, 0:
+		// Continue below.
+	default:
+		return sessionOutputEntry{}, false, domain.Validation(fmt.Sprintf(
+			"session output %q is not a regular file", relativePath,
+		))
+	}
+	if header.Size < 0 || header.Size > MaxFileBytes {
+		return sessionOutputEntry{}, false, domain.TooLarge(fmt.Sprintf(
+			"session output %q exceeds 500 MB limit", relativePath,
+		))
+	}
+	return sessionOutputEntry{path: relativePath, size: header.Size}, true, nil
 }
 
 func (p *SessionOutputPublisher) publishOne(
@@ -117,6 +238,7 @@ func (p *SessionOutputPublisher) publishOne(
 	sessionID string,
 	outputPath string,
 	size int64,
+	expectedChecksum string,
 	body io.Reader,
 ) error {
 	mimeType := mime.TypeByExtension(path.Ext(outputPath))
@@ -156,6 +278,10 @@ func (p *SessionOutputPublisher) publishOne(
 			"session outputs: %q archive size changed: read %d bytes, expected %d",
 			outputPath, info.SizeBytes, size,
 		)
+	}
+	if info.ChecksumSHA256 != expectedChecksum {
+		p.cleanupIncomplete(ctx, file)
+		return domain.Validation("session output archive changed while publishing")
 	}
 	completion, err := p.repo.CompleteSessionOutput(ctx, id, info)
 	if err != nil {

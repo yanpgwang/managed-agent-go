@@ -49,14 +49,25 @@ Each output is subject to the 500 MB per-file limit. One Session may publish at
 most 500 files from the output tree. Directories are traversed but are not
 Files; symbolic links, hard links, devices, path traversal, and other
 non-regular archive entries are rejected. An unchanged retry preserves the
-already-visible File; rewriting the same relative output path with new bytes
-atomically replaces its visible File metadata and object.
+already-visible File without another object upload; rewriting the same relative
+output path with new bytes atomically replaces its visible File metadata and
+object. Removing a path from the output tree hides and cleans up its prior File
+at the next idle snapshot, so the visible set matches the current tree and the
+500-file limit applies across turns.
+
+An invalid output entry emits a recoverable `session.error` immediately before
+the idle event. The agent's answer remains visible and the Session remains
+usable, allowing a later turn to remove or replace the invalid entry. An
+explicit interrupt skips output publication so cancellation is not delayed by
+a large snapshot.
 
 Publishing requires both configured Files storage and a Docker sandbox. It is
 not enabled for the CMA `self_hosted` Environment mode, where the client owns
 tool execution, nor for the local-process sandbox or current remote adapters.
 A text-only Session that never provisioned a sandbox does not create one merely
-to check for outputs.
+to check for outputs. A durable Docker sandbox created before the output mount
+was introduced fails closed and must be recreated; it is never treated as an
+empty output tree.
 
 ## Lifecycle and limits
 

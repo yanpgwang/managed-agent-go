@@ -1,7 +1,6 @@
 package pg
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -174,9 +173,29 @@ func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	publisher := app.NewSessionOutputPublisher(repo, blobs, ids, fixedClock{})
-	if err := publisher.Publish(ctx, session.ID, pgOutputSandbox{
-		archive: oneFileOutputArchive(t, "output.txt", "sdk-output"),
-	}); err != nil {
+	provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{
+		DefaultImage: "alpine:latest", ResourceBaseDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewDockerProvider: %v", err)
+	}
+	_, outputBox, err := provider.Create(ctx, t.Name(), sandbox.Spec{
+		Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("create Docker output sandbox: %v", err)
+	}
+	defer func() {
+		if err := outputBox.Destroy(context.Background()); err != nil {
+			t.Errorf("destroy Docker output sandbox: %v", err)
+		}
+	}()
+	if err := outputBox.WriteFile(
+		ctx, sandbox.SessionOutputsRoot+"/output.txt", []byte("sdk-output"),
+	); err != nil {
+		t.Fatalf("write Session output through sandbox tool boundary: %v", err)
+	}
+	if err := publisher.Publish(ctx, session.ID, outputBox); err != nil {
 		t.Fatalf("Publish Session output: %v", err)
 	}
 	rawRequest, err := http.NewRequestWithContext(
@@ -329,40 +348,3 @@ type serviceNamedReader struct {
 
 func (*serviceNamedReader) Name() string        { return "service.txt" }
 func (*serviceNamedReader) ContentType() string { return "text/plain" }
-
-type pgOutputSandbox struct {
-	archive []byte
-}
-
-func (pgOutputSandbox) Exec(context.Context, sandbox.Command) (*sandbox.Result, error) {
-	return nil, errors.New("not implemented")
-}
-func (pgOutputSandbox) ReadFile(context.Context, string) ([]byte, error) {
-	return nil, errors.New("not implemented")
-}
-func (pgOutputSandbox) WriteFile(context.Context, string, []byte) error {
-	return errors.New("not implemented")
-}
-func (pgOutputSandbox) Root() string                  { return "/workspace" }
-func (pgOutputSandbox) Destroy(context.Context) error { return nil }
-func (s pgOutputSandbox) OpenSessionOutputs(context.Context) (io.ReadCloser, error) {
-	return io.NopCloser(bytes.NewReader(s.archive)), nil
-}
-
-func oneFileOutputArchive(t *testing.T, name string, body string) []byte {
-	t.Helper()
-	var buffer bytes.Buffer
-	writer := tar.NewWriter(&buffer)
-	if err := writer.WriteHeader(&tar.Header{
-		Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(body)),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := writer.Write([]byte(body)); err != nil {
-		t.Fatal(err)
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return buffer.Bytes()
-}
