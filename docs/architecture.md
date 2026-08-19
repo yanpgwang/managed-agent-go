@@ -208,4 +208,7 @@ The strongest current risks are semantic rather than structural:
    child before primary Workflow and sandbox cleanup.
 
 Current API support is tracked in the [compatibility matrix](compatibility.md);
-planned capability work is kept in the [roadmap](roadmap.md).
+the upstream target is the
+[Claude Managed Agents documentation](https://platform.claude.com/docs/en/managed-agents/overview),
+and focused engineering work is tracked in
+[GitHub Issues](https://github.com/yanpgwang/mango/issues).

@@ -15,7 +15,7 @@
   <a href="https://yanpgwang.github.io/mango/getting-started">Getting started</a> ·
   <a href="https://yanpgwang.github.io/mango/compatibility">Compatibility</a> ·
   <a href="https://yanpgwang.github.io/mango/architecture">Architecture</a> ·
-  <a href="https://yanpgwang.github.io/mango/roadmap">Roadmap</a>
+  <a href="https://platform.claude.com/docs/en/managed-agents/overview">Claude Managed Agents</a>
 </p>
 
 <p align="center">
@@ -105,8 +105,8 @@ The [compatibility summary](https://yanpgwang.github.io/mango/compatibility)
 states the user-visible boundary. Persistent child-Agent orchestration,
 provider-neutral Advisor consultations, and shared Session budgets are
 implemented; Dreams, environment-variable secret egress, and
-production-platform hardening remain
-[roadmap work](https://yanpgwang.github.io/mango/roadmap).
+production-platform hardening remain explicit compatibility gaps or focused
+[GitHub Issues](https://github.com/yanpgwang/mango/issues).
 
 ## Architecture
 

@@ -107,8 +107,8 @@ const config: Config = {
               href: 'https://github.com/yanpgwang/mango/releases',
             },
             {
-              label: 'Roadmap',
-              to: '/roadmap',
+              label: 'Claude Managed Agents',
+              href: 'https://platform.claude.com/docs/en/managed-agents/overview',
             },
             {
               label: 'GitHub',

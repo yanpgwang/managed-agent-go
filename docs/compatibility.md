@@ -10,6 +10,14 @@ Claude Managed Agents HTTP contract. Compatibility describes observable API
 and runtime behavior; Mango does not reproduce Anthropic's private scheduler,
 storage, sandbox, or control plane.
 
+The [Claude Managed Agents documentation](https://platform.claude.com/docs/en/managed-agents/overview)
+and the pinned official Go SDK define the upstream target contract. This page
+is Mango's sole public delta ledger against that contract. Focused engineering
+work belongs in [GitHub Issues](https://github.com/yanpgwang/mango/issues), and
+shipped behavior belongs in
+[GitHub Releases](https://github.com/yanpgwang/mango/releases); Mango does not
+maintain a separate product roadmap.
+
 Use this page to decide whether a workflow is ready for your deployment:
 
 - **Supported** — implemented and exercised end to end for the stated scope.
@@ -82,5 +90,7 @@ black-box client, PostgreSQL transaction tests, Temporal replay and integration
 tests, and real PostgreSQL/Temporal/NATS/MinIO/Docker service tests.
 
 Mango has not published a versioned release. Published versions will appear in
-[GitHub Releases](https://github.com/yanpgwang/mango/releases). See
-[Roadmap](roadmap.md) for remaining work.
+[GitHub Releases](https://github.com/yanpgwang/mango/releases). Follow the
+[Claude Managed Agents documentation](https://platform.claude.com/docs/en/managed-agents/overview)
+for the upstream contract, this page for Mango's current delta, and
+[GitHub Issues](https://github.com/yanpgwang/mango/issues) for active work.
