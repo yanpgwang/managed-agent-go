@@ -23,7 +23,7 @@ import (
 	"github.com/moby/moby/api/pkg/authconfig"
 	"github.com/moby/moby/api/types/container"
 	dockerclient "github.com/moby/moby/client"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func dockerAvailable(t *testing.T) {
@@ -1428,7 +1428,7 @@ func TestDocker_DefaultResourceDirectoryFallsBackWithoutHome(t *testing.T) {
 	}
 	provider := providerInterface.(*dockerProvider)
 	want := filepath.Join(
-		os.TempDir(), fmt.Sprintf("managed-agent-resources-%d", os.Getuid()),
+		os.TempDir(), fmt.Sprintf("mango-resources-%d", os.Getuid()),
 	)
 	if provider.resourceBaseDir != want {
 		t.Fatalf("resourceBaseDir = %q, want %q", provider.resourceBaseDir, want)

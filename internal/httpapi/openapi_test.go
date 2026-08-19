@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/mango/internal/app"
 	"gopkg.in/yaml.v3"
 )
 

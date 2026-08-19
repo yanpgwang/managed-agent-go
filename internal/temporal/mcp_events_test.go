@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.temporal.io/sdk/testsuite"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/mcpclient"
+	"github.com/yanpgwang/mango/internal/model"
 )
 
 // mcpTurnTool is the pinned definition PrepareTurn produces for a discovered

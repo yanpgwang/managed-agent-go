@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // The public projection is a flat tagged union, so a committed MCP event must

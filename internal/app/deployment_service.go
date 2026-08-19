@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/robfig/cron"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 const (

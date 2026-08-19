@@ -88,13 +88,13 @@ is refused at startup by default**: a real model can be steered into running
 tool commands on the host with no isolation. The offline deterministic fake
 model plus the local sandbox (the zero-config default) always starts. To run a
 real model, either select the Docker provider (below) or, as a dev-only explicit
-override, set `MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1` — this accepts the
+override, set `MANGO_ALLOW_UNSAFE_LOCAL_SANDBOX=1` — this accepts the
 risk of running tool commands on the host unisolated and must never be used with
 untrusted input or in production.
 
 ### Docker provider
 
-Set `MANAGED_AGENT_SANDBOX=docker` to run each sandbox in a container. The
+Set `MANGO_SANDBOX=docker` to run each sandbox in a container. The
 provider talks directly to the Docker Engine API through the supported Moby Go
 client; it does not invoke the `docker` CLI. The client honors `DOCKER_HOST`,
 `DOCKER_API_VERSION`, and Docker TLS environment variables and negotiates a

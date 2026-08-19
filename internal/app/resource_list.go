@@ -3,7 +3,7 @@ package app
 import (
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // AgentListQuery is deliberately distinct from EnvironmentListQuery because

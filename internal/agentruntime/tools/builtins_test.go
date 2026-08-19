@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 func newSB(t *testing.T) sandbox.Sandbox {

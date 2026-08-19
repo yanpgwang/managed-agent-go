@@ -11,14 +11,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // testDatabaseURLEnv names the connection string for the integration test
 // database. When unset the PostgreSQL-backed tests skip, so `go test ./...`
 // passes with no local stack. The local dev stack (deployments/local) exposes a
 // suitable database at the documented default.
-const testDatabaseURLEnv = "MANAGED_AGENT_TEST_DATABASE_URL"
+const testDatabaseURLEnv = "MANGO_TEST_DATABASE_URL"
 
 // baseURL returns the configured admin/base database URL, or "" when the tests
 // should skip. It defaults to the local dev stack's connection string when the

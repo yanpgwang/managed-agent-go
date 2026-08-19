@@ -5,7 +5,7 @@ slug: /architecture
 
 # Architecture overview
 
-`managed-agent-go` is one codebase with explicit API and worker process roles.
+`mango` is one codebase with explicit API and worker process roles.
 PostgreSQL owns public resources and events, Temporal owns in-flight
 orchestration, and NATS Core carries ephemeral wakeups and previews. The local
 Compose stack runs those roles separately; they can also be packaged in one
@@ -109,7 +109,7 @@ model vendor, sandbox backend, or worker topology.
 
 | Package | Responsibility |
 | --- | --- |
-| `cmd/managed-agent` | Composition root, configuration, process lifecycle |
+| `cmd/mango` | Composition root, configuration, process lifecycle |
 | `internal/httpapi` | HTTP routes, strict validation, DTO mapping, SSE |
 | `internal/app` | Shared resource validation and transport-neutral use-case types |
 | `internal/blob` | S3-compatible storage for public File bytes and immutable Skill archives |

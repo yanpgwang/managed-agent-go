@@ -13,8 +13,8 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/lib/environments"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func TestOfficialGoSDKEnvironmentWorkSurface(t *testing.T) {

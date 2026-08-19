@@ -3,9 +3,9 @@ package temporal
 import (
 	"fmt"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/mango/internal/agentruntime"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
 )
 
 type preparedRequestContext struct {

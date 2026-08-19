@@ -17,32 +17,32 @@
 #
 # See deployments/local/README.md for the full workflow and connection strings.
 
-name: managed-agent-local
+name: mango-local
 
 services:
   postgres:
     image: postgres:17.5-alpine
-    container_name: managed-agent-postgres
+    container_name: mango-postgres
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       # Temporal's auto-setup creates its own `temporal` / `temporal_visibility`
       # databases. This default database is the application's ledger.
-      POSTGRES_DB: managed_agent
+      POSTGRES_DB: mango
     ports:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
     healthcheck:
       # pg_isready exits 0 only once the server accepts connections.
-      test: ["CMD-SHELL", "pg_isready -U postgres -d managed_agent"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d mango"]
       interval: 5s
       timeout: 5s
       retries: 20
 
   temporal:
     image: temporalio/auto-setup:1.29.7
-    container_name: managed-agent-temporal
+    container_name: mango-temporal
     depends_on:
       postgres:
         condition: service_healthy
@@ -66,7 +66,7 @@ services:
 
   temporal-ui:
     image: temporalio/ui:2.52.1
-    container_name: managed-agent-temporal-ui
+    container_name: mango-temporal-ui
     depends_on:
       temporal:
         condition: service_healthy
@@ -78,7 +78,7 @@ services:
 
   nats:
     image: nats:2.11.17-alpine
-    container_name: managed-agent-nats
+    container_name: mango-nats
     command:
       - "--http_port=8222"        # monitoring endpoint used by the health check
     ports:
@@ -92,7 +92,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
-    container_name: managed-agent-minio
+    container_name: mango-minio
     command: ["server", "/data"]
     environment:
       MINIO_ROOT_USER: minioadmin
@@ -111,8 +111,8 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile
-    image: managed-agent-go:local
-    container_name: managed-agent-api
+    image: mango:local
+    container_name: mango-api
     command: ["serve", "-addr", ":8080"]
     depends_on:
       postgres:
@@ -124,19 +124,19 @@ services:
       minio:
         condition: service_healthy
     environment:
-      MANAGED_AGENT_DATABASE_URL: postgres://postgres:postgres@postgres:5432/managed_agent?sslmode=disable
-      MANAGED_AGENT_API_KEY: ${MANAGED_AGENT_API_KEY:-sk-mango-local-development}
-      MANAGED_AGENT_TEMPORAL_HOSTPORT: temporal:7233
-      MANAGED_AGENT_TEMPORAL_NAMESPACE: default
-      MANAGED_AGENT_NATS_URL: nats://nats:4222
-      MANAGED_AGENT_FILE_S3_ENDPOINT: http://minio:9000
-      MANAGED_AGENT_FILE_S3_REGION: us-east-1
-      MANAGED_AGENT_FILE_S3_BUCKET: managed-agent-files
-      MANAGED_AGENT_FILE_S3_ACCESS_KEY: minioadmin
-      MANAGED_AGENT_FILE_S3_SECRET_KEY: minioadmin
-      MANAGED_AGENT_FILE_S3_PATH_STYLE: "true"
-      MANAGED_AGENT_FILE_S3_CREATE_BUCKET: "true"
-      MANAGED_AGENT_VAULT_KEYRING_FILE: /run/secrets/mango-vault-keyring.json
+      MANGO_DATABASE_URL: postgres://postgres:postgres@postgres:5432/mango?sslmode=disable
+      MANGO_API_KEY: ${MANGO_API_KEY:-sk-mango-local-development}
+      MANGO_TEMPORAL_HOSTPORT: temporal:7233
+      MANGO_TEMPORAL_NAMESPACE: default
+      MANGO_NATS_URL: nats://nats:4222
+      MANGO_FILE_S3_ENDPOINT: http://minio:9000
+      MANGO_FILE_S3_REGION: us-east-1
+      MANGO_FILE_S3_BUCKET: mango-files
+      MANGO_FILE_S3_ACCESS_KEY: minioadmin
+      MANGO_FILE_S3_SECRET_KEY: minioadmin
+      MANGO_FILE_S3_PATH_STYLE: "true"
+      MANGO_FILE_S3_CREATE_BUCKET: "true"
+      MANGO_VAULT_KEYRING_FILE: /run/secrets/mango-vault-keyring.json
     volumes:
       - ./vault-keyring.json:/run/secrets/mango-vault-keyring.json:ro
     ports:
@@ -148,11 +148,11 @@ services:
       retries: 20
 
   worker:
-    image: managed-agent-go:local
+    image: mango:local
     # The api service builds this shared image before Compose creates either
     # application container. Never attempt to pull this intentionally local tag.
     pull_policy: never
-    container_name: managed-agent-worker
+    container_name: mango-worker
     command: ["orchestrate"]
     # Keep the execution plane alive across Docker Desktop/daemon restarts. A
     # stopped worker leaves accepted messages pending indefinitely.
@@ -165,29 +165,29 @@ services:
       nats:
         condition: service_healthy
     environment:
-      MANAGED_AGENT_DATABASE_URL: postgres://postgres:postgres@postgres:5432/managed_agent?sslmode=disable
-      MANAGED_AGENT_TEMPORAL_HOSTPORT: temporal:7233
-      MANAGED_AGENT_TEMPORAL_NAMESPACE: default
-      MANAGED_AGENT_NATS_URL: nats://nats:4222
+      MANGO_DATABASE_URL: postgres://postgres:postgres@postgres:5432/mango?sslmode=disable
+      MANGO_TEMPORAL_HOSTPORT: temporal:7233
+      MANGO_TEMPORAL_NAMESPACE: default
+      MANGO_NATS_URL: nats://nats:4222
       # Model credentials are supplied by scripts/with-dev-env through Compose
       # interpolation. Empty values preserve the deterministic offline model.
-      MANAGED_AGENT_MODEL_BASE_URL: ${MANAGED_AGENT_MODEL_BASE_URL:-}
-      MANAGED_AGENT_MODEL_API_KEY: ${MANAGED_AGENT_MODEL_API_KEY:-}
-      MANAGED_AGENT_MODEL_ID: ${MANAGED_AGENT_MODEL_ID:-}
-      MANAGED_AGENT_MODEL_AUTH: ${MANAGED_AGENT_MODEL_AUTH:-x-api-key}
+      MANGO_MODEL_BASE_URL: ${MANGO_MODEL_BASE_URL:-}
+      MANGO_MODEL_API_KEY: ${MANGO_MODEL_API_KEY:-}
+      MANGO_MODEL_ID: ${MANGO_MODEL_ID:-}
+      MANGO_MODEL_AUTH: ${MANGO_MODEL_AUTH:-x-api-key}
       # The Compose worker is itself container-isolated. Running the nested
       # Docker provider would require host-visible bind paths for its child
       # sandboxes, so this local development service deliberately executes
       # tools inside the worker container instead.
-      MANAGED_AGENT_SANDBOX: local
-      MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX: "1"
-      MANAGED_AGENT_FILE_S3_ENDPOINT: http://minio:9000
-      MANAGED_AGENT_FILE_S3_REGION: us-east-1
-      MANAGED_AGENT_FILE_S3_BUCKET: managed-agent-files
-      MANAGED_AGENT_FILE_S3_ACCESS_KEY: minioadmin
-      MANAGED_AGENT_FILE_S3_SECRET_KEY: minioadmin
-      MANAGED_AGENT_FILE_S3_PATH_STYLE: "true"
-      MANAGED_AGENT_VAULT_KEYRING_FILE: /run/secrets/mango-vault-keyring.json
+      MANGO_SANDBOX: local
+      MANGO_ALLOW_UNSAFE_LOCAL_SANDBOX: "1"
+      MANGO_FILE_S3_ENDPOINT: http://minio:9000
+      MANGO_FILE_S3_REGION: us-east-1
+      MANGO_FILE_S3_BUCKET: mango-files
+      MANGO_FILE_S3_ACCESS_KEY: minioadmin
+      MANGO_FILE_S3_SECRET_KEY: minioadmin
+      MANGO_FILE_S3_PATH_STYLE: "true"
+      MANGO_VAULT_KEYRING_FILE: /run/secrets/mango-vault-keyring.json
     volumes:
       - ./vault-keyring.json:/run/secrets/mango-vault-keyring.json:ro
     healthcheck:

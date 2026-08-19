@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // An interrupted turn keeps a tool round only when the round durably completed.

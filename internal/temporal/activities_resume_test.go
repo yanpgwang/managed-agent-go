@@ -9,8 +9,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/agentruntime"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func TestPrepareTurnCompactsRequestButKeepsLosslessTranscriptDelta(t *testing.T) {
@@ -302,7 +302,7 @@ func TestPrepareTurn_SelectsThreadAgentRuntimeConfiguration(t *testing.T) {
 		t, prepared.Request.System, root+"/child-review/SKILL.md",
 	)
 	require.True(t, prepared.IsChild)
-	require.NotContains(t, prepared.Request.System, "<managed-agents-coordinator>")
+	require.NotContains(t, prepared.Request.System, "<mango-coordinator>")
 	require.NotContains(t, summarizeModelTools(prepared.Request.Tools), modelToolSummary{
 		Name: agentruntime.SendToAgentToolName,
 	})
@@ -511,7 +511,7 @@ func TestPrepareTurn_AttachesPrivateCoordinatorToolsOnlyToPrimary(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.False(t, prepared.IsChild)
-	require.Contains(t, prepared.Request.System, "<managed-agents-coordinator>")
+	require.Contains(t, prepared.Request.System, "<mango-coordinator>")
 	require.Contains(t, prepared.Request.System, "<agent-thread-message>")
 	tools := summarizeModelTools(prepared.Request.Tools)
 	require.Contains(t, tools, modelToolSummary{Name: agentruntime.ListAgentsToolName})
@@ -551,7 +551,7 @@ func TestPrepareTurn_AttachesAdvisorOnlyToPrimary(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.False(t, prepared.IsChild)
-	require.NotContains(t, prepared.Request.System, "<managed-agents-coordinator>")
+	require.NotContains(t, prepared.Request.System, "<mango-coordinator>")
 	require.Contains(t, prepared.Request.System, "<managed-advisor>")
 	require.Len(t, prepared.Request.Tools, 1)
 	require.Empty(t, prepared.Request.Tools[0].Type)

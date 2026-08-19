@@ -9,7 +9,7 @@ npm start
 ```
 
 The production defaults target GitHub Pages at
-`https://yanpgwang.github.io/managed-agent-go/`. Override `DOCS_URL` and
+`https://yanpgwang.github.io/mango/`. Override `DOCS_URL` and
 `DOCS_BASE_URL` when building for another host.
 
 The `.github/workflows/pages.yml` workflow builds and deploys the static site

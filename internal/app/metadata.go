@@ -1,7 +1,7 @@
 package app
 
 import (
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // The public metadata contract lives in the domain so resource state machines

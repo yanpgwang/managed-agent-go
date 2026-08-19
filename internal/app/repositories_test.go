@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // These repositories are deliberately test-only. They exercise application

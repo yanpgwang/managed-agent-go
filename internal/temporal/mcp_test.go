@@ -9,11 +9,11 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/agentruntime"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/mcpclient"
+	"github.com/yanpgwang/mango/internal/model"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 type fakeMCPClient struct {

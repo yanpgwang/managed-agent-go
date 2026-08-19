@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func TestFake_EchoesLastUserTextAndRecordsRequest(t *testing.T) {

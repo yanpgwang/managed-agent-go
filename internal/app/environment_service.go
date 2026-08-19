@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 type EnvironmentService struct {

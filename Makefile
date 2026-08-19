@@ -7,19 +7,19 @@ GOLANGCI_LINT ?= golangci-lint
 GOVULNCHECK ?= go run golang.org/x/vuln/cmd/govulncheck@v1.6.0
 
 BIN_DIR ?= bin
-BINARY ?= $(BIN_DIR)/managed-agent
-IMAGE ?= managed-agent-go:local
+BINARY ?= $(BIN_DIR)/mango
+IMAGE ?= mango:local
 VERSION ?= dev
 REVISION ?= $(shell git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
 GOPROXY ?=
 LINT_BASE ?= origin/main
-MANAGED_AGENT_TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable
-MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT ?= localhost:7233
-MANAGED_AGENT_TEST_NATS_URL ?= nats://localhost:4222
-MANAGED_AGENT_TEST_S3_ENDPOINT ?= http://localhost:9000
-MANAGED_AGENT_TEST_S3_BUCKET ?= managed-agent-test
-MANAGED_AGENT_TEST_S3_ACCESS_KEY ?= minioadmin
-MANAGED_AGENT_TEST_S3_SECRET_KEY ?= minioadmin
+MANGO_TEST_DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/mango?sslmode=disable
+MANGO_TEST_TEMPORAL_HOSTPORT ?= localhost:7233
+MANGO_TEST_NATS_URL ?= nats://localhost:4222
+MANGO_TEST_S3_ENDPOINT ?= http://localhost:9000
+MANGO_TEST_S3_BUCKET ?= mango-test
+MANGO_TEST_S3_ACCESS_KEY ?= minioadmin
+MANGO_TEST_S3_SECRET_KEY ?= minioadmin
 
 DOCKER_BUILD_ARGS := --build-arg VERSION=$(VERSION) --build-arg REVISION=$(REVISION)
 ifneq ($(strip $(GOPROXY)),)
@@ -60,7 +60,7 @@ help:
 
 build:
 	@mkdir -p $(BIN_DIR)
-	$(GO) build -trimpath -o $(BINARY) ./cmd/managed-agent
+	$(GO) build -trimpath -o $(BINARY) ./cmd/mango
 
 lint:
 	$(GOLANGCI_LINT) run --new-from-rev=$(LINT_BASE) ./...
@@ -72,24 +72,24 @@ test-race:
 	$(GO) test -race ./...
 
 test-service:
-	MANAGED_AGENT_TEST_LIVE_MODEL=0 \
-	MANAGED_AGENT_TEST_DATABASE_URL='$(MANAGED_AGENT_TEST_DATABASE_URL)' \
-	MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT='$(MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT)' \
-	MANAGED_AGENT_TEST_NATS_URL='$(MANAGED_AGENT_TEST_NATS_URL)' \
-	MANAGED_AGENT_TEST_S3_ENDPOINT='$(MANAGED_AGENT_TEST_S3_ENDPOINT)' \
-	MANAGED_AGENT_TEST_S3_BUCKET='$(MANAGED_AGENT_TEST_S3_BUCKET)' \
-	MANAGED_AGENT_TEST_S3_ACCESS_KEY='$(MANAGED_AGENT_TEST_S3_ACCESS_KEY)' \
-	MANAGED_AGENT_TEST_S3_SECRET_KEY='$(MANAGED_AGENT_TEST_S3_SECRET_KEY)' \
+	MANGO_TEST_LIVE_MODEL=0 \
+	MANGO_TEST_DATABASE_URL='$(MANGO_TEST_DATABASE_URL)' \
+	MANGO_TEST_TEMPORAL_HOSTPORT='$(MANGO_TEST_TEMPORAL_HOSTPORT)' \
+	MANGO_TEST_NATS_URL='$(MANGO_TEST_NATS_URL)' \
+	MANGO_TEST_S3_ENDPOINT='$(MANGO_TEST_S3_ENDPOINT)' \
+	MANGO_TEST_S3_BUCKET='$(MANGO_TEST_S3_BUCKET)' \
+	MANGO_TEST_S3_ACCESS_KEY='$(MANGO_TEST_S3_ACCESS_KEY)' \
+	MANGO_TEST_S3_SECRET_KEY='$(MANGO_TEST_S3_SECRET_KEY)' \
 	$(GO) test ./... -count=1
 
 test-model-live:
-	MANAGED_AGENT_TEST_LIVE_MODEL=1 \
+	MANGO_TEST_LIVE_MODEL=1 \
 	$(GO) test ./internal/model -run '^TestAnthropic_LiveMessagesConformance$$' -count=1
 
 test-platform-live:
-	MANAGED_AGENT_TEST_LIVE_MODEL=1 \
-	MANAGED_AGENT_TEST_DATABASE_URL='$(MANAGED_AGENT_TEST_DATABASE_URL)' \
-	MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT='$(MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT)' \
+	MANGO_TEST_LIVE_MODEL=1 \
+	MANGO_TEST_DATABASE_URL='$(MANGO_TEST_DATABASE_URL)' \
+	MANGO_TEST_TEMPORAL_HOSTPORT='$(MANGO_TEST_TEMPORAL_HOSTPORT)' \
 	$(GO) test ./internal/temporal -run '^TestVerticalSlice_LiveModel(EndToEnd|ToolStepEndToEnd)$$' -count=1
 
 vet:

@@ -8,8 +8,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/mcpclient"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 // ProjectMCPResult separates a protocol-native MCP result from the content sent

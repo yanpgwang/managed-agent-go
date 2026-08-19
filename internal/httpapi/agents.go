@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request) {

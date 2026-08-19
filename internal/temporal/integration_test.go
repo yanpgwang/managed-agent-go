@@ -16,13 +16,13 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
+	"github.com/yanpgwang/mango/internal/agentruntime"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
+	"github.com/yanpgwang/mango/internal/pg"
+	"github.com/yanpgwang/mango/internal/sandbox"
+	temporalpkg "github.com/yanpgwang/mango/internal/temporal"
 )
 
 // TestVerticalSlice_EndToEnd is the real integration path required by the
@@ -33,18 +33,18 @@ import (
 // authoritative agent.message plus terminal idle land in PostgreSQL in receipt
 // order with the session projected back to idle.
 //
-// It skips unless BOTH MANAGED_AGENT_TEST_DATABASE_URL and
-// MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT are set, so `go test ./...` passes with no
+// It skips unless BOTH MANGO_TEST_DATABASE_URL and
+// MANGO_TEST_TEMPORAL_HOSTPORT are set, so `go test ./...` passes with no
 // local stack. The local dev stack (deployments/local) satisfies both.
 func TestVerticalSlice_EndToEnd(t *testing.T) {
 	runVerticalSliceEndToEnd(t, model.NewFake(), "fake", 30*time.Second)
 }
 
 func TestVerticalSlice_MultiagentDelegationEndToEnd(t *testing.T) {
-	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
-	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
+	dbURL := os.Getenv("MANGO_TEST_DATABASE_URL")
+	hostPort := os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT")
 	if dbURL == "" || hostPort == "" {
-		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the multiagent end-to-end slice")
+		t.Skip("set MANGO_TEST_DATABASE_URL and MANGO_TEST_TEMPORAL_HOSTPORT to run the multiagent end-to-end slice")
 	}
 	ctx := context.Background()
 	store, cleanup := integrationStore(t, dbURL)
@@ -61,7 +61,7 @@ func TestVerticalSlice_MultiagentDelegationEndToEnd(t *testing.T) {
 		TemporalClient: c, Store: store, ModelClient: probe,
 		SandboxProvider: sandbox.NewLocalProvider(), IDGenerator: ids,
 		RelayConfig: temporalpkg.RelayConfig{PollInterval: 50 * time.Millisecond},
-		TaskQueue:   "managed-agent-multiagent-test-" + ids.NewID(""),
+		TaskQueue:   "mango-multiagent-test-" + ids.NewID(""),
 	})
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)
@@ -230,7 +230,7 @@ func (m *multiagentProbeModel) CreateMessage(
 		m.coordinatorCalls++
 		switch m.coordinatorCalls {
 		case 1:
-			if !strings.Contains(req.System, "<managed-agents-coordinator>") {
+			if !strings.Contains(req.System, "<mango-coordinator>") {
 				return model.Response{}, fmt.Errorf("coordinator runtime context was not attached")
 			}
 			if !requestHasTool(req, agentruntime.SendToAgentToolName) ||
@@ -335,23 +335,23 @@ func TestVerticalSlice_LiveModelEndToEnd(t *testing.T) {
 
 func liveModelForTest(t *testing.T, purpose string) (model.Client, string) {
 	t.Helper()
-	if os.Getenv("MANAGED_AGENT_TEST_LIVE_MODEL") != "1" {
-		t.Skipf("set MANAGED_AGENT_TEST_LIVE_MODEL=1 to run the live-model %s", purpose)
+	if os.Getenv("MANGO_TEST_LIVE_MODEL") != "1" {
+		t.Skipf("set MANGO_TEST_LIVE_MODEL=1 to run the live-model %s", purpose)
 	}
-	if os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL") == "" ||
-		os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT") == "" {
-		t.Skipf("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the live-model %s", purpose)
+	if os.Getenv("MANGO_TEST_DATABASE_URL") == "" ||
+		os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT") == "" {
+		t.Skipf("set MANGO_TEST_DATABASE_URL and MANGO_TEST_TEMPORAL_HOSTPORT to run the live-model %s", purpose)
 	}
-	modelID := strings.TrimSpace(os.Getenv("MANAGED_AGENT_MODEL_ID"))
+	modelID := strings.TrimSpace(os.Getenv("MANGO_MODEL_ID"))
 	if modelID == "" {
-		t.Fatalf("MANAGED_AGENT_MODEL_ID is required for the live-model %s", purpose)
+		t.Fatalf("MANGO_MODEL_ID is required for the live-model %s", purpose)
 	}
 	modelClient, configured, err := model.AnthropicFromEnv()
 	if err != nil {
 		t.Fatalf("configure live model: %v", err)
 	}
 	if !configured {
-		t.Fatalf("MANAGED_AGENT_MODEL_BASE_URL and MANAGED_AGENT_MODEL_API_KEY are required for the live-model %s", purpose)
+		t.Fatalf("MANGO_MODEL_BASE_URL and MANGO_MODEL_API_KEY are required for the live-model %s", purpose)
 	}
 	return modelClient, modelID
 }
@@ -363,10 +363,10 @@ func runVerticalSliceEndToEnd(
 	testTimeout time.Duration,
 ) {
 	t.Helper()
-	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
-	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
+	dbURL := os.Getenv("MANGO_TEST_DATABASE_URL")
+	hostPort := os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT")
 	if dbURL == "" || hostPort == "" {
-		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the real end-to-end slice")
+		t.Skip("set MANGO_TEST_DATABASE_URL and MANGO_TEST_TEMPORAL_HOSTPORT to run the real end-to-end slice")
 	}
 	ctx := context.Background()
 
@@ -390,7 +390,7 @@ func runVerticalSliceEndToEnd(
 		SandboxProvider: sandbox.NewLocalProvider(),
 		IDGenerator:     ids,
 		RelayConfig:     temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
-		TaskQueue:       "managed-agent-test-" + ids.NewID(""),
+		TaskQueue:       "mango-test-" + ids.NewID(""),
 	})
 
 	// Start the worker.
@@ -485,10 +485,10 @@ func runVerticalSliceEndToEnd(
 // the persisted sandbox through the deterministic cleanup Workflow, and
 // physically finalize the Session without another DELETE request.
 func TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd(t *testing.T) {
-	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
-	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
+	dbURL := os.Getenv("MANGO_TEST_DATABASE_URL")
+	hostPort := os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT")
 	if dbURL == "" || hostPort == "" {
-		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run lifecycle recovery")
+		t.Skip("set MANGO_TEST_DATABASE_URL and MANGO_TEST_TEMPORAL_HOSTPORT to run lifecycle recovery")
 	}
 	ctx := context.Background()
 	store, cleanup := integrationStore(t, dbURL)
@@ -507,7 +507,7 @@ func TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd(t *testing.T) {
 		SandboxProvider: sandbox.NewLocalProvider(),
 		IDGenerator:     ids,
 		RelayConfig:     temporalpkg.RelayConfig{},
-		TaskQueue:       "managed-agent-lifecycle-test-" + ids.NewID(""),
+		TaskQueue:       "mango-lifecycle-test-" + ids.NewID(""),
 	})
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)
@@ -605,10 +605,10 @@ func TestLifecycleReconciler_RecoversPreparedDeletionEndToEnd(t *testing.T) {
 // Workflow, the Workflow rereads the durable ledger, and only then requests
 // cancellation of the heartbeat-enabled model Activity.
 func TestVerticalSlice_InterruptCancelsModelActivity(t *testing.T) {
-	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
-	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
+	dbURL := os.Getenv("MANGO_TEST_DATABASE_URL")
+	hostPort := os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT")
 	if dbURL == "" || hostPort == "" {
-		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the interrupt end-to-end slice")
+		t.Skip("set MANGO_TEST_DATABASE_URL and MANGO_TEST_TEMPORAL_HOSTPORT to run the interrupt end-to-end slice")
 	}
 	ctx := context.Background()
 
@@ -630,7 +630,7 @@ func TestVerticalSlice_InterruptCancelsModelActivity(t *testing.T) {
 		SandboxProvider: sandbox.NewLocalProvider(),
 		IDGenerator:     ids,
 		RelayConfig:     temporalpkg.RelayConfig{PollInterval: 200 * time.Millisecond},
-		TaskQueue:       "managed-agent-test-" + ids.NewID(""),
+		TaskQueue:       "mango-test-" + ids.NewID(""),
 	})
 	if err := runtime.Worker.Start(); err != nil {
 		t.Fatalf("worker start: %v", err)
@@ -756,7 +756,7 @@ func TestVerticalSlice_InterruptCancelsModelActivity(t *testing.T) {
 // terminal idle to PostgreSQL. Skips unless both the DB and Temporal env vars
 // are set.
 func TestVerticalSlice_ToolStepEndToEnd(t *testing.T) {
-	const marker = "managed-agent-temporal-local-ok"
+	const marker = "mango-temporal-local-ok"
 	runToolStepEndToEnd(t, toolStepCase{
 		provider: sandbox.NewLocalProvider(),
 		modelClient: toolProbeModel{
@@ -804,12 +804,12 @@ func TestVerticalSlice_LiveModelToolStepEndToEnd(t *testing.T) {
 // non-error tool_result therefore proves the Activity actually executed inside
 // the provisioned container, not merely that Docker provisioning succeeded.
 func TestVerticalSlice_DockerToolStepEndToEnd(t *testing.T) {
-	if os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL") == "" ||
-		os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT") == "" {
-		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the Docker tool end-to-end slice")
+	if os.Getenv("MANGO_TEST_DATABASE_URL") == "" ||
+		os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT") == "" {
+		t.Skip("set MANGO_TEST_DATABASE_URL and MANGO_TEST_TEMPORAL_HOSTPORT to run the Docker tool end-to-end slice")
 	}
 	provider := dockerProviderForTest(t, dockerOptional)
-	const marker = "managed-agent-temporal-docker-ok"
+	const marker = "mango-temporal-docker-ok"
 	runToolStepEndToEnd(t, toolStepCase{
 		provider: provider,
 		modelClient: toolProbeModel{
@@ -832,9 +832,9 @@ func TestVerticalSlice_DockerToolStepEndToEnd(t *testing.T) {
 // extracts the canonical archive, and the runtime injects the complete SKILL.md
 // without asking the model to call read or bash.
 func TestVerticalSlice_DockerSkillRuntimeEndToEnd(t *testing.T) {
-	if os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL") == "" ||
-		os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT") == "" {
-		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the Docker Skill end-to-end slice")
+	if os.Getenv("MANGO_TEST_DATABASE_URL") == "" ||
+		os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT") == "" {
+		t.Skip("set MANGO_TEST_DATABASE_URL and MANGO_TEST_TEMPORAL_HOSTPORT to run the Docker Skill end-to-end slice")
 	}
 	provider := dockerProviderForTest(t, dockerOptional)
 	runToolStepEndToEnd(t, toolStepCase{
@@ -975,10 +975,10 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 	if tc.expectedToolOutput == "" {
 		t.Fatal("tool step test expected output must be non-empty")
 	}
-	dbURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
-	hostPort := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
+	dbURL := os.Getenv("MANGO_TEST_DATABASE_URL")
+	hostPort := os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT")
 	if dbURL == "" || hostPort == "" {
-		t.Skip("set MANAGED_AGENT_TEST_DATABASE_URL and MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT to run the tool end-to-end slice")
+		t.Skip("set MANGO_TEST_DATABASE_URL and MANGO_TEST_TEMPORAL_HOSTPORT to run the tool end-to-end slice")
 	}
 	ctx := context.Background()
 
@@ -997,7 +997,7 @@ func runToolStepEndToEnd(t *testing.T, tc toolStepCase) {
 	if tc.setup != nil {
 		skills, resources = tc.setup(t, ctx, store, ids)
 	}
-	taskQueue := "managed-agent-test-" + ids.NewID("")
+	taskQueue := "mango-test-" + ids.NewID("")
 	runtime := temporalpkg.NewRuntime(temporalpkg.RuntimeConfig{
 		TemporalClient:  c,
 		Store:           store,
@@ -1499,7 +1499,7 @@ func terminateIntegrationWorkflow(t *testing.T, c client.Client, workflowID stri
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := c.TerminateWorkflow(ctx, workflowID, "", "managed-agent integration test cleanup"); err != nil {
+	if err := c.TerminateWorkflow(ctx, workflowID, "", "mango integration test cleanup"); err != nil {
 		var notFound *serviceerror.NotFound
 		if errors.As(err, &notFound) {
 			return

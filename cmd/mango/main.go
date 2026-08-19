@@ -14,19 +14,19 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/blob"
-	"github.com/yanpgwang/managed-agent-go/internal/controlplane"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
-	"github.com/yanpgwang/managed-agent-go/internal/live"
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
-	"github.com/yanpgwang/managed-agent-go/internal/oauthclient"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
-	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/blob"
+	"github.com/yanpgwang/mango/internal/controlplane"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/httpapi"
+	"github.com/yanpgwang/mango/internal/live"
+	"github.com/yanpgwang/mango/internal/mcpclient"
+	"github.com/yanpgwang/mango/internal/model"
+	"github.com/yanpgwang/mango/internal/oauthclient"
+	"github.com/yanpgwang/mango/internal/pg"
+	"github.com/yanpgwang/mango/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/secretcrypto"
+	temporalpkg "github.com/yanpgwang/mango/internal/temporal"
 )
 
 // defaultAddr binds to loopback by default so a fresh `serve` never exposes the
@@ -37,12 +37,12 @@ const defaultAddr = "127.0.0.1:8080"
 // unsafeLocalSandboxEnv, when set to "1", permits running a real
 // (network-backed) model against the local, non-isolating sandbox. See
 // guardModelSandbox.
-const unsafeLocalSandboxEnv = "MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX"
+const unsafeLocalSandboxEnv = "MANGO_ALLOW_UNSAFE_LOCAL_SANDBOX"
 
 const (
-	sandboxProviderEnv    = "MANAGED_AGENT_SANDBOX"
-	sandboxImageEnv       = "MANAGED_AGENT_SANDBOX_IMAGE"
-	sandboxResourceDirEnv = "MANAGED_AGENT_SANDBOX_RESOURCE_DIR"
+	sandboxProviderEnv    = "MANGO_SANDBOX"
+	sandboxImageEnv       = "MANGO_SANDBOX_IMAGE"
+	sandboxResourceDirEnv = "MANGO_SANDBOX_RESOURCE_DIR"
 
 	e2bAPIKeyEnv      = "E2B_API_KEY"
 	e2bAPIURLEnv      = "E2B_API_URL"
@@ -71,16 +71,16 @@ const (
 	daytonaImageEnv     = "DAYTONA_IMAGE"
 	daytonaAutoPauseEnv = "DAYTONA_AUTO_PAUSE_MINUTES"
 
-	fileS3EndpointEnv     = "MANAGED_AGENT_FILE_S3_ENDPOINT"
-	fileS3RegionEnv       = "MANAGED_AGENT_FILE_S3_REGION"
-	fileS3BucketEnv       = "MANAGED_AGENT_FILE_S3_BUCKET"
-	fileS3AccessKeyEnv    = "MANAGED_AGENT_FILE_S3_ACCESS_KEY"
-	fileS3SecretKeyEnv    = "MANAGED_AGENT_FILE_S3_SECRET_KEY"
-	fileS3PathStyleEnv    = "MANAGED_AGENT_FILE_S3_PATH_STYLE"
-	fileS3CreateBucketEnv = "MANAGED_AGENT_FILE_S3_CREATE_BUCKET"
-	fileUploadTempDirEnv  = "MANAGED_AGENT_FILE_UPLOAD_TEMP_DIR"
+	fileS3EndpointEnv     = "MANGO_FILE_S3_ENDPOINT"
+	fileS3RegionEnv       = "MANGO_FILE_S3_REGION"
+	fileS3BucketEnv       = "MANGO_FILE_S3_BUCKET"
+	fileS3AccessKeyEnv    = "MANGO_FILE_S3_ACCESS_KEY"
+	fileS3SecretKeyEnv    = "MANGO_FILE_S3_SECRET_KEY"
+	fileS3PathStyleEnv    = "MANGO_FILE_S3_PATH_STYLE"
+	fileS3CreateBucketEnv = "MANGO_FILE_S3_CREATE_BUCKET"
+	fileUploadTempDirEnv  = "MANGO_FILE_UPLOAD_TEMP_DIR"
 
-	vaultKeyringFileEnv = "MANAGED_AGENT_VAULT_KEYRING_FILE"
+	vaultKeyringFileEnv = "MANGO_VAULT_KEYRING_FILE"
 )
 
 // resolveModelClient returns the worker model client and reports whether it is
@@ -355,7 +355,7 @@ func configuredSandboxProviderName() string {
 // with the local sandbox, which is a dev-grade guardrail and not a security
 // boundary: a real model can be steered into executing tool commands that run on
 // the host with no isolation. The pairing is permitted only when the operator
-// explicitly sets MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1. The deterministic
+// explicitly sets MANGO_ALLOW_UNSAFE_LOCAL_SANDBOX=1. The deterministic
 // fake model + local sandbox (the zero-config default) is always allowed, as is
 // any model against the Docker sandbox.
 func guardModelSandbox(realModel, localSandbox, allowUnsafe bool) error {
@@ -363,7 +363,7 @@ func guardModelSandbox(realModel, localSandbox, allowUnsafe bool) error {
 		return errors.New("refusing to run a real model against the local sandbox: " +
 			"the local sandbox is a dev-grade guardrail, not a security boundary, and a " +
 			"real model can run tool commands on the host with no isolation. " +
-			"Set MANAGED_AGENT_SANDBOX=docker for real isolation, or set " +
+			"Set MANGO_SANDBOX=docker for real isolation, or set " +
 			unsafeLocalSandboxEnv + "=1 to override this check at your own risk")
 	}
 	return nil
@@ -391,7 +391,7 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 
 func main() {
 	if len(os.Args) < 2 {
-		log.Fatal("usage: managed-agent <serve|orchestrate|workspace|api-key> [flags]")
+		log.Fatal("usage: mango <serve|orchestrate|workspace|api-key> [flags]")
 	}
 	switch os.Args[1] {
 	case "serve":
@@ -403,7 +403,7 @@ func main() {
 	case "api-key":
 		runAPIKeyCommand()
 	default:
-		log.Fatal("usage: managed-agent <serve|orchestrate|workspace|api-key> [flags]")
+		log.Fatal("usage: mango <serve|orchestrate|workspace|api-key> [flags]")
 	}
 }
 
@@ -421,7 +421,7 @@ func runServe() {
 
 func runWorkspaceCommand() {
 	if len(os.Args) < 3 {
-		log.Fatal("usage: managed-agent workspace <create|list> [flags]")
+		log.Fatal("usage: mango workspace <create|list> [flags]")
 	}
 	switch os.Args[2] {
 	case "create":
@@ -454,13 +454,13 @@ func runWorkspaceCommand() {
 			log.Fatalf("workspace list: %v", err)
 		}
 	default:
-		log.Fatal("usage: managed-agent workspace <create|list> [flags]")
+		log.Fatal("usage: mango workspace <create|list> [flags]")
 	}
 }
 
 func runAPIKeyCommand() {
 	if len(os.Args) < 3 {
-		log.Fatal("usage: managed-agent api-key <create|list|revoke> [flags]")
+		log.Fatal("usage: mango api-key <create|list|revoke> [flags]")
 	}
 	switch os.Args[2] {
 	case "create":
@@ -519,7 +519,7 @@ func runAPIKeyCommand() {
 		}
 		fmt.Printf("revoked\t%s\n", *id)
 	default:
-		log.Fatal("usage: managed-agent api-key <create|list|revoke> [flags]")
+		log.Fatal("usage: mango api-key <create|list|revoke> [flags]")
 	}
 }
 
@@ -568,7 +568,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		log.Fatalf("serve: count API keys: %v", err)
 	}
 	if keyCount == 0 {
-		log.Fatalf("serve: no active API key; set %s or run managed-agent api-key create", envAPIKey)
+		log.Fatalf("serve: no active API key; set %s or run mango api-key create", envAPIKey)
 	}
 	cfg.Authenticator = pgStore
 	systemStore := pg.NewSystemStore(pool, ids, clock)

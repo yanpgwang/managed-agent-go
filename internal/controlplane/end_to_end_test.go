@@ -12,20 +12,20 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
-	"github.com/yanpgwang/managed-agent-go/internal/live"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/httpapi"
+	"github.com/yanpgwang/mango/internal/live"
+	"github.com/yanpgwang/mango/internal/model"
+	"github.com/yanpgwang/mango/internal/pg"
+	"github.com/yanpgwang/mango/internal/sandbox"
+	temporalpkg "github.com/yanpgwang/mango/internal/temporal"
 	enumspb "go.temporal.io/api/enums/v1"
 )
 
 func TestHTTPPostgresTemporalNATSEndToEnd(t *testing.T) {
-	temporalAddress := os.Getenv("MANAGED_AGENT_TEST_TEMPORAL_HOSTPORT")
-	natsURL := os.Getenv("MANAGED_AGENT_TEST_NATS_URL")
+	temporalAddress := os.Getenv("MANGO_TEST_TEMPORAL_HOSTPORT")
+	natsURL := os.Getenv("MANGO_TEST_NATS_URL")
 	if os.Getenv(testDatabaseURLEnv) == "" || temporalAddress == "" || natsURL == "" {
 		t.Skip("PostgreSQL/Temporal/NATS integration environment is not configured")
 	}
@@ -54,7 +54,7 @@ func TestHTTPPostgresTemporalNATSEndToEnd(t *testing.T) {
 		SandboxProvider:  sandbox.NewLocalProvider(),
 		IDGenerator:      fixture.ids,
 		RelayConfig:      temporalpkg.RelayConfig{PollInterval: 20 * time.Millisecond},
-		TaskQueue:        "managed-agent-test-" + domain.NewRandomIDGen().NewID(""),
+		TaskQueue:        "mango-test-" + domain.NewRandomIDGen().NewID(""),
 		PreviewPublisher: broker,
 	})
 	if err := runtime.Worker.Start(); err != nil {

@@ -10,8 +10,8 @@ infrastructure versions and health checks.
 | Temporal UI| `temporalio/ui:2.52.1`         | `8233` → container `8080`   | Workflow explorer at <http://localhost:8233>.        |
 | NATS Core  | `nats:2.11.17-alpine`          | `4222` (client), `8222` (monitoring) | Ephemeral previews and SSE wakeups; PostgreSQL cursor reads repair loss. |
 | MinIO      | `minio/minio:RELEASE.2025-09-07T16-13-09Z` | `9000` | S3-compatible File bytes for development and service conformance. |
-| API        | `managed-agent-go:local`        | `8080`                      | PostgreSQL-backed Managed Agents-compatible HTTP API. |
-| Worker     | `managed-agent-go:local`        | —                           | Temporal worker and PostgreSQL outbox relay. |
+| API        | `mango:local`        | `8080`                      | PostgreSQL-backed Managed Agents-compatible HTTP API. |
+| Worker     | `mango:local`        | —                           | Temporal worker and PostgreSQL outbox relay. |
 
 The Go module pins the matching client libraries: `go.temporal.io/sdk`,
 `github.com/jackc/pgx/v5`, `github.com/pressly/goose/v3`, and
@@ -32,7 +32,7 @@ worker uses the real Messages endpoint. A missing file or empty model values
 keep the offline deterministic model.
 
 The API bootstraps `sk-mango-local-development` for the default Workspace.
-Override it with `MANAGED_AGENT_API_KEY` before `make local-up`; never reuse the
+Override it with `MANGO_API_KEY` before `make local-up`; never reuse the
 bundled value outside local development.
 
 `make health` returns only once Postgres accepts connections, the Temporal
@@ -50,27 +50,27 @@ docker compose -f deployments/local/compose.yaml ps
 
 ```sh
 # Application database (pgx / goose / sqlc)
-export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
-export MANAGED_AGENT_API_KEY="sk-mango-local-development"
+export MANGO_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mango?sslmode=disable"
+export MANGO_API_KEY="sk-mango-local-development"
 
 # Temporal frontend (Go SDK client)
-export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
-export MANAGED_AGENT_TEMPORAL_NAMESPACE="default"
+export MANGO_TEMPORAL_HOSTPORT="localhost:7233"
+export MANGO_TEMPORAL_NAMESPACE="default"
 
 # NATS Core live channel
-export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
+export MANGO_NATS_URL="nats://localhost:4222"
 
 # Files API object store
-export MANAGED_AGENT_FILE_S3_ENDPOINT="http://localhost:9000"
-export MANAGED_AGENT_FILE_S3_REGION="us-east-1"
-export MANAGED_AGENT_FILE_S3_BUCKET="managed-agent-files"
-export MANAGED_AGENT_FILE_S3_ACCESS_KEY="minioadmin"
-export MANAGED_AGENT_FILE_S3_SECRET_KEY="minioadmin"
-export MANAGED_AGENT_FILE_S3_PATH_STYLE="true"
-export MANAGED_AGENT_FILE_S3_CREATE_BUCKET="true"
+export MANGO_FILE_S3_ENDPOINT="http://localhost:9000"
+export MANGO_FILE_S3_REGION="us-east-1"
+export MANGO_FILE_S3_BUCKET="mango-files"
+export MANGO_FILE_S3_ACCESS_KEY="minioadmin"
+export MANGO_FILE_S3_SECRET_KEY="minioadmin"
+export MANGO_FILE_S3_PATH_STYLE="true"
+export MANGO_FILE_S3_CREATE_BUCKET="true"
 
 # Vault API keyring (the Compose stack mounts its development-only keyring).
-export MANAGED_AGENT_VAULT_KEYRING_FILE="$PWD/deployments/local/vault-keyring.json"
+export MANGO_VAULT_KEYRING_FILE="$PWD/deployments/local/vault-keyring.json"
 ```
 
 The `default` Temporal namespace is created automatically by `auto-setup`.
@@ -95,7 +95,7 @@ schema; workflow, object, and sandbox cleanup is part of the assertions.
 
 Each service declares a Docker `healthcheck`:
 
-- **postgres** — `pg_isready -U postgres -d managed_agent`
+- **postgres** — `pg_isready -U postgres -d mango`
 - **temporal** — `tctl --address temporal:7233 cluster health`
 - **nats** — HTTP `GET /healthz` on the monitoring port
 - **minio** — HTTP `GET /minio/health/live`

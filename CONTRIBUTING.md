@@ -1,4 +1,4 @@
-# Contributing to managed-agent-go
+# Contributing to mango
 
 Thanks for helping improve the project. This repository is a clean-room,
 self-hosted runtime with a Claude-compatible integration surface, so changes
@@ -74,7 +74,7 @@ make test-model-live
 make test-platform-live
 ```
 
-The live targets require the `MANAGED_AGENT_MODEL_*` variables documented in
+The live targets require the `MANGO_MODEL_*` variables documented in
 the getting-started guide. They are intentionally not run in public CI and must
 never print or persist API keys.
 

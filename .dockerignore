@@ -6,7 +6,7 @@ assets
 bin
 deployments
 docs
-managed-agent.db
+mango.db
 *.db-shm
 *.db-wal
 website

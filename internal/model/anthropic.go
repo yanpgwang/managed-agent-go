@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 var _ Client = (*Anthropic)(nil)
@@ -60,16 +60,16 @@ func NewAnthropic(cfg AnthropicConfig) (*Anthropic, error) {
 // (nil, false, nil) when the base URL or key is unset, so the caller falls back
 // to the offline fake without error.
 func AnthropicFromEnv() (*Anthropic, bool, error) {
-	base := os.Getenv("MANAGED_AGENT_MODEL_BASE_URL")
-	key := os.Getenv("MANAGED_AGENT_MODEL_API_KEY")
+	base := os.Getenv("MANGO_MODEL_BASE_URL")
+	key := os.Getenv("MANGO_MODEL_API_KEY")
 	if base == "" || key == "" {
 		return nil, false, nil
 	}
-	auth := os.Getenv("MANAGED_AGENT_MODEL_AUTH")
+	auth := os.Getenv("MANGO_MODEL_AUTH")
 	c, err := NewAnthropic(AnthropicConfig{
 		BaseURL:    base,
 		APIKey:     key,
-		Model:      os.Getenv("MANAGED_AGENT_MODEL_ID"),
+		Model:      os.Getenv("MANGO_MODEL_ID"),
 		AuthHeader: auth,
 	})
 	if err != nil {

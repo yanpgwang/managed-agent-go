@@ -6,7 +6,7 @@ slug: /api/vaults
 # Vaults and Credentials
 
 Vaults group write-only credentials used by MCP connections. The API is
-enabled only when `MANAGED_AGENT_VAULT_KEYRING_FILE` points to a valid
+enabled only when `MANGO_VAULT_KEYRING_FILE` points to a valid
 operator-mounted keyring.
 
 The thirteen operations cover Vault and Credential create/get/update/list/

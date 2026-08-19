@@ -14,7 +14,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // ErrNotFound means a durable provider reference no longer resolves to a

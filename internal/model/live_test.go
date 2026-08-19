@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // TestAnthropic_LiveMessagesConformance verifies the smallest external model
@@ -15,19 +15,19 @@ import (
 // with a non-empty text response. It is opt-in because it uses credentials,
 // reaches the network, and may incur provider cost.
 func TestAnthropic_LiveMessagesConformance(t *testing.T) {
-	if os.Getenv("MANAGED_AGENT_TEST_LIVE_MODEL") != "1" {
-		t.Skip("set MANAGED_AGENT_TEST_LIVE_MODEL=1 to run the live model conformance test")
+	if os.Getenv("MANGO_TEST_LIVE_MODEL") != "1" {
+		t.Skip("set MANGO_TEST_LIVE_MODEL=1 to run the live model conformance test")
 	}
-	modelID := strings.TrimSpace(os.Getenv("MANAGED_AGENT_MODEL_ID"))
+	modelID := strings.TrimSpace(os.Getenv("MANGO_MODEL_ID"))
 	if modelID == "" {
-		t.Fatal("MANAGED_AGENT_MODEL_ID is required for the live model conformance test")
+		t.Fatal("MANGO_MODEL_ID is required for the live model conformance test")
 	}
 	client, configured, err := AnthropicFromEnv()
 	if err != nil {
 		t.Fatalf("configure live model: %v", err)
 	}
 	if !configured {
-		t.Fatal("MANAGED_AGENT_MODEL_BASE_URL and MANAGED_AGENT_MODEL_API_KEY are required for the live model conformance test")
+		t.Fatal("MANGO_MODEL_BASE_URL and MANGO_MODEL_API_KEY are required for the live model conformance test")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)

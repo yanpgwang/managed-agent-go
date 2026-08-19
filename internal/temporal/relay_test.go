@@ -6,7 +6,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
+	"github.com/yanpgwang/mango/internal/pg"
 )
 
 // fakeOutbox is an in-memory OutboxStore for relay crash-boundary tests. It

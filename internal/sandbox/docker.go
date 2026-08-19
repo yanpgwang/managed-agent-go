@@ -29,7 +29,7 @@ import (
 	"github.com/moby/moby/api/types/mount"
 	registrytypes "github.com/moby/moby/api/types/registry"
 	"github.com/moby/moby/client"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 const (
@@ -147,7 +147,7 @@ func newDockerProviderWithEngine(cfg DockerConfig, engine dockerEngine) (Provide
 		userDir, userErr := os.UserHomeDir()
 		if userErr != nil {
 			userDir = filepath.Join(
-				os.TempDir(), fmt.Sprintf("managed-agent-resources-%d", os.Getuid()),
+				os.TempDir(), fmt.Sprintf("mango-resources-%d", os.Getuid()),
 			)
 			resourceBaseDir = userDir
 		} else {
@@ -156,7 +156,7 @@ func newDockerProviderWithEngine(cfg DockerConfig, engine dockerEngine) (Provide
 			// directories, causing otherwise valid bind mounts to fail until the VM is
 			// restarted. A visible, stable home-directory path avoids that daemon-side
 			// cache edge while remaining configurable for production deployments.
-			resourceBaseDir = filepath.Join(userDir, "managed-agent-resources")
+			resourceBaseDir = filepath.Join(userDir, "mango-resources")
 		}
 	}
 	resourceBaseDir, err := filepath.Abs(resourceBaseDir)

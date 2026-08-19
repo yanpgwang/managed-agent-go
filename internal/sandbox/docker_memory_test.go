@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func newDockerMemoryTestSandbox(t *testing.T) (*dockerSandbox, MemoryStoreMount, string) {

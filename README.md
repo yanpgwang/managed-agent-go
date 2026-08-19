@@ -11,17 +11,17 @@
 </p>
 
 <p align="center">
-  <a href="https://yanpgwang.github.io/managed-agent-go/">Documentation</a> ·
-  <a href="https://yanpgwang.github.io/managed-agent-go/getting-started">Getting started</a> ·
-  <a href="https://yanpgwang.github.io/managed-agent-go/compatibility">Compatibility</a> ·
-  <a href="https://yanpgwang.github.io/managed-agent-go/architecture">Architecture</a> ·
-  <a href="https://yanpgwang.github.io/managed-agent-go/roadmap">Roadmap</a>
+  <a href="https://yanpgwang.github.io/mango/">Documentation</a> ·
+  <a href="https://yanpgwang.github.io/mango/getting-started">Getting started</a> ·
+  <a href="https://yanpgwang.github.io/mango/compatibility">Compatibility</a> ·
+  <a href="https://yanpgwang.github.io/mango/architecture">Architecture</a> ·
+  <a href="https://yanpgwang.github.io/mango/roadmap">Roadmap</a>
 </p>
 
 <p align="center">
-  <a href="https://github.com/yanpgwang/managed-agent-go/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/yanpgwang/managed-agent-go/actions/workflows/ci.yml/badge.svg"></a>
-  <a href="https://github.com/yanpgwang/managed-agent-go/actions/workflows/pages.yml"><img alt="Documentation" src="https://github.com/yanpgwang/managed-agent-go/actions/workflows/pages.yml/badge.svg"></a>
-  <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/github/license/yanpgwang/managed-agent-go"></a>
+  <a href="https://github.com/yanpgwang/mango/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/yanpgwang/mango/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/yanpgwang/mango/actions/workflows/pages.yml"><img alt="Documentation" src="https://github.com/yanpgwang/mango/actions/workflows/pages.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/github/license/yanpgwang/mango"></a>
 </p>
 
 Mango implements the documented Managed Agents API as a self-hosted runtime:
@@ -50,8 +50,8 @@ production-oriented architecture is built in Go on PostgreSQL and Temporal.
 You need Docker with Compose and `make`.
 
 ```bash
-git clone https://github.com/yanpgwang/managed-agent-go.git
-cd managed-agent-go
+git clone https://github.com/yanpgwang/mango.git
+cd mango
 make local-up
 make local-health
 ```
@@ -65,7 +65,7 @@ curl -i http://localhost:8080/readyz
 The local stack uses a deterministic offline model, so no model API key is
 required. Protected Mango routes use the development key
 `sk-mango-local-development`; health and readiness remain public.
-Follow the [five-minute walkthrough](https://yanpgwang.github.io/managed-agent-go/getting-started)
+Follow the [five-minute walkthrough](https://yanpgwang.github.io/mango/getting-started)
 to create an Environment, Agent, and Session, then send and stream your first
 message.
 
@@ -83,7 +83,7 @@ make local-down
 > are not part of Mango's current HTTP surface.
 > Its architecture is designed for production operation, but the project does
 > not yet claim production readiness.
-> Review the [compatibility matrix](https://yanpgwang.github.io/managed-agent-go/compatibility)
+> Review the [compatibility matrix](https://yanpgwang.github.io/mango/compatibility)
 > before relying on a capability. The default local sandbox is for development
 > and is not a security boundary.
 
@@ -101,12 +101,12 @@ make local-down
 | Session Threads | Persistent coordinator delegation plus Mango-managed Advisor consultations over ordinary client tool calls, with independent context, usage, lifecycle events, reports, isolated event/preview streams, routed client-action waits, and durable interrupts |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
-The [compatibility summary](https://yanpgwang.github.io/managed-agent-go/compatibility)
+The [compatibility summary](https://yanpgwang.github.io/mango/compatibility)
 states the user-visible boundary. Persistent child-Agent orchestration,
 provider-neutral Advisor consultations, and shared Session budgets are
 implemented; Dreams, environment-variable secret egress, and
 production-platform hardening remain
-[roadmap work](https://yanpgwang.github.io/managed-agent-go/roadmap).
+[roadmap work](https://yanpgwang.github.io/mango/roadmap).
 
 ## Architecture
 
@@ -133,7 +133,7 @@ carries only ephemeral wakeups and previews; persisted events are always
 reconciled from PostgreSQL. A lost signal, process restart, or NATS outage
 cannot discard accepted work.
 
-Read the [architecture overview](https://yanpgwang.github.io/managed-agent-go/architecture)
+Read the [architecture overview](https://yanpgwang.github.io/mango/architecture)
 for the failure model, transactional outbox, tool journal, interrupt ordering,
 and sandbox lifecycle.
 
@@ -141,16 +141,16 @@ and sandbox lifecycle.
 
 | I want to… | Read |
 | --- | --- |
-| Run my first agent session | [Getting started](https://yanpgwang.github.io/managed-agent-go/getting-started) |
-| Connect a real model endpoint | [Use a real model endpoint](https://yanpgwang.github.io/managed-agent-go/getting-started#use-a-real-model-endpoint) |
-| Choose an execution backend | [Sandbox backends](https://yanpgwang.github.io/managed-agent-go/sandboxes) |
-| Run a coordinator and child Agents | [Multi-agent guide](https://yanpgwang.github.io/managed-agent-go/guides/multi-agent) |
-| Check an API operation | [API reference](https://yanpgwang.github.io/managed-agent-go/api) |
-| Understand supported behavior | [API compatibility](https://yanpgwang.github.io/managed-agent-go/compatibility) |
-| Plan a deployment | [Deployment model](https://yanpgwang.github.io/managed-agent-go/deployment) |
+| Run my first agent session | [Getting started](https://yanpgwang.github.io/mango/getting-started) |
+| Connect a real model endpoint | [Use a real model endpoint](https://yanpgwang.github.io/mango/getting-started#use-a-real-model-endpoint) |
+| Choose an execution backend | [Sandbox backends](https://yanpgwang.github.io/mango/sandboxes) |
+| Run a coordinator and child Agents | [Multi-agent guide](https://yanpgwang.github.io/mango/guides/multi-agent) |
+| Check an API operation | [API reference](https://yanpgwang.github.io/mango/api) |
+| Understand supported behavior | [API compatibility](https://yanpgwang.github.io/mango/compatibility) |
+| Plan a deployment | [Deployment model](https://yanpgwang.github.io/mango/deployment) |
 
 The complete documentation is also published at
-[yanpgwang.github.io/managed-agent-go](https://yanpgwang.github.io/managed-agent-go/).
+[yanpgwang.github.io/mango](https://yanpgwang.github.io/mango/).
 
 ## Development
 

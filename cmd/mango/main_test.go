@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 func TestRetryingSessionResourceReconcilerRecoversAndCaches(t *testing.T) {
@@ -39,13 +39,13 @@ func TestRetryingSessionResourceReconcilerRecoversAndCaches(t *testing.T) {
 }
 
 // TestResolveSandboxProvider_DefaultsToLocal asserts that, with no
-// MANAGED_AGENT_SANDBOX set, resolveSandboxProvider returns the offline
+// MANGO_SANDBOX set, resolveSandboxProvider returns the offline
 // local provider. localProvider is unexported, so we cannot type-assert;
 // instead we smoke-test the observable behavior: provision a sandbox and run
 // echo. The local provider does this with a host child process and no docker
 // daemon, so success here (offline, no docker) proves the default is local.
 func TestResolveSandboxProvider_DefaultsToLocal(t *testing.T) {
-	t.Setenv("MANAGED_AGENT_SANDBOX", "")
+	t.Setenv("MANGO_SANDBOX", "")
 	p, isLocal, err := resolveSandboxProvider()
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +174,7 @@ func TestSandboxEnvironmentParsersRejectInvalidValues(t *testing.T) {
 
 // TestGuardModelSandbox_Matrix covers the safe-defaults startup guard: a real
 // model against the local (non-isolating) sandbox must fail unless the operator
-// explicitly opts in via MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1. Every other
+// explicitly opts in via MANGO_ALLOW_UNSAFE_LOCAL_SANDBOX=1. Every other
 // combination — including the zero-config fake + local default — must start.
 func TestGuardModelSandbox_Matrix(t *testing.T) {
 	cases := []struct {
@@ -200,8 +200,8 @@ func TestGuardModelSandbox_Matrix(t *testing.T) {
 			if tc.wantErr {
 				// The error must guide the operator to both remedies.
 				msg := err.Error()
-				if !strings.Contains(msg, "MANAGED_AGENT_SANDBOX=docker") {
-					t.Errorf("error does not mention MANAGED_AGENT_SANDBOX=docker: %q", msg)
+				if !strings.Contains(msg, "MANGO_SANDBOX=docker") {
+					t.Errorf("error does not mention MANGO_SANDBOX=docker: %q", msg)
 				}
 				if !strings.Contains(msg, unsafeLocalSandboxEnv) {
 					t.Errorf("error does not mention %s override: %q", unsafeLocalSandboxEnv, msg)
@@ -243,8 +243,8 @@ func TestNewHTTPServer_Timeouts(t *testing.T) {
 // realModel=true when both the model base URL and API key are configured. It
 // performs no network call: construction does not contact the endpoint.
 func TestResolveModelClient_ReportsRealModelWithEnv(t *testing.T) {
-	t.Setenv("MANAGED_AGENT_MODEL_BASE_URL", "https://model.invalid")
-	t.Setenv("MANAGED_AGENT_MODEL_API_KEY", "sk-test")
+	t.Setenv("MANGO_MODEL_BASE_URL", "https://model.invalid")
+	t.Setenv("MANGO_MODEL_API_KEY", "sk-test")
 	client, realModel, err := resolveModelClient()
 	if err != nil {
 		t.Fatal(err)
@@ -258,8 +258,8 @@ func TestResolveModelClient_ReportsRealModelWithEnv(t *testing.T) {
 }
 
 func TestResolveModelClient_UsesFakeWithoutEnv(t *testing.T) {
-	t.Setenv("MANAGED_AGENT_MODEL_BASE_URL", "")
-	t.Setenv("MANAGED_AGENT_MODEL_API_KEY", "")
+	t.Setenv("MANGO_MODEL_BASE_URL", "")
+	t.Setenv("MANGO_MODEL_API_KEY", "")
 	client, realModel, err := resolveModelClient()
 	if err != nil {
 		t.Fatal(err)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // Frame is the unit delivered to a stream subscriber. Exactly one of Event or

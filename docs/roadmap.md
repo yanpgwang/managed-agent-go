@@ -10,9 +10,9 @@ Agents with compatible public behavior and durable orchestration underneath.
 
 This roadmap describes project direction, not a delivery schedule. Concrete
 work and acceptance criteria belong in
-[GitHub Issues](https://github.com/yanpgwang/managed-agent-go/issues); shipped
+[GitHub Issues](https://github.com/yanpgwang/mango/issues); shipped
 behavior belongs in
-[GitHub Releases](https://github.com/yanpgwang/managed-agent-go/releases), and
+[GitHub Releases](https://github.com/yanpgwang/mango/releases), and
 current support claims belong in [API compatibility](compatibility.md).
 Priorities may change as the upstream contract and implementation evidence
 evolve.

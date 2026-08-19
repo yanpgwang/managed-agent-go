@@ -82,5 +82,5 @@ black-box client, PostgreSQL transaction tests, Temporal replay and integration
 tests, and real PostgreSQL/Temporal/NATS/MinIO/Docker service tests.
 
 Mango has not published a versioned release. Published versions will appear in
-[GitHub Releases](https://github.com/yanpgwang/managed-agent-go/releases). See
+[GitHub Releases](https://github.com/yanpgwang/mango/releases). See
 [Roadmap](roadmap.md) for remaining work.

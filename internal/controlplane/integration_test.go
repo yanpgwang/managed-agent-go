@@ -17,14 +17,14 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
-	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/httpapi"
+	"github.com/yanpgwang/mango/internal/pg"
+	temporalpkg "github.com/yanpgwang/mango/internal/temporal"
 )
 
-const testDatabaseURLEnv = "MANAGED_AGENT_TEST_DATABASE_URL"
+const testDatabaseURLEnv = "MANGO_TEST_DATABASE_URL"
 
 var testSchemaSequence atomic.Int64
 

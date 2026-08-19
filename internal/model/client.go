@@ -7,7 +7,7 @@ package model
 import (
 	"context"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 type ToolSchema struct {

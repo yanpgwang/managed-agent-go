@@ -31,7 +31,7 @@ type localProvider struct {
 // kernel and filesystem namespace, and offers no network isolation. Do NOT run
 // untrusted code with it.
 func NewLocalProvider() Provider {
-	return &localProvider{baseDir: filepath.Join(os.TempDir(), "managed-agent-sandboxes")}
+	return &localProvider{baseDir: filepath.Join(os.TempDir(), "mango-sandboxes")}
 }
 
 func (p *localProvider) Name() string { return LocalProviderName }

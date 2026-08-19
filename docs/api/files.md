@@ -17,7 +17,7 @@ GET    /v1/files/{file_id}/content
 DELETE /v1/files/{file_id}
 ```
 
-Set `MANAGED_AGENT_FILE_S3_BUCKET` and the corresponding endpoint, region, and
+Set `MANGO_FILE_S3_BUCKET` and the corresponding endpoint, region, and
 credential variables before using these routes. In strict mode they require
 `anthropic-beta: files-api-2025-04-14`.
 

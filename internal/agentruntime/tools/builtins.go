@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 // execBash runs a shell command inside the sandbox and returns its combined

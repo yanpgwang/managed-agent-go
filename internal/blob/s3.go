@@ -14,7 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/mango/internal/app"
 )
 
 type S3Config struct {

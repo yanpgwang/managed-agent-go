@@ -11,7 +11,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 // Result is the outcome of a tool execution. Content is the wire block array

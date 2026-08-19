@@ -3,9 +3,9 @@ package agentruntime
 import (
 	"context"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime/tools"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/mango/internal/agentruntime/tools"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
 )
 
 var _ AgentRuntime = (*AgentCore)(nil)

@@ -80,7 +80,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: make local-config
-      - run: make image-smoke IMAGE=managed-agent-go:ci
+      - run: make image-smoke IMAGE=mango:ci
 
   docs:
     name: Documentation

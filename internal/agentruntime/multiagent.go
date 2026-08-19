@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
 )
 
 const (
@@ -17,7 +17,7 @@ const (
 
 const advisorMaxTokens = 2048
 
-const coordinatorRuntimeContext = `<managed-agents-coordinator>
+const coordinatorRuntimeContext = `<mango-coordinator>
 You coordinate the roster agents available through list_agents and send_to_agent.
 
 Runtime semantics:
@@ -27,7 +27,7 @@ Runtime semantics:
 - The runtime starts a new coordinator turn whenever an Agent message arrives. Synthesize useful results for the user and use send_to_agent for any necessary follow-up.
 - Coordinate dependent work yourself. Do not tell one Agent to wait for another Agent's future report because sibling Threads do not receive each other's messages. Wait for the prerequisite report, then send the dependent Agent a self-contained task.
 - Before presenting a final answer, account for every delegated task required for the user's goal. Use list_agents when you need to check whether relevant Threads are still running.
-</managed-agents-coordinator>`
+</mango-coordinator>`
 
 // ProjectCoordinatorSystemContext appends the private harness protocol that
 // makes the public Managed Agents cross-Thread events meaningful to the model.
