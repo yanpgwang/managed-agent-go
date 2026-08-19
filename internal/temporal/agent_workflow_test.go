@@ -1419,6 +1419,159 @@ func TestWorkflowTurn_ExhaustsModelRetriesAndReturnsIdle(t *testing.T) {
 	require.Equal(t, "retries_exhausted", stopReason["type"])
 }
 
+func TestWorkflowTurnCompactsLargeToolResultBeforeNextModelRequest(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	initial := []domain.Message{{
+		Role:    domain.RoleUser,
+		Content: []domain.ContentBlock{{Type: "text", Text: "read the large result"}},
+	}}
+	largeResult := strings.Repeat("tool-output-", 55_000)
+	var calls []CallModelInput
+	var completed CompleteWorkflowTurnInput
+	registerWorkflowTurnActivities(
+		env,
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{
+				AttemptID: "ratm_context_tool", UsesProviderTranscript: true,
+				TranscriptDelta: initial,
+				Request: model.Request{
+					Model: "test-model", Messages: initial,
+					Tools: []model.ToolSchema{{Name: "read"}},
+				},
+				Tools: []TurnTool{{
+					Name: "read", Kind: TurnToolBuiltin,
+					Permission: domain.PermissionPolicy{Type: "always_allow"},
+				}},
+			}, nil
+		},
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			calls = append(calls, in)
+			if len(calls) == 1 {
+				return CallModelResult{
+					ModelRequestStartID: in.ModelRequestStartID,
+					ModelRequestEndID:   in.ModelRequestEndID,
+					Response: model.Response{
+						StopReason: "tool_use",
+						Content: []domain.ContentBlock{{
+							Type: "tool_use", ToolUseID: "tool_large",
+							ToolName: "read", Input: map[string]any{"path": "large.log"},
+						}},
+						Usage: domain.TokenUsage{InputTokens: 100, OutputTokens: 10},
+					},
+					ToolSteps: []PlannedToolStep{{
+						ToolUseEventID:    "sevt_tool_large",
+						ProviderToolUseID: "tool_large",
+						ToolStepID:        "tstep_tool_large",
+					}},
+				}, nil
+			}
+			last := in.Request.Messages[len(in.Request.Messages)-1]
+			require.Equal(t, domain.RoleUser, last.Role)
+			require.Equal(t, "tool_result", last.Content[0].Type)
+			require.Contains(t, last.Content[0].Text, "Tool result compacted")
+			require.Less(t, len(last.Content[0].Text), 4_000)
+			return CallModelResult{
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+				MessageEventID:      "sevt_after_compaction",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content:    []domain.ContentBlock{{Type: "text", Text: "done"}},
+				},
+			}, nil
+		},
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{Result: domain.ToolStepResult{
+				Content: []any{map[string]any{"type": "text", "text": largeResult}},
+			}}, nil
+		},
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			completed = in
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_context_tool", TriggerEventID: "sevt_context_tool",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Len(t, calls, 2)
+	require.Contains(t, draftTypes(completed.Output), domain.EvAgentThreadContextCompacted)
+	var durableResult string
+	for _, message := range completed.TranscriptDelta {
+		for _, block := range message.Content {
+			if block.Type == "tool_result" {
+				durableResult = block.Text
+			}
+		}
+	}
+	require.Equal(t, largeResult, durableResult,
+		"request compaction must not mutate the lossless transcript")
+}
+
+func TestWorkflowTurnReactivelyCompactsRequestTooLargeOnce(t *testing.T) {
+	var suite testsuite.WorkflowTestSuite
+	env := suite.NewTestWorkflowEnvironment()
+	env.RegisterWorkflow(workflowTurnHarness)
+
+	messages := []domain.Message{
+		{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: strings.Repeat("old ", 15_000)}}},
+		{Role: domain.RoleAssistant, Content: []domain.ContentBlock{{Type: "text", Text: strings.Repeat("analysis ", 10_000)}}},
+		{Role: domain.RoleUser, Content: []domain.ContentBlock{{Type: "text", Text: "current request"}}},
+	}
+	var calls []CallModelInput
+	var completed CompleteWorkflowTurnInput
+	registerWorkflowTurnActivities(
+		env,
+		func(context.Context, PrepareTurnInput) (PrepareTurnResult, error) {
+			return PrepareTurnResult{Request: model.Request{
+				Model: "test-model", Messages: messages,
+			}}, nil
+		},
+		func(_ context.Context, in CallModelInput) (CallModelResult, error) {
+			calls = append(calls, in)
+			if len(calls) == 1 {
+				return CallModelResult{
+					ModelRequestStartID:  in.ModelRequestStartID,
+					ModelRequestEndID:    in.ModelRequestEndID,
+					ContextOverflow:      true,
+					ContextOverflowError: "provider rejected an oversized request",
+				}, nil
+			}
+			require.Less(t,
+				domain.EstimateMessagesTokens(in.Request.Messages),
+				domain.EstimateMessagesTokens(calls[0].Request.Messages),
+			)
+			return CallModelResult{
+				ModelRequestStartID: in.ModelRequestStartID,
+				ModelRequestEndID:   in.ModelRequestEndID,
+				MessageEventID:      "sevt_reactive_done",
+				Response: model.Response{
+					StopReason: "end_turn",
+					Content:    []domain.ContentBlock{{Type: "text", Text: "recovered"}},
+				},
+			}, nil
+		},
+		func(context.Context, ExecuteToolInput) (ExecuteToolResult, error) {
+			return ExecuteToolResult{}, errors.New("unexpected tool execution")
+		},
+		func(_ context.Context, in CompleteWorkflowTurnInput) (RunTurnResult, error) {
+			completed = in
+			return RunTurnResult{Disposition: TurnCompleted}, nil
+		},
+	)
+
+	env.ExecuteWorkflow(workflowTurnHarness, PrepareTurnInput{
+		SessionID: "sess_reactive_context", TriggerEventID: "sevt_reactive_context",
+	})
+	require.NoError(t, env.GetWorkflowError())
+	require.Len(t, calls, 2)
+	require.Contains(t, draftTypes(completed.Output), domain.EvAgentThreadContextCompacted)
+}
+
 func TestWorkflowTurn_MixedBatchExecutesBuiltinAndParksClientAction(t *testing.T) {
 	var suite testsuite.WorkflowTestSuite
 	env := suite.NewTestWorkflowEnvironment()

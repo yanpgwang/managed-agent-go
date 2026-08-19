@@ -35,6 +35,24 @@ type ContentBlock struct {
 type Message struct {
 	Role    Role
 	Content []ContentBlock
+	// ContextUsage is private continuation metadata. It anchors one provider
+	// response to the exact request usage the provider reported, allowing the
+	// next request to measure only messages added after that response. Provider
+	// adapters intentionally serialize only Role and Content.
+	ContextUsage *ContextUsageAnchor `json:"context_usage,omitempty"`
+}
+
+// ContextUsageAnchor records the exact size of one completed provider request
+// plus its response. RequestFingerprint protects the baseline when the model,
+// system prompt, tools, or other request settings change. PrefixFingerprint
+// protects it when compaction or another projection changes messages that the
+// provider usage had measured. ContentBlocks marks the response boundary when
+// adjacent assistant messages are merged to preserve role alternation.
+type ContextUsageAnchor struct {
+	Usage              TokenUsage `json:"usage"`
+	RequestFingerprint string     `json:"request_fingerprint"`
+	PrefixFingerprint  string     `json:"prefix_fingerprint"`
+	ContentBlocks      int        `json:"content_blocks"`
 }
 
 // ProviderToolUseMapping keeps provider-private tool ids separate from the

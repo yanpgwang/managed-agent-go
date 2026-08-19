@@ -181,7 +181,52 @@ func TestProviderTranscriptContextIsIsolatedByThread(t *testing.T) {
 	}
 }
 
+func TestAppendProviderMessagesPreservesLatestContextUsage(t *testing.T) {
+	first := &domain.ContextUsageAnchor{
+		Usage:              domain.TokenUsage{InputTokens: 10},
+		RequestFingerprint: "request-1",
+		PrefixFingerprint:  "prefix-1",
+		ContentBlocks:      1,
+	}
+	latest := &domain.ContextUsageAnchor{
+		Usage:              domain.TokenUsage{InputTokens: 20},
+		RequestFingerprint: "request-2",
+		PrefixFingerprint:  "prefix-2",
+		ContentBlocks:      2,
+	}
+	got := appendProviderMessages(
+		[]domain.Message{{
+			Role:         domain.RoleAssistant,
+			Content:      []domain.ContentBlock{{Type: "text", Text: "first"}},
+			ContextUsage: first,
+		}},
+		[]domain.Message{{
+			Role:         domain.RoleAssistant,
+			Content:      []domain.ContentBlock{{Type: "text", Text: "latest"}},
+			ContextUsage: latest,
+		}},
+	)
+
+	if len(got) != 1 || len(got[0].Content) != 2 {
+		t.Fatalf("merged transcript = %#v", got)
+	}
+	if got[0].ContextUsage == nil ||
+		got[0].ContextUsage.RequestFingerprint != latest.RequestFingerprint ||
+		got[0].ContextUsage.PrefixFingerprint != latest.PrefixFingerprint {
+		t.Fatalf("latest context anchor = %#v", got[0].ContextUsage)
+	}
+	if got[0].ContextUsage == latest {
+		t.Fatal("merged transcript retained the caller's mutable anchor pointer")
+	}
+}
+
 func TestCloseInterruptedProviderTranscript_PairsDanglingTools(t *testing.T) {
+	anchor := &domain.ContextUsageAnchor{
+		Usage:              domain.TokenUsage{InputTokens: 25},
+		RequestFingerprint: "request",
+		PrefixFingerprint:  "prefix",
+		ContentBlocks:      3,
+	}
 	messages := []domain.Message{
 		{
 			Role: domain.RoleAssistant,
@@ -190,6 +235,7 @@ func TestCloseInterruptedProviderTranscript_PairsDanglingTools(t *testing.T) {
 				{Type: "tool_use", ToolUseID: "provider_pending"},
 				{Type: "server_tool_use", ToolUseID: "server_native"},
 			},
+			ContextUsage: anchor,
 		},
 		{
 			Role: domain.RoleUser,
@@ -215,6 +261,11 @@ func TestCloseInterruptedProviderTranscript_PairsDanglingTools(t *testing.T) {
 	}
 	if len(messages[1].Content) != 1 {
 		t.Fatal("helper mutated its input transcript")
+	}
+	if got[0].ContextUsage == nil ||
+		got[0].ContextUsage.RequestFingerprint != anchor.RequestFingerprint ||
+		got[0].ContextUsage == anchor {
+		t.Fatalf("context anchor was not cloned: %#v", got[0].ContextUsage)
 	}
 	if got := closeInterruptedProviderTranscript(nil); got != nil {
 		t.Fatalf("nil transcript became represented: %#v", got)

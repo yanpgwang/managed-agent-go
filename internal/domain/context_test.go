@@ -112,3 +112,34 @@ func TestEstimateMessagesTokensCountsRichSerializedContent(t *testing.T) {
 		t.Fatalf("rich document was not included in token estimate")
 	}
 }
+
+func TestCompactMessagesTrimsSingleOversizedToolResultWithoutMutatingTranscript(t *testing.T) {
+	originalText := strings.Repeat("结果-content-", 20_000)
+	originalRich := json.RawMessage(`{"type":"document","data":"` + strings.Repeat("A", 30_000) + `"}`)
+	messages := []Message{{
+		Role: RoleUser,
+		Content: []ContentBlock{{
+			Type: "tool_result", ToolResultFor: "tool_large",
+			Text: originalText, ResultContent: []json.RawMessage{originalRich},
+		}},
+	}}
+
+	got, projection := CompactMessages(messages, 2_000)
+	if !projection.Compacted {
+		t.Fatal("oversized tool result was not compacted")
+	}
+	if projection.DroppedMessages != 0 || len(got) != 1 || len(got[0].Content) != 1 {
+		t.Fatalf("projection = %#v, messages = %#v", projection, got)
+	}
+	block := got[0].Content[0]
+	if block.ToolResultFor != "tool_large" || !strings.Contains(block.Text, "Tool result compacted") {
+		t.Fatalf("compacted block = %#v", block)
+	}
+	if len(block.ResultContent) != 0 || len(block.Raw) != 0 {
+		t.Fatalf("rich payload survived request projection: %#v", block)
+	}
+	if messages[0].Content[0].Text != originalText ||
+		len(messages[0].Content[0].ResultContent) != 1 {
+		t.Fatal("lossless source transcript was mutated")
+	}
+}

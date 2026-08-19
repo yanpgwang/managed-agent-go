@@ -3,6 +3,7 @@ module github.com/yanpgwang/managed-agent-go
 go 1.26.6
 
 require (
+	charm.land/catwalk v0.51.23
 	github.com/alibaba/OpenSandbox/sdks/sandbox/go v1.0.5
 	github.com/anthropics/anthropic-sdk-go v1.63.1
 	github.com/aws/aws-sdk-go-v2 v1.41.6
@@ -52,6 +53,7 @@ require (
 	github.com/buger/jsonparser v1.1.2 // indirect
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/charmbracelet/x/etag v0.2.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect

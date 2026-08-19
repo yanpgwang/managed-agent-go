@@ -2,6 +2,7 @@ package temporal
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,6 +157,34 @@ func TestEvaluateOutcomeUsesIsolatedGraderContext(t *testing.T) {
 	require.Len(t, request.Messages, 1)
 	require.Equal(t, domain.RoleUser, request.Messages[0].Role)
 	require.Contains(t, request.Messages[0].Content[0].Text, "ship the report")
+}
+
+func TestEvaluateOutcomeRejectsOversizedIsolatedContextBeforeInference(t *testing.T) {
+	client := &outcomeModel{response: model.Response{
+		Content: []domain.ContentBlock{{
+			Type: "text", Text: `{"result":"satisfied","explanation":"unused"}`,
+		}},
+	}}
+	activities := NewActivities(client, nil, nil, nil, domain.NewSeqIDGen())
+
+	got, err := activities.EvaluateOutcome(context.Background(), EvaluateOutcomeInput{
+		Model: "unknown-model",
+		Outcome: domain.OutcomeSpec{
+			OutcomeID: "outc_large", Description: "review the oversized candidate",
+			Rubric: map[string]any{"type": "text", "content": "be complete"},
+		},
+		Candidate: []domain.Message{{
+			Role: domain.RoleAssistant,
+			Content: []domain.ContentBlock{{
+				Type: "text", Text: strings.Repeat("x", 700_000),
+			}},
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Contains(t, got.FatalError, "context is too large")
+	require.Empty(t, client.request.Model,
+		"outcome grader must reject its own oversized request before inference")
 }
 
 func TestWorkflowTurnEvaluatesOutcomeAndAccountsUsage(t *testing.T) {

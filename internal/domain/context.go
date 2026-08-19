@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const ContextPolicyVersion = 1
@@ -97,8 +98,18 @@ func CompactMessages(messages []Message, maxEstimatedTokens int) ([]Message, Con
 		OriginalEstimatedTokens:  original,
 		ProjectedEstimatedTokens: original,
 	}
-	if maxEstimatedTokens <= 0 || original <= maxEstimatedTokens || len(messages) <= 1 {
+	if maxEstimatedTokens <= 0 || original <= maxEstimatedTokens {
 		return cloneMessages(messages), projection
+	}
+	if len(messages) <= 1 {
+		projected, compacted := compactOversizedToolResults(
+			cloneMessages(messages), maxEstimatedTokens,
+		)
+		if compacted {
+			projection.Compacted = true
+			projection.ProjectedEstimatedTokens = EstimateMessagesTokens(projected)
+		}
+		return projected, projection
 	}
 
 	// Reserve roughly ten percent for the extractive summary. The newest
@@ -127,7 +138,14 @@ func CompactMessages(messages []Message, maxEstimatedTokens int) ([]Message, Con
 		cut--
 	}
 	if cut == 0 {
-		return cloneMessages(messages), projection
+		projected, compacted := compactOversizedToolResults(
+			cloneMessages(messages), maxEstimatedTokens,
+		)
+		if compacted {
+			projection.Compacted = true
+			projection.ProjectedEstimatedTokens = EstimateMessagesTokens(projected)
+		}
+		return projected, projection
 	}
 
 	dropped := messages[:cut]
@@ -149,14 +167,115 @@ func CompactMessages(messages []Message, maxEstimatedTokens int) ([]Message, Con
 
 	projection.Compacted = true
 	projection.DroppedMessages = cut
+	suffix, _ = compactOversizedToolResults(suffix, maxEstimatedTokens)
 	projection.ProjectedEstimatedTokens = EstimateMessagesTokens(suffix)
 	return suffix, projection
+}
+
+// compactOversizedToolResults trims only the request-time projection of tool
+// output. A single recent file read or shell result can itself exceed the
+// context window; preserving that payload verbatim would make ordinary history
+// compaction ineffective. Tool ids, error state, a bounded head/tail excerpt,
+// and the lossless durable transcript remain intact.
+func compactOversizedToolResults(
+	messages []Message,
+	maxEstimatedTokens int,
+) ([]Message, bool) {
+	if EstimateMessagesTokens(messages) <= maxEstimatedTokens {
+		return messages, false
+	}
+	compacted := false
+	for messageIndex := range messages {
+		for blockIndex := range messages[messageIndex].Content {
+			block := &messages[messageIndex].Content[blockIndex]
+			if block.Type != "tool_result" {
+				continue
+			}
+			originalBytes := len(block.Text) + len(block.Raw)
+			for _, raw := range block.ResultContent {
+				originalBytes += len(raw)
+			}
+			if originalBytes < 1024 {
+				continue
+			}
+			block.Text = compactedToolResultExcerpt(block.Text, originalBytes, 3000)
+			block.Raw = nil
+			block.ResultContent = nil
+			compacted = true
+			if EstimateMessagesTokens(messages) <= maxEstimatedTokens {
+				return messages, true
+			}
+		}
+	}
+	if !compacted || EstimateMessagesTokens(messages) <= maxEstimatedTokens {
+		return messages, compacted
+	}
+	for messageIndex := range messages {
+		for blockIndex := range messages[messageIndex].Content {
+			block := &messages[messageIndex].Content[blockIndex]
+			if block.Type != "tool_result" ||
+				!strings.Contains(block.Text, "Tool result compacted") {
+				continue
+			}
+			block.Text = fmt.Sprintf(
+				"[Tool result compacted; original content omitted; tool_use_id=%s]",
+				block.ToolResultFor,
+			)
+			if EstimateMessagesTokens(messages) <= maxEstimatedTokens {
+				return messages, true
+			}
+		}
+	}
+	return messages, true
+}
+
+func compactedToolResultExcerpt(text string, originalBytes int, maxBytes int) string {
+	marker := fmt.Sprintf(
+		"\n...[Tool result compacted; %d original bytes]...\n",
+		originalBytes,
+	)
+	if text == "" || maxBytes <= len(marker) {
+		return strings.TrimSpace(marker)
+	}
+	if len(text) <= maxBytes {
+		return text + marker
+	}
+	headBytes := (maxBytes - len(marker)) * 3 / 4
+	tailBytes := maxBytes - len(marker) - headBytes
+	head := validUTF8Prefix(text, headBytes)
+	tail := validUTF8Suffix(text, tailBytes)
+	return head + marker + tail
+}
+
+func validUTF8Prefix(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	for maxBytes > 0 && !utf8.ValidString(value[:maxBytes]) {
+		maxBytes--
+	}
+	return value[:maxBytes]
+}
+
+func validUTF8Suffix(value string, maxBytes int) string {
+	if len(value) <= maxBytes {
+		return value
+	}
+	start := len(value) - maxBytes
+	for start < len(value) && !utf8.ValidString(value[start:]) {
+		start++
+	}
+	return value[start:]
 }
 
 func cloneMessages(messages []Message) []Message {
 	out := make([]Message, len(messages))
 	for i, message := range messages {
 		out[i] = message
+		if message.ContextUsage != nil {
+			anchor := *message.ContextUsage
+			out[i].ContextUsage = &anchor
+		}
 		out[i].Content = make([]ContentBlock, len(message.Content))
 		for j, block := range message.Content {
 			out[i].Content[j] = cloneContentBlock(block)
