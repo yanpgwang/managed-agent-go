@@ -280,9 +280,21 @@ func runWorkflowTurnInternal(
 		}
 		request := prepared.Request
 		request.Messages = messages
+		preparedContext, err := prepareRequestContext(request, false, 0)
+		if err != nil {
+			return turn.terminate(failTurn(err.Error()))
+		}
+		request = preparedContext.Request
+		if preparedContext.Projection.Compacted {
+			messages = request.Messages
+			turn.output = append(turn.output, domain.EventDraft{
+				Type: domain.EvAgentThreadContextCompacted, Payload: map[string]any{},
+			})
+		}
 		mappingCheckpoint := len(turn.toolUseMappings)
 		var called CallModelResult
 		var activityOutcome interruptibleActivityOutcome
+		recoveredContextOverflow := false
 		for attempt := 0; ; attempt++ {
 			modelRequestStartID, modelRequestEndID := modelRequestAttemptSpanIDs(
 				sessionID,
@@ -347,6 +359,38 @@ func runWorkflowTurnInternal(
 					turn.output = append(turn.output, *start)
 				}
 			}
+			if called.ContextOverflow {
+				if end := modelRequestEndDraft(called, true); end != nil {
+					turn.output = append(turn.output, *end)
+				}
+				if activityOutcome.Interrupted {
+					return turn.complete(nil)
+				}
+				if recoveredContextOverflow {
+					message := called.ContextOverflowError
+					if message == "" {
+						message = "model request exceeded the provider context window after compaction"
+					}
+					return turn.terminateTyped("model_request_failed_error", message)
+				}
+				recovered, recoveryErr := prepareRequestContext(request, true, 0)
+				if recoveryErr != nil {
+					return turn.terminateTyped(
+						"model_request_failed_error", recoveryErr.Error(),
+					)
+				}
+				request = recovered.Request
+				messages = request.Messages
+				recoveredContextOverflow = true
+				turn.output = append(turn.output, domain.EventDraft{
+					Type:    domain.EvAgentThreadContextCompacted,
+					Payload: map[string]any{},
+				})
+				if err := turn.flushOutput(); err != nil {
+					return RunTurnResult{}, err
+				}
+				continue
+			}
 			if called.FatalError != "" {
 				if end := modelRequestEndDraft(called, true); end != nil {
 					turn.output = append(turn.output, *end)
@@ -392,6 +436,7 @@ func runWorkflowTurnInternal(
 				return RunTurnResult{}, err
 			}
 		}
+		assistantMessage := model.AnchoredAssistantMessage(request, called.Response)
 		var toolUses []domain.ContentBlock
 		for _, block := range called.Response.Content {
 			if block.Type == "tool_use" {
@@ -424,10 +469,7 @@ func runWorkflowTurnInternal(
 			}
 			turn.transcriptDelta = agentruntime.AppendMerging(
 				turn.transcriptDelta,
-				[]domain.Message{{
-					Role:    domain.RoleAssistant,
-					Content: called.Response.Content,
-				}},
+				[]domain.Message{assistantMessage},
 			)
 			for _, planned := range called.ToolSteps {
 				if providerStopReasons && disposition != providerResponseExecuteTools {
@@ -520,10 +562,9 @@ func runWorkflowTurnInternal(
 						pauseMessagesBase = append([]domain.Message(nil), messages...)
 					}
 				}
-				messages = agentruntime.AppendMerging(messages, []domain.Message{{
-					Role:    domain.RoleAssistant,
-					Content: called.Response.Content,
-				}})
+				messages = agentruntime.AppendMerging(
+					messages, []domain.Message{assistantMessage},
+				)
 				if !cumulativePauseContinuations {
 					pauseChainActive = true
 				}
@@ -550,7 +591,7 @@ func runWorkflowTurnInternal(
 					}},
 				}
 				messages = agentruntime.AppendMerging(messages, []domain.Message{
-					{Role: domain.RoleAssistant, Content: called.Response.Content},
+					assistantMessage,
 					recoveryMessage,
 				})
 				if prepared.UsesProviderTranscript {
@@ -569,9 +610,9 @@ func runWorkflowTurnInternal(
 			if prepared.Outcome == nil || outcomeFinished {
 				return turn.complete(nil)
 			}
-			candidate := agentruntime.AppendMerging(messages, []domain.Message{{
-				Role: domain.RoleAssistant, Content: called.Response.Content,
-			}})
+			candidate := agentruntime.AppendMerging(
+				messages, []domain.Message{assistantMessage},
+			)
 			finalCycle := outcomeIteration+1 >= prepared.Outcome.MaxIterations
 			evaluationStartID, evaluationEndID := outcomeEvaluationSpanIDs(
 				sessionID,
@@ -785,7 +826,7 @@ func runWorkflowTurnInternal(
 		// Preserve the model's exact assistant round, including text emitted
 		// alongside tool_use blocks, then append the paired tool results.
 		messages = agentruntime.AppendMerging(messages, []domain.Message{
-			{Role: domain.RoleAssistant, Content: called.Response.Content},
+			assistantMessage,
 			{Role: domain.RoleUser, Content: executed.resultBlocks},
 		})
 	}

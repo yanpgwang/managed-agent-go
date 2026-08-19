@@ -574,7 +574,13 @@ func AppendMerging(base, added []domain.Message) []domain.Message {
 			merged = append(merged, out[n-1].Content...)
 			merged = append(merged, m.Content...)
 			dup := append([]domain.Message(nil), out...)
-			dup[n-1] = domain.Message{Role: out[n-1].Role, Content: merged}
+			anchor := out[n-1].ContextUsage
+			if m.ContextUsage != nil {
+				anchor = m.ContextUsage
+			}
+			dup[n-1] = domain.Message{
+				Role: out[n-1].Role, Content: merged, ContextUsage: anchor,
+			}
 			out = dup
 			continue
 		}

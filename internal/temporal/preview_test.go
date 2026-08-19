@@ -93,6 +93,34 @@ func TestCallModelPermanentAPIErrorBecomesFatalResult(t *testing.T) {
 	}
 }
 
+func TestCallModelRequestTooLargeBecomesContextRecoveryResult(t *testing.T) {
+	client := model.NewFake()
+	client.SetError(&model.APIError{
+		Kind:       model.ErrorRequestTooLarge,
+		StatusCode: 413,
+		Type:       "request_too_large",
+		Message:    "request exceeds context window",
+	})
+	activities := NewActivities(client, nil, nil, nil, domain.NewSeqIDGen())
+
+	result, err := activities.CallModel(context.Background(), CallModelInput{
+		SessionID: "sesn_context_overflow",
+		Request:   model.Request{Model: "test-model"},
+	})
+	if err != nil {
+		t.Fatalf("CallModel returned Activity error: %v", err)
+	}
+	if !result.ContextOverflow || result.ContextOverflowError == "" {
+		t.Fatalf("context overflow result = %#v", result)
+	}
+	if result.FatalError != "" || result.RetryError != nil {
+		t.Fatalf("context overflow entered the ordinary failure path: %#v", result)
+	}
+	if result.ModelRequestStartID == "" || result.ModelRequestEndID == "" {
+		t.Fatal("context overflow result is missing model span ids")
+	}
+}
+
 func TestCallModelBillingErrorUsesDocumentedVariant(t *testing.T) {
 	client := model.NewFake()
 	client.SetError(&model.APIError{

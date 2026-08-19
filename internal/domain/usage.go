@@ -30,6 +30,18 @@ type TokenUsage struct {
 	Speed string
 }
 
+// ContextTokens returns the provider-measured context immediately after one
+// response. Anthropic reports uncached input, cache creation, and cache reads
+// as disjoint input buckets; all occupy the request context. Output is included
+// because the assistant response becomes input to the next request.
+func (u TokenUsage) ContextTokens() int64 {
+	return u.InputTokens +
+		u.CacheCreation.Ephemeral1hInputTokens +
+		u.CacheCreation.Ephemeral5mInputTokens +
+		u.CacheReadInputTokens +
+		u.OutputTokens
+}
+
 func (u *TokenUsage) Add(other TokenUsage) {
 	u.CacheCreation.Ephemeral1hInputTokens += other.CacheCreation.Ephemeral1hInputTokens
 	u.CacheCreation.Ephemeral5mInputTokens += other.CacheCreation.Ephemeral5mInputTokens

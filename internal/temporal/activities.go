@@ -392,10 +392,6 @@ type TurnCompletionResult struct {
 // and applied after projection.
 const historyScanLimit = 10000
 
-// defaultContextTokenBudget leaves headroom inside Claude's usual context
-// window for the system prompt, tools, model output, and provider overhead.
-const defaultContextTokenBudget = 150000
-
 // sandboxTurnTimeout bounds a built-in tool execution within a turn.
 const sandboxTurnTimeout = 120 * time.Second
 
@@ -440,7 +436,7 @@ func NewActivities(
 	activities := &Activities{
 		modelClient: modelClient, source: source,
 		journal: journal, sandboxes: sandboxes, ids: ids,
-		mcp: mcpclient.NewRemote(nil), contextTokenBudget: defaultContextTokenBudget,
+		mcp: mcpclient.NewRemote(nil),
 	}
 	if len(previewPublisher) > 0 {
 		activities.previews = previewPublisher[0]
@@ -1068,30 +1064,16 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 		}
 		result.PreludeEvents = append(result.PreludeEvents, setupEvents...)
 	}
-	availableContextTokens := a.contextTokenBudget - requestContextOverhead(result.Request)
-	if availableContextTokens < 8000 {
-		availableContextTokens = 8000
-	}
-	fullMessages := result.Request.Messages
-	compactionBudget := availableContextTokens
-	if domain.EstimateMessagesTokens(fullMessages) > availableContextTokens {
-		compactionBudget -= agentruntime.RuntimeSkillReattachmentBudget(fullMessages)
-		if compactionBudget < 8000 {
-			compactionBudget = 8000
-		}
-	}
-	result.Request.Messages, result.ContextProjection = domain.CompactMessages(
-		fullMessages,
-		compactionBudget,
+	preparedContext, err := prepareRequestContext(
+		result.Request,
+		false,
+		a.contextTokenBudget,
 	)
-	if result.ContextProjection.Compacted {
-		result.Request.Messages = agentruntime.ReattachRuntimeSkillInjections(
-			fullMessages,
-			result.Request.Messages,
-		)
-		result.ContextProjection.ProjectedEstimatedTokens =
-			domain.EstimateMessagesTokens(result.Request.Messages)
+	if err != nil {
+		return PrepareTurnResult{FatalError: err.Error()}, nil
 	}
+	result.Request = preparedContext.Request
+	result.ContextProjection = preparedContext.Projection
 	if result.ThreadID != "" {
 		if snapshots, ok := a.source.(ThreadContextSnapshotSource); ok {
 			snapshot, found, err := snapshots.GetThreadContextSnapshotForTrigger(
@@ -1164,9 +1146,7 @@ func requestContextOverhead(request model.Request) int {
 	if encoded, err := json.Marshal(request.Tools); err == nil {
 		overhead += domain.EstimateTextTokens(string(encoded))
 	}
-	// Reserve output capacity and provider framing in addition to measured
-	// system/tool bytes.
-	return overhead + 4096
+	return overhead
 }
 
 func (a *Activities) addMCPTools(
@@ -1434,7 +1414,7 @@ func (a *Activities) EvaluateOutcome(
 	if err != nil {
 		return EvaluateOutcomeResult{FatalError: err.Error()}, nil
 	}
-	response, err := a.modelClient.CreateMessage(ctx, model.Request{
+	graderRequest := model.Request{
 		Model: in.Model, Effort: in.Effort, Speed: in.Speed, InferenceGeo: in.InferenceGeo,
 		System: outcomeGraderSystem + " Return exactly one JSON object with " +
 			`{"result":"satisfied|needs_revision|failed","explanation":"..."}.`,
@@ -1442,7 +1422,12 @@ func (a *Activities) EvaluateOutcome(
 		Messages: []domain.Message{{Role: domain.RoleUser, Content: []domain.ContentBlock{{
 			Type: "text", Text: prompt,
 		}}}},
-	})
+	}
+	preparedContext, err := prepareRequestContext(graderRequest, false, 0)
+	if err != nil {
+		return EvaluateOutcomeResult{FatalError: err.Error()}, nil
+	}
+	response, err := a.modelClient.CreateMessage(ctx, preparedContext.Request)
 	if err != nil {
 		var apiErr *model.APIError
 		if errors.As(err, &apiErr) && !apiErr.Retryable() {
@@ -1759,6 +1744,14 @@ func (a *Activities) CallModel(ctx context.Context, in CallModelInput) (CallMode
 	}
 	if err != nil {
 		var apiErr *model.APIError
+		if errors.As(err, &apiErr) && apiErr.Kind == model.ErrorRequestTooLarge {
+			return CallModelResult{
+				ModelRequestStartID:  modelRequestStartID,
+				ModelRequestEndID:    modelRequestEndID,
+				ContextOverflow:      true,
+				ContextOverflowError: apiErr.Error(),
+			}, nil
+		}
 		if errors.As(err, &apiErr) && apiErr.Retryable() && in.HandleRetryableErrors {
 			return CallModelResult{
 				ModelRequestStartID: modelRequestStartID,
@@ -2300,6 +2293,20 @@ func (a *Activities) executeAdvisorTool(
 	if err != nil {
 		return ExecuteToolResult{}, err
 	}
+	preparedContext, contextErr := prepareRequestContext(in.AdvisorRequest, false, 0)
+	if contextErr != nil {
+		consultation := in.AdvisorConsultation
+		consultation.Model = in.AdvisorRequest.Model
+		consultation.UsageModel = in.AdvisorRequest.Model
+		consultation.StopReason = "context_limit"
+		consultation.UsageKnown = false
+		result := advisorErrorResult("Advisor request was too large: " + contextErr.Error())
+		if err := a.completeAdvisorToolStep(ctx, in, result, consultation); err != nil {
+			return ExecuteToolResult{}, err
+		}
+		return ExecuteToolResult{Result: workflowToolResult(result)}, nil
+	}
+	in.AdvisorRequest = preparedContext.Request
 
 	response, err := a.modelClient.CreateMessage(ctx, in.AdvisorRequest)
 	consultation := in.AdvisorConsultation

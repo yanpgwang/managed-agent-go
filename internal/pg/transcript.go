@@ -118,6 +118,10 @@ func appendProviderMessages(
 		}
 		if n := len(base); n > 0 && base[n-1].Role == message.Role {
 			base[n-1].Content = append(base[n-1].Content, message.Content...)
+			if message.ContextUsage != nil {
+				anchor := *message.ContextUsage
+				base[n-1].ContextUsage = &anchor
+			}
 			continue
 		}
 		base = append(base, message)
@@ -146,6 +150,10 @@ func closeInterruptedProviderTranscript(
 				[]domain.ContentBlock(nil),
 				message.Content...,
 			),
+		}
+		if message.ContextUsage != nil {
+			anchor := *message.ContextUsage
+			cloned[index].ContextUsage = &anchor
 		}
 	}
 	answered := make(map[string]struct{})

@@ -244,15 +244,17 @@ type PlannedToolStep struct {
 // public/journal IDs. MessageEventID names the public agent.message when the
 // response contains non-empty text.
 type CallModelResult struct {
-	Response            model.Response    `json:"response"`
-	MessageEventID      string            `json:"message_event_id,omitempty"`
-	ThinkingEventID     string            `json:"thinking_event_id,omitempty"`
-	ModelRequestStartID string            `json:"model_request_start_id,omitempty"`
-	ModelRequestEndID   string            `json:"model_request_end_id,omitempty"`
-	ToolSteps           []PlannedToolStep `json:"tool_steps,omitempty"`
-	FatalError          string            `json:"fatal_error,omitempty"`
-	FatalErrorType      string            `json:"fatal_error_type,omitempty"`
-	RetryError          *ModelRetryError  `json:"retry_error,omitempty"`
+	Response             model.Response    `json:"response"`
+	MessageEventID       string            `json:"message_event_id,omitempty"`
+	ThinkingEventID      string            `json:"thinking_event_id,omitempty"`
+	ModelRequestStartID  string            `json:"model_request_start_id,omitempty"`
+	ModelRequestEndID    string            `json:"model_request_end_id,omitempty"`
+	ToolSteps            []PlannedToolStep `json:"tool_steps,omitempty"`
+	FatalError           string            `json:"fatal_error,omitempty"`
+	FatalErrorType       string            `json:"fatal_error_type,omitempty"`
+	ContextOverflow      bool              `json:"context_overflow,omitempty"`
+	ContextOverflowError string            `json:"context_overflow_error,omitempty"`
+	RetryError           *ModelRetryError  `json:"retry_error,omitempty"`
 }
 
 type AccountModelRequestInput struct {

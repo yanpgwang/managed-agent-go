@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -226,6 +227,31 @@ func TestExecuteTool_AdvisorInferenceIsDurableAndNotRepeated(t *testing.T) {
 		source.consultation.Usage.InputTokens != 120 ||
 		source.consultation.PublicContent[0].(map[string]any)["text"] != "check the shutdown race" {
 		t.Fatalf("consultation = %+v", source.consultation)
+	}
+}
+
+func TestExecuteTool_AdvisorRejectsOversizedContextBeforeInference(t *testing.T) {
+	journal := &memoryMCPJournal{}
+	source := &advisorActivitySource{
+		fakeSource: newFakeSource(nil),
+		journal:    journal,
+	}
+	client := &advisorProbeClient{}
+	activities := NewActivities(client, source, journal, nil, &testIDGen{})
+	in := advisorExecuteInput()
+	in.AdvisorRequest.Messages[0].Content[0].Text = strings.Repeat("x", 700_000)
+
+	result, err := activities.ExecuteTool(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Result.IsError || client.calls != 0 || source.calls != 1 {
+		t.Fatalf("oversized advisor result=%+v model=%d persistence=%d",
+			result.Result, client.calls, source.calls)
+	}
+	if source.consultation.StopReason != "context_limit" ||
+		source.consultation.UsageKnown {
+		t.Fatalf("oversized consultation = %+v", source.consultation)
 	}
 }
 
