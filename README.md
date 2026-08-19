@@ -92,7 +92,7 @@ make local-down
 | Core resources | Agent, Environment, and Session lifecycle, versioning, filtering, and pagination |
 | Events and runtime | Messages, interrupts, custom-tool results, confirmations, outcomes, retries, SSE, and durable park/resume |
 | Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools with optional Vault-backed bearer authentication |
-| Files | Five-operation Files API with configured object storage; File-backed Session Resources with durable read-only Docker mounts |
+| Files | Five-operation Files API with configured object storage; File-backed Session Resources and idle-boundary publication of Docker `/mnt/session/outputs` deliverables |
 | Skills | Nine custom resource operations, immutable Version pins, and Claude Code-style on-demand instruction loading in Docker Sessions |
 | Memory | Fourteen Store, Memory, and immutable Version operations; durable read/write or read-only Docker mounts at `/mnt/memory` |
 | Vaults | Thirteen encrypted Vault and Credential operations plus ordered Session attachment, live OAuth validation, and automatic token refresh; environment-variable egress remains in progress |

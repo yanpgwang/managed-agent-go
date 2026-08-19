@@ -68,6 +68,31 @@ type FileRepository interface {
 	ListIncomplete(context.Context) ([]domain.File, error)
 }
 
+type SessionOutputCompletion struct {
+	File      domain.File
+	Garbage   []domain.File
+	Duplicate bool
+}
+
+type SessionOutputSnapshot struct {
+	Current map[string]domain.File
+	Garbage []domain.File
+}
+
+// SessionOutputRepository extends the ordinary Files intent boundary with the
+// atomic replacement semantics required for runtime-produced deliverables.
+// Object-store I/O still happens outside its transactions.
+type SessionOutputRepository interface {
+	FileRepository
+	CompleteSessionOutput(
+		context.Context,
+		string,
+		BlobInfo,
+	) (SessionOutputCompletion, error)
+	PrepareSessionOutputSnapshot(context.Context, string, []string) (SessionOutputSnapshot, error)
+	PrepareSessionOutputDeletion(context.Context, string) ([]domain.File, error)
+}
+
 // BlobStore is intentionally small so S3-compatible storage can back Files
 // and immutable Skill archives without leaking provider types into the
 // application or HTTP layers.

@@ -287,8 +287,122 @@ func (r *memoryFileRepository) ListIncomplete(context.Context) ([]domain.File, e
 	return files, nil
 }
 
+func (r *memoryFileRepository) CompleteSessionOutput(
+	_ context.Context,
+	id string,
+	info BlobInfo,
+) (SessionOutputCompletion, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	pending, present := r.files[id]
+	if !present || pending.State != domain.FileStateUploading ||
+		pending.Scope == nil || pending.OutputPath == "" {
+		return SessionOutputCompletion{}, domain.Conflict("not a pending Session output")
+	}
+	var current *domain.File
+	garbage := make([]domain.File, 0)
+	for _, file := range r.files {
+		if file.ID == pending.ID || file.Scope == nil ||
+			file.Scope.ID != pending.Scope.ID || file.OutputPath != pending.OutputPath {
+			continue
+		}
+		switch file.State {
+		case domain.FileStateReady:
+			copy := file
+			current = &copy
+		case domain.FileStateDeleting:
+			garbage = append(garbage, file)
+		}
+	}
+	if current != nil && current.SizeBytes == info.SizeBytes &&
+		current.ChecksumSHA256 == info.ChecksumSHA256 {
+		return SessionOutputCompletion{
+			File: *current, Garbage: garbage, Duplicate: true,
+		}, nil
+	}
+	if current == nil {
+		readyCount := 0
+		for _, file := range r.files {
+			if file.Scope != nil && file.Scope.ID == pending.Scope.ID &&
+				file.OutputPath != "" && file.State == domain.FileStateReady {
+				readyCount++
+			}
+		}
+		if readyCount >= MaxSessionOutputFiles {
+			return SessionOutputCompletion{}, domain.TooLarge(
+				"session outputs exceed 500 file limit",
+			)
+		}
+	}
+	if current != nil {
+		current.State = domain.FileStateDeleting
+		r.files[current.ID] = *current
+		garbage = append(garbage, *current)
+	}
+	pending.SizeBytes = info.SizeBytes
+	pending.ChecksumSHA256 = info.ChecksumSHA256
+	pending.State = domain.FileStateReady
+	r.files[id] = pending
+	return SessionOutputCompletion{File: pending, Garbage: garbage}, nil
+}
+
+func (r *memoryFileRepository) PrepareSessionOutputDeletion(
+	_ context.Context,
+	sessionID string,
+) ([]domain.File, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	files := make([]domain.File, 0)
+	for id, file := range r.files {
+		if file.Scope == nil || file.Scope.ID != sessionID || file.OutputPath == "" {
+			continue
+		}
+		if file.State == domain.FileStateReady {
+			file.State = domain.FileStateDeleting
+			r.files[id] = file
+		}
+		files = append(files, file)
+	}
+	return files, nil
+}
+
+func (r *memoryFileRepository) PrepareSessionOutputSnapshot(
+	_ context.Context,
+	sessionID string,
+	outputPaths []string,
+) (SessionOutputSnapshot, error) {
+	wanted := make(map[string]struct{}, len(outputPaths))
+	for _, outputPath := range outputPaths {
+		wanted[outputPath] = struct{}{}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	current := make(map[string]domain.File)
+	garbage := make([]domain.File, 0)
+	for id, file := range r.files {
+		if file.Scope == nil || file.Scope.ID != sessionID || file.OutputPath == "" {
+			continue
+		}
+		if _, present := wanted[file.OutputPath]; present {
+			if file.State == domain.FileStateReady {
+				current[file.OutputPath] = file
+			}
+			continue
+		}
+		if file.State == domain.FileStateReady {
+			file.State = domain.FileStateDeleting
+			r.files[id] = file
+		}
+		if file.State == domain.FileStateDeleting {
+			garbage = append(garbage, file)
+		}
+	}
+	return SessionOutputSnapshot{Current: current, Garbage: garbage}, nil
+}
+
 type memoryBlobStore struct {
 	objects               map[string][]byte
+	putCalls              int
 	putErr                error
 	rejectCanceledCleanup bool
 }
@@ -304,6 +418,7 @@ func (s *memoryBlobStore) Put(
 	body io.Reader,
 	maxBytes int64,
 ) (BlobInfo, error) {
+	s.putCalls++
 	if s.putErr != nil {
 		return BlobInfo{}, s.putErr
 	}

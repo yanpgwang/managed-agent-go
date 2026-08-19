@@ -209,6 +209,12 @@ func NewRuntime(config RuntimeConfig) *Runtime {
 		hasSkillCapability && skillCapability.SupportsSkillBundles() &&
 			hasSkillResources && skillResources.SupportsSkillRuntime(),
 	)
+	outputCapability, hasOutputCapability := config.SandboxProvider.(sandbox.SessionOutputProvider)
+	outputPublisher, hasOutputPublisher := config.Resources.(SessionOutputPublisher)
+	if hasOutputCapability && outputCapability.SupportsSessionOutputs() &&
+		hasOutputPublisher && outputPublisher.SupportsSessionOutputs() {
+		acts.WithSessionOutputPublisher(outputPublisher)
+	}
 	if config.Resources != nil {
 		acts.WithSandboxResourceReconciler(config.Resources)
 	}

@@ -228,6 +228,7 @@ func TestWorkspaceCompositeConstraintsAreValidated(t *testing.T) {
 SELECT conname, convalidated
 FROM pg_constraint
 WHERE conname = ANY($1)
+  AND connamespace = current_schema()::regnamespace
 ORDER BY conname`, []string{
 		"deployments_agent_workspace_fk",
 		"deployments_environment_workspace_fk",

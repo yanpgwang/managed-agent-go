@@ -3,9 +3,11 @@ package pg
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"os"
 	"sync"
@@ -18,6 +20,7 @@ import (
 	"github.com/yanpgwang/mango/internal/blob"
 	"github.com/yanpgwang/mango/internal/domain"
 	"github.com/yanpgwang/mango/internal/httpapi"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 func TestFileService_PostgresS3RestartReconciliation(t *testing.T) {
@@ -50,9 +53,9 @@ func TestFileService_PostgresS3RestartReconciliation(t *testing.T) {
 		t.Fatalf("created = %+v", created)
 	}
 
-	// Seed the future output-file path through the internal repository so the
-	// public Download operation has real byte-exact S3 evidence without claiming
-	// that ordinary client uploads are downloadable.
+	// Seed a downloadable Session-scoped fixture so reconciliation exercises
+	// both public and internal File intents. Runtime output publication is
+	// covered end to end by TestFileHTTP_PostgresS3SDKLifecycle below.
 	output := domain.File{
 		ID: "file_output_service", Filename: "output.txt", MimeType: "text/plain",
 		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
@@ -131,7 +134,8 @@ func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
 		t.Fatalf("NewS3Store: %v", err)
 	}
 	repo := NewFileRepository(store)
-	service := app.NewFileService(repo, blobs, domain.NewSeqIDGen(), fixedClock{})
+	ids := domain.NewSeqIDGen()
+	service := app.NewFileService(repo, blobs, ids, fixedClock{})
 	server := httptest.NewServer(httpapi.NewServer(httpapi.Deps{Files: service}, httpapi.Config{
 		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
 	}).Handler())
@@ -164,24 +168,73 @@ func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
 			t.Fatalf("Download error = %T %v", err, err)
 		}
 	}
-	output := domain.File{
-		ID: "file_output_http_service", Filename: "output.txt", MimeType: "text/plain",
-		CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
-		Downloadable: true, Scope: &domain.FileScope{ID: "sesn_http", Type: "session"},
-		BlobKey: "files/file_output_http_service", State: domain.FileStateUploading,
-	}
-	if err := repo.BeginUpload(ctx, output); err != nil {
+	session := newSession("sesn_http")
+	if _, err := store.CreateSession(ctx, session, nil); err != nil {
 		t.Fatal(err)
 	}
-	info, err := blobs.Put(ctx, output.BlobKey, output.MimeType,
-		bytes.NewBufferString("sdk-output"), app.MaxFileBytes)
+	publisher := app.NewSessionOutputPublisher(repo, blobs, ids, fixedClock{})
+	provider, err := sandbox.NewDockerProvider(sandbox.DockerConfig{
+		DefaultImage: "alpine:latest", ResourceBaseDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewDockerProvider: %v", err)
+	}
+	_, outputBox, err := provider.Create(ctx, t.Name(), sandbox.Spec{
+		Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("create Docker output sandbox: %v", err)
+	}
+	defer func() {
+		if err := outputBox.Destroy(context.Background()); err != nil {
+			t.Errorf("destroy Docker output sandbox: %v", err)
+		}
+	}()
+	if err := outputBox.WriteFile(
+		ctx, sandbox.SessionOutputsRoot+"/output.txt", []byte("sdk-output"),
+	); err != nil {
+		t.Fatalf("write Session output through sandbox tool boundary: %v", err)
+	}
+	if err := publisher.Publish(ctx, session.ID, outputBox); err != nil {
+		t.Fatalf("Publish Session output: %v", err)
+	}
+	rawRequest, err := http.NewRequestWithContext(
+		ctx, http.MethodGet, server.URL+"/v1/files?scope_id="+session.ID, nil,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repo.CompleteUpload(ctx, output.ID, info); err != nil {
-		t.Fatal(err)
+	rawRequest.Header.Set("x-api-key", "sk-test")
+	rawRequest.Header.Set("anthropic-version", "2023-06-01")
+	rawRequest.Header.Set("anthropic-beta", "files-api-2025-04-14")
+	rawResponse, err := server.Client().Do(rawRequest)
+	if err != nil {
+		t.Fatalf("raw list Session outputs: %v", err)
 	}
-	response, err := client.Beta.Files.Download(ctx, output.ID, anthropic.BetaFileDownloadParams{})
+	defer func() { _ = rawResponse.Body.Close() }()
+	if rawResponse.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(rawResponse.Body)
+		t.Fatalf("raw list Session outputs = %d: %s", rawResponse.StatusCode, body)
+	}
+	var listed struct {
+		Data []struct {
+			ID           string `json:"id"`
+			Filename     string `json:"filename"`
+			Downloadable bool   `json:"downloadable"`
+			Scope        struct {
+				ID string `json:"id"`
+			} `json:"scope"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(rawResponse.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode raw output list: %v", err)
+	}
+	if len(listed.Data) != 1 || listed.Data[0].Filename != "output.txt" ||
+		!listed.Data[0].Downloadable || listed.Data[0].Scope.ID != session.ID {
+		t.Fatalf("raw output list = %+v", listed.Data)
+	}
+	outputID := listed.Data[0].ID
+	response, err := client.Beta.Files.Download(ctx, outputID, anthropic.BetaFileDownloadParams{})
 	if err != nil {
 		t.Fatalf("Download output: %v", err)
 	}
@@ -199,7 +252,7 @@ func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
 	if _, err := client.Beta.Files.GetMetadata(ctx, uploaded.ID, anthropic.BetaFileGetMetadataParams{}); err == nil {
 		t.Fatal("deleted File remains visible")
 	}
-	if _, err := service.Delete(ctx, output.ID); err != nil {
+	if _, err := service.Delete(ctx, outputID); err != nil {
 		t.Fatalf("Delete output: %v", err)
 	}
 }

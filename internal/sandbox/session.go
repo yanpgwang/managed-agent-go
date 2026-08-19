@@ -150,62 +150,12 @@ func (m *SessionManager) Acquire(
 	}
 	unlock := m.acquireSessionLock(sessionID)
 	defer unlock()
-	if !spec.Packages.Empty() {
-		capability, ok := m.provider.(PackageSetupProvider)
-		if !ok || !capability.SupportsPackageSetup() {
-			return nil, Permanent(fmt.Errorf(
-				"sandbox: provider %q does not support isolated package setup",
-				m.provider.Name(),
-			))
-		}
+	if err := m.validateAcquireSpec(spec); err != nil {
+		return nil, err
 	}
-	if spec.Network == "limited" {
-		capability, ok := m.provider.(LimitedNetworkProvider)
-		if !ok || !capability.SupportsLimitedNetwork() {
-			return nil, Permanent(fmt.Errorf(
-				"sandbox: provider %q does not support limited networking",
-				m.provider.Name(),
-			))
-		}
-	} else if len(spec.NetworkAllowedHosts) > 0 || len(spec.SetupNetworkAllowedHosts) > 0 {
-		return nil, Permanent(errors.New(
-			"sandbox: network allowlists require limited networking",
-		))
-	}
-
-	m.mu.Lock()
-	if box := m.boxes[sessionID]; box != nil {
-		boundSpecHash := m.specHashes[sessionID]
-		boundNetworkHash := m.networkHashes[sessionID]
-		m.mu.Unlock()
-		if !bindingProvesPackageSetup(boundSpecHash, spec) {
-			return nil, Permanent(fmt.Errorf(
-				"sandbox: session %s cached binding does not prove setup for the requested package plan",
-				sessionID,
-			))
-		}
-		if spec.Network == "limited" && boundNetworkHash != limitedNetworkHash(spec) {
-			if err := applyLimitedNetwork(ctx, box, spec.NetworkAllowedHosts); err != nil {
-				return nil, err
-			}
-			m.mu.Lock()
-			m.networkHashes[sessionID] = limitedNetworkHash(spec)
-			m.mu.Unlock()
-		}
-		return box, nil
-	}
-	m.mu.Unlock()
-
-	binding, found, err := m.bindings.GetSandboxBinding(ctx, sessionID)
-	if err != nil {
-		return nil, fmt.Errorf("sandbox: load binding: %w", err)
-	}
-	if found {
-		box, err := m.attach(ctx, binding, spec)
-		if err != nil {
-			return nil, err
-		}
-		m.cache(sessionID, box, binding.SpecHash, spec)
+	if box, found, err := m.acquireExistingLocked(ctx, sessionID, spec); err != nil {
+		return nil, err
+	} else if found {
 		return box, nil
 	}
 
@@ -305,6 +255,94 @@ func (m *SessionManager) Acquire(
 	}
 	m.cache(sessionID, box, authoritative.SpecHash, spec)
 	return box, nil
+}
+
+// AcquireExisting attaches to a Session sandbox only when a durable binding
+// already exists. It never provisions a new resource. Idle-boundary duties use
+// this to avoid creating an otherwise unused sandbox for text-only Sessions.
+func (m *SessionManager) AcquireExisting(
+	ctx context.Context,
+	sessionID string,
+	spec Spec,
+) (Sandbox, bool, error) {
+	if sessionID == "" {
+		return nil, false, errors.New("sandbox: session id is required")
+	}
+	unlock := m.acquireSessionLock(sessionID)
+	defer unlock()
+	if err := m.validateAcquireSpec(spec); err != nil {
+		return nil, false, err
+	}
+	return m.acquireExistingLocked(ctx, sessionID, spec)
+}
+
+func (m *SessionManager) validateAcquireSpec(spec Spec) error {
+	if !spec.Packages.Empty() {
+		capability, ok := m.provider.(PackageSetupProvider)
+		if !ok || !capability.SupportsPackageSetup() {
+			return Permanent(fmt.Errorf(
+				"sandbox: provider %q does not support isolated package setup",
+				m.provider.Name(),
+			))
+		}
+	}
+	if spec.Network == "limited" {
+		capability, ok := m.provider.(LimitedNetworkProvider)
+		if !ok || !capability.SupportsLimitedNetwork() {
+			return Permanent(fmt.Errorf(
+				"sandbox: provider %q does not support limited networking",
+				m.provider.Name(),
+			))
+		}
+	} else if len(spec.NetworkAllowedHosts) > 0 || len(spec.SetupNetworkAllowedHosts) > 0 {
+		return Permanent(errors.New(
+			"sandbox: network allowlists require limited networking",
+		))
+	}
+	return nil
+}
+
+func (m *SessionManager) acquireExistingLocked(
+	ctx context.Context,
+	sessionID string,
+	spec Spec,
+) (Sandbox, bool, error) {
+	m.mu.Lock()
+	if box := m.boxes[sessionID]; box != nil {
+		boundSpecHash := m.specHashes[sessionID]
+		boundNetworkHash := m.networkHashes[sessionID]
+		m.mu.Unlock()
+		if !bindingProvesPackageSetup(boundSpecHash, spec) {
+			return nil, false, Permanent(fmt.Errorf(
+				"sandbox: session %s cached binding does not prove setup for the requested package plan",
+				sessionID,
+			))
+		}
+		if spec.Network == "limited" && boundNetworkHash != limitedNetworkHash(spec) {
+			if err := applyLimitedNetwork(ctx, box, spec.NetworkAllowedHosts); err != nil {
+				return nil, false, err
+			}
+			m.mu.Lock()
+			m.networkHashes[sessionID] = limitedNetworkHash(spec)
+			m.mu.Unlock()
+		}
+		return box, true, nil
+	}
+	m.mu.Unlock()
+
+	binding, found, err := m.bindings.GetSandboxBinding(ctx, sessionID)
+	if err != nil {
+		return nil, false, fmt.Errorf("sandbox: load binding: %w", err)
+	}
+	if !found {
+		return nil, false, nil
+	}
+	box, err := m.attach(ctx, binding, spec)
+	if err != nil {
+		return nil, false, err
+	}
+	m.cache(sessionID, box, binding.SpecHash, spec)
+	return box, true, nil
 }
 
 func (m *SessionManager) attach(

@@ -78,6 +78,22 @@ have to write into the worker host's absolute `/mnt` path and therefore rejects
 the feature. Current remote adapters also reject it until their service APIs
 can prove an equivalent isolated read-only mount contract.
 
+## Session output mounts
+
+Docker also exposes a provider-owned writable bind mount at
+`/mnt/session/outputs`. Before a primary Session becomes idle, the worker
+attaches to the existing durable container, takes the provider resource lock,
+streams the directory as an archive, validates every path and entry type, and
+publishes regular files to Mango's S3-compatible Files store. The worker never
+creates a sandbox solely for output discovery. The mount and publication
+capabilities are separate from File Resource input mounts: local and current
+remote adapters advertise neither output export nor an equivalent writable
+absolute-path boundary. A provider must also pass the shared output conformance
+suite: built-in file tools and shell commands must see the same durable root,
+export must be streaming and repeatable under the resource lock, and an adapter
+without that proof remains fail-closed. Docker sandboxes created before this
+mount existed must be recreated rather than silently producing an empty export.
+
 ## Custom Skill mounts
 
 Custom Skill execution uses a separate provider capability because a bundle is
@@ -90,11 +106,11 @@ containers, so attach after worker restart can recover the same host root.
 
 The worker checks the marker and materialized tree before every relevant tool
 step, repairs missing or damaged staging, and removes abandoned extraction
-directories. Sandbox destruction removes the shared root containing both File
-and Skill staging. Containers created before this mount existed fail closed for
-pinned Skills and must be recreated; Docker cannot add a bind mount to a live
-container. Local, self-hosted, and current remote adapters do not advertise the
-capability.
+directories. Sandbox destruction removes the shared root containing File,
+output, and Skill staging. Containers created before this mount existed fail
+closed for pinned Skills and must be recreated; Docker cannot add a bind mount
+to a live container. Local execution, CMA `self_hosted` Environment execution,
+and current remote adapters do not advertise the capability.
 
 ## Memory Store mounts
 

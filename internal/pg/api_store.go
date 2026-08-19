@@ -604,6 +604,13 @@ WHERE state = 'ready' AND id IN (
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
+UPDATE files
+SET state = 'deleting', updated_at = $2
+WHERE state = 'ready' AND scope_type = 'session' AND scope_id = $1
+  AND output_path IS NOT NULL`, sessionID, now); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
 UPDATE session_resources
 SET state = 'deleting', updated_at = $2
 WHERE session_id = $1 AND state = 'active'`, sessionID, now); err != nil {
@@ -627,26 +634,64 @@ WHERE session_id = $1 AND state = 'active'`, sessionID, now); err != nil {
 
 // FinalizeSessionDeletion physically deletes a previously fenced session.
 func (s *Store) FinalizeSessionDeletion(ctx context.Context, sessionID string) error {
-	affected, err := s.q.DeleteMarkedSession(ctx, sessionID)
-	if err != nil {
-		if isForeignKeyViolation(err) {
-			return domain.Conflict("session sandbox or File Resource cleanup is incomplete")
+	deleted := false
+	err := s.withPGXTx(ctx, func(tx pgx.Tx, q *pgstore.Queries) error {
+		row, err := q.LockSession(ctx, sessionID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			// A concurrent retry already completed the prepared deletion.
+			return nil
 		}
-		return err
-	}
-	if affected != 1 {
-		exists, existsErr := s.SessionExists(ctx, sessionID)
-		if existsErr != nil {
-			return existsErr
+		if err != nil {
+			return err
 		}
-		if exists {
+		if !row.DeletingAt.Valid {
 			return domain.Conflict("session deletion was not prepared")
 		}
-		// A concurrent retry already completed the same prepared deletion.
+		var outputsRemain bool
+		if err := tx.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM files
+    WHERE scope_type = 'session' AND scope_id = $1
+      AND output_path IS NOT NULL AND workspace_id = $2
+)`, sessionID, row.WorkspaceID).Scan(&outputsRemain); err != nil {
+			return err
+		}
+		if outputsRemain {
+			return domain.Conflict("session output cleanup is incomplete")
+		}
+		affected, err := q.DeleteMarkedSession(ctx, sessionID)
+		if err != nil {
+			if isForeignKeyViolation(err) {
+				return domain.Conflict("session sandbox or File Resource cleanup is incomplete")
+			}
+			return err
+		}
+		if affected != 1 {
+			return domain.Conflict("session deletion was not prepared")
+		}
+		deleted = true
 		return nil
+	})
+	if err != nil {
+		return err
 	}
-	s.notifySession(ctx, sessionID)
+	if deleted {
+		s.notifySession(ctx, sessionID)
+	}
 	return nil
+}
+
+// SessionOutputFilesExist lets lifecycle reconciliation avoid requiring the
+// object store for Sessions that never produced a deliverable.
+func (s *Store) SessionOutputFilesExist(ctx context.Context, sessionID string) (bool, error) {
+	var exists bool
+	err := s.pool.QueryRow(ctx, `
+SELECT EXISTS (
+    SELECT 1 FROM files
+    WHERE scope_type = 'session' AND scope_id = $1
+      AND output_path IS NOT NULL
+)`, sessionID).Scan(&exists)
+	return exists, err
 }
 
 // ListDeletingSessionIDs returns fenced sessions in stable oldest-first order

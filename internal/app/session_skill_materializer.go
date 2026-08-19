@@ -155,9 +155,10 @@ func (m *SessionSkillMaterializer) reconcileRuntime(
 // SessionRuntimeMaterializer composes File Resource and custom Skill
 // reconciliation behind Temporal's single pre-tool hook.
 type SessionRuntimeMaterializer struct {
-	files  *SessionResourceMaterializer
-	skills *SessionSkillMaterializer
-	memory *SessionMemoryMaterializer
+	files   *SessionResourceMaterializer
+	skills  *SessionSkillMaterializer
+	memory  *SessionMemoryMaterializer
+	outputs *SessionOutputPublisher
 }
 
 func NewSessionRuntimeMaterializer(
@@ -172,8 +173,32 @@ func NewSessionRuntimeMaterializer(
 	return materializer
 }
 
+func (m *SessionRuntimeMaterializer) WithSessionOutputPublisher(
+	outputs *SessionOutputPublisher,
+) *SessionRuntimeMaterializer {
+	m.outputs = outputs
+	return m
+}
+
 func (m *SessionRuntimeMaterializer) SupportsSkillRuntime() bool {
 	return m != nil && m.skills != nil && m.skills.SupportsSkillRuntime()
+}
+
+func (m *SessionRuntimeMaterializer) SupportsSessionOutputs() bool {
+	return m != nil && m.outputs != nil
+}
+
+func (m *SessionRuntimeMaterializer) PublishSessionOutputs(
+	ctx context.Context,
+	sessionID string,
+	box sandbox.Sandbox,
+) error {
+	if m == nil || m.outputs == nil {
+		return sandbox.Permanent(fmt.Errorf(
+			"session output publication is not configured",
+		))
+	}
+	return m.outputs.Publish(ctx, sessionID, box)
 }
 
 func (m *SessionRuntimeMaterializer) Reconcile(
@@ -257,6 +282,11 @@ func (m *SessionRuntimeMaterializer) CleanupSession(
 	ctx context.Context,
 	sessionID string,
 ) error {
+	if m.outputs != nil {
+		if err := m.outputs.CleanupSession(ctx, sessionID); err != nil {
+			return err
+		}
+	}
 	if m.files != nil {
 		if err := m.files.CleanupSession(ctx, sessionID); err != nil {
 			return err

@@ -23,10 +23,11 @@ import (
 )
 
 const (
-	dockerResourceFilesDir  = "files"
-	dockerResourceSkillsDir = "skills"
-	dockerResourceMemoryDir = "memory"
-	dockerResourceStateDir  = "state"
+	dockerResourceFilesDir   = "files"
+	dockerResourceOutputsDir = "outputs"
+	dockerResourceSkillsDir  = "skills"
+	dockerResourceMemoryDir  = "memory"
+	dockerResourceStateDir   = "state"
 )
 
 func dockerResourceRootPrefix(sessionKey string) string {
@@ -162,30 +163,32 @@ func isDockerResourceRootName(name string) bool {
 	return err == nil
 }
 
-func (p *dockerProvider) ensureResourceRoot(sessionKey string) (string, string, string, string, error) {
+func (p *dockerProvider) ensureResourceRoot(
+	sessionKey string,
+) (string, string, string, string, string, error) {
 	if strings.Contains(p.resourceBaseDir, ",") {
-		return "", "", "", "", errors.New("sandbox: docker resource directory cannot contain a comma")
+		return "", "", "", "", "", errors.New("sandbox: docker resource directory cannot contain a comma")
 	}
 	if _, err := os.Stat(p.resourceBaseDir); errors.Is(err, os.ErrNotExist) {
 		if err := os.MkdirAll(p.resourceBaseDir, 0o700); err != nil {
-			return "", "", "", "", fmt.Errorf("sandbox: create docker resource base directory: %w", err)
+			return "", "", "", "", "", fmt.Errorf("sandbox: create docker resource base directory: %w", err)
 		}
 		if err := os.Chmod(p.resourceBaseDir, 0o700); err != nil {
-			return "", "", "", "", fmt.Errorf("sandbox: protect docker resource base directory: %w", err)
+			return "", "", "", "", "", fmt.Errorf("sandbox: protect docker resource base directory: %w", err)
 		}
 	} else if err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: inspect docker resource base directory: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: inspect docker resource base directory: %w", err)
 	}
 	base, err := filepath.EvalSymlinks(p.resourceBaseDir)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: resolve docker resource base directory: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: resolve docker resource base directory: %w", err)
 	}
 	// A new generation for each newly provisioned container prevents stale
 	// Docker Desktop bind-mount lookups after an earlier sandbox was destroyed.
 	// The winning generation is recovered from the container mount on Attach.
 	root, err := os.MkdirTemp(base, dockerResourceRootPrefix(sessionKey))
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: create docker resource directory: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: create docker resource directory: %w", err)
 	}
 	cleanup := true
 	defer func() {
@@ -194,36 +197,46 @@ func (p *dockerProvider) ensureResourceRoot(sessionKey string) (string, string, 
 		}
 	}()
 	if err := os.MkdirAll(filepath.Join(root, dockerResourceFilesDir), 0o755); err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: create docker resource files directory: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: create docker resource files directory: %w", err)
 	}
 	if err := os.Chmod(filepath.Join(root, dockerResourceFilesDir), 0o755); err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: set docker resource files permissions: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: set docker resource files permissions: %w", err)
+	}
+	// Output files are produced by the container user, which is provider-image
+	// specific. The directory is private to one Session resource root, so broad
+	// write permission does not cross a Session boundary.
+	if err := os.MkdirAll(filepath.Join(root, dockerResourceOutputsDir), 0o777); err != nil {
+		return "", "", "", "", "", fmt.Errorf("sandbox: create docker output directory: %w", err)
+	}
+	if err := os.Chmod(filepath.Join(root, dockerResourceOutputsDir), 0o777); err != nil {
+		return "", "", "", "", "", fmt.Errorf("sandbox: set docker output permissions: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, dockerResourceSkillsDir), 0o755); err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: create docker Skill directory: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: create docker Skill directory: %w", err)
 	}
 	if err := os.Chmod(filepath.Join(root, dockerResourceSkillsDir), 0o755); err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: set docker Skill directory permissions: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: set docker Skill directory permissions: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, dockerResourceMemoryDir), 0o755); err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: create Docker Memory Store directory: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: create Docker Memory Store directory: %w", err)
 	}
 	if err := os.Chmod(filepath.Join(root, dockerResourceMemoryDir), 0o755); err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: set Docker Memory Store permissions: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: set Docker Memory Store permissions: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(root, dockerResourceStateDir), 0o700); err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: create docker resource state directory: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: create docker resource state directory: %w", err)
 	}
 	if err := os.Chmod(filepath.Join(root, dockerResourceStateDir), 0o700); err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: set docker resource state permissions: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: set docker resource state permissions: %w", err)
 	}
 	resolved, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", "", "", "", fmt.Errorf("sandbox: resolve docker resource directory: %w", err)
+		return "", "", "", "", "", fmt.Errorf("sandbox: resolve docker resource directory: %w", err)
 	}
 	cleanup = false
 	return resolved,
 		filepath.Join(resolved, dockerResourceFilesDir),
+		filepath.Join(resolved, dockerResourceOutputsDir),
 		filepath.Join(resolved, dockerResourceSkillsDir),
 		filepath.Join(resolved, dockerResourceMemoryDir),
 		nil
@@ -261,6 +274,45 @@ func (p *dockerProvider) inspectSkillMount(
 		filepath.Dir(skillsRoot) != resourceRoot {
 		return false, Permanent(errors.New(
 			"sandbox: Docker Skill mount source is not provider-owned",
+		))
+	}
+	return true, nil
+}
+
+func (p *dockerProvider) inspectOutputMount(
+	ctx context.Context,
+	cid string,
+	resourceRoot string,
+) (bool, error) {
+	mounts, err := p.inspectContainerMounts(ctx, cid)
+	if err != nil {
+		return false, fmt.Errorf("sandbox: inspect Docker output mount: %w", err)
+	}
+	var actual *container.MountPoint
+	for index := range mounts {
+		if mounts[index].Destination == SessionOutputsRoot {
+			actual = &mounts[index]
+			break
+		}
+	}
+	if actual == nil {
+		// Sandboxes created before output publication remain attachable for
+		// ordinary tools, but cannot claim the deliverable capability.
+		return false, nil
+	}
+	if !actual.RW || resourceRoot == "" {
+		return false, Permanent(errors.New(
+			"sandbox: Docker output mount is not a recognized writable bind mount",
+		))
+	}
+	outputsRoot, err := canonicalLocalPath(actual.Source)
+	if err != nil {
+		return false, fmt.Errorf("sandbox: resolve Docker output mount: %w", err)
+	}
+	if filepath.Base(outputsRoot) != dockerResourceOutputsDir ||
+		filepath.Dir(outputsRoot) != resourceRoot {
+		return false, Permanent(errors.New(
+			"sandbox: Docker output mount source is not provider-owned",
 		))
 	}
 	return true, nil

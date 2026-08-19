@@ -110,10 +110,11 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.DockerProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup:  true,
-				FileResources: true,
-				SkillBundles:  true,
-				MemoryStores:  true,
+				PackageSetup:   true,
+				FileResources:  true,
+				SessionOutputs: true,
+				SkillBundles:   true,
+				MemoryStores:   true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				return sandbox.NewDockerProvider(sandbox.DockerConfig{
@@ -267,6 +268,7 @@ type resolvedFiles struct {
 	service    *app.FileService
 	repository *pg.FileRepository
 	blobs      app.FileBlobStore
+	outputs    *app.SessionOutputPublisher
 }
 
 func resolveFiles(
@@ -308,7 +310,10 @@ func resolveFiles(
 			return nil, fmt.Errorf("files: reconcile incomplete operations: %w", err)
 		}
 	}
-	return &resolvedFiles{service: files, repository: repository, blobs: blobs}, nil
+	return &resolvedFiles{
+		service: files, repository: repository, blobs: blobs,
+		outputs: app.NewSessionOutputPublisher(repository, blobs, ids, clock),
+	}, nil
 }
 
 func firstNonEmpty(values ...string) string {

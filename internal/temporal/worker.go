@@ -48,6 +48,7 @@ func NewWorkerOnTaskQueue(
 	w.RegisterActivityWithOptions(acts.AccountModelRequest, activity.RegisterOptions{Name: ActivityAccountModelRequest})
 	w.RegisterActivityWithOptions(acts.EvaluateOutcome, activity.RegisterOptions{Name: ActivityEvaluateOutcome})
 	w.RegisterActivityWithOptions(acts.ExecuteTool, activity.RegisterOptions{Name: ActivityExecuteTool})
+	w.RegisterActivityWithOptions(acts.PublishSessionOutputs, activity.RegisterOptions{Name: ActivityPublishSessionOutputs})
 	w.RegisterActivityWithOptions(acts.CompleteWorkflowTurn, activity.RegisterOptions{Name: ActivityCompleteWorkflowTurn})
 	w.RegisterActivityWithOptions(acts.ReleaseSandbox, activity.RegisterOptions{Name: ActivityReleaseSandbox})
 	return w

@@ -46,10 +46,11 @@ The plaintext generated key is printed only by `api-key create`; PostgreSQL
 stores its SHA-256 digest. API and worker processes share Workspace ownership
 through PostgreSQL, but only the API needs request credentials.
 
-The API owns HTTP resources, SSE, event admission, and Files metadata/object
-coordination. The worker owns Temporal Workflow/Activity execution, model
-calls, sandbox tools, File Resource materialization, and the outbox relay. They
-share a release artifact but not a scaling or rollout policy.
+The API owns HTTP resources, SSE, event admission, and client Files
+metadata/object coordination. The worker owns Temporal Workflow/Activity
+execution, model calls, sandbox tools, File Resource materialization, Session
+output publication, and the outbox relay. They share a release artifact but
+not a scaling or rollout policy.
 
 Files add an S3-compatible dependency beside PostgreSQL, Temporal, and NATS.
 Set `MANGO_FILE_S3_BUCKET` to enable the five Files routes; leaving it
@@ -57,8 +58,8 @@ empty keeps the rest of the API available and makes Files requests return
 `422`. Failure to initialize or reconcile the configured object store also
 disables only Files so the Managed Agents core remains available. The API
 process uses these settings. A worker that materializes Session File Resources
-must use the same bucket, endpoint, region, and credentials (it does not run
-startup intent reconciliation):
+or publishes `/mnt/session/outputs` must use the same bucket, endpoint, region,
+and credentials (it does not run startup intent reconciliation):
 
 | Variable | Meaning |
 | --- | --- |
@@ -72,11 +73,12 @@ startup intent reconciliation):
 
 The first Files slice assumes one Files-enabled API process during startup
 reconciliation. It also needs temporary disk capacity up to 500 MB per
-concurrent upload or Session Resource copy. These are explicit limits until
-distributed intent leasing and direct multipart object-store operations are
-implemented.
+concurrent upload, Session Resource copy, or Session output publication. These
+are explicit limits until distributed intent leasing and direct multipart
+object-store operations are implemented.
 
-File-backed Session Resources additionally require
+File-backed Session Resources and automatic Session output publication
+additionally require
 `MANGO_SANDBOX=docker`. The worker must run where the selected Docker
 Engine API is reachable; the provider uses the Moby Go client directly and does
 not require a `docker` CLI binary. Configure a non-default daemon with

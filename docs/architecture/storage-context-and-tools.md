@@ -199,8 +199,23 @@ Deletion records a tombstone until the worker removes the applied mount.
 Identity-bearing provider markers and a provider-side lock make delete/re-add
 safe even when a timed-out attempt overlaps its retry. The
 local and current remote adapters reject this feature because they cannot
-provide the same absolute-path read-only boundary. Ordinary tool output still
-does not automatically become a File or a separate Artifact resource.
+provide the same absolute-path read-only boundary.
+
+Docker separately bind-mounts a provider-owned writable directory at
+`/mnt/session/outputs`. Before the primary Session's idle event is committed,
+Temporal runs a retryable Activity that attaches only to an existing sandbox,
+streams the output tree, rejects non-regular or escaping entries, and publishes
+each accepted file through the same PostgreSQL-intent/S3-byte split. Relative
+output path plus Session scope is the durable identity: an unchanged retry
+reuses the visible File without another object upload, changed bytes replace it
+in one metadata transaction, and paths absent from the validated snapshot are
+hidden before their old objects are cleaned. A database-side count guard keeps
+the visible set within 500 files across turns. Invalid entries become a
+recoverable `session.error` plus idle instead of terminating the Session; an
+explicit interrupt skips the snapshot so it cannot wait behind large output
+publication. Changed files leave the old object as a crash-recoverable deletion intent.
+Arbitrary workspace files and tool-result spill files outside the documented
+output root do not automatically become public Files.
 
 Custom Skill metadata and immutable Version state follow the same split-source
 pattern without becoming Files. PostgreSQL owns the Skill identity, latest

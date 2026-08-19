@@ -314,6 +314,55 @@ func TestSessionManager_ReusesSandboxPerSession(t *testing.T) {
 	}
 }
 
+func TestSessionManager_AcquireExistingNeverProvisions(t *testing.T) {
+	provider := &countingProvider{inner: NewLocalProvider()}
+	bindings := newMemoryBindingStore()
+	manager := NewSessionManager(provider, bindings)
+
+	box, found, err := manager.AcquireExisting(
+		context.Background(), "sesn_text_only", Spec{},
+	)
+	if err != nil || found || box != nil {
+		t.Fatalf("AcquireExisting = box:%v found:%t err:%v", box, found, err)
+	}
+	if got := provider.provisions.Load(); got != 0 {
+		t.Fatalf("AcquireExisting provisioned %d sandboxes, want 0", got)
+	}
+}
+
+func TestSessionManager_AcquireExistingReattachesDurableBinding(t *testing.T) {
+	ctx := context.Background()
+	provider := &countingProvider{inner: NewLocalProvider()}
+	bindings := newMemoryBindingStore()
+	first := NewSessionManager(provider, bindings)
+	box, err := first.Acquire(ctx, "sesn_existing", Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := box.WriteFile(ctx, "state.txt", []byte("kept")); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted := NewSessionManager(provider, bindings)
+	attached, found, err := restarted.AcquireExisting(ctx, "sesn_existing", Spec{})
+	if err != nil || !found {
+		t.Fatalf("AcquireExisting found=%t err=%v", found, err)
+	}
+	data, err := attached.ReadFile(ctx, "state.txt")
+	if err != nil || string(data) != "kept" {
+		t.Fatalf("reattached data=%q err=%v", data, err)
+	}
+	if got := provider.provisions.Load(); got != 1 {
+		t.Fatalf("Create calls=%d, want 1", got)
+	}
+	if got := provider.attachments.Load(); got != 1 {
+		t.Fatalf("Attach calls=%d, want 1", got)
+	}
+	if err := restarted.Release(ctx, "sesn_existing"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNewSessionManager_RequiresBindingStore(t *testing.T) {
 	defer func() {
 		if recovered := recover(); recovered == nil {

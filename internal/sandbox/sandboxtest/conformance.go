@@ -3,10 +3,13 @@
 package sandboxtest
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -23,6 +26,99 @@ type Config struct {
 	NewProvider Factory
 	Spec        sandbox.Spec
 	ShellPath   string
+}
+
+// RunSessionOutputs exercises the provider-neutral contract required before a
+// provider may advertise SessionOutputs. Adapters that cannot pass this suite
+// must remain fail-closed in the capability registry.
+func RunSessionOutputs(t *testing.T, cfg Config) {
+	t.Helper()
+	if cfg.NewProvider == nil {
+		t.Fatal("sandboxtest: NewProvider is required")
+	}
+	if cfg.Spec.Timeout == 0 {
+		cfg.Spec.Timeout = 30 * time.Second
+	}
+	if cfg.ShellPath == "" {
+		cfg.ShellPath = "/bin/sh"
+	}
+	ctx := context.Background()
+	provider := cfg.NewProvider(t)
+	capability, ok := provider.(sandbox.SessionOutputProvider)
+	if !ok || !capability.SupportsSessionOutputs() {
+		t.Fatalf("provider %q does not advertise Session outputs", provider.Name())
+	}
+	_, box, err := provider.Create(ctx, sessionKey(t), cfg.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	exporter, ok := box.(sandbox.SessionOutputSandbox)
+	if !ok {
+		t.Fatalf("provider %q sandbox does not export Session outputs", provider.Name())
+	}
+	locker, ok := box.(sandbox.ResourceSynchronizationSandbox)
+	if !ok {
+		t.Fatalf("provider %q sandbox cannot lock output snapshots", provider.Name())
+	}
+	if err := box.WriteFile(
+		ctx, sandbox.SessionOutputsRoot+"/nested/tool.txt", []byte("tool"),
+	); err != nil {
+		t.Fatalf("write output through tool boundary: %v", err)
+	}
+	result, err := box.Exec(ctx, sandbox.Command{
+		Path: cfg.ShellPath,
+		Args: []string{"-c", "printf shell > /mnt/session/outputs/shell.txt"},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("write output through shell boundary: result=%+v err=%v", result, err)
+	}
+	unlock, err := locker.LockResourceOperation(ctx)
+	if err != nil {
+		t.Fatalf("lock output snapshot: %v", err)
+	}
+	defer unlock()
+	first := readSessionOutputArchive(t, ctx, exporter)
+	second := readSessionOutputArchive(t, ctx, exporter)
+	want := map[string]string{"nested/tool.txt": "tool", "shell.txt": "shell"}
+	if !maps.Equal(first, want) || !maps.Equal(second, want) {
+		t.Fatalf("repeatable output snapshots = first:%v second:%v want:%v", first, second, want)
+	}
+}
+
+func readSessionOutputArchive(
+	t *testing.T,
+	ctx context.Context,
+	exporter sandbox.SessionOutputSandbox,
+) map[string]string {
+	t.Helper()
+	stream, err := exporter.OpenSessionOutputs(ctx)
+	if err != nil {
+		t.Fatalf("OpenSessionOutputs: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	files := make(map[string]string)
+	reader := tar.NewReader(stream)
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			return files
+		}
+		if err != nil {
+			t.Fatalf("read output archive: %v", err)
+		}
+		if header.Typeflag == tar.TypeDir {
+			continue
+		}
+		if header.Typeflag != tar.TypeReg && header.Typeflag != 0 {
+			t.Fatalf("output archive entry %q type = %d", header.Name, header.Typeflag)
+		}
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			t.Fatalf("read output %q: %v", header.Name, err)
+		}
+		files[strings.TrimPrefix(header.Name, "./")] = string(body)
+	}
 }
 
 // Run exercises the provider behavior required by SessionManager and the

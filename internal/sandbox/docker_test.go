@@ -245,6 +245,9 @@ func TestDocker_CreateBuildsTypedEngineRequest(t *testing.T) {
 		!mounts["/mnt/memory/project"] {
 		t.Fatalf("mounts = %+v", captured.HostConfig.Mounts)
 	}
+	if readOnly, present := mounts[SessionOutputsRoot]; !present || readOnly {
+		t.Fatalf("Session output mount = present:%t readOnly:%t", present, readOnly)
+	}
 }
 
 func TestDocker_EnsureImagePullsAndWaitsWhenMissing(t *testing.T) {
@@ -496,6 +499,71 @@ func TestDocker_ReadFileRejectsContainerSymlinkArchive(t *testing.T) {
 	}
 }
 
+func TestDocker_OpenSessionOutputsStreamsProviderArchive(t *testing.T) {
+	want := []byte("tar stream")
+	var sourcePath string
+	engine := &stubDockerEngine{
+		copyFromFn: func(
+			_ context.Context,
+			cid string,
+			options dockerclient.CopyFromContainerOptions,
+		) (dockerclient.CopyFromContainerResult, error) {
+			if cid != "container-id" {
+				t.Fatalf("container id = %q", cid)
+			}
+			sourcePath = options.SourcePath
+			return dockerclient.CopyFromContainerResult{
+				Content: io.NopCloser(bytes.NewReader(want)),
+			}, nil
+		},
+	}
+	box := &dockerSandbox{
+		provider: &dockerProvider{engine: engine}, cid: "container-id",
+		outputMountReady: true,
+	}
+	stream, err := box.OpenSessionOutputs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stream.Close() }()
+	got, err := io.ReadAll(stream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sourcePath != SessionOutputsRoot+"/." || !bytes.Equal(got, want) {
+		t.Fatalf("source=%q stream=%q", sourcePath, got)
+	}
+}
+
+func TestDocker_OpenSessionOutputsRejectsLegacySandboxWithoutMount(t *testing.T) {
+	box := &dockerSandbox{outputMountReady: false}
+	_, err := box.OpenSessionOutputs(context.Background())
+	if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), "predates") {
+		t.Fatalf("legacy Session output error = %v", err)
+	}
+}
+
+func TestDocker_OpenSessionOutputsDoesNotTreatMissingMountAsEmpty(t *testing.T) {
+	engine := &stubDockerEngine{
+		copyFromFn: func(
+			context.Context,
+			string,
+			dockerclient.CopyFromContainerOptions,
+		) (dockerclient.CopyFromContainerResult, error) {
+			return dockerclient.CopyFromContainerResult{},
+				containerderrdefs.ErrNotFound.WithMessage("missing")
+		},
+	}
+	box := &dockerSandbox{
+		provider: &dockerProvider{engine: engine}, cid: "container-id",
+		outputMountReady: true,
+	}
+	_, err := box.OpenSessionOutputs(context.Background())
+	if err == nil || IsPermanent(err) || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("missing Session output mount error = %v", err)
+	}
+}
+
 func TestDocker_ExecAndExitCode(t *testing.T) {
 	sb := newDockerSB(t, Spec{})
 	res, err := sb.Exec(context.Background(), Command{Path: "sh", Args: []string{"-c", "echo hi"}})
@@ -569,6 +637,48 @@ func TestDocker_FileRoundTripAndConfinement(t *testing.T) {
 	if strings.TrimSpace(string(res.Stdout)) != "data" {
 		t.Fatalf("exec cat = %q", res.Stdout)
 	}
+}
+
+func TestDocker_SessionOutputMountIsWritableAndExported(t *testing.T) {
+	ctx := context.Background()
+	box := newDockerSB(t, Spec{})
+	want := []byte("docker output\n")
+	if err := box.WriteFile(
+		ctx, SessionOutputsRoot+"/nested/report.txt", want,
+	); err != nil {
+		t.Fatalf("write Session output: %v", err)
+	}
+	exporter, ok := box.(SessionOutputSandbox)
+	if !ok {
+		t.Fatalf("Docker sandbox does not expose SessionOutputSandbox: %T", box)
+	}
+	stream, err := exporter.OpenSessionOutputs(ctx)
+	if err != nil {
+		t.Fatalf("OpenSessionOutputs: %v", err)
+	}
+	defer func() { _ = stream.Close() }()
+	reader := tar.NewReader(stream)
+	for {
+		header, nextErr := reader.Next()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			t.Fatalf("read output archive: %v", nextErr)
+		}
+		if strings.TrimPrefix(header.Name, "./") != "nested/report.txt" {
+			continue
+		}
+		got, readErr := io.ReadAll(reader)
+		if readErr != nil {
+			t.Fatalf("read exported output: %v", readErr)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("exported output = %q, want %q", got, want)
+		}
+		return
+	}
+	t.Fatal("nested/report.txt missing from Docker output archive")
 }
 
 func TestDocker_ToolFilePathUsesExplicitResourceRoots(t *testing.T) {
@@ -1293,7 +1403,7 @@ func TestDocker_FileResourceDirectoryModesIgnoreUmask(t *testing.T) {
 		t.Fatal(err)
 	}
 	provider := providerInterface.(*dockerProvider)
-	root, _, _, _, err := provider.ensureResourceRoot(t.Name())
+	root, _, _, _, _, err := provider.ensureResourceRoot(t.Name())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1307,6 +1417,7 @@ func TestDocker_FileResourceDirectoryModesIgnoreUmask(t *testing.T) {
 	}
 	for target, want := range map[string]os.FileMode{
 		filepath.Join(root, dockerResourceFilesDir):           0o755,
+		filepath.Join(root, dockerResourceOutputsDir):         0o777,
 		filepath.Join(root, dockerResourceFilesDir, "nested"): 0o755,
 		filepath.Join(root, dockerResourceStateDir):           0o700,
 	} {
