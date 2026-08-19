@@ -19,7 +19,7 @@ import (
 
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/client"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 const (

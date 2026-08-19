@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
+	"github.com/yanpgwang/mango/internal/mcpclient"
 )
 
 func TestProjectMCPResult_SeparatesRawModelAndBinaryContent(t *testing.T) {

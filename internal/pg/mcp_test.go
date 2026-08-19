@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/mcpclient"
 )
 
 func TestMCPDiscoverySnapshotMigrationBackfillsPrimaryThread(t *testing.T) {

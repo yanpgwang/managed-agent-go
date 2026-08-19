@@ -1,5 +1,5 @@
 # Binaries
-/managed-agent
+/mango
 *.exe
 
 # Local databases and data

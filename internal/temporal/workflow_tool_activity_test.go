@@ -14,19 +14,19 @@ import (
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/testsuite"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
+	"github.com/yanpgwang/mango/internal/pg"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 var toolSchemaSeq atomic.Int64
 
 func newToolTestStore(t *testing.T) *pg.Store {
 	t.Helper()
-	url := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
+	url := os.Getenv("MANGO_TEST_DATABASE_URL")
 	if url == "" {
-		t.Skip("MANAGED_AGENT_TEST_DATABASE_URL not set; skipping PostgreSQL tool-path test")
+		t.Skip("MANGO_TEST_DATABASE_URL not set; skipping PostgreSQL tool-path test")
 	}
 	ctx := context.Background()
 	cfg, err := pgxpool.ParseConfig(url)

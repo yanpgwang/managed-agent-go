@@ -6,9 +6,9 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	temporalpkg "github.com/yanpgwang/mango/internal/temporal"
 )
 
 // TestPostgresSessionUpdateAppliesToTheNextTurn covers the durable half of the

@@ -12,8 +12,8 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
 )
 
 func registerNoThreadInterrupt(env *testsuite.TestWorkflowEnvironment) {

@@ -29,17 +29,17 @@ treated as a high-availability or hardened production configuration.
 One immutable image serves two independently scalable roles:
 
 ```text
-managed-agent serve -addr :8080
-managed-agent orchestrate
+mango serve -addr :8080
+mango orchestrate
 ```
 
 The API refuses to start without an active Workspace key. Set
-`MANAGED_AGENT_API_KEY` to bootstrap or rotate the default Workspace key, or
+`MANGO_API_KEY` to bootstrap or rotate the default Workspace key, or
 manage additional Workspaces and keys through the operator CLI:
 
 ```sh
-managed-agent workspace create -name acme
-managed-agent api-key create -workspace wrkspc_... -label production
+mango workspace create -name acme
+mango api-key create -workspace wrkspc_... -label production
 ```
 
 The plaintext generated key is printed only by `api-key create`; PostgreSQL
@@ -52,7 +52,7 @@ calls, sandbox tools, File Resource materialization, and the outbox relay. They
 share a release artifact but not a scaling or rollout policy.
 
 Files add an S3-compatible dependency beside PostgreSQL, Temporal, and NATS.
-Set `MANAGED_AGENT_FILE_S3_BUCKET` to enable the five Files routes; leaving it
+Set `MANGO_FILE_S3_BUCKET` to enable the five Files routes; leaving it
 empty keeps the rest of the API available and makes Files requests return
 `422`. Failure to initialize or reconcile the configured object store also
 disables only Files so the Managed Agents core remains available. The API
@@ -62,13 +62,13 @@ startup intent reconciliation):
 
 | Variable | Meaning |
 | --- | --- |
-| `MANAGED_AGENT_FILE_S3_BUCKET` | Required bucket name; empty disables Files |
-| `MANAGED_AGENT_FILE_S3_REGION` | AWS region; defaults to `us-east-1` |
-| `MANAGED_AGENT_FILE_S3_ENDPOINT` | Optional S3-compatible endpoint |
-| `MANAGED_AGENT_FILE_S3_ACCESS_KEY` / `MANAGED_AGENT_FILE_S3_SECRET_KEY` | Optional static credentials; configure both together |
-| `MANAGED_AGENT_FILE_S3_PATH_STYLE` | Use path-style addressing for providers such as MinIO |
-| `MANAGED_AGENT_FILE_S3_CREATE_BUCKET` | Development convenience; create a missing bucket |
-| `MANAGED_AGENT_FILE_UPLOAD_TEMP_DIR` | Directory for bounded upload spool files |
+| `MANGO_FILE_S3_BUCKET` | Required bucket name; empty disables Files |
+| `MANGO_FILE_S3_REGION` | AWS region; defaults to `us-east-1` |
+| `MANGO_FILE_S3_ENDPOINT` | Optional S3-compatible endpoint |
+| `MANGO_FILE_S3_ACCESS_KEY` / `MANGO_FILE_S3_SECRET_KEY` | Optional static credentials; configure both together |
+| `MANGO_FILE_S3_PATH_STYLE` | Use path-style addressing for providers such as MinIO |
+| `MANGO_FILE_S3_CREATE_BUCKET` | Development convenience; create a missing bucket |
+| `MANGO_FILE_UPLOAD_TEMP_DIR` | Directory for bounded upload spool files |
 
 The first Files slice assumes one Files-enabled API process during startup
 reconciliation. It also needs temporary disk capacity up to 500 MB per
@@ -77,13 +77,13 @@ distributed intent leasing and direct multipart object-store operations are
 implemented.
 
 File-backed Session Resources additionally require
-`MANAGED_AGENT_SANDBOX=docker`. The worker must run where the selected Docker
+`MANGO_SANDBOX=docker`. The worker must run where the selected Docker
 Engine API is reachable; the provider uses the Moby Go client directly and does
 not require a `docker` CLI binary. Configure a non-default daemon with
 `DOCKER_HOST` and the standard Docker TLS environment variables. The daemon
 must be able to bind the worker's provider-owned staging directory. Set
-`MANAGED_AGENT_SANDBOX_RESOURCE_DIR` to place that directory on a dedicated
-host volume; the default is `managed-agent-resources` beneath the process
+`MANGO_SANDBOX_RESOURCE_DIR` to place that directory on a dedicated
+host volume; the default is `mango-resources` beneath the process
 user's home directory. The API and every worker
 on the task queue must agree on the sandbox provider and object-store
 configuration. The local-process provider and current remote adapters reject
@@ -92,13 +92,13 @@ read-only mount contract.
 
 Memory API contents and immutable Versions live entirely in PostgreSQL and do
 not require S3-compatible storage. Memory-backed Session Resources do require
-`MANAGED_AGENT_SANDBOX=docker`: the API snapshots each attachment, and the
+`MANGO_SANDBOX=docker`: the API snapshots each attachment, and the
 worker bind-mounts it beneath `/mnt/memory`, then synchronizes tool changes back
 to PostgreSQL. API and worker processes must select the same provider. Local,
 self-hosted, and current remote adapters reject Memory Store attachment while
 the standalone Memory API remains available.
 
-The Vault API is disabled unless `MANAGED_AGENT_VAULT_KEYRING_FILE` points to
+The Vault API is disabled unless `MANGO_VAULT_KEYRING_FILE` points to
 an operator-mounted JSON keyring. A configured but invalid keyring fails API
 startup rather than falling back to plaintext storage. The file has this shape:
 

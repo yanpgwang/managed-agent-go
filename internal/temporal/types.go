@@ -10,14 +10,14 @@
 package temporal
 
 import (
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
 )
 
 const (
 	// TaskQueue is the single task queue the session worker listens on for this
 	// slice. Split queues (session vs thread vs webhook) are a later concern.
-	TaskQueue = "managed-agent-session"
+	TaskQueue = "mango-session"
 
 	// WakeupSignalName is the Signal the outbox relay (and the API fast path)
 	// send to wake a SessionWorkflow. Its payload is metadata only.

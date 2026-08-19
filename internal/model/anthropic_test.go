@@ -12,7 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func TestAnthropic_SendsMessagesAndParsesResponse(t *testing.T) {

@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/credentialruntime"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/secretcrypto"
 )
 
 func TestVaultRuntimeResolutionUsesSessionOrderAndCurrentCredentialState(t *testing.T) {

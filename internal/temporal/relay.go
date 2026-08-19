@@ -6,7 +6,7 @@ import (
 	"log"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
+	"github.com/yanpgwang/mango/internal/pg"
 )
 
 // WakeupDeliverer delivers one wakeup to Temporal. *Signaler implements it; a

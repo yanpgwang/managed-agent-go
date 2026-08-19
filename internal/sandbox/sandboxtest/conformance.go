@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 // Factory returns a fresh client for the same provider deployment. It may call

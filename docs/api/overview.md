@@ -90,10 +90,10 @@ many users to a Workspace and apply its own RBAC before calling Mango. Use the
 operator CLI to manage the OSS boundary:
 
 ```sh
-managed-agent workspace create -name acme
-managed-agent api-key create -workspace wrkspc_... -label production
-managed-agent api-key list -workspace wrkspc_...
-managed-agent api-key revoke -id key_...
+mango workspace create -name acme
+mango api-key create -workspace wrkspc_... -label production
+mango api-key list -workspace wrkspc_...
+mango api-key revoke -id key_...
 ```
 
 Every response includes a `request-id` header. JSON request bodies are limited

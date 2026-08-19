@@ -7,8 +7,8 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/pg/pgstore"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 var _ sandbox.BindingStore = (*Store)(nil)

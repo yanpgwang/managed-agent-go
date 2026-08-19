@@ -1,4 +1,4 @@
-module github.com/yanpgwang/managed-agent-go
+module github.com/yanpgwang/mango
 
 go 1.26.6
 

@@ -14,9 +14,9 @@ import (
 	"unicode"
 	"unicode/utf8"
 
-	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/secretcrypto"
+	"github.com/yanpgwang/mango/internal/credentialruntime"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/secretcrypto"
 )
 
 const (
@@ -711,7 +711,7 @@ func sealCredentialSecret(cipher secretcrypto.Cipher, vaultID, credentialID, cre
 
 func credentialAAD(vaultID, credentialID, credentialKey string, auth domain.CredentialAuth) []byte {
 	publicAuth, _ := json.Marshal(auth)
-	return append([]byte("managed-agent-go/vault-credential/v1\x00"+vaultID+"\x00"+credentialID+"\x00"+credentialKey+"\x00"), publicAuth...)
+	return append([]byte("mango/vault-credential/v1\x00"+vaultID+"\x00"+credentialID+"\x00"+credentialKey+"\x00"), publicAuth...)
 }
 
 func (s *VaultService) verifyCredentialEnvelope(item domain.VaultCredential) error {

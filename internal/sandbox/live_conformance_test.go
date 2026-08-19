@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox/sandboxtest"
+	"github.com/yanpgwang/mango/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/sandbox/sandboxtest"
 )
 
 func TestE2BLiveConformance(t *testing.T) {

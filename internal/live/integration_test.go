@@ -10,9 +10,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/pg"
 )
 
 var liveSchemaSequence atomic.Int64
@@ -29,8 +29,8 @@ type liveTestFixture struct {
 
 func newLiveTestFixture(t *testing.T) *liveTestFixture {
 	t.Helper()
-	databaseURL := os.Getenv("MANAGED_AGENT_TEST_DATABASE_URL")
-	natsURL := os.Getenv("MANAGED_AGENT_TEST_NATS_URL")
+	databaseURL := os.Getenv("MANGO_TEST_DATABASE_URL")
+	natsURL := os.Getenv("MANGO_TEST_NATS_URL")
 	if databaseURL == "" || natsURL == "" {
 		t.Skip("PostgreSQL/NATS integration environment is not configured")
 	}

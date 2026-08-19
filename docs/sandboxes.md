@@ -22,14 +22,14 @@ Temporal Activity -> SessionManager -> sandbox.Provider -> sandbox.Sandbox
 provider name and opaque external ID; a restarted worker calls `Attach` instead
 of creating an empty replacement. `Sandbox` exposes command execution, confined
 file access, a workspace root, and teardown. The execution worker selects one
-compiled adapter through an internal registry. `MANAGED_AGENT_SANDBOX` accepts
+compiled adapter through an internal registry. `MANGO_SANDBOX` accepts
 `local` (the default), `docker`, `e2b`, `cube`, `opensandbox`, or `daytona`; an
 unknown name fails startup instead of falling back to host execution. Provider
 selection does not add fields to the Managed Agents Environment or Session
 APIs.
 
 The `serve` and `orchestrate` processes for one deployment must use the same
-`MANAGED_AGENT_SANDBOX` value. API admission reads that provider's declared
+`MANGO_SANDBOX` value. API admission reads that provider's declared
 capabilities without loading worker credentials; the worker verifies the same
 capability again before provisioning.
 
@@ -226,7 +226,7 @@ documented in Claude's
 [cloud environment setup](https://platform.claude.com/docs/en/managed-agents/environments)
 and
 [self-hosted sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
-guides. `managed-agent-go` remains an independent implementation and does not
+guides. `mango` remains an independent implementation and does not
 claim Anthropic's hosted isolation properties.
 
 ## Adding a backend

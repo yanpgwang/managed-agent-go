@@ -6,8 +6,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/sandbox"
 )
 
 type staticSessionSkillRepository struct {

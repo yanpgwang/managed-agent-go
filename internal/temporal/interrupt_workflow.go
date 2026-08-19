@@ -5,7 +5,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 const (

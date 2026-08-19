@@ -17,9 +17,9 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"golang.org/x/oauth2"
 
-	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/httpegress"
+	"github.com/yanpgwang/mango/internal/credentialruntime"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/httpegress"
 )
 
 type Tool struct {
@@ -247,7 +247,7 @@ func (r *Remote) connectWithHTTPClient(
 	httpClient *http.Client,
 ) (*mcp.ClientSession, error) {
 	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "managed-agent-go",
+		Name:    "mango",
 		Version: "dev",
 	}, nil)
 	session, err := client.Connect(

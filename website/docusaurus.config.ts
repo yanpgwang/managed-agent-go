@@ -12,9 +12,9 @@ const config: Config = {
   },
 
   url: process.env.DOCS_URL ?? 'https://yanpgwang.github.io',
-  baseUrl: process.env.DOCS_BASE_URL ?? '/managed-agent-go/',
+  baseUrl: process.env.DOCS_BASE_URL ?? '/mango/',
   organizationName: 'yanpgwang',
-  projectName: 'managed-agent-go',
+  projectName: 'mango',
 
   onBrokenLinks: 'throw',
   markdown: {
@@ -38,7 +38,7 @@ const config: Config = {
           showLastUpdateTime: true,
           showLastUpdateAuthor: true,
           editUrl: ({docPath}) =>
-            `https://github.com/yanpgwang/managed-agent-go/edit/main/docs/${docPath.replace(
+            `https://github.com/yanpgwang/mango/edit/main/docs/${docPath.replace(
               /^(\.\.\/docs\/)+/,
               '',
             )}`,
@@ -65,7 +65,7 @@ const config: Config = {
           label: 'Documentation',
         },
         {
-          href: 'https://github.com/yanpgwang/managed-agent-go',
+          href: 'https://github.com/yanpgwang/mango',
           label: 'GitHub',
           position: 'right',
         },
@@ -104,7 +104,7 @@ const config: Config = {
             },
             {
               label: 'Releases',
-              href: 'https://github.com/yanpgwang/managed-agent-go/releases',
+              href: 'https://github.com/yanpgwang/mango/releases',
             },
             {
               label: 'Roadmap',
@@ -112,12 +112,12 @@ const config: Config = {
             },
             {
               label: 'GitHub',
-              href: 'https://github.com/yanpgwang/managed-agent-go',
+              href: 'https://github.com/yanpgwang/mango',
             },
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} managed-agent-go contributors. Apache-2.0.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Mango contributors. Apache-2.0.`,
     },
     prism: {
       theme: prismThemes.github,

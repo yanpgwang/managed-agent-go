@@ -7,8 +7,8 @@ import (
 
 	"github.com/jackc/pgx/v5/stdlib"
 	"github.com/pressly/goose/v3"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func TestAdvisorConsultationsProjectThreadsEventsAndUsageIdempotently(t *testing.T) {

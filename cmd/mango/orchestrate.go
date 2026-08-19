@@ -10,14 +10,14 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/controlplane"
-	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/live"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/controlplane"
+	"github.com/yanpgwang/mango/internal/credentialruntime"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/live"
+	"github.com/yanpgwang/mango/internal/pg"
+	"github.com/yanpgwang/mango/internal/sandbox"
+	temporalpkg "github.com/yanpgwang/mango/internal/temporal"
 )
 
 type unavailableSessionResourceReconciler struct {
@@ -317,11 +317,11 @@ func (r unavailableSessionResourceReconciler) CleanupSession(
 // Environment variables shared by the PostgreSQL HTTP control plane and the
 // Temporal execution worker.
 const (
-	envDatabaseURL       = "MANAGED_AGENT_DATABASE_URL"
-	envTemporalHostPort  = "MANAGED_AGENT_TEMPORAL_HOSTPORT"
-	envTemporalNamespace = "MANAGED_AGENT_TEMPORAL_NAMESPACE"
-	envNATSURL           = "MANAGED_AGENT_NATS_URL"
-	envAPIKey            = "MANAGED_AGENT_API_KEY"
+	envDatabaseURL       = "MANGO_DATABASE_URL"
+	envTemporalHostPort  = "MANGO_TEMPORAL_HOSTPORT"
+	envTemporalNamespace = "MANGO_TEMPORAL_NAMESPACE"
+	envNATSURL           = "MANGO_NATS_URL"
+	envAPIKey            = "MANGO_API_KEY"
 )
 
 // runOrchestrate boots the Temporal execution role: it runs PostgreSQL

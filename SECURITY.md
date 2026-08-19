@@ -1,6 +1,6 @@
 # Security policy
 
-`managed-agent-go` is pre-release software and has not received a security
+`mango` is pre-release software and has not received a security
 audit. It should not be exposed as a production multi-tenant service without an
 independent review.
 
@@ -13,7 +13,7 @@ Until the first stable release, security fixes target the latest commit on
 
 Please use the repository's private GitHub Security Advisory reporting flow:
 
-`https://github.com/yanpgwang/managed-agent-go/security/advisories/new`
+`https://github.com/yanpgwang/mango/security/advisories/new`
 
 Include affected versions, reproduction steps, impact, and any suggested
 mitigation. Do not include credentials or sensitive production data. Please do

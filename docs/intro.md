@@ -7,7 +7,7 @@ sidebar_position: 1
 
 # Mango
 
-Mango (`managed-agent-go`) is an independent, Apache-2.0-licensed agent runtime
+Mango is an independent, Apache-2.0-licensed agent runtime
 written in Go. It persists server-owned sessions, delegates inference to a
 Messages API endpoint, executes tools in replaceable sandboxes, and exposes an
 HTTP surface compatible with the Claude Managed Agents API.

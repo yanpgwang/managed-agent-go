@@ -17,14 +17,14 @@ import (
 	"go.temporal.io/sdk/activity"
 	temporalsdk "go.temporal.io/sdk/temporal"
 
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/agentruntime/tools"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/mcpclient"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	"github.com/yanpgwang/managed-agent-go/internal/workspace"
+	"github.com/yanpgwang/mango/internal/agentruntime"
+	"github.com/yanpgwang/mango/internal/agentruntime/tools"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/mcpclient"
+	"github.com/yanpgwang/mango/internal/model"
+	"github.com/yanpgwang/mango/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/workspace"
 )
 
 // Registered activity names. Referenced by the workflow through the exported

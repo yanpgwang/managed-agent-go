@@ -52,14 +52,14 @@ directly to PostgreSQL; Mango does not expose a Workspace administration HTTP
 surface.
 
 ```sh
-managed-agent workspace list
-managed-agent workspace create -name acme
-managed-agent api-key create -workspace wrkspc_... -label production
-managed-agent api-key list -workspace wrkspc_...
-managed-agent api-key revoke -id key_...
+mango workspace list
+mango workspace create -name acme
+mango api-key create -workspace wrkspc_... -label production
+mango api-key list -workspace wrkspc_...
+mango api-key revoke -id key_...
 ```
 
-`MANAGED_AGENT_API_KEY` binds an operator-supplied bootstrap key to
+`MANGO_API_KEY` binds an operator-supplied bootstrap key to
 `wrkspc_default`, which preserves a simple single-Workspace deployment and a
 smooth upgrade for pre-tenancy data.
 

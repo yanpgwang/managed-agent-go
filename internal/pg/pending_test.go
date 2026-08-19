@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func TestValidatePendingCompletion(t *testing.T) {

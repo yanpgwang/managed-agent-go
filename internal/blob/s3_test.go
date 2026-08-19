@@ -9,19 +9,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
+	"github.com/yanpgwang/mango/internal/app"
 )
 
 func TestS3Store_PutOpenDeleteAndLimit(t *testing.T) {
-	endpoint := os.Getenv("MANAGED_AGENT_TEST_S3_ENDPOINT")
+	endpoint := os.Getenv("MANGO_TEST_S3_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("MANAGED_AGENT_TEST_S3_ENDPOINT not set; skipping S3 conformance")
+		t.Skip("MANGO_TEST_S3_ENDPOINT not set; skipping S3 conformance")
 	}
 	store, err := NewS3Store(context.Background(), S3Config{
 		Endpoint: endpoint, Region: "us-east-1",
-		Bucket:       os.Getenv("MANAGED_AGENT_TEST_S3_BUCKET"),
-		AccessKey:    os.Getenv("MANAGED_AGENT_TEST_S3_ACCESS_KEY"),
-		SecretKey:    os.Getenv("MANAGED_AGENT_TEST_S3_SECRET_KEY"),
+		Bucket:       os.Getenv("MANGO_TEST_S3_BUCKET"),
+		AccessKey:    os.Getenv("MANGO_TEST_S3_ACCESS_KEY"),
+		SecretKey:    os.Getenv("MANGO_TEST_S3_SECRET_KEY"),
 		UsePathStyle: true, CreateBucket: true, UploadTempDir: t.TempDir(),
 	})
 	if err != nil {

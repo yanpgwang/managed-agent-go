@@ -11,12 +11,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
-	temporalpkg "github.com/yanpgwang/managed-agent-go/internal/temporal"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/httpapi"
+	"github.com/yanpgwang/mango/internal/pg"
+	"github.com/yanpgwang/mango/internal/sandbox"
+	temporalpkg "github.com/yanpgwang/mango/internal/temporal"
 )
 
 func TestPostgresSessionFileResourcesAreIndependentAndRecoverable(t *testing.T) {

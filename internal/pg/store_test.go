@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // TestAdmitEvents_AtomicEventAndOutbox proves the core admission invariant: one

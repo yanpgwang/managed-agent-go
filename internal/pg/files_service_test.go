@@ -14,24 +14,24 @@ import (
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/blob"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/httpapi"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/blob"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/httpapi"
 )
 
 func TestFileService_PostgresS3RestartReconciliation(t *testing.T) {
-	endpoint := os.Getenv("MANAGED_AGENT_TEST_S3_ENDPOINT")
+	endpoint := os.Getenv("MANGO_TEST_S3_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("MANAGED_AGENT_TEST_S3_ENDPOINT not set; skipping Files service conformance")
+		t.Skip("MANGO_TEST_S3_ENDPOINT not set; skipping Files service conformance")
 	}
 	store := testStore(t)
 	repo := NewFileRepository(store)
 	blobs, err := blob.NewS3Store(context.Background(), blob.S3Config{
 		Endpoint: endpoint, Region: "us-east-1",
-		Bucket:       os.Getenv("MANAGED_AGENT_TEST_S3_BUCKET"),
-		AccessKey:    os.Getenv("MANAGED_AGENT_TEST_S3_ACCESS_KEY"),
-		SecretKey:    os.Getenv("MANAGED_AGENT_TEST_S3_SECRET_KEY"),
+		Bucket:       os.Getenv("MANGO_TEST_S3_BUCKET"),
+		AccessKey:    os.Getenv("MANGO_TEST_S3_ACCESS_KEY"),
+		SecretKey:    os.Getenv("MANGO_TEST_S3_SECRET_KEY"),
 		UsePathStyle: true, CreateBucket: true, UploadTempDir: t.TempDir(),
 	})
 	if err != nil {
@@ -115,16 +115,16 @@ func TestFileService_PostgresS3RestartReconciliation(t *testing.T) {
 }
 
 func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
-	endpoint := os.Getenv("MANAGED_AGENT_TEST_S3_ENDPOINT")
+	endpoint := os.Getenv("MANGO_TEST_S3_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("MANAGED_AGENT_TEST_S3_ENDPOINT not set; skipping Files HTTP service conformance")
+		t.Skip("MANGO_TEST_S3_ENDPOINT not set; skipping Files HTTP service conformance")
 	}
 	store := testStore(t)
 	blobs, err := blob.NewS3Store(context.Background(), blob.S3Config{
 		Endpoint: endpoint, Region: "us-east-1",
-		Bucket:       os.Getenv("MANAGED_AGENT_TEST_S3_BUCKET"),
-		AccessKey:    os.Getenv("MANAGED_AGENT_TEST_S3_ACCESS_KEY"),
-		SecretKey:    os.Getenv("MANAGED_AGENT_TEST_S3_SECRET_KEY"),
+		Bucket:       os.Getenv("MANGO_TEST_S3_BUCKET"),
+		AccessKey:    os.Getenv("MANGO_TEST_S3_ACCESS_KEY"),
+		SecretKey:    os.Getenv("MANGO_TEST_S3_SECRET_KEY"),
 		UsePathStyle: true, CreateBucket: true, UploadTempDir: t.TempDir(),
 	})
 	if err != nil {
@@ -205,16 +205,16 @@ func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
 }
 
 func TestFileService_PostgresS3ConcurrentLifecycle(t *testing.T) {
-	endpoint := os.Getenv("MANAGED_AGENT_TEST_S3_ENDPOINT")
+	endpoint := os.Getenv("MANGO_TEST_S3_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("MANAGED_AGENT_TEST_S3_ENDPOINT not set; skipping concurrent Files conformance")
+		t.Skip("MANGO_TEST_S3_ENDPOINT not set; skipping concurrent Files conformance")
 	}
 	store := testStore(t)
 	blobs, err := blob.NewS3Store(context.Background(), blob.S3Config{
 		Endpoint: endpoint, Region: "us-east-1",
-		Bucket:       os.Getenv("MANAGED_AGENT_TEST_S3_BUCKET"),
-		AccessKey:    os.Getenv("MANAGED_AGENT_TEST_S3_ACCESS_KEY"),
-		SecretKey:    os.Getenv("MANAGED_AGENT_TEST_S3_SECRET_KEY"),
+		Bucket:       os.Getenv("MANGO_TEST_S3_BUCKET"),
+		AccessKey:    os.Getenv("MANGO_TEST_S3_ACCESS_KEY"),
+		SecretKey:    os.Getenv("MANGO_TEST_S3_SECRET_KEY"),
 		UsePathStyle: true, CreateBucket: true, UploadTempDir: t.TempDir(),
 	})
 	if err != nil {

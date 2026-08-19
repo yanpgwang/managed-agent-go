@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/workspace"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/workspace"
 )
 
 type workspaceAuthenticatorFunc func(context.Context, string) (string, error)

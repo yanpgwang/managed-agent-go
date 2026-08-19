@@ -10,7 +10,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func NewPublicClient(timeout time.Duration) *http.Client {

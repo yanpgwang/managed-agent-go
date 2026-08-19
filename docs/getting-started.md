@@ -143,21 +143,21 @@ source worker with different model or sandbox configuration:
 ```bash
 docker compose -f deployments/local/compose.yaml stop worker
 
-export MANAGED_AGENT_DATABASE_URL="postgres://postgres:postgres@localhost:5432/managed_agent?sslmode=disable"
-export MANAGED_AGENT_TEMPORAL_HOSTPORT="localhost:7233"
-export MANAGED_AGENT_NATS_URL="nats://localhost:4222"
+export MANGO_DATABASE_URL="postgres://postgres:postgres@localhost:5432/mango?sslmode=disable"
+export MANGO_TEMPORAL_HOSTPORT="localhost:7233"
+export MANGO_NATS_URL="nats://localhost:4222"
 
-export MANAGED_AGENT_MODEL_BASE_URL=https://api.example.com
-export MANAGED_AGENT_MODEL_API_KEY=replace-me
-export MANAGED_AGENT_MODEL_ID=claude-model-id
-export MANAGED_AGENT_MODEL_AUTH=x-api-key # or authorization-bearer
+export MANGO_MODEL_BASE_URL=https://api.example.com
+export MANGO_MODEL_API_KEY=replace-me
+export MANGO_MODEL_ID=claude-model-id
+export MANGO_MODEL_AUTH=x-api-key # or authorization-bearer
 
 # A real model must not run against the local sandbox (it is a dev-grade
 # guardrail, not a security boundary), so select the Docker sandbox for real
 # isolation. The server refuses to start with a real model + local sandbox.
-export MANAGED_AGENT_SANDBOX=docker
+export MANGO_SANDBOX=docker
 
-go run ./cmd/managed-agent orchestrate
+go run ./cmd/mango orchestrate
 ```
 
 The provider name is validated strictly. The compiled choices are `local`,
@@ -192,7 +192,7 @@ credentials, availability, latency, and cost are not deterministic. Use a newly
 issued key if a credential has ever appeared in chat, logs, or shell history.
 
 If you understand the risk and deliberately want a real model against the local
-sandbox during development, set `MANAGED_AGENT_ALLOW_UNSAFE_LOCAL_SANDBOX=1` to
+sandbox during development, set `MANGO_ALLOW_UNSAFE_LOCAL_SANDBOX=1` to
 override the startup guard. This is a dev-only escape hatch — the local sandbox
 runs tool commands on the host with no isolation, so never use it with untrusted
 input or in production.
@@ -210,7 +210,7 @@ $EDITOR ~/.config/mango/dev.env
 Run a command with that environment explicitly:
 
 ```bash
-scripts/with-dev-env go run ./cmd/managed-agent orchestrate
+scripts/with-dev-env go run ./cmd/mango orchestrate
 ```
 
 The wrapper requires the file to have no group or other permissions. Set

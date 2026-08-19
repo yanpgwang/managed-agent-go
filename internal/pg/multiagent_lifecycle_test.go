@@ -4,9 +4,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/pg/pgstore"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/pg/pgstore"
 )
 
 func completeLifecycleChildIdle(t *testing.T, fixture multiagentInterruptFixture) {

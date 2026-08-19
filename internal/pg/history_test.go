@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 // textMsg builds a user.message draft with a single text block.

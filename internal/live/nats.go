@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/pg"
 )
 
 const (
@@ -34,7 +34,7 @@ func Connect(url string) (*Broker, error) {
 	}
 	connection, err := nats.Connect(
 		url,
-		nats.Name("managed-agent-go"),
+		nats.Name("mango"),
 		nats.Timeout(5*time.Second),
 		nats.MaxReconnects(-1),
 		nats.ReconnectWait(time.Second),
@@ -85,11 +85,11 @@ type previewEnvelope struct {
 }
 
 func eventSubject(sessionID string) string {
-	return "managed_agent.session." + subjectToken(sessionID) + ".events"
+	return "mango.session." + subjectToken(sessionID) + ".events"
 }
 
 func previewSubject(sessionID string, threadIDs ...string) string {
-	subject := "managed_agent.session." + subjectToken(sessionID)
+	subject := "mango.session." + subjectToken(sessionID)
 	if len(threadIDs) > 0 && threadIDs[0] != "" {
 		subject += ".thread." + subjectToken(threadIDs[0])
 	}

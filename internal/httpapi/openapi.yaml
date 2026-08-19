@@ -1,6 +1,6 @@
 openapi: 3.1.0
 info:
-  title: managed-agent-go
+  title: mango
   version: 0.1.0
   description: >-
     Clean-room implementation of the supported Claude Managed Agents API core,
@@ -12,7 +12,7 @@ info:
     identifier: Apache-2.0
 servers:
   - url: /
-    description: Current managed-agent-go server
+    description: Current mango server
 security:
   - ApiKeyAuth: []
   - BearerAuth: []

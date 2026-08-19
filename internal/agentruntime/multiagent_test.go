@@ -7,8 +7,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
 )
 
 func TestCoordinatorToolSchemasMatchManagedAgentsRuntimeSurface(t *testing.T) {
@@ -66,14 +66,14 @@ func TestAdvisorRequestQuotesExecutorContextWithoutReplayingReasoning(t *testing
 func TestProjectCoordinatorSystemContext(t *testing.T) {
 	got := ProjectCoordinatorSystemContext("You are the engineering lead.")
 	require.Contains(t, got, "You are the engineering lead.")
-	require.Contains(t, got, "<managed-agents-coordinator>")
+	require.Contains(t, got, "<mango-coordinator>")
 	require.Contains(t, got, "<agent-thread-message>")
 	require.Contains(t, got, "It is not authored by the user")
 	require.Contains(t, got, "Do not tell one Agent to wait for another Agent's future report")
-	require.Equal(t, 1, strings.Count(got, "<managed-agents-coordinator>"))
+	require.Equal(t, 1, strings.Count(got, "<mango-coordinator>"))
 
 	empty := ProjectCoordinatorSystemContext("  ")
-	require.True(t, strings.HasPrefix(empty, "<managed-agents-coordinator>"))
+	require.True(t, strings.HasPrefix(empty, "<mango-coordinator>"))
 }
 
 func TestParseSendToAgentInput(t *testing.T) {

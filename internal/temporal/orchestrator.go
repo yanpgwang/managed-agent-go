@@ -5,12 +5,12 @@ import (
 	"errors"
 	"log"
 
-	"github.com/yanpgwang/managed-agent-go/internal/app"
-	"github.com/yanpgwang/managed-agent-go/internal/credentialruntime"
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
-	"github.com/yanpgwang/managed-agent-go/internal/model"
-	"github.com/yanpgwang/managed-agent-go/internal/pg"
-	"github.com/yanpgwang/managed-agent-go/internal/sandbox"
+	"github.com/yanpgwang/mango/internal/app"
+	"github.com/yanpgwang/mango/internal/credentialruntime"
+	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/model"
+	"github.com/yanpgwang/mango/internal/pg"
+	"github.com/yanpgwang/mango/internal/sandbox"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
 )

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 type AgentService struct {

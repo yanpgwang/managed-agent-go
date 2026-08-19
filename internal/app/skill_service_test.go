@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/yanpgwang/managed-agent-go/internal/domain"
+	"github.com/yanpgwang/mango/internal/domain"
 )
 
 func TestSkillService_CustomLifecycleAndReconciliation(t *testing.T) {
