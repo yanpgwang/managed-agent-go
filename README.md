@@ -24,9 +24,8 @@
   <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/github/license/yanpgwang/mango"></a>
 </p>
 
-Mango is a self-hosted implementation of the documented **Man**aged Agents API,
-written in **Go**. It provides durable sessions, event streaming, tool
-orchestration, File and custom Skill
+Mango implements the documented Managed Agents API as a self-hosted runtime:
+durable sessions, event streaming, tool orchestration, File and custom Skill
 resources, persistent Memory Stores, an encrypted Vault control plane, durable
 scheduled Deployments, self-hosted Environment worker leases, and pluggable
 sandbox execution. Its
