@@ -42,7 +42,7 @@ earlier when it is a prerequisite for a higher-tier slice.
 | 0 | Contract tracking | Keep the official Go SDK and documented unions pinned to a reviewed version; classify new research-preview surfaces explicitly instead of folding them into the stable operation count. |
 | 0 | Dreams | Add the five Dream operations and durable asynchronous lifecycle, then implement transcript-plus-Memory consolidation with `create_new` and `update_existing` output behavior. |
 | 1 | Multi-agent conformance | Add live Advisor lifecycle timing and targeted in-flight interruption around the Mango-owned inference Activity; resolve exact report-only preview suppression separately. |
-| 1 | Model and context runtime | Add complete per-provider-request audit recipes, model context profiles, and compaction quality/evaluation evidence before pursuing provider-private tokenizer parity. |
+| 1 | Model and context runtime | Add complete per-provider-request audit recipes and explicit custom-endpoint context overrides; checkpoint later-round projections, extend overflow recovery to Outcome and Advisor calls, and establish compaction quality and retention evidence. Provider-private tokenizer parity is a later optimization rather than the compatibility gate. |
 | 1 | Webhooks | Emit compact, signed, retryable lifecycle notifications from a transactional outbox, covering Session/Thread first and the remaining documented resources incrementally. |
 | 1 | Vaults | Implement environment-variable credential egress with injection-location policy and publish refresh-failure lifecycle events through Webhooks. |
 | 2 | MCP tools | Add explicit private connectivity or tunnels, deprecated SSE fallback, and MCP resources/prompts without weakening the current public-network fence. |
