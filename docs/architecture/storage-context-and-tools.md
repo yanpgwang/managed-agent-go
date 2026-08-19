@@ -114,6 +114,24 @@ provider tool-use id <-> internal tool step id <-> public event id
 The mapping allows public compatibility without mutating the provider
 transcript.
 
+### Context admission and accounting
+
+Every working-model request passes through the same proactive and predictive
+admission policy before provider execution. The policy resolves known Anthropic
+model windows from the embedded Catwalk catalog, falls back conservatively for
+unknown or ambiguous model IDs, reserves the requested output and one
+model/tool growth round, and compacts before the provider's input limit. A
+provider `request_too_large` response triggers one more aggressive compaction
+attempt for the working turn.
+
+The latest safe provider-usage anchor measures the already-observed request and
+response prefix. Request and prefix fingerprints invalidate stale anchors, and
+only messages appended after a valid anchor are estimated. Without a safe
+anchor, the complete system prompt, messages, and tool schemas use the
+provider-independent conservative estimator. Outcome and Advisor calls have
+independent preflight admission, but do not yet share the working turn's
+provider-overflow recovery path.
+
 ### Context Snapshot
 
 A Context Snapshot is an immutable recipe for one provider request. It pins:
@@ -129,13 +147,16 @@ Compaction creates a new snapshot and summary entry. It never rewrites the
 original provider transcript. This gives debugging and audit tools an exact
 answer to both “what happened?” and “what did this model call actually see?”
 
-The current implementation durably checkpoints compacted child message
-projections: represented transcript event IDs, projected messages, token
-projection, context-policy version, and the preceding snapshot ID. The Thread's
-pinned Agent configuration and runtime capabilities remain separately
-authoritative. A complete audit recipe for every provider round, including
-resolved system instructions, tool schemas, adapter version, and model
-parameters, remains follow-up work; it is not a public Managed Agents resource.
+The current implementation durably checkpoints compacted turn-preparation
+projections for primary and child Threads: represented transcript event IDs,
+projected messages, token projection, context-policy version, and the preceding
+snapshot ID. The Thread's pinned Agent configuration and runtime capabilities
+remain separately authoritative. Later-round projections within the same turn
+are not yet stored as equivalent checkpoints. A complete audit recipe for every
+provider request and attempt, including the resolved endpoint profile, system
+instructions, tool schemas, adapter version, model parameters, usage anchor,
+admission limits, compaction reason, and overflow outcome, remains follow-up
+work; it is not a public Managed Agents resource.
 
 ### Operation Journal
 
@@ -510,9 +531,14 @@ tool boundaries needed for native web and unauthenticated MCP:
 7. Request-time token-aware context projection and extractive compaction are
    deeply detached from the durable transcript, including nested tool inputs
    and rich/raw content, so request adaptation cannot mutate stored history.
-   Compacted projections are durably snapshotted per Thread. Complete
-   per-provider-round audit recipes, deployment-managed MCP authentication,
-   provider-round records, explicit per-endpoint capability profiles, and
+   Known model windows come from Catwalk; provider usage anchors measure the
+   observed prefix, predictive admission reserves the next round, oversized
+   tool results are compacted independently, and a working turn can recover
+   once from provider-reported context overflow. Compacted turn-preparation
+   projections are durably snapshotted per Thread. Complete per-request audit
+   recipes, later-round projection checkpoints, explicit custom-endpoint
+   capability overrides, equivalent Outcome/Advisor overflow recovery,
+   deployment-managed MCP authentication, provider-request records, and
    reference-only Temporal payloads remain follow-up work.
 
 ## Delivery order
@@ -531,12 +557,16 @@ tool boundaries needed for native web and unauthenticated MCP:
    deployment-managed authentication remains.
 5. **Self-hosted execution:** built-in calls park for `user.tool_result` and are
    implemented. Optional managed search/fetch providers remain follow-up work.
-6. **Context engineering:** conservative token budgets, rich-content-aware
-   projection, extractive compaction, and immutable per-Thread compaction checkpoints
-   are implemented. Complete provider-request audit recipes, provider-exact
-   counters, and retention controls remain follow-up work. Independent
-   cross-Session Memory now uses PostgreSQL-backed Stores and Docker Session
-   mounts.
+6. **Context engineering:** Catwalk-derived model windows, provider-usage
+   anchors, conservative post-anchor estimates, predictive admission,
+   rich-content-aware projection, extractive and oversized-tool-result
+   compaction, one-shot working-turn overflow recovery, and immutable
+   per-Thread turn-preparation checkpoints are implemented. Explicit
+   custom-endpoint overrides, complete per-provider-request audit recipes,
+   later-round projection checkpoints, equivalent Outcome/Advisor overflow
+   recovery, provider-exact counters, compaction quality evidence, and retention
+   controls remain follow-up work. Independent cross-Session Memory now uses
+   PostgreSQL-backed Stores and Docker Session mounts.
 
 The first two steps were treated as prerequisites rather than cleanup after
 native web, so new Sessions do not depend on reconstructing provider context
