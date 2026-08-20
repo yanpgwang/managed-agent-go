@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yanpgwang/mango/internal/app"
@@ -434,6 +435,10 @@ func deploymentToJSON(item domain.Deployment) map[string]any {
 	for _, event := range item.InitialEvents {
 		value := map[string]any{"type": event.Type}
 		for key, field := range event.Payload {
+			if key == "id" || key == "type" || key == "processed_at" ||
+				strings.HasPrefix(key, "__") {
+				continue
+			}
 			value[key] = field
 		}
 		events = append(events, value)
