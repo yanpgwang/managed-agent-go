@@ -50,10 +50,17 @@ response still contains exactly one event for each caller-submitted input;
 server-created fan-out receipts remain internal to their owning Thread ledgers.
 
 Content blocks are validated as closed tagged unions. Images accept `base64`
-and `url` sources; documents accept `base64`, `text`, and `url` sources, with
-`text` sources requiring `media_type: text/plain`. File sources still return
-`422 unsupported_error`: the independent Files resource exists, but Session
-Resources and file-content projection are not yet wired into messages.
+and `url` sources. Documents accept `base64`, `text`, `url`, and `file`
+sources, with `text` sources requiring `media_type: text/plain`. A `file`
+source is supported only on `user.message` documents and must reference a
+ready, top-level File in the same Workspace whose declared media type and bytes
+are eligible for UTF-8 text projection. Mango checks the stored size and
+SHA-256, rejects empty, NUL-containing, non-UTF-8, scoped, missing, corrupt,
+and non-text Files, and limits resolved File content to 262,144 characters per
+admission. The private text snapshot is committed with the event and projected
+to the model as an ordinary text block; the public event continues to expose
+only the documented `file_id`. File-sourced images and tool-result documents
+return `422 unsupported_error`.
 Tool-result search blocks require `source`, `title`, `citations.enabled`, and
 an array of text blocks. Unknown fields are rejected at every nested level.
 Outcome rubrics accept inline `{type: "text", content: "..."}` or reusable

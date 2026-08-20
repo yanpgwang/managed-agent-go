@@ -265,7 +265,11 @@ func validateClientEvent(event map[string]any) error {
 		}
 		return nil
 	}
-	validateContent := func(required bool, allowedTypes map[string]bool) error {
+	validateContent := func(
+		required bool,
+		allowedTypes map[string]bool,
+		allowFileDocument bool,
+	) error {
 		content, ok := event["content"].([]any)
 		if !ok {
 			if !required {
@@ -293,7 +297,7 @@ func validateClientEvent(event map[string]any) error {
 			if !allowedTypes[blockType] {
 				return domain.Validation(fmt.Sprintf("content block type %q is not allowed for %s", blockType, t))
 			}
-			if err := validateClientContentBlock(block); err != nil {
+			if err := validateClientContentBlock(block, allowFileDocument); err != nil {
 				return err
 			}
 		}
@@ -307,9 +311,9 @@ func validateClientEvent(event map[string]any) error {
 
 	switch t {
 	case domain.EvUserMessage:
-		return validateContent(true, messageContent)
+		return validateContent(true, messageContent, true)
 	case domain.EvSystemMessage:
-		return validateContent(true, systemContent)
+		return validateContent(true, systemContent, false)
 	case domain.EvUserInterrupt:
 		if err := optionalString(event, "session_thread_id"); err != nil {
 			return err
@@ -324,7 +328,7 @@ func validateClientEvent(event map[string]any) error {
 		if err := requireString("custom_tool_use_id"); err != nil {
 			return err
 		}
-		if err := validateContent(false, resultContent); err != nil {
+		if err := validateContent(false, resultContent, false); err != nil {
 			return err
 		}
 		if err := optionalString(event, "session_thread_id"); err != nil {
@@ -334,7 +338,7 @@ func validateClientEvent(event map[string]any) error {
 		if err := requireString("tool_use_id"); err != nil {
 			return err
 		}
-		if err := validateContent(false, resultContent); err != nil {
+		if err := validateContent(false, resultContent, false); err != nil {
 			return err
 		}
 		if err := optionalString(event, "session_thread_id"); err != nil {
@@ -415,7 +419,7 @@ func validateClientEvent(event map[string]any) error {
 	return nil
 }
 
-func validateClientContentBlock(block map[string]any) error {
+func validateClientContentBlock(block map[string]any, allowFileDocument bool) error {
 	blockType, _ := block["type"].(string)
 	switch blockType {
 	case "text":
@@ -437,7 +441,7 @@ func validateClientContentBlock(block map[string]any) error {
 		); err != nil {
 			return err
 		}
-		return validateClientContentSource(block, "image")
+		return validateClientContentSource(block, "image", false)
 	case "document":
 		if err := validateObjectFields(
 			block,
@@ -453,7 +457,7 @@ func validateClientContentBlock(block map[string]any) error {
 				return err
 			}
 		}
-		return validateClientContentSource(block, "document")
+		return validateClientContentSource(block, "document", allowFileDocument)
 	case "search_result":
 		return validateSearchResultBlock(block)
 	default:
@@ -462,7 +466,11 @@ func validateClientContentBlock(block map[string]any) error {
 	return nil
 }
 
-func validateClientContentSource(block map[string]any, blockType string) error {
+func validateClientContentSource(
+	block map[string]any,
+	blockType string,
+	allowFile bool,
+) error {
 	source, ok := block["source"].(map[string]any)
 	if !ok {
 		return domain.Validation(blockType + " content blocks require a source")
@@ -517,7 +525,11 @@ func validateClientContentSource(block map[string]any, blockType string) error {
 		if source["file_id"] == "" {
 			return domain.Validation(blockType + " file source requires file_id")
 		}
-		return domain.Unsupported("file-sourced content requires the Files API")
+		if !allowFile {
+			return domain.Unsupported(
+				"file-sourced content is supported only for text documents in user.message",
+			)
+		}
 	}
 	return nil
 }
@@ -564,7 +576,7 @@ func validateSearchResultBlock(block map[string]any) error {
 		if text["type"] != "text" {
 			return domain.Validation("search_result content only accepts text blocks")
 		}
-		if err := validateClientContentBlock(text); err != nil {
+		if err := validateClientContentBlock(text, false); err != nil {
 			return err
 		}
 	}

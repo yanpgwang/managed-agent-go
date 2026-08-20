@@ -72,6 +72,57 @@ func TestProjectMessages_FileOutcomeRubricMatchesInlineText(t *testing.T) {
 	}
 }
 
+func TestProjectMessages_FileDocumentSnapshotBecomesOrdinaryText(t *testing.T) {
+	payload := WithFileMessageContents(map[string]any{
+		"content": []any{
+			map[string]any{"type": "text", "text": "Review this attachment."},
+			map[string]any{
+				"type": "document", "title": "Evidence", "context": "Treat as reference",
+				"source": map[string]any{"type": "file", "file_id": "file_notes"},
+			},
+		},
+	}, []FileMessageContent{{
+		ContentIndex: 1, FileID: "file_notes", Filename: "notes.md",
+		MimeType: "text/markdown", Content: "# Durable notes\nkeep this text",
+	}})
+
+	// Exercise the same map shapes produced by PostgreSQL JSONB decoding.
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal(encoded, &stored); err != nil {
+		t.Fatal(err)
+	}
+	messages := ProjectMessages([]Event{{Type: EvUserMessage, Payload: stored}})
+	if len(messages) != 1 || len(messages[0].Content) != 2 {
+		t.Fatalf("projected messages = %#v", messages)
+	}
+	attachment := messages[0].Content[1]
+	if attachment.Type != "text" || len(attachment.Raw) != 0 ||
+		!strings.Contains(attachment.Text, "# Durable notes") ||
+		!strings.Contains(attachment.Text, `"filename":"notes.md"`) ||
+		!strings.Contains(attachment.Text, `"title":"Evidence"`) ||
+		!strings.Contains(attachment.Text, `"context":"Treat as reference"`) {
+		t.Fatalf("projected attachment = %#v", attachment)
+	}
+}
+
+func TestProjectMessages_DropsFileDocumentWithoutMatchingSnapshot(t *testing.T) {
+	payload := WithFileMessageContents(map[string]any{
+		"content": []any{map[string]any{
+			"type":   "document",
+			"source": map[string]any{"type": "file", "file_id": "file_public"},
+		}},
+	}, []FileMessageContent{{
+		ContentIndex: 0, FileID: "file_other", Content: "must not leak",
+	}})
+	if messages := ProjectMessages([]Event{{Type: EvUserMessage, Payload: payload}}); len(messages) != 0 {
+		t.Fatalf("corrupt file snapshot reached provider: %#v", messages)
+	}
+}
+
 func TestProjectMessages_PreservesRichToolResultContent(t *testing.T) {
 	events := []Event{
 		{ID: "use_1", Type: EvAgentCustomToolUse, Payload: map[string]any{

@@ -694,6 +694,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 	)
 	if files != nil {
 		sessions.EnableFileOutcomeRubrics(files)
+		sessions.EnableFileMessageContent(files)
 	}
 	sessions.ConfigureCloudSkillBundles(providerCapabilities.SkillBundles)
 	if vaults != nil {

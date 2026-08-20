@@ -502,6 +502,7 @@ func runOrchestrate() {
 	)
 	if fileRuntime != nil {
 		deploymentSessions.EnableFileOutcomeRubrics(fileRuntime.service)
+		deploymentSessions.EnableFileMessageContent(fileRuntime.service)
 	}
 	deploymentSessions.ConfigureCloudSkillBundles(providerCapabilities.SkillBundles)
 	if vaults != nil {

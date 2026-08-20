@@ -50,6 +50,33 @@ durably snapshots the resulting text with the admitted event.
 The event returned to clients retains only the File reference. Deleting the
 source after admission does not change the working-agent or grader input.
 
+## Message content
+
+A ready top-level client upload can be referenced by a `user.message` document:
+
+```json
+{
+  "type": "document",
+  "source": {"type": "file", "file_id": "file_..."}
+}
+```
+
+This text-only compatibility slice accepts declared text formats, JSON/XML
+variants, common textual application formats, and generic
+`application/octet-stream` uploads whose bytes are valid UTF-8 and contain no
+NUL. It does not parse PDF, OCR images, or send provider-native document
+blocks. Mango reads and verifies the object before event admission, stores an
+immutable private snapshot with the event, and sends the model an ordinary
+text block containing filename/media metadata plus the File content. The
+public event retains the original `file_id`, and deleting the source File does
+not change replay or later conversation turns.
+
+Each File and the aggregate resolved File content in one admission are limited
+to 262,144 characters. Empty, oversized, corrupt, non-UTF-8, non-text,
+Session-scoped, missing, deleting, and cross-Workspace Files fail before the
+Session or event is committed. File-sourced images and File documents inside
+tool results remain unsupported.
+
 ## Session outputs
 
 The output directory is writable inside a Docker sandbox. At every primary
@@ -87,8 +114,8 @@ empty output tree.
 - Metadata becomes visible only after the object write completes.
 - Delete hides metadata before deleting bytes; startup reconciliation finishes
   interrupted operations.
-- Top-level Files are accepted as UTF-8 outcome rubrics, but not as message
-  content.
+- Top-level Files are accepted as bounded UTF-8 outcome rubrics and text-only
+  `user.message` document content.
 - Only `/mnt/session/outputs` is exported; arbitrary workspace files remain
   private to the sandbox.
 - File metadata and object keys are Workspace-scoped. Startup reconciliation
