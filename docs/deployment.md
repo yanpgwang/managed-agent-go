@@ -57,9 +57,11 @@ Set `MANGO_FILE_S3_BUCKET` to enable the five Files routes; leaving it
 empty keeps the rest of the API available and makes Files requests return
 `422`. Failure to initialize or reconcile the configured object store also
 disables only Files so the Managed Agents core remains available. The API
-process uses these settings. A worker that materializes Session File Resources
-or publishes `/mnt/session/outputs` must use the same bucket, endpoint, region,
-and credentials (it does not run startup intent reconciliation):
+process uses these settings for uploads and File-message admission. A worker
+that starts Deployment Runs containing File messages or File outcome rubrics,
+materializes Session File Resources, or publishes `/mnt/session/outputs` must
+use the same bucket, endpoint, region, and credentials (it does not run startup
+intent reconciliation):
 
 | Variable | Meaning |
 | --- | --- |

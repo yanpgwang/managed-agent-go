@@ -1442,6 +1442,17 @@ func TestSDK_EventSendRichContentShapes(t *testing.T) {
 							},
 						},
 					},
+					{
+						OfDocument: &anthropic.BetaManagedAgentsDocumentBlockParam{
+							Type: anthropic.BetaManagedAgentsDocumentBlockTypeDocument,
+							Source: anthropic.BetaManagedAgentsDocumentBlockSourceUnionParam{
+								OfFile: &anthropic.BetaManagedAgentsFileDocumentSourceParam{
+									Type:   anthropic.BetaManagedAgentsFileDocumentSourceTypeFile,
+									FileID: "file_uploaded_text",
+								},
+							},
+						},
+					},
 				},
 			},
 		}},
@@ -1453,7 +1464,7 @@ func TestSDK_EventSendRichContentShapes(t *testing.T) {
 		t.Fatalf("send echoed %d events, want 1", len(sent.Data))
 	}
 	message := sent.Data[0].AsUserMessage()
-	if len(message.Content) != 2 {
+	if len(message.Content) != 3 {
 		t.Fatalf("echoed content = %+v", message.Content)
 	}
 	if got := message.Content[0].AsImage().Source.AsURL().URL; got != "https://example.com/image.png" {
@@ -1463,6 +1474,9 @@ func TestSDK_EventSendRichContentShapes(t *testing.T) {
 	if document.Title != "Evidence" || document.Context != "Supporting material" ||
 		document.Source.AsText().Data != "evidence" {
 		t.Fatalf("echoed document = %+v", document)
+	}
+	if got := message.Content[2].AsDocument().Source.AsFile().FileID; got != "file_uploaded_text" {
+		t.Fatalf("echoed File document ID = %q", got)
 	}
 }
 

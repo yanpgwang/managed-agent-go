@@ -3,6 +3,7 @@ package domain
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -16,8 +17,24 @@ const (
 // MaxOutcomeRubricCharacters is the documented limit for inline and File rubrics.
 const MaxOutcomeRubricCharacters = 262144
 
+// MaxFileMessageCharacters bounds one uploaded UTF-8 File projected into a
+// user.message. The limit keeps admission reads and durable event snapshots
+// bounded independently of the 500 MB Files storage limit.
+const MaxFileMessageCharacters = 262144
+
+// FileMessageContent is the private, admission-time snapshot of one public
+// document source that references a File. The public event retains only the
+// file_id; the provider receives Content as an ordinary text block.
+type FileMessageContent struct {
+	ContentIndex int
+	FileID       string
+	Filename     string
+	MimeType     string
+	Content      string
+}
+
 type ContentBlock struct {
-	Type          string         // "text" | "thinking" | "redacted_thinking" | "tool_use" | "tool_result"
+	Type          string         // typed local blocks plus losslessly preserved provider-native block types
 	Text          string         // text blocks; also flattened text of a tool_result
 	ToolUseID     string         // tool_use: the event id
 	ToolName      string         // tool_use: tool name
@@ -342,8 +359,9 @@ func contentBlocks(payload map[string]any) []ContentBlock {
 	if !ok {
 		return nil
 	}
+	fileContents := FileMessageContents(payload)
 	var blocks []ContentBlock
-	for _, item := range raw {
+	for index, item := range raw {
 		block, ok := item.(map[string]any)
 		if !ok {
 			continue
@@ -360,6 +378,23 @@ func contentBlocks(payload map[string]any) []ContentBlock {
 			blocks = append(blocks, ContentBlock{Type: "text", Text: text})
 			continue
 		}
+		if t == "document" {
+			source, _ := block["source"].(map[string]any)
+			if source["type"] == "file" {
+				snapshot, found := fileContents[strconv.Itoa(index)]
+				if !found || snapshot.FileID != source["file_id"] {
+					// File-sourced messages have always required an admission
+					// snapshot. A missing or mismatched private value indicates
+					// corrupt historical state; never pass the unresolved file_id
+					// to an external provider.
+					continue
+				}
+				blocks = append(blocks, ContentBlock{
+					Type: "text", Text: projectFileMessageText(block, snapshot),
+				})
+				continue
+			}
+		}
 		encoded, err := json.Marshal(block)
 		if err != nil {
 			continue
@@ -370,6 +405,77 @@ func contentBlocks(payload map[string]any) []ContentBlock {
 		})
 	}
 	return blocks
+}
+
+// WithFileMessageContents attaches immutable File text snapshots to a cloned
+// event payload. HTTP projections redact this top-level internal key while the
+// PostgreSQL event ledger preserves it for replay and later turns.
+func WithFileMessageContents(
+	payload map[string]any,
+	contents []FileMessageContent,
+) map[string]any {
+	resolved := make(map[string]any, len(payload)+1)
+	for key, value := range payload {
+		resolved[key] = value
+	}
+	stored := make(map[string]any, len(contents))
+	for _, content := range contents {
+		stored[strconv.Itoa(content.ContentIndex)] = map[string]any{
+			"file_id": content.FileID, "filename": content.Filename,
+			"mime_type": content.MimeType, "content": content.Content,
+		}
+	}
+	resolved[InternalFileMessageContents] = stored
+	return resolved
+}
+
+// FileMessageContents decodes both newly constructed and PostgreSQL JSON
+// payloads into snapshots keyed by the public content-block index.
+func FileMessageContents(payload map[string]any) map[string]FileMessageContent {
+	raw, ok := payload[InternalFileMessageContents].(map[string]any)
+	if !ok {
+		return nil
+	}
+	contents := make(map[string]FileMessageContent, len(raw))
+	for index, value := range raw {
+		item, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		parsedIndex, err := strconv.Atoi(index)
+		if err != nil || parsedIndex < 0 {
+			continue
+		}
+		content := FileMessageContent{
+			ContentIndex: parsedIndex,
+			FileID:       stringValue(item["file_id"]),
+			Filename:     stringValue(item["filename"]),
+			MimeType:     stringValue(item["mime_type"]),
+			Content:      stringValue(item["content"]),
+		}
+		if content.FileID == "" {
+			continue
+		}
+		contents[index] = content
+	}
+	return contents
+}
+
+func projectFileMessageText(block map[string]any, snapshot FileMessageContent) string {
+	metadata := map[string]string{
+		"file_id": snapshot.FileID, "filename": snapshot.Filename,
+		"media_type": snapshot.MimeType,
+	}
+	if title, _ := block["title"].(string); title != "" {
+		metadata["title"] = title
+	}
+	if context, _ := block["context"].(string); context != "" {
+		metadata["context"] = context
+	}
+	encoded, _ := json.Marshal(metadata)
+	return "The user attached the following UTF-8 text document.\n" +
+		"<file_metadata>" + string(encoded) + "</file_metadata>\n" +
+		"<file_content>\n" + snapshot.Content + "\n</file_content>"
 }
 
 func rawContentBlocks(raw any) []json.RawMessage {

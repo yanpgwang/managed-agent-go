@@ -39,6 +39,12 @@ type OutcomeRubricReader interface {
 	ReadOutcomeRubric(context.Context, string) (string, error)
 }
 
+// MessageFileReader resolves one top-level File into a bounded UTF-8 snapshot
+// before event admission.
+type MessageFileReader interface {
+	ReadMessageFile(context.Context, string) (domain.FileMessageContent, error)
+}
+
 // SessionService owns public Session validation and delegates the atomic
 // session/event admission boundary to PostgreSQL plus the Temporal outbox.
 type SessionService struct {
@@ -50,6 +56,7 @@ type SessionService struct {
 	clock        domain.Clock
 	resources    *SessionResourceService
 	outcomeFiles OutcomeRubricReader
+	messageFiles MessageFileReader
 	memoryStores interface {
 		GetStore(context.Context, string) (domain.MemoryStore, error)
 	}
@@ -66,6 +73,12 @@ type SessionService struct {
 // independent of sandbox File mounts.
 func (s *SessionService) EnableFileOutcomeRubrics(reader OutcomeRubricReader) {
 	s.outcomeFiles = reader
+}
+
+// EnableFileMessageContent installs the internal Files reader used to resolve
+// and snapshot text-only document sources before event admission.
+func (s *SessionService) EnableFileMessageContent(reader MessageFileReader) {
+	s.messageFiles = reader
 }
 
 // EnableVaults permits Session Vault attachments for deployments whose API and
@@ -173,6 +186,10 @@ func (s *SessionService) Create(
 		}
 	}
 	input.InitialEvents, err = s.resolveOutcomeRubrics(ctx, input.InitialEvents)
+	if err != nil {
+		return domain.Session{}, err
+	}
+	input.InitialEvents, err = s.resolveMessageFiles(ctx, input.InitialEvents)
 	if err != nil {
 		return domain.Session{}, err
 	}
@@ -479,7 +496,68 @@ func (s *SessionService) SendEvent(
 	if err != nil {
 		return nil, err
 	}
+	prepared, err = s.resolveMessageFiles(ctx, prepared)
+	if err != nil {
+		return nil, err
+	}
 	return s.orchestrator.Admit(ctx, id, prepared)
+}
+
+func (s *SessionService) resolveMessageFiles(
+	ctx context.Context,
+	drafts []domain.EventDraft,
+) ([]domain.EventDraft, error) {
+	prepared := append([]domain.EventDraft(nil), drafts...)
+	cache := make(map[string]domain.FileMessageContent)
+	totalCharacters := 0
+	for draftIndex, draft := range prepared {
+		if draft.Type != domain.EvUserMessage {
+			continue
+		}
+		blocks, _ := draft.Payload["content"].([]any)
+		var snapshots []domain.FileMessageContent
+		for contentIndex, raw := range blocks {
+			block, _ := raw.(map[string]any)
+			if block["type"] != "document" {
+				continue
+			}
+			source, _ := block["source"].(map[string]any)
+			if source["type"] != "file" {
+				continue
+			}
+			fileID, _ := source["file_id"].(string)
+			if fileID == "" {
+				return nil, domain.Validation("document file source requires file_id")
+			}
+			if s.messageFiles == nil {
+				return nil, domain.Unsupported(
+					"file message content is unavailable because Files storage is not configured",
+				)
+			}
+			snapshot, ok := cache[fileID]
+			if !ok {
+				var err error
+				snapshot, err = s.messageFiles.ReadMessageFile(ctx, fileID)
+				if err != nil {
+					return nil, err
+				}
+				cache[fileID] = snapshot
+			}
+			snapshot.ContentIndex = contentIndex
+			totalCharacters += utf8.RuneCountInString(snapshot.Content)
+			if totalCharacters > domain.MaxFileMessageCharacters {
+				return nil, domain.Validation(
+					"file message content must contain at most 262144 characters per admission",
+				)
+			}
+			snapshots = append(snapshots, snapshot)
+		}
+		if len(snapshots) > 0 {
+			draft.Payload = domain.WithFileMessageContents(draft.Payload, snapshots)
+			prepared[draftIndex] = draft
+		}
+	}
+	return prepared, nil
 }
 
 func (s *SessionService) resolveOutcomeRubrics(

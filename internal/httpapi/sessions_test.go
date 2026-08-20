@@ -254,8 +254,19 @@ func TestSendEvents_ValidatesVariantShape(t *testing.T) {
 
 	fileDocument := `{"events":[{"type":"user.message","content":[{` +
 		`"type":"document","source":{"type":"file","file_id":"file_x"}}]}]}`
-	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileDocument); rec.Code != 422 {
-		t.Fatalf("file document -> %d, want 422: %s", rec.Code, rec.Body)
+	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileDocument); rec.Code != 200 {
+		t.Fatalf("file document -> %d, want 200: %s", rec.Code, rec.Body)
+	}
+	fileImage := `{"events":[{"type":"user.message","content":[{` +
+		`"type":"image","source":{"type":"file","file_id":"file_x"}}]}]}`
+	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileImage); rec.Code != 422 {
+		t.Fatalf("file image -> %d, want 422: %s", rec.Code, rec.Body)
+	}
+	fileToolResult := `{"events":[{"type":"user.tool_result","tool_use_id":"sevt_x",` +
+		`"content":[{"type":"document","source":{"type":"file",` +
+		`"file_id":"file_x"}}]}]}`
+	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileToolResult); rec.Code != 422 {
+		t.Fatalf("file tool result -> %d, want 422: %s", rec.Code, rec.Body)
 	}
 }
 

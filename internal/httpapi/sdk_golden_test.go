@@ -134,6 +134,53 @@ func TestGolden_EventIsFlatTaggedUnion(t *testing.T) {
 	t.Fatal("never observed the user.message in list output")
 }
 
+func TestGolden_FileDocumentReferenceRemainsPublicAndFlat(t *testing.T) {
+	client, ts := sdkClientAndServer(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "opus", "sys")
+	env := mustEnv(t, ts.URL)
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent: anthropic.BetaSessionNewParamsAgentUnion{
+			OfString: anthropic.String(agent.ID),
+		},
+		EnvironmentID: env,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, body := rawRequest(
+		t, http.MethodPost, ts.URL+"/v1/sessions/"+session.ID+"/events",
+		`{"events":[{"type":"user.message","content":[{"type":"document",`+
+			`"title":"Notes","source":{"type":"file","file_id":"file_notes"}}]}]}`,
+	)
+	if status != http.StatusOK {
+		t.Fatalf("send status %d: %s", status, body)
+	}
+	var sent struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(body, &sent); err != nil || len(sent.Data) != 1 {
+		t.Fatalf("decode send response: %v (%s)", err, body)
+	}
+	event := sent.Data[0]
+	blocks, ok := event["content"].([]any)
+	if !ok || len(blocks) != 1 {
+		t.Fatalf("public content = %#v", event["content"])
+	}
+	block := blocks[0].(map[string]any)
+	source := block["source"].(map[string]any)
+	if event["type"] != "user.message" || block["type"] != "document" ||
+		block["title"] != "Notes" || source["type"] != "file" ||
+		source["file_id"] != "file_notes" {
+		t.Fatalf("public File event = %#v", event)
+	}
+	for key := range event {
+		if strings.HasPrefix(key, "__") {
+			t.Fatalf("public event leaked private key %q: %#v", key, event)
+		}
+	}
+}
+
 func TestGolden_RejectsServerOnlyEventType(t *testing.T) {
 	client, ts := sdkClientAndServer(t)
 	ctx := context.Background()

@@ -66,6 +66,7 @@ const (
 	InternalOutcomeEvaluationStart = "__outcome_evaluation_start_id"
 	InternalOutcomeIteration       = "__outcome_evaluation_iteration"
 	InternalOutcomeRubricContent   = "__outcome_rubric_content"
+	InternalFileMessageContents    = "__file_message_contents"
 )
 
 // EventDraft is an event about to be persisted. Payload holds the type-specific

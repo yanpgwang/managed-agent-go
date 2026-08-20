@@ -54,7 +54,7 @@ func TestEventToJSON_MCPToolEventsUseDocumentedFields(t *testing.T) {
 	}
 }
 
-func TestEventToJSON_RedactsResolvedOutcomeRubricContent(t *testing.T) {
+func TestEventToJSON_RedactsResolvedFileContent(t *testing.T) {
 	event := eventToJSON(domain.Event{
 		ID: "sevt_outcome", Type: domain.EvUserDefineOutcome,
 		Payload: map[string]any{
@@ -63,6 +63,9 @@ func TestEventToJSON_RedactsResolvedOutcomeRubricContent(t *testing.T) {
 				"type": "file", "file_id": "file_rubric",
 			},
 			domain.InternalOutcomeRubricContent: "private rubric bytes",
+			domain.InternalFileMessageContents: map[string]any{
+				"0": map[string]any{"content": "private message File bytes"},
+			},
 		},
 	})
 	if event["rubric"].(map[string]any)["file_id"] != "file_rubric" {
@@ -70,6 +73,9 @@ func TestEventToJSON_RedactsResolvedOutcomeRubricContent(t *testing.T) {
 	}
 	if _, present := event[domain.InternalOutcomeRubricContent]; present {
 		t.Fatalf("private rubric content leaked: %#v", event)
+	}
+	if _, present := event[domain.InternalFileMessageContents]; present {
+		t.Fatalf("private message File content leaked: %#v", event)
 	}
 }
 

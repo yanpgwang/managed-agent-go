@@ -5,8 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"mime"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -22,6 +24,7 @@ const (
 	MaxFileBytes          int64 = 500 << 20
 	fileCleanupTimeout          = 10 * time.Second
 	maxOutcomeRubricBytes int64 = domain.MaxOutcomeRubricCharacters * utf8.UTFMax
+	maxFileMessageBytes   int64 = domain.MaxFileMessageCharacters * utf8.UTFMax
 )
 
 // ErrBlobTooLarge lets a streaming blob implementation stop after one byte
@@ -201,18 +204,79 @@ func (s *FileService) ReadOutcomeRubric(ctx context.Context, id string) (string,
 	if err != nil {
 		return "", err
 	}
+	content, err := s.readTopLevelUTF8(
+		ctx, file, "file outcome rubric", "file outcome rubric content",
+		domain.MaxOutcomeRubricCharacters, maxOutcomeRubricBytes,
+	)
+	if errors.Is(err, errFileContentInvalidUTF8) {
+		return "", domain.Validation("file outcome rubric must contain valid UTF-8")
+	}
+	return content, err
+}
+
+// ReadMessageFile returns a bounded, integrity-checked snapshot for a
+// user.message document source. Generic application/octet-stream is accepted
+// so official SDK uploads and source files without a registered media type can
+// still be projected after their bytes pass UTF-8 validation.
+func (s *FileService) ReadMessageFile(
+	ctx context.Context,
+	id string,
+) (domain.FileMessageContent, error) {
+	file, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return domain.FileMessageContent{}, err
+	}
+	if strings.EqualFold(filepath.Ext(file.Filename), ".pdf") ||
+		!isTextMessageMediaType(file.MimeType) {
+		return domain.FileMessageContent{}, domain.Unsupported(
+			"file message content supports UTF-8 text files only",
+		)
+	}
+	content, err := s.readTopLevelUTF8(
+		ctx, file, "file message content", "file message content",
+		domain.MaxFileMessageCharacters, maxFileMessageBytes,
+	)
+	if errors.Is(err, errFileContentInvalidUTF8) {
+		return domain.FileMessageContent{}, domain.Unsupported(
+			"file message content supports UTF-8 text files only",
+		)
+	}
+	if err != nil {
+		return domain.FileMessageContent{}, err
+	}
+	if strings.ContainsRune(content, '\x00') {
+		return domain.FileMessageContent{}, domain.Unsupported(
+			"file message content supports UTF-8 text files only",
+		)
+	}
+	return domain.FileMessageContent{
+		FileID: file.ID, Filename: file.Filename, MimeType: file.MimeType,
+		Content: content,
+	}, nil
+}
+
+var errFileContentInvalidUTF8 = errors.New("file content is not valid UTF-8")
+
+func (s *FileService) readTopLevelUTF8(
+	ctx context.Context,
+	file domain.File,
+	label string,
+	limitLabel string,
+	maxCharacters int,
+	maxBytes int64,
+) (string, error) {
 	if file.Scope != nil {
-		return "", domain.Validation("file outcome rubric must reference a top-level File")
+		return "", domain.Validation(label + " must reference a top-level File")
 	}
 	if file.SizeBytes == 0 {
-		return "", domain.Validation("file outcome rubric must not be empty")
+		return "", domain.Validation(label + " must not be empty")
 	}
 	if file.SizeBytes < 0 {
-		return "", errors.New("file outcome rubric has invalid stored size")
+		return "", errors.New(label + " has invalid stored size")
 	}
-	if file.SizeBytes > maxOutcomeRubricBytes {
+	if file.SizeBytes > maxBytes {
 		return "", domain.Validation(
-			"file outcome rubric content must contain at most 262144 characters",
+			fmt.Sprintf("%s must contain at most %d characters", limitLabel, maxCharacters),
 		)
 	}
 	body, err := s.blobs.Open(ctx, file.BlobKey)
@@ -221,32 +285,51 @@ func (s *FileService) ReadOutcomeRubric(ctx context.Context, id string) (string,
 	}
 	defer body.Close() //nolint:errcheck // the bounded read reports content errors
 
-	data, err := io.ReadAll(io.LimitReader(body, maxOutcomeRubricBytes+1))
+	data, err := io.ReadAll(io.LimitReader(body, maxBytes+1))
 	if err != nil {
 		return "", err
 	}
-	if int64(len(data)) > maxOutcomeRubricBytes {
+	if int64(len(data)) > maxBytes {
 		return "", domain.Validation(
-			"file outcome rubric content must contain at most 262144 characters",
+			fmt.Sprintf("%s must contain at most %d characters", limitLabel, maxCharacters),
 		)
 	}
 	info := ComputeBlobInfo(data)
 	if info.SizeBytes != file.SizeBytes ||
 		!strings.EqualFold(info.ChecksumSHA256, file.ChecksumSHA256) {
-		return "", errors.New("file outcome rubric blob failed integrity verification")
+		return "", errors.New(label + " blob failed integrity verification")
 	}
 	if len(data) == 0 {
-		return "", domain.Validation("file outcome rubric must not be empty")
+		return "", domain.Validation(label + " must not be empty")
 	}
 	if !utf8.Valid(data) {
-		return "", domain.Validation("file outcome rubric must contain valid UTF-8")
+		return "", errFileContentInvalidUTF8
 	}
-	if utf8.RuneCount(data) > domain.MaxOutcomeRubricCharacters {
+	if utf8.RuneCount(data) > maxCharacters {
 		return "", domain.Validation(
-			"file outcome rubric content must contain at most 262144 characters",
+			fmt.Sprintf("%s must contain at most %d characters", limitLabel, maxCharacters),
 		)
 	}
 	return string(data), nil
+}
+
+func isTextMessageMediaType(mediaType string) bool {
+	if strings.HasPrefix(mediaType, "text/") {
+		return true
+	}
+	if mediaType == "application/octet-stream" || strings.HasSuffix(mediaType, "+json") ||
+		strings.HasSuffix(mediaType, "+xml") {
+		return true
+	}
+	switch mediaType {
+	case "application/json", "application/xml", "application/yaml", "application/x-yaml",
+		"application/toml", "application/x-toml", "application/javascript",
+		"application/x-javascript", "application/ecmascript", "application/sql",
+		"application/graphql", "application/x-sh":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *FileService) Delete(ctx context.Context, id string) (domain.File, error) {

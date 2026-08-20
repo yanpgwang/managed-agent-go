@@ -194,6 +194,108 @@ func TestFileService_ReadOutcomeRubricValidatesBoundedTextAndIntegrity(t *testin
 	}
 }
 
+func TestFileService_ReadMessageFileValidatesTextScopeBoundsAndIntegrity(t *testing.T) {
+	newFixture := func(
+		t *testing.T,
+		data []byte,
+		mediaType string,
+	) (*FileService, *memoryFileRepository, *memoryBlobStore, domain.File) {
+		t.Helper()
+		repo := newMemoryFileRepository()
+		blobs := newMemoryBlobStore()
+		service := NewFileService(repo, blobs, domain.NewSeqIDGen(), domain.FixedClock{})
+		file, err := service.Upload(context.Background(), FileUploadInput{
+			Filename: "notes.md", MimeType: mediaType, Body: bytes.NewReader(data),
+		})
+		if err != nil {
+			t.Fatalf("upload message File: %v", err)
+		}
+		return service, repo, blobs, file
+	}
+
+	const valid = "# Notes\n\n你好 from the uploaded file"
+	for _, mediaType := range []string{"text/markdown", "application/octet-stream"} {
+		service, _, _, file := newFixture(t, []byte(valid), mediaType)
+		got, err := service.ReadMessageFile(context.Background(), file.ID)
+		if err != nil || got.FileID != file.ID || got.Filename != "notes.md" ||
+			got.MimeType != mediaType || got.Content != valid {
+			t.Fatalf("ReadMessageFile(%s) = %+v, %v", mediaType, got, err)
+		}
+	}
+	service := NewFileService(
+		newMemoryFileRepository(), newMemoryBlobStore(),
+		domain.NewSeqIDGen(), domain.FixedClock{},
+	)
+	genericPDF, err := service.Upload(context.Background(), FileUploadInput{
+		Filename: "scan.pdf", MimeType: "application/octet-stream",
+		Body: bytes.NewBufferString("%PDF-1.4"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReadMessageFile(context.Background(), genericPDF.ID); err == nil ||
+		!strings.Contains(err.Error(), "UTF-8 text files only") {
+		t.Fatalf("generic PDF error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		data      []byte
+		mediaType string
+		mutate    func(*memoryFileRepository, *memoryBlobStore, domain.File)
+		want      string
+	}{
+		{name: "empty", mediaType: "text/plain", want: "must not be empty"},
+		{
+			name: "invalid UTF-8", data: []byte{0xff}, mediaType: "text/plain",
+			want: "UTF-8 text files only",
+		},
+		{
+			name: "NUL byte", data: []byte("text\x00binary"), mediaType: "text/plain",
+			want: "UTF-8 text files only",
+		},
+		{
+			name: "PDF media type", data: []byte("%PDF-1.4"), mediaType: "application/pdf",
+			want: "UTF-8 text files only",
+		},
+		{
+			name:      "too many characters",
+			data:      []byte(strings.Repeat("x", domain.MaxFileMessageCharacters+1)),
+			mediaType: "text/plain", want: "at most 262144 characters",
+		},
+		{
+			name: "Session scoped", data: []byte("valid"), mediaType: "text/plain",
+			mutate: func(repo *memoryFileRepository, _ *memoryBlobStore, file domain.File) {
+				repo.mu.Lock()
+				stored := repo.files[file.ID]
+				stored.Scope = &domain.FileScope{ID: "sesn_1", Type: "session"}
+				repo.files[file.ID] = stored
+				repo.mu.Unlock()
+			},
+			want: "top-level File",
+		},
+		{
+			name: "integrity mismatch", data: []byte("valid"), mediaType: "text/plain",
+			mutate: func(_ *memoryFileRepository, blobs *memoryBlobStore, file domain.File) {
+				blobs.objects[file.BlobKey] = []byte("other")
+			},
+			want: "integrity verification",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, repo, blobs, file := newFixture(t, test.data, test.mediaType)
+			if test.mutate != nil {
+				test.mutate(repo, blobs, file)
+			}
+			_, err := service.ReadMessageFile(context.Background(), file.ID)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ReadMessageFile error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func TestFileService_PreservesBlobWhenCompletionResultIsAmbiguous(t *testing.T) {
 	repo := newMemoryFileRepository()
 	repo.completeErrAfterCommit = errors.New("database connection lost after commit")

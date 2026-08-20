@@ -190,8 +190,15 @@ The sandbox is not the model-context database. Provider-native blocks remain in
 the Provider Transcript even when a tool also creates files.
 
 Files uploaded through the public Files API are independent resources backed by
-S3-compatible object storage. A File-backed Session Resource creates a second,
-downloadable, Session-scoped File object and records a durable desired mount.
+S3-compatible object storage. A text-only File referenced by a `user.message`
+is read and integrity-checked before event admission; PostgreSQL stores a
+private immutable UTF-8 snapshot beside the public `file_id`, so model
+projection and replay do not depend on the later existence of the object. This
+path produces an ordinary text content block and does not depend on sandbox or
+provider-native document support.
+
+A File-backed Session Resource instead creates a second, downloadable,
+Session-scoped File object and records a durable desired mount.
 Before each sandbox tool execution the Docker adapter streams any missing copy
 into provider-owned staging, verifies size and SHA-256, atomically publishes
 it, and exposes the staging directory read-only at `/mnt/session/uploads`.

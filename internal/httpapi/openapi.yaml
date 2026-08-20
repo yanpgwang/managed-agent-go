@@ -4410,6 +4410,7 @@ components:
         url: {type: string}
     FileImageSourceInput:
       type: object
+      description: Documented wire shape; Mango currently rejects File-sourced images.
       additionalProperties: false
       required: [type, file_id]
       properties:
@@ -4457,6 +4458,10 @@ components:
         url: {type: string}
     FileDocumentSourceInput:
       type: object
+      description: >-
+        A previously uploaded File. Mango supports this source only for
+        user.message documents whose ready top-level File can be projected as
+        bounded UTF-8 text; PDF, image, and other non-text Files are rejected.
       additionalProperties: false
       required: [type, file_id]
       properties:
