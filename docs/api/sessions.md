@@ -83,6 +83,11 @@ and current remote-provider Sessions reject custom Skill execution.
 
 Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.
+An outcome may use either an inline text rubric or a ready top-level File rubric
+from the same Workspace. File text is validated and snapshotted before the
+Session admission transaction, so a missing or invalid File cannot leave a
+partially created Session and deleting it later cannot change the active
+outcome.
 The optional `title`, `metadata`, `initial_events`, `resources`, and `vault_ids`
 fields must use their documented non-null shapes when present; omission supplies
 the empty/default value. `budget: null` explicitly selects no spend ceiling. A

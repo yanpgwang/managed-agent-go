@@ -34,6 +34,11 @@ type deploymentSessionOrchestrator interface {
 	) (domain.Session, []domain.Event, error)
 }
 
+// OutcomeRubricReader resolves and validates one reusable Files API rubric.
+type OutcomeRubricReader interface {
+	ReadOutcomeRubric(context.Context, string) (string, error)
+}
+
 // SessionService owns public Session validation and delegates the atomic
 // session/event admission boundary to PostgreSQL plus the Temporal outbox.
 type SessionService struct {
@@ -44,6 +49,7 @@ type SessionService struct {
 	ids          domain.IDGenerator
 	clock        domain.Clock
 	resources    *SessionResourceService
+	outcomeFiles OutcomeRubricReader
 	memoryStores interface {
 		GetStore(context.Context, string) (domain.MemoryStore, error)
 	}
@@ -53,6 +59,13 @@ type SessionService struct {
 	// Self-hosted EnvironmentWorker instances download pinned Skills through
 	// the public Skills API and therefore do not depend on this capability.
 	cloudSkillBundles bool
+}
+
+// EnableFileOutcomeRubrics installs the internal Files reader used to resolve
+// and snapshot reusable rubric text before event admission. This capability is
+// independent of sandbox File mounts.
+func (s *SessionService) EnableFileOutcomeRubrics(reader OutcomeRubricReader) {
+	s.outcomeFiles = reader
 }
 
 // EnableVaults permits Session Vault attachments for deployments whose API and
@@ -158,6 +171,10 @@ func (s *SessionService) Create(
 				"initial_events contains an unsupported event type",
 			)
 		}
+	}
+	input.InitialEvents, err = s.resolveOutcomeRubrics(ctx, input.InitialEvents)
+	if err != nil {
+		return domain.Session{}, err
 	}
 
 	snapshot := agent
@@ -458,7 +475,43 @@ func (s *SessionService) SendEvent(
 			)
 		}
 	}
-	return s.orchestrator.Admit(ctx, id, drafts)
+	prepared, err := s.resolveOutcomeRubrics(ctx, drafts)
+	if err != nil {
+		return nil, err
+	}
+	return s.orchestrator.Admit(ctx, id, prepared)
+}
+
+func (s *SessionService) resolveOutcomeRubrics(
+	ctx context.Context,
+	drafts []domain.EventDraft,
+) ([]domain.EventDraft, error) {
+	prepared := append([]domain.EventDraft(nil), drafts...)
+	for index, draft := range prepared {
+		if draft.Type != domain.EvUserDefineOutcome {
+			continue
+		}
+		rubric, ok := draft.Payload["rubric"].(map[string]any)
+		if !ok || rubric["type"] != "file" {
+			continue
+		}
+		fileID, ok := rubric["file_id"].(string)
+		if !ok || fileID == "" {
+			return nil, domain.Validation("file rubric requires file_id")
+		}
+		if s.outcomeFiles == nil {
+			return nil, domain.Unsupported(
+				"file outcome rubrics are unavailable because Files storage is not configured",
+			)
+		}
+		content, err := s.outcomeFiles.ReadOutcomeRubric(ctx, fileID)
+		if err != nil {
+			return nil, err
+		}
+		draft.Payload = domain.WithOutcomeRubricContent(draft.Payload, content)
+		prepared[index] = draft
+	}
+	return prepared, nil
 }
 
 // Update applies the documented session update body. Validation of the merged

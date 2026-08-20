@@ -4517,6 +4517,7 @@ components:
           maxLength: 262144
     FileRubric:
       type: object
+      description: Reusable UTF-8 rubric resolved from a ready top-level File in the caller's Workspace.
       additionalProperties: false
       required: [type, file_id]
       properties:
@@ -4526,6 +4527,7 @@ components:
         file_id:
           type: string
           minLength: 1
+          description: ID of a File uploaded through the Files API.
     OutcomeRubric:
       oneOf:
         - $ref: '#/components/schemas/TextRubric'

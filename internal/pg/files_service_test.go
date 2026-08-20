@@ -52,6 +52,10 @@ func TestFileService_PostgresS3RestartReconciliation(t *testing.T) {
 	if created.SizeBytes != 5 || created.Downloadable {
 		t.Fatalf("created = %+v", created)
 	}
+	rubric, err := service.ReadOutcomeRubric(ctx, created.ID)
+	if err != nil || rubric != "input" {
+		t.Fatalf("ReadOutcomeRubric through PostgreSQL/S3 = %q, %v", rubric, err)
+	}
 
 	// Seed a downloadable Session-scoped fixture so reconciliation exercises
 	// both public and internal File intents. Runtime output publication is

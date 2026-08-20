@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +96,101 @@ func TestFileService_ValidatesUploadAndMapsStreamingLimit(t *testing.T) {
 	}
 	if len(repo.files) != 0 {
 		t.Fatalf("failed upload left rows: %+v", repo.files)
+	}
+}
+
+func TestFileService_ReadOutcomeRubricValidatesBoundedTextAndIntegrity(t *testing.T) {
+	newFixture := func(t *testing.T, data []byte) (*FileService, *memoryFileRepository, *memoryBlobStore, domain.File) {
+		t.Helper()
+		repo := newMemoryFileRepository()
+		blobs := newMemoryBlobStore()
+		service := NewFileService(repo, blobs, domain.NewSeqIDGen(), domain.FixedClock{})
+		file, err := service.Upload(context.Background(), FileUploadInput{
+			Filename: "rubric.md", MimeType: "application/octet-stream",
+			Body: bytes.NewReader(data),
+		})
+		if err != nil {
+			t.Fatalf("upload rubric: %v", err)
+		}
+		return service, repo, blobs, file
+	}
+
+	valid := "# Rubric\n- cites evidence"
+	service, _, _, file := newFixture(t, []byte(valid))
+	got, err := service.ReadOutcomeRubric(context.Background(), file.ID)
+	if err != nil || got != valid {
+		t.Fatalf("ReadOutcomeRubric = %q, %v", got, err)
+	}
+	maxRunes := strings.Repeat("界", domain.MaxOutcomeRubricCharacters)
+	service, _, _, file = newFixture(t, []byte(maxRunes))
+	if got, err := service.ReadOutcomeRubric(context.Background(), file.ID); err != nil || got != maxRunes {
+		t.Fatalf("exact character limit: len=%d err=%v", len(got), err)
+	}
+	if _, err := service.ReadOutcomeRubric(context.Background(), "file_missing"); err == nil {
+		t.Fatal("missing rubric File was accepted")
+	}
+	service, repo, _, file := newFixture(t, []byte(valid))
+	if _, err := repo.BeginDelete(context.Background(), file.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReadOutcomeRubric(context.Background(), file.ID); err == nil {
+		t.Fatal("deleting rubric File was accepted")
+	}
+
+	tests := []struct {
+		name   string
+		data   []byte
+		mutate func(*memoryFileRepository, *memoryBlobStore, domain.File)
+		want   string
+	}{
+		{name: "empty", data: nil, want: "must not be empty"},
+		{name: "invalid UTF-8", data: []byte{0xff}, want: "valid UTF-8"},
+		{
+			name: "too many characters",
+			data: []byte(strings.Repeat("x", domain.MaxOutcomeRubricCharacters+1)),
+			want: "at most 262144 characters",
+		},
+		{
+			name: "Session scoped", data: []byte("valid"),
+			mutate: func(repo *memoryFileRepository, _ *memoryBlobStore, file domain.File) {
+				repo.mu.Lock()
+				stored := repo.files[file.ID]
+				stored.Scope = &domain.FileScope{ID: "sesn_1", Type: "session"}
+				repo.files[file.ID] = stored
+				repo.mu.Unlock()
+			},
+			want: "top-level File",
+		},
+		{
+			name: "metadata precheck", data: []byte("valid"),
+			mutate: func(repo *memoryFileRepository, _ *memoryBlobStore, file domain.File) {
+				repo.mu.Lock()
+				stored := repo.files[file.ID]
+				stored.SizeBytes = maxOutcomeRubricBytes + 1
+				repo.files[file.ID] = stored
+				repo.mu.Unlock()
+			},
+			want: "at most 262144 characters",
+		},
+		{
+			name: "integrity mismatch", data: []byte("valid"),
+			mutate: func(_ *memoryFileRepository, blobs *memoryBlobStore, file domain.File) {
+				blobs.objects[file.BlobKey] = []byte("other")
+			},
+			want: "integrity verification",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service, repo, blobs, file := newFixture(t, test.data)
+			if test.mutate != nil {
+				test.mutate(repo, blobs, file)
+			}
+			_, err := service.ReadOutcomeRubric(context.Background(), file.ID)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ReadOutcomeRubric error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

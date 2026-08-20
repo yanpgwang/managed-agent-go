@@ -37,6 +37,19 @@ independent, downloadable Session-scoped copies. Mango-managed Docker Sessions
 also publish agent deliverables written beneath `/mnt/session/outputs` as
 downloadable Files with `scope.id` equal to the Session ID.
 
+## Outcome rubrics
+
+A ready top-level client upload can be reused as an outcome rubric by sending
+`{"type":"file","file_id":"file_..."}` in `user.define_outcome`. This is an
+internal admission read and does not make the File publicly downloadable.
+Mango reads at most the largest valid UTF-8 encoding of 262,144 characters,
+checks the stored byte count and SHA-256, rejects empty, invalid UTF-8,
+over-limit, deleting, missing, cross-Workspace, and Session-scoped Files, and
+durably snapshots the resulting text with the admitted event.
+
+The event returned to clients retains only the File reference. Deleting the
+source after admission does not change the working-agent or grader input.
+
 ## Session outputs
 
 The output directory is writable inside a Docker sandbox. At every primary
@@ -74,7 +87,8 @@ empty output tree.
 - Metadata becomes visible only after the object write completes.
 - Delete hides metadata before deleting bytes; startup reconciliation finishes
   interrupted operations.
-- Top-level Files are not yet accepted as message content or outcome rubrics.
+- Top-level Files are accepted as UTF-8 outcome rubrics, but not as message
+  content.
 - Only `/mnt/session/outputs` is exported; arbitrary workspace files remain
   private to the sandbox.
 - File metadata and object keys are Workspace-scoped. Startup reconciliation

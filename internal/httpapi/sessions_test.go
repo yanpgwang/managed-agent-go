@@ -248,8 +248,8 @@ func TestSendEvents_ValidatesVariantShape(t *testing.T) {
 
 	fileRubric := `{"events":[{"type":"user.define_outcome","description":"x",` +
 		`"rubric":{"type":"file","file_id":"file_x"}}]}`
-	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileRubric); rec.Code != 422 {
-		t.Fatalf("file rubric -> %d, want 422: %s", rec.Code, rec.Body)
+	if rec := do(h, "POST", "/v1/sessions/"+id+"/events", fileRubric); rec.Code != 200 {
+		t.Fatalf("file rubric -> %d, want 200: %s", rec.Code, rec.Body)
 	}
 
 	fileDocument := `{"events":[{"type":"user.message","content":[{` +
@@ -371,7 +371,7 @@ func TestValidateClientEventRejectsMalformedNestedObjects(t *testing.T) {
 		{
 			"type": "user.define_outcome", "description": "x",
 			"rubric": map[string]any{
-				"type": "text", "content": strings.Repeat("x", maxOutcomeRubricCharacters+1),
+				"type": "text", "content": strings.Repeat("x", domain.MaxOutcomeRubricCharacters+1),
 			},
 		},
 	}

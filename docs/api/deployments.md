@@ -52,6 +52,11 @@ must immediately follow the user event it annotates. Schedules use five-field
 POSIX cron syntax and an IANA timezone. The response includes the next five
 occurrences in `schedule.upcoming_runs_at`.
 
+A File-backed outcome rubric remains a File reference in the Deployment
+template. Each Run resolves and snapshots the current ready top-level File while
+creating its Session. Deleting the source cannot affect an already admitted Run,
+but a later Run records `file_not_found_error` instead of creating a Session.
+
 `budget: null` explicitly stores no Session spend ceiling. A non-null limit uses
 the same integer-USD-cent shape and model-price validation as direct Session
 creation. Each Run copies the Deployment's current budget into its new Session;
@@ -109,7 +114,9 @@ recovered claim idempotent. Running only the API `serve` role exposes the HTTP
 surface but does not execute scheduled work.
 
 File and Memory Store resources require their existing Session sandbox
-capabilities, and Vault references require the configured Vault keyring. GitHub
+capabilities. File-backed outcome rubrics require configured Files storage but
+do not require a sandbox mount capability. Vault references require the
+configured Vault keyring. GitHub
 repository resources are rejected explicitly because Mango does not yet have a
 sealed clone-token path. Exact hosted scheduler jitter and automatic Deployment
 archival when an Agent is archived are not claimed.
