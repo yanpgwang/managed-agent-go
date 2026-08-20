@@ -173,6 +173,7 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 			Capabilities: sandbox.ProviderCapabilities{
 				PackageSetup:   true,
 				LimitedNetwork: true,
+				FileResources:  true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				useProxy, err := envBool(openSandboxUseProxyEnv)
@@ -193,7 +194,8 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.DaytonaProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup: true,
+				PackageSetup:  true,
+				FileResources: true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				autoPauseMinutes, err := envPositiveInt(daytonaAutoPauseEnv)

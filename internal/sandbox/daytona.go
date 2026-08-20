@@ -46,8 +46,10 @@ type daytonaRemote interface {
 	Exec(context.Context, string, string, time.Duration) (string, string, int, error)
 	ReadFile(context.Context, string) ([]byte, error)
 	WriteFile(context.Context, string, []byte) error
+	MakeDirectory(context.Context, string) error
 	Start(context.Context) error
 	Destroy(context.Context) error
+	remoteFileResourceDataPlane
 }
 
 type daytonaService interface {
@@ -106,6 +108,8 @@ func newDaytonaProvider(service daytonaService, root string) Provider {
 func (p *daytonaProvider) Name() string { return DaytonaProviderName }
 
 func (*daytonaProvider) SupportsPackageSetup() bool { return true }
+
+func (*daytonaProvider) SupportsFileResources() bool { return true }
 
 func (p *daytonaProvider) Create(
 	ctx context.Context,
@@ -169,11 +173,7 @@ func (p *daytonaProvider) Attach(
 		}
 		return nil, fmt.Errorf("sandbox: daytona start: %w", err)
 	}
-	box := &daytonaBox{
-		remote:  resource.remote,
-		root:    p.root,
-		timeout: spec.Timeout,
-	}
+	box := newDaytonaBox(resource.remote, p.root, spec.Timeout)
 	if err := box.ensureRoot(ctx); err != nil {
 		return nil, err
 	}
@@ -192,31 +192,27 @@ func (p *daytonaProvider) attachResource(
 }
 
 type daytonaBox struct {
-	remote  daytonaRemote
-	root    string
-	timeout time.Duration
+	remote    daytonaRemote
+	root      string
+	timeout   time.Duration
+	resources *remoteFileResources
+}
+
+func newDaytonaBox(
+	remote daytonaRemote,
+	root string,
+	timeout time.Duration,
+) *daytonaBox {
+	return &daytonaBox{
+		remote: remote, root: root, timeout: timeout,
+		resources: newRemoteFileResources(DaytonaProviderName, remote),
+	}
 }
 
 func (s *daytonaBox) Root() string { return s.root }
 
 func (s *daytonaBox) ensureRoot(ctx context.Context) error {
-	_, stderr, code, err := s.remote.Exec(
-		ctx,
-		"mkdir -p "+shellQuote(s.root),
-		"/",
-		s.timeout,
-	)
-	if err != nil {
-		return fmt.Errorf("sandbox: daytona create workspace: %w", err)
-	}
-	if code != 0 {
-		return fmt.Errorf(
-			"sandbox: daytona create workspace failed (exit %d): %s",
-			code,
-			strings.TrimSpace(stderr),
-		)
-	}
-	return nil
+	return s.remote.MakeDirectory(ctx, s.root)
 }
 
 func (s *daytonaBox) Exec(
@@ -247,7 +243,7 @@ func (s *daytonaBox) ReadFile(
 	ctx context.Context,
 	value string,
 ) ([]byte, error) {
-	full, err := containedRemotePath(s.root, value)
+	full, err := remoteToolPath(s.root, value, SessionUploadsRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -259,27 +255,37 @@ func (s *daytonaBox) WriteFile(
 	value string,
 	data []byte,
 ) error {
-	full, err := containedRemotePath(s.root, value)
+	full, err := remoteToolPath(s.root, value, SessionUploadsRoot)
 	if err != nil {
 		return err
 	}
-	_, stderr, code, err := s.remote.Exec(
-		ctx,
-		"mkdir -p "+shellQuote(path.Dir(full)),
-		s.root,
-		s.timeout,
-	)
-	if err != nil {
+	if err := s.remote.MakeDirectory(ctx, path.Dir(full)); err != nil {
 		return fmt.Errorf("sandbox: daytona create parent: %w", err)
 	}
-	if code != 0 {
-		return fmt.Errorf(
-			"sandbox: daytona create parent failed (exit %d): %s",
-			code,
-			strings.TrimSpace(stderr),
-		)
-	}
 	return s.remote.WriteFile(ctx, full, data)
+}
+
+func (s *daytonaBox) HasFileResource(
+	ctx context.Context,
+	mount FileResourceMount,
+) (bool, error) {
+	return s.resources.HasFileResource(ctx, mount)
+}
+
+func (s *daytonaBox) ImportFileResource(
+	ctx context.Context,
+	mount FileResourceMount,
+	content io.Reader,
+) error {
+	return s.resources.ImportFileResource(ctx, mount, content)
+}
+
+func (s *daytonaBox) RemoveFileResource(
+	ctx context.Context,
+	runtimePath string,
+	identity string,
+) error {
+	return s.resources.RemoveFileResource(ctx, runtimePath, identity)
 }
 
 func (s *daytonaBox) Destroy(ctx context.Context) error {
@@ -411,6 +417,65 @@ func (s *daytonaSDKRemote) WriteFile(
 		bytes.NewReader(data),
 		value,
 	)
+}
+
+func (s *daytonaSDKRemote) MakeDirectory(
+	ctx context.Context,
+	directory string,
+) error {
+	return s.sandbox.FileSystem.CreateFolder(
+		ctx, directory, daytonaoptions.WithMode("0755"),
+	)
+}
+
+func (s *daytonaSDKRemote) ResourceCreateDirectory(
+	ctx context.Context,
+	directory string,
+	permissions remoteFilePermissions,
+) error {
+	return s.sandbox.FileSystem.CreateFolder(
+		ctx, directory, daytonaoptions.WithMode(remotePermissionDigits(permissions.Mode)),
+	)
+}
+
+func (s *daytonaSDKRemote) ResourceUpload(
+	ctx context.Context,
+	filePath string,
+	content io.Reader,
+	_ remoteFilePermissions,
+) error {
+	return s.sandbox.FileSystem.UploadFileStream(ctx, content, filePath)
+}
+
+func (s *daytonaSDKRemote) ResourceOpen(
+	ctx context.Context,
+	filePath string,
+) (io.ReadCloser, error) {
+	return s.sandbox.FileSystem.DownloadFileStream(ctx, filePath)
+}
+
+func (s *daytonaSDKRemote) ResourceStat(
+	ctx context.Context,
+	filePath string,
+) (remoteFileInfo, error) {
+	item, err := s.sandbox.FileSystem.GetFileInfo(ctx, filePath)
+	if err != nil {
+		return remoteFileInfo{}, err
+	}
+	return remoteFileInfo{
+		SizeBytes: item.Size, Regular: !item.IsDirectory,
+	}, nil
+}
+
+func (s *daytonaSDKRemote) ResourceRemoveFile(
+	ctx context.Context,
+	filePath string,
+) error {
+	return s.sandbox.FileSystem.DeleteFile(ctx, filePath, false)
+}
+
+func (*daytonaSDKRemote) ResourceIsNotFound(err error) bool {
+	return isDaytonaNotFound(err)
 }
 
 func (s *daytonaSDKRemote) Start(ctx context.Context) error {

@@ -199,9 +199,9 @@ type SessionOutputSandbox interface {
 	OpenSessionOutputs(context.Context) (io.ReadCloser, error)
 }
 
-// ReadOnlyFileMount describes one immutable File copy expected inside a
-// sandbox. RuntimePath must be a child of SessionUploadsRoot.
-type ReadOnlyFileMount struct {
+// FileResourceMount describes one File copy expected inside a sandbox.
+// RuntimePath must be a child of SessionUploadsRoot.
+type FileResourceMount struct {
 	// Identity distinguishes successive resources that reuse one runtime path.
 	// It must remain stable across worker restarts.
 	Identity       string
@@ -210,21 +210,22 @@ type ReadOnlyFileMount struct {
 	ChecksumSHA256 string
 }
 
-// FileResourceProvider declares support for isolated, read-only Session File
-// resources. Providers must opt in explicitly: ordinary workspace writes are
-// neither absolute-path mounts nor a read-only boundary.
+// FileResourceProvider declares support for materializing Session File
+// resources. Providers must opt in explicitly because ordinary workspace
+// writes do not expose the documented absolute uploads path.
 type FileResourceProvider interface {
 	SupportsFileResources() bool
 }
 
 // FileResourceSandbox reconciles File-backed Session Resources for a live
-// sandbox. ImportReadOnlyFile must stream, validate, and publish atomically;
-// RemoveReadOnlyFile must be idempotent and must not remove a newer identity
-// that reused the same runtime path.
+// sandbox. ImportFileResource must stream and validate the source bytes;
+// RemoveFileResource must be idempotent and must not remove a newer identity
+// that reused the same runtime path. Individual providers may enforce a
+// stronger read-only presentation.
 type FileResourceSandbox interface {
-	HasReadOnlyFile(context.Context, ReadOnlyFileMount) (bool, error)
-	ImportReadOnlyFile(context.Context, ReadOnlyFileMount, io.Reader) error
-	RemoveReadOnlyFile(context.Context, string, string) error
+	HasFileResource(context.Context, FileResourceMount) (bool, error)
+	ImportFileResource(context.Context, FileResourceMount, io.Reader) error
+	RemoveFileResource(context.Context, string, string) error
 }
 
 // MemoryStoreProvider declares support for durable writable Memory Store

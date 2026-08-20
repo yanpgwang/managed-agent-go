@@ -102,6 +102,40 @@ func containedRemotePath(root, value string) (string, error) {
 	return clean, nil
 }
 
+// remoteToolPath resolves provider file-tool requests without confusing an
+// absolute Session resource path with a workspace-relative path. Additional
+// roots are opt-in per sandbox capability; every other absolute path remains
+// outside the file-tool boundary.
+func remoteToolPath(
+	root string,
+	value string,
+	additionalRoots ...string,
+) (string, error) {
+	if root == "" {
+		root = remoteDefaultRoot
+	}
+	if !path.IsAbs(value) {
+		return containedRemotePath(root, value)
+	}
+	clean := path.Clean(value)
+	if pathWithinRemoteRoot(root, clean) {
+		return clean, nil
+	}
+	for _, additionalRoot := range additionalRoots {
+		if !pathWithinRemoteRoot(additionalRoot, clean) || clean == additionalRoot {
+			continue
+		}
+		return clean, nil
+	}
+	return "", fmt.Errorf("sandbox: path %q is outside the authorized runtime roots", value)
+}
+
+func pathWithinRemoteRoot(root string, value string) bool {
+	root = path.Clean(root)
+	value = path.Clean(value)
+	return value == root || strings.HasPrefix(value, root+"/")
+}
+
 func commandTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
 	if timeout <= 0 {
 		return ctx, func() {}

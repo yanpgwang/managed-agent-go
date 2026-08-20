@@ -199,14 +199,14 @@ provider-native document support.
 
 A File-backed Session Resource instead creates a second, downloadable,
 Session-scoped File object and records a durable desired mount.
-Before each sandbox tool execution the Docker adapter streams any missing copy
-into provider-owned staging, verifies size and SHA-256, atomically publishes
-it, and exposes the staging directory read-only at `/mnt/session/uploads`.
-Deletion records a tombstone until the worker removes the applied mount.
-Identity-bearing provider markers and a provider-side lock make delete/re-add
-safe even when a timed-out attempt overlaps its retry. The
-local and current remote adapters reject this feature because they cannot
-provide the same absolute-path read-only boundary.
+Before each sandbox tool execution a capable adapter ensures that the requested
+identity exists beneath `/mnt/session/uploads`. Docker streams into
+provider-owned staging, verifies size and SHA-256, atomically publishes it, and
+exposes the staging directory read-only. OpenSandbox and Daytona stream through
+their official SDK clients and record an identity marker after validation; the
+current remote copies are writable and sandbox-local edits do not update the
+S3-backed Session File. Deletion records a tombstone until the worker removes
+the applied copy. Local, E2B, and Cube adapters reject the feature.
 
 Docker separately bind-mounts a provider-owned writable directory at
 `/mnt/session/outputs`. Before the primary Session's idle event is committed,

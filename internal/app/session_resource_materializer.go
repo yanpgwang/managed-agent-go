@@ -64,11 +64,11 @@ func (m *SessionResourceMaterializer) Reconcile(
 			if err != nil {
 				return err
 			}
-			mount := sandbox.ReadOnlyFileMount{
+			mount := sandbox.FileResourceMount{
 				Identity: resource.ID, RuntimePath: resource.MountPath, SizeBytes: file.SizeBytes,
 				ChecksumSHA256: file.ChecksumSHA256,
 			}
-			present, err := mounter.HasReadOnlyFile(ctx, mount)
+			present, err := mounter.HasFileResource(ctx, mount)
 			if err != nil {
 				return err
 			}
@@ -79,7 +79,7 @@ func (m *SessionResourceMaterializer) Reconcile(
 			if err != nil {
 				return err
 			}
-			importErr := mounter.ImportReadOnlyFile(ctx, mount, body)
+			importErr := mounter.ImportFileResource(ctx, mount, body)
 			closeErr := body.Close()
 			if importErr != nil {
 				return importErr
@@ -87,9 +87,9 @@ func (m *SessionResourceMaterializer) Reconcile(
 			if closeErr != nil {
 				return fmt.Errorf("session resource: close object body: %w", closeErr)
 			}
-			// A timed-out attempt can overlap its retry. Revalidate after the
-			// atomic publish so a late import cannot resurrect a resource whose
-			// tombstone another attempt already finalized.
+			// A timed-out attempt can overlap its retry. Revalidate after import
+			// so a late attempt cannot keep a resource whose tombstone another
+			// attempt already finalized.
 			checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 			current, currentErr := m.resources.GetSessionResource(
 				checkCtx, sessionID, resource.ID,
@@ -97,7 +97,7 @@ func (m *SessionResourceMaterializer) Reconcile(
 			if currentErr != nil {
 				var domainErr *domain.DomainError
 				if errors.As(currentErr, &domainErr) && domainErr.Kind == domain.KindNotFound {
-					removeErr := mounter.RemoveReadOnlyFile(
+					removeErr := mounter.RemoveFileResource(
 						checkCtx, resource.MountPath, resource.ID,
 					)
 					cancel()
@@ -126,7 +126,7 @@ func (m *SessionResourceMaterializer) Reconcile(
 				continue
 			}
 			if supported {
-				if err := mounter.RemoveReadOnlyFile(
+				if err := mounter.RemoveFileResource(
 					ctx, resource.MountPath, resource.ID,
 				); err != nil {
 					return err

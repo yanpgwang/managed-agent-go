@@ -79,9 +79,10 @@ concurrent upload, Session Resource copy, or Session output publication. These
 are explicit limits until distributed intent leasing and direct multipart
 object-store operations are implemented.
 
-File-backed Session Resources and automatic Session output publication
-additionally require
-`MANGO_SANDBOX=docker`. The worker must run where the selected Docker
+File-backed Session Resources require `MANGO_SANDBOX=docker`, `opensandbox`, or
+`daytona`; the remote providers currently expose writable sandbox-local copies.
+Automatic Session output publication requires `MANGO_SANDBOX=docker`. The
+Docker worker must run where the selected Docker
 Engine API is reachable; the provider uses the Moby Go client directly and does
 not require a `docker` CLI binary. Configure a non-default daemon with
 `DOCKER_HOST` and the standard Docker TLS environment variables. The daemon
@@ -90,9 +91,7 @@ must be able to bind the worker's provider-owned staging directory. Set
 host volume; the default is `mango-resources` beneath the process
 user's home directory. The API and every worker
 on the task queue must agree on the sandbox provider and object-store
-configuration. The local-process provider and current remote adapters reject
-File Resources because they cannot yet provide the same isolated, absolute,
-read-only mount contract.
+configuration. The local-process, E2B, and Cube adapters reject File Resources.
 
 Memory API contents and immutable Versions live entirely in PostgreSQL and do
 not require S3-compatible storage. Memory-backed Session Resources do require

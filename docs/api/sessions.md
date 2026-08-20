@@ -118,11 +118,12 @@ corresponding Docker sandbox capability is configured:
 ```
 
 Each attachment creates an independent, downloadable Session-scoped File copy
-and a read-only mount beneath `/mnt/session/uploads`. A Memory Store input uses
-`type: "memory_store"`, `memory_store_id`, optional `instructions`, and
+beneath `/mnt/session/uploads`. Docker presents it read-only; OpenSandbox and
+Daytona currently expose a writable sandbox-local copy. A Memory Store input
+uses `type: "memory_store"`, `memory_store_id`, optional `instructions`, and
 `read_write` or `read_only` access; it is mounted beneath `/mnt/memory` and can
 only be attached at creation. GitHub repository, self-hosted Environment,
-local-process, and current remote-provider resources return `422`.
+local-process, E2B, and Cube resources return `422`.
 `vault_ids` is an ordered list of active Vault references. The order is frozen
 with the Session: for an MCP endpoint, the first Vault containing a matching
 credential wins. Admission requires the Vault keyring to be configured and

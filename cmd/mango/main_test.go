@@ -141,6 +141,17 @@ func TestSandboxProviderRegistry_AdvertisesRuntimeCapabilities(t *testing.T) {
 				wantSessionOutputs,
 			)
 		}
+		wantFileResources := name == sandbox.DockerProviderName ||
+			name == sandbox.OpenSandboxProviderName ||
+			name == sandbox.DaytonaProviderName
+		if capabilities.FileResources != wantFileResources {
+			t.Errorf(
+				"%s FileResources = %v, want %v",
+				name,
+				capabilities.FileResources,
+				wantFileResources,
+			)
+		}
 	}
 }
 

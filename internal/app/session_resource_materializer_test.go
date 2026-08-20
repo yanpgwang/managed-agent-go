@@ -53,15 +53,15 @@ func (*trackingFileResourceSandbox) ReadFile(context.Context, string) ([]byte, e
 }
 func (*trackingFileResourceSandbox) WriteFile(context.Context, string, []byte) error { return nil }
 func (*trackingFileResourceSandbox) Destroy(context.Context) error                   { return nil }
-func (*trackingFileResourceSandbox) HasReadOnlyFile(
+func (*trackingFileResourceSandbox) HasFileResource(
 	context.Context,
-	sandbox.ReadOnlyFileMount,
+	sandbox.FileResourceMount,
 ) (bool, error) {
 	return false, nil
 }
-func (s *trackingFileResourceSandbox) ImportReadOnlyFile(
+func (s *trackingFileResourceSandbox) ImportFileResource(
 	_ context.Context,
-	mount sandbox.ReadOnlyFileMount,
+	mount sandbox.FileResourceMount,
 	body io.Reader,
 ) error {
 	data, err := io.ReadAll(body)
@@ -72,7 +72,7 @@ func (s *trackingFileResourceSandbox) ImportReadOnlyFile(
 	s.data = data
 	return nil
 }
-func (s *trackingFileResourceSandbox) RemoveReadOnlyFile(
+func (s *trackingFileResourceSandbox) RemoveFileResource(
 	_ context.Context,
 	_ string,
 	identity string,
@@ -136,7 +136,7 @@ func TestSessionResourceMaterializerRejectsUnsupportedSandboxPermanently(t *test
 
 func TestTrackingSandboxIdentityDoesNotRemoveReplacement(t *testing.T) {
 	box := &trackingFileResourceSandbox{identity: "sesrsc_new", data: []byte("new")}
-	if err := box.RemoveReadOnlyFile(
+	if err := box.RemoveFileResource(
 		context.Background(), "/mnt/session/uploads/same", "sesrsc_old",
 	); err != nil {
 		t.Fatal(err)

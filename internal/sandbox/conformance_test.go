@@ -32,5 +32,6 @@ func TestDockerProviderConformance(t *testing.T) {
 		Spec: sandbox.Spec{Timeout: 30 * time.Second},
 	}
 	sandboxtest.Run(t, cfg)
+	sandboxtest.RunFileResources(t, cfg)
 	sandboxtest.RunSessionOutputs(t, cfg)
 }

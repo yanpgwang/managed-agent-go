@@ -369,7 +369,7 @@ func (p *dockerProvider) inspectResourceMount(
 	return resourceRoot, true, nil
 }
 
-func validateReadOnlyFileMount(mount ReadOnlyFileMount) error {
+func validateFileResourceMount(mount FileResourceMount) error {
 	if err := validateResourceIdentity(mount.Identity); err != nil {
 		return err
 	}
@@ -449,7 +449,7 @@ func (s *dockerSandbox) resourcePaths(runtimePath string) (string, string, error
 	return target, marker, nil
 }
 
-func resourceMarker(mount ReadOnlyFileMount) string {
+func resourceMarker(mount FileResourceMount) string {
 	return mount.Identity + "\n" + strconv.FormatInt(mount.SizeBytes, 10) + "\n" +
 		mount.ChecksumSHA256 + "\n"
 }
@@ -543,14 +543,14 @@ func (s *dockerSandbox) LockResourceSync(
 	return context.WithValue(ctx, dockerResourceSyncContextKey{}, true), unlock, nil
 }
 
-func (s *dockerSandbox) HasReadOnlyFile(
+func (s *dockerSandbox) HasFileResource(
 	ctx context.Context,
-	mount ReadOnlyFileMount,
+	mount FileResourceMount,
 ) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	if err := validateReadOnlyFileMount(mount); err != nil {
+	if err := validateFileResourceMount(mount); err != nil {
 		return false, Permanent(err)
 	}
 	if !s.resourceMountReady || s.resourceRoot == "" {
@@ -585,9 +585,9 @@ func (s *dockerSandbox) HasReadOnlyFile(
 	return string(stored) == resourceMarker(mount), nil
 }
 
-func (s *dockerSandbox) ImportReadOnlyFile(
+func (s *dockerSandbox) ImportFileResource(
 	ctx context.Context,
-	mount ReadOnlyFileMount,
+	mount FileResourceMount,
 	content io.Reader,
 ) error {
 	if err := ctx.Err(); err != nil {
@@ -596,7 +596,7 @@ func (s *dockerSandbox) ImportReadOnlyFile(
 	if content == nil {
 		return errors.New("sandbox: File Resource content is required")
 	}
-	if err := validateReadOnlyFileMount(mount); err != nil {
+	if err := validateFileResourceMount(mount); err != nil {
 		return Permanent(err)
 	}
 	target, marker, err := s.resourcePaths(mount.RuntimePath)
@@ -665,7 +665,7 @@ func (s *dockerSandbox) ImportReadOnlyFile(
 	return nil
 }
 
-func (s *dockerSandbox) RemoveReadOnlyFile(
+func (s *dockerSandbox) RemoveFileResource(
 	ctx context.Context,
 	runtimePath string,
 	identity string,

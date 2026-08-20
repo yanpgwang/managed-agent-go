@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -68,6 +70,155 @@ func TestRemoteProviderConformance(t *testing.T) {
 			store := newFakeRemoteStore(t.TempDir())
 			runFakeRemoteContract(t, func() Provider { return test.open(store) })
 		})
+	}
+}
+
+func TestRemoteFileResourceConformance(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*fakeRemoteStore) Provider
+	}{
+		{
+			name: OpenSandboxProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newOpenSandboxProvider(
+					&fakeOpenSandboxService{store: store}, remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: DaytonaProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newDaytonaProvider(
+					&fakeDaytonaService{store: store}, defaultDaytonaRoot,
+				)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeRemoteStore(t.TempDir())
+			runFakeRemoteFileResourceContract(
+				t, store, func() Provider { return test.open(store) },
+			)
+		})
+	}
+}
+
+func runFakeRemoteFileResourceContract(
+	t *testing.T,
+	store *fakeRemoteStore,
+	open func() Provider,
+) {
+	t.Helper()
+	ctx := context.Background()
+	spec := Spec{Timeout: 5 * time.Second}
+	sessionKey := "sesn-files-" + strings.NewReplacer("/", "-", " ", "-").
+		Replace(strings.ToLower(t.Name()))
+	provider := open()
+	capability, ok := provider.(FileResourceProvider)
+	if !ok || !capability.SupportsFileResources() {
+		t.Fatalf("provider %q does not advertise File Resources", provider.Name())
+	}
+	ref, box, err := provider.Create(ctx, sessionKey, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	resources, ok := box.(FileResourceSandbox)
+	if !ok {
+		t.Fatalf("sandbox %T does not expose File Resources", box)
+	}
+	content := []byte("remote resource\n")
+	mount := testFileResourceMount(SessionUploadsRoot+"/nested/data.txt", content)
+	mount.Identity = "sesrsc_remote_first"
+	if err := resources.ImportFileResource(ctx, mount, bytes.NewReader(content)); err != nil {
+		t.Fatal(err)
+	}
+	if calls := store.execCallCount(ref.ID); calls != 0 {
+		t.Fatalf("File Resource import used Exec %d time(s), want SDK-only operations", calls)
+	}
+	assertFakeRemoteResource(t, ctx, box, resources, mount, content)
+	edited := []byte("agent-edited resource\n")
+	if err := box.WriteFile(ctx, mount.RuntimePath, edited); err != nil {
+		t.Fatalf("edit materialized File Resource: %v", err)
+	}
+	assertFakeRemoteResource(t, ctx, box, resources, mount, edited)
+
+	execCalls := store.execCallCount(ref.ID)
+	replacementContent := []byte("remote replacement\n")
+	replacement := testFileResourceMount(mount.RuntimePath, replacementContent)
+	replacement.Identity = "sesrsc_remote_second"
+	if err := resources.ImportFileResource(
+		ctx, replacement, &readerThatFails{data: []byte("partial")},
+	); err == nil {
+		t.Fatal("partial replacement unexpectedly succeeded")
+	}
+	if calls := store.execCallCount(ref.ID); calls != execCalls {
+		t.Fatalf(
+			"failed File Resource import used Exec: got %d call(s), want %d",
+			calls, execCalls,
+		)
+	}
+	execCalls = store.execCallCount(ref.ID)
+	if err := resources.ImportFileResource(
+		ctx, replacement, bytes.NewReader(replacementContent),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := resources.RemoveFileResource(ctx, mount.RuntimePath, mount.Identity); err != nil {
+		t.Fatalf("stale removal: %v", err)
+	}
+	if calls := store.execCallCount(ref.ID); calls != execCalls {
+		t.Fatalf(
+			"File Resource replacement used Exec: got %d call(s), want %d",
+			calls, execCalls,
+		)
+	}
+	assertFakeRemoteResource(t, ctx, box, resources, replacement, replacementContent)
+
+	attached, err := open().Attach(ctx, sessionKey, ref, spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachedResources := attached.(FileResourceSandbox)
+	assertFakeRemoteResource(
+		t, ctx, attached, attachedResources, replacement, replacementContent,
+	)
+	if err := attachedResources.RemoveFileResource(
+		ctx, replacement.RuntimePath, replacement.Identity,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := attachedResources.RemoveFileResource(
+		ctx, replacement.RuntimePath, replacement.Identity,
+	); err != nil {
+		t.Fatalf("idempotent removal: %v", err)
+	}
+}
+
+func assertFakeRemoteResource(
+	t *testing.T,
+	ctx context.Context,
+	box Sandbox,
+	resources FileResourceSandbox,
+	mount FileResourceMount,
+	want []byte,
+) {
+	t.Helper()
+	present, err := resources.HasFileResource(ctx, mount)
+	if err != nil || !present {
+		t.Fatalf("HasFileResource = %t, %v", present, err)
+	}
+	got, err := box.ReadFile(ctx, mount.RuntimePath)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("ReadFile mounted resource = %q, %v", got, err)
+	}
+	result, err := box.Exec(ctx, Command{
+		Path: "/bin/sh", Args: []string{"-c", "cat " + mount.RuntimePath},
+	})
+	if err != nil || result.ExitCode != 0 || !bytes.Equal(result.Stdout, want) {
+		t.Fatalf("shell read mounted resource: result=%+v err=%v", result, err)
 	}
 }
 
@@ -196,6 +347,7 @@ type fakeRemoteResource struct {
 	id        string
 	name      string
 	metadata  map[string]string
+	execCalls int
 	root      string
 	destroyed bool
 }
@@ -258,6 +410,16 @@ func (s *fakeRemoteStore) get(idOrName string) (*fakeRemoteResource, error) {
 	return resource, nil
 }
 
+func (s *fakeRemoteStore) execCallCount(id string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	resource := s.resources[id]
+	if resource == nil {
+		return 0
+	}
+	return resource.execCalls
+}
+
 func (s *fakeRemoteStore) destroy(id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -266,6 +428,21 @@ func (s *fakeRemoteStore) destroy(id string) error {
 		return errFakeRemoteNotFound
 	}
 	resource.destroyed = true
+	_ = filepath.Walk(resource.root, func(
+		filePath string,
+		info os.FileInfo,
+		err error,
+	) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			_ = os.Chmod(filePath, 0o700)
+		} else {
+			_ = os.Chmod(filePath, 0o600)
+		}
+		return nil
+	})
 	return os.RemoveAll(resource.root)
 }
 
@@ -290,12 +467,17 @@ func (h *fakeRemoteHandle) exec(
 	ctx context.Context,
 	command string,
 ) (string, string, int, error) {
+	h.store.mu.Lock()
+	h.resource.execCalls++
+	h.store.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return "", "", -1, err
 	}
 	if strings.HasPrefix(command, "mkdir -p ") {
 		return "", "", 0, nil
 	}
+	uploads, _ := h.fullPath(SessionUploadsRoot)
+	command = strings.ReplaceAll(command, SessionUploadsRoot, uploads)
 	process := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	process.Dir = h.resource.root
 	process.Env = []string{"PATH=/usr/bin:/bin"}
@@ -337,6 +519,141 @@ func (h *fakeRemoteHandle) writeFile(value string, data []byte) error {
 	return os.WriteFile(full, data, 0o600)
 }
 
+func (h *fakeRemoteHandle) fullPath(value string) (string, error) {
+	relative, err := fakeRelativePath(value)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(h.resource.root, filepath.FromSlash(relative)), nil
+}
+
+func (h *fakeRemoteHandle) ResourceCreateDirectory(
+	_ context.Context,
+	directory string,
+	permissions remoteFilePermissions,
+) error {
+	full, err := h.fullPath(directory)
+	if err != nil {
+		return err
+	}
+	if err := fakePrivilegedMkdirAll(h.resource.root, full); err != nil {
+		return err
+	}
+	if err := os.Chmod(full, os.FileMode(permissions.Mode)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func fakePrivilegedMkdirAll(root string, directory string) error {
+	relative, err := filepath.Rel(root, directory)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return errors.New("fake remote directory escapes resource root")
+	}
+	current := root
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		parentInfo, err := os.Stat(current)
+		if err != nil {
+			return err
+		}
+		parentMode := parentInfo.Mode().Perm()
+		if parentMode&0o200 == 0 {
+			if err := os.Chmod(current, parentMode|0o200); err != nil {
+				return err
+			}
+		}
+		next := filepath.Join(current, component)
+		mkdirErr := os.Mkdir(next, 0o755)
+		if parentMode&0o200 == 0 {
+			if err := os.Chmod(current, parentMode); err != nil {
+				return err
+			}
+		}
+		if mkdirErr != nil && !errors.Is(mkdirErr, os.ErrExist) {
+			return mkdirErr
+		}
+		current = next
+	}
+	return nil
+}
+
+func (h *fakeRemoteHandle) ResourceUpload(
+	_ context.Context,
+	filePath string,
+	content io.Reader,
+	permissions remoteFilePermissions,
+) error {
+	full, err := h.fullPath(filePath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(full), 0o700); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(full, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(permissions.Mode))
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(file, content)
+	closeErr := file.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	if err := os.Chmod(full, os.FileMode(permissions.Mode)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (h *fakeRemoteHandle) ResourceOpen(
+	_ context.Context,
+	filePath string,
+) (io.ReadCloser, error) {
+	full, err := h.fullPath(filePath)
+	if err != nil {
+		return nil, err
+	}
+	return os.Open(full)
+}
+
+func (h *fakeRemoteHandle) ResourceStat(
+	_ context.Context,
+	filePath string,
+) (remoteFileInfo, error) {
+	full, err := h.fullPath(filePath)
+	if err != nil {
+		return remoteFileInfo{}, err
+	}
+	info, err := os.Lstat(full)
+	if err != nil {
+		return remoteFileInfo{}, err
+	}
+	return remoteFileInfo{
+		SizeBytes: info.Size(), Regular: info.Mode().IsRegular(),
+	}, nil
+}
+
+func (h *fakeRemoteHandle) ResourceRemoveFile(
+	_ context.Context,
+	filePath string,
+) error {
+	full, err := h.fullPath(filePath)
+	if err != nil {
+		return err
+	}
+	return os.Remove(full)
+}
+
+func (*fakeRemoteHandle) ResourceIsNotFound(err error) bool {
+	return errors.Is(err, os.ErrNotExist) || errors.Is(err, errFakeRemoteNotFound)
+}
+
 func fakeRelativePath(value string) (string, error) {
 	for _, root := range []string{remoteDefaultRoot, defaultDaytonaRoot} {
 		if value == root {
@@ -345,6 +662,9 @@ func fakeRelativePath(value string) (string, error) {
 		if strings.HasPrefix(value, root+"/") {
 			return strings.TrimPrefix(value, root+"/"), nil
 		}
+	}
+	if path.IsAbs(value) {
+		return strings.TrimPrefix(path.Clean(value), "/"), nil
 	}
 	return "", fmt.Errorf("unexpected fake remote path %q", value)
 }
@@ -606,9 +926,7 @@ func fakeDaytonaResource(
 	}
 }
 
-type fakeDaytonaRemote struct {
-	fakeRemoteHandle
-}
+type fakeDaytonaRemote struct{ fakeRemoteHandle }
 
 func (s *fakeDaytonaRemote) Exec(
 	ctx context.Context,
@@ -632,6 +950,15 @@ func (s *fakeDaytonaRemote) WriteFile(
 	data []byte,
 ) error {
 	return s.writeFile(value, data)
+}
+
+func (s *fakeDaytonaRemote) MakeDirectory(
+	_ context.Context,
+	directory string,
+) error {
+	return s.ResourceCreateDirectory(context.Background(), directory, remoteFilePermissions{
+		Mode: 0o755,
+	})
 }
 
 func (s *fakeDaytonaRemote) Start(context.Context) error {
