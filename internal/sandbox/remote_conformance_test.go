@@ -154,6 +154,18 @@ func runFakeRemoteFileResourceContract(
 	); err == nil {
 		t.Fatal("partial replacement unexpectedly succeeded")
 	}
+	if err := resources.RemoveFileResource(ctx, mount.RuntimePath, mount.Identity); err != nil {
+		t.Fatalf("stale removal during interrupted replacement: %v", err)
+	}
+	partial, err := box.ReadFile(ctx, mount.RuntimePath)
+	if err != nil || string(partial) != "partial" {
+		t.Fatalf("stale removal changed pending replacement = %q, %v", partial, err)
+	}
+	if err := resources.RemoveFileResource(
+		ctx, replacement.RuntimePath, replacement.Identity,
+	); err != nil {
+		t.Fatalf("remove interrupted replacement: %v", err)
+	}
 	if calls := store.execCallCount(ref.ID); calls != execCalls {
 		t.Fatalf(
 			"failed File Resource import used Exec: got %d call(s), want %d",
@@ -635,7 +647,9 @@ func (h *fakeRemoteHandle) ResourceStat(
 		return remoteFileInfo{}, err
 	}
 	return remoteFileInfo{
-		SizeBytes: info.Size(), Regular: info.Mode().IsRegular(),
+		SizeBytes: info.Size(),
+		Regular:   info.Mode().IsRegular(),
+		Directory: info.IsDir(),
 	}, nil
 }
 

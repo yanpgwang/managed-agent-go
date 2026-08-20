@@ -46,7 +46,6 @@ type daytonaRemote interface {
 	Exec(context.Context, string, string, time.Duration) (string, string, int, error)
 	ReadFile(context.Context, string) ([]byte, error)
 	WriteFile(context.Context, string, []byte) error
-	MakeDirectory(context.Context, string) error
 	Start(context.Context) error
 	Destroy(context.Context) error
 	remoteFileResourceDataPlane
@@ -212,7 +211,7 @@ func newDaytonaBox(
 func (s *daytonaBox) Root() string { return s.root }
 
 func (s *daytonaBox) ensureRoot(ctx context.Context) error {
-	return s.remote.MakeDirectory(ctx, s.root)
+	return s.resources.ensureDirectory(ctx, s.root, 0o755)
 }
 
 func (s *daytonaBox) Exec(
@@ -259,7 +258,7 @@ func (s *daytonaBox) WriteFile(
 	if err != nil {
 		return err
 	}
-	if err := s.remote.MakeDirectory(ctx, path.Dir(full)); err != nil {
+	if err := s.resources.ensureDirectory(ctx, path.Dir(full), 0o755); err != nil {
 		return fmt.Errorf("sandbox: daytona create parent: %w", err)
 	}
 	return s.remote.WriteFile(ctx, full, data)
@@ -419,15 +418,6 @@ func (s *daytonaSDKRemote) WriteFile(
 	)
 }
 
-func (s *daytonaSDKRemote) MakeDirectory(
-	ctx context.Context,
-	directory string,
-) error {
-	return s.sandbox.FileSystem.CreateFolder(
-		ctx, directory, daytonaoptions.WithMode("0755"),
-	)
-}
-
 func (s *daytonaSDKRemote) ResourceCreateDirectory(
 	ctx context.Context,
 	directory string,
@@ -463,7 +453,9 @@ func (s *daytonaSDKRemote) ResourceStat(
 		return remoteFileInfo{}, err
 	}
 	return remoteFileInfo{
-		SizeBytes: item.Size, Regular: !item.IsDirectory,
+		SizeBytes: item.Size,
+		Regular:   !item.IsDirectory,
+		Directory: item.IsDirectory,
 	}, nil
 }
 

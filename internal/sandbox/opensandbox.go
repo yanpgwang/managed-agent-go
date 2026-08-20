@@ -217,9 +217,7 @@ func (s *openSandboxBox) ApplyLimitedNetwork(
 }
 
 func (s *openSandboxBox) ensureRoot(ctx context.Context) error {
-	return s.remote.ResourceCreateDirectory(ctx, s.root, remoteFilePermissions{
-		Mode: 0o777,
-	})
+	return s.resources.ensureDirectory(ctx, s.root, 0o777)
 }
 
 func (s *openSandboxBox) Exec(
@@ -266,9 +264,7 @@ func (s *openSandboxBox) WriteFile(
 	if err != nil {
 		return err
 	}
-	if err := s.remote.ResourceCreateDirectory(ctx, path.Dir(full), remoteFilePermissions{
-		Mode: 0o777,
-	}); err != nil {
+	if err := s.resources.ensureDirectory(ctx, path.Dir(full), 0o777); err != nil {
 		return fmt.Errorf("sandbox: opensandbox create parent: %w", err)
 	}
 	return s.remote.WriteFile(ctx, full, data)
@@ -561,7 +557,9 @@ func (*openSandboxSDKRemote) ResourceIsNotFound(err error) bool {
 
 func openSandboxRemoteFileInfo(item opensandbox.FileInfo) remoteFileInfo {
 	return remoteFileInfo{
-		SizeBytes: item.Size, Regular: item.Type == "file",
+		SizeBytes: item.Size,
+		Regular:   item.Type == "file",
+		Directory: item.Type == "directory",
 	}
 }
 

@@ -25,6 +25,7 @@ type remoteFilePermissions struct {
 type remoteFileInfo struct {
 	SizeBytes int64
 	Regular   bool
+	Directory bool
 }
 
 // remoteFileResourceDataPlane is deliberately private and smaller than a
@@ -107,11 +108,12 @@ func (r *remoteFileResources) ImportFileResource(
 		return err
 	}
 	target := path.Clean(mount.RuntimePath)
-	markerPath := remoteResourceMarkerPath(mount.RuntimePath)
-	// Invalidate the marker before overwriting the visible copy. If the upload
-	// is interrupted, the next reconcile will retry instead of accepting a
-	// partial file as the requested resource.
-	if err := r.removeFileIfPresent(ctx, markerPath); err != nil {
+	// Publish the new identity before overwriting the visible copy. The pending
+	// marker does not satisfy HasFileResource, but it prevents a stale detach
+	// from deleting the new identity while an interrupted import is retried.
+	if err := r.writeMarker(
+		ctx, mount.RuntimePath, pendingResourceMarker(mount.Identity),
+	); err != nil {
 		return err
 	}
 
@@ -167,11 +169,14 @@ func (r *remoteFileResources) RemoveFileResource(
 	defer r.mu.Unlock()
 
 	marker, err := r.readMarker(ctx, runtimePath)
-	if err == nil && resourceMarkerIdentity([]byte(marker)) != identity {
+	if r.files.ResourceIsNotFound(err) {
 		return nil
 	}
-	if err != nil && !r.files.ResourceIsNotFound(err) {
+	if err != nil {
 		return err
+	}
+	if resourceMarkerIdentity([]byte(marker)) != identity {
+		return nil
 	}
 	if err := r.removeFileIfPresent(ctx, path.Clean(runtimePath)); err != nil {
 		return err
@@ -221,11 +226,42 @@ func (r *remoteFileResources) ensureDirectory(
 	directory string,
 	mode int,
 ) error {
-	permissions := remoteFilePermissions{Mode: mode}
-	if err := r.files.ResourceCreateDirectory(ctx, directory, permissions); err != nil {
-		return fmt.Errorf("sandbox: %s create resource directory %s: %w", r.provider, directory, err)
+	info, err := r.files.ResourceStat(ctx, directory)
+	if err == nil {
+		if info.Directory {
+			return nil
+		}
+		return fmt.Errorf(
+			"sandbox: %s resource path %s is not a directory",
+			r.provider,
+			directory,
+		)
 	}
-	return nil
+	if !r.files.ResourceIsNotFound(err) {
+		return fmt.Errorf(
+			"sandbox: %s inspect resource directory %s: %w",
+			r.provider,
+			directory,
+			err,
+		)
+	}
+	permissions := remoteFilePermissions{Mode: mode}
+	createErr := r.files.ResourceCreateDirectory(ctx, directory, permissions)
+	if createErr == nil {
+		return nil
+	}
+	// A successful provider-side create can still lose its acknowledgement.
+	// Re-read the durable state before returning a retryable error.
+	info, statErr := r.files.ResourceStat(ctx, directory)
+	if statErr == nil && info.Directory {
+		return nil
+	}
+	return fmt.Errorf(
+		"sandbox: %s create resource directory %s: %w",
+		r.provider,
+		directory,
+		createErr,
+	)
 }
 
 func (r *remoteFileResources) writeMarker(
@@ -286,6 +322,10 @@ func (r *remoteFileResources) removeFileIfPresent(
 func remoteResourceMarkerPath(runtimePath string) string {
 	sum := sha256.Sum256([]byte(path.Clean(runtimePath)))
 	return path.Join(remoteResourceMarkerRoot, hex.EncodeToString(sum[:]))
+}
+
+func pendingResourceMarker(identity string) string {
+	return identity + "\npending\n"
 }
 
 type countingReader struct {

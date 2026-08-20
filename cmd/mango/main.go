@@ -656,7 +656,7 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 		sessionResources = sessionResourceLifecycle
 		if !providerCapabilities.FileResources {
 			log.Printf(
-				"serve: Session File Resource admission disabled; sandbox provider %q has no isolated read-only mount capability; existing resources remain readable and detachable",
+				"serve: Session File Resource admission disabled; sandbox provider %q has no materialization capability; existing resources remain readable and detachable",
 				configuredSandboxProviderName(),
 			)
 		}

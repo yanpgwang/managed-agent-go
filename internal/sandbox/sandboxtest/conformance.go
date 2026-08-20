@@ -67,6 +67,16 @@ func RunFileResources(t *testing.T, cfg Config) {
 	); err == nil {
 		t.Fatal("partial replacement unexpectedly succeeded")
 	}
+	if err := resources.RemoveFileResource(
+		ctx, replacement.RuntimePath, mount.Identity,
+	); err != nil {
+		t.Fatalf("stale removal during interrupted replacement: %v", err)
+	}
+	if err := resources.RemoveFileResource(
+		ctx, replacement.RuntimePath, replacement.Identity,
+	); err != nil {
+		t.Fatalf("remove interrupted replacement: %v", err)
+	}
 	if err := resources.ImportFileResource(
 		ctx, replacement, bytes.NewReader(replacementContent),
 	); err != nil {
