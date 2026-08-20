@@ -13,6 +13,9 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
+// MaxOutcomeRubricCharacters is the documented limit for inline and File rubrics.
+const MaxOutcomeRubricCharacters = 262144
+
 type ContentBlock struct {
 	Type          string         // "text" | "thinking" | "redacted_thinking" | "tool_use" | "tool_result"
 	Text          string         // text blocks; also flattened text of a tool_result
@@ -265,23 +268,47 @@ func stringValue(raw any) string {
 
 func outcomePromptBlocks(payload map[string]any) []ContentBlock {
 	description, _ := payload["description"].(string)
-	rubric, _ := payload["rubric"].(map[string]any)
 	maxIterations := 3
 	if raw, ok := payload["max_iterations"].(float64); ok && raw >= 1 {
 		maxIterations = int(raw)
 	}
-	var rubricText string
-	switch rubric["type"] {
-	case "text":
-		rubricText, _ = rubric["content"].(string)
-	case "file":
-		fileID, _ := rubric["file_id"].(string)
-		rubricText = "Rubric file reference: " + fileID
-	}
+	rubricText, _ := OutcomeRubricContent(payload)
 	text := "Work toward the following outcome and produce the requested deliverable.\n\n" +
 		"Outcome:\n" + description + "\n\nRubric:\n" + rubricText +
 		fmt.Sprintf("\n\nThe harness may evaluate and request up to %d revision cycles.", maxIterations)
 	return []ContentBlock{{Type: "text", Text: text}}
+}
+
+// WithOutcomeRubricContent attaches the resolved bytes of a file-backed rubric
+// to a cloned private event payload. The public rubric union remains unchanged;
+// HTTP projections redact this internal field by prefix convention.
+func WithOutcomeRubricContent(payload map[string]any, content string) map[string]any {
+	resolved := make(map[string]any, len(payload)+1)
+	for key, value := range payload {
+		resolved[key] = value
+	}
+	resolved[InternalOutcomeRubricContent] = content
+	return resolved
+}
+
+// OutcomeRubricContent projects both public rubric variants onto the one text
+// input consumed by the working agent and isolated grader. File rubrics must
+// have been resolved and snapshotted before event admission.
+func OutcomeRubricContent(payload map[string]any) (string, bool) {
+	rubric, ok := payload["rubric"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	switch rubric["type"] {
+	case "text":
+		content, ok := rubric["content"].(string)
+		return content, ok
+	case "file":
+		content, ok := payload[InternalOutcomeRubricContent].(string)
+		return content, ok
+	default:
+		return "", false
+	}
 }
 
 func resultBlock(toolUseID string, payload map[string]any) ContentBlock {

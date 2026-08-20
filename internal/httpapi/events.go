@@ -25,8 +25,6 @@ const maxPageLimit = 1000
 // request may carry.
 const maxDeltaOptIn = 100
 
-const maxOutcomeRubricCharacters = 262144
-
 // deltaOptInTypes is the closed set of event types a client may opt into for
 // preview frames. Only agent.message previews are currently emitted, but the
 // opt-in contract accepts agent.thinking too.
@@ -380,7 +378,7 @@ func validateClientEvent(event map[string]any) error {
 			}
 			if value, ok := rubric["content"].(string); !ok || value == "" {
 				return domain.Validation("text rubric requires content")
-			} else if utf8.RuneCountInString(value) > maxOutcomeRubricCharacters {
+			} else if utf8.RuneCountInString(value) > domain.MaxOutcomeRubricCharacters {
 				return domain.Validation("text rubric content must contain at most 262144 characters")
 			}
 		case "file":
@@ -394,7 +392,6 @@ func validateClientEvent(event map[string]any) error {
 			if value, ok := rubric["file_id"].(string); !ok || value == "" {
 				return domain.Validation("file rubric requires file_id")
 			}
-			return domain.Unsupported("file outcome rubrics require the Files API")
 		default:
 			return domain.Validation("rubric type must be text or file")
 		}

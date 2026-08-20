@@ -155,6 +155,65 @@ func TestSDK_SessionFileResourceLifecycle(t *testing.T) {
 	}
 }
 
+func TestSDK_FileBackedOutcomeRubricShape(t *testing.T) {
+	client, ts, _ := sdkClientServerAndSessions(t)
+	ctx := context.Background()
+	agent := mustAgent(t, client, "opus", "sys")
+	environmentID := mustEnv(t, ts.URL)
+
+	session, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent: anthropic.BetaSessionNewParamsAgentUnion{
+			OfString: anthropic.String(agent.ID),
+		},
+		EnvironmentID: environmentID,
+		InitialEvents: []anthropic.BetaSessionNewParamsInitialEventUnion{{
+			OfUserDefineOutcome: &anthropic.BetaManagedAgentsUserDefineOutcomeEventParams{
+				Type:        anthropic.BetaManagedAgentsUserDefineOutcomeEventParamsTypeUserDefineOutcome,
+				Description: "produce report.md",
+				Rubric: anthropic.BetaManagedAgentsUserDefineOutcomeEventParamsRubricUnion{
+					OfFile: &anthropic.BetaManagedAgentsFileRubricParams{
+						Type:   anthropic.BetaManagedAgentsFileRubricParamsTypeFile,
+						FileID: "file_rubric",
+					},
+				},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create Session with file rubric through SDK: %v", err)
+	}
+	if session.ID == "" {
+		t.Fatal("SDK decoded an empty Session id")
+	}
+
+	conversation, err := client.Beta.Sessions.New(ctx, anthropic.BetaSessionNewParams{
+		Agent: anthropic.BetaSessionNewParamsAgentUnion{
+			OfString: anthropic.String(agent.ID),
+		},
+		EnvironmentID: environmentID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Beta.Sessions.Events.Send(
+		ctx,
+		conversation.ID,
+		anthropic.BetaSessionEventSendParams{Events: []anthropic.BetaManagedAgentsEventParamsUnion{
+			anthropic.BetaManagedAgentsEventParamsOfUserDefineOutcome(
+				"produce report.md",
+				anthropic.BetaManagedAgentsFileRubricParams{
+					Type:   anthropic.BetaManagedAgentsFileRubricParamsTypeFile,
+					FileID: "file_rubric",
+				},
+				anthropic.BetaManagedAgentsUserDefineOutcomeEventParamsTypeUserDefineOutcome,
+			),
+		}},
+	)
+	if err != nil || len(result.Data) == 0 {
+		t.Fatalf("send file rubric through SDK: result=%+v err=%v", result, err)
+	}
+}
+
 func TestSDK_SessionMemoryStoreResource(t *testing.T) {
 	client, ts, _ := sdkClientServerAndSessions(t)
 	ctx := context.Background()

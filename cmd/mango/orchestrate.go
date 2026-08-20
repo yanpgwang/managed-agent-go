@@ -500,6 +500,9 @@ func runOrchestrate() {
 		store, agentsRepo, environmentsRepo, runtime.Orchestrator(), ids,
 		realClock{}, skillResolver, sessionResources,
 	)
+	if fileRuntime != nil {
+		deploymentSessions.EnableFileOutcomeRubrics(fileRuntime.service)
+	}
 	deploymentSessions.ConfigureCloudSkillBundles(providerCapabilities.SkillBundles)
 	if vaults != nil {
 		deploymentSessions.EnableVaults()

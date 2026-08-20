@@ -54,6 +54,25 @@ func TestEventToJSON_MCPToolEventsUseDocumentedFields(t *testing.T) {
 	}
 }
 
+func TestEventToJSON_RedactsResolvedOutcomeRubricContent(t *testing.T) {
+	event := eventToJSON(domain.Event{
+		ID: "sevt_outcome", Type: domain.EvUserDefineOutcome,
+		Payload: map[string]any{
+			"description": "produce report",
+			"rubric": map[string]any{
+				"type": "file", "file_id": "file_rubric",
+			},
+			domain.InternalOutcomeRubricContent: "private rubric bytes",
+		},
+	})
+	if event["rubric"].(map[string]any)["file_id"] != "file_rubric" {
+		t.Fatalf("public rubric = %#v", event["rubric"])
+	}
+	if _, present := event[domain.InternalOutcomeRubricContent]; present {
+		t.Fatalf("private rubric content leaked: %#v", event)
+	}
+}
+
 // The new server-emitted types are not accepted from callers.
 func TestSendEvents_RejectsMCPToolEventTypes(t *testing.T) {
 	h := NewTestHandler(t)

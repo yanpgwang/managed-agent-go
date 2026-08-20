@@ -941,17 +941,20 @@ func (a *Activities) PrepareTurn(ctx context.Context, in PrepareTurnInput) (Prep
 	if trigger.Type == domain.EvUserDefineOutcome {
 		outcomeID, _ := trigger.Payload["outcome_id"].(string)
 		description, _ := trigger.Payload["description"].(string)
-		rubric, _ := trigger.Payload["rubric"].(map[string]any)
+		rubricContent, rubricOK := domain.OutcomeRubricContent(trigger.Payload)
 		maxIterations := 3
 		if configured := intValue(trigger.Payload["max_iterations"]); configured > 0 {
 			maxIterations = configured
 		}
-		if outcomeID == "" || description == "" || rubric == nil {
+		if outcomeID == "" || description == "" || !rubricOK || rubricContent == "" {
 			result.FatalError = "define_outcome is missing its server id, description, or rubric"
 		} else {
 			result.Outcome = &domain.OutcomeSpec{
 				OutcomeID: outcomeID, Description: description,
-				Rubric: rubric, MaxIterations: maxIterations,
+				Rubric: map[string]any{
+					"type": "text", "content": rubricContent,
+				},
+				MaxIterations: maxIterations,
 			}
 		}
 	}

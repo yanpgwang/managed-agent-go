@@ -56,7 +56,11 @@ and `url` sources; documents accept `base64`, `text`, and `url` sources, with
 Resources and file-content projection are not yet wired into messages.
 Tool-result search blocks require `source`, `title`, `citations.enabled`, and
 an array of text blocks. Unknown fields are rejected at every nested level.
-Text outcome rubrics are limited to 262,144 characters.
+Outcome rubrics accept inline `{type: "text", content: "..."}` or reusable
+`{type: "file", file_id: "file_..."}` inputs. Both are limited to 262,144
+characters. A File rubric must be a ready, top-level File in the same Workspace;
+Mango validates and snapshots its UTF-8 text before admitting the event. The
+public event keeps the File reference and never exposes the private snapshot.
 
 An interrupt is first committed to PostgreSQL and then delivered to each
 affected Workflow as a metadata-only wakeup. An interrupt that commits before

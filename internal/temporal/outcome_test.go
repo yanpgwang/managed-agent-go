@@ -66,6 +66,67 @@ func TestPrepareTurnRunsReceiptProcessedActiveOutcome(t *testing.T) {
 	require.True(t, prepared.AlreadyCompleted)
 }
 
+func TestPrepareTurnFileOutcomeRubricMatchesInlineWorkingAndGraderInputs(t *testing.T) {
+	processedAt := time.Now().UTC()
+	const rubricContent = "# Rubric\n- cites evidence\n- produces report.md"
+	basePayload := map[string]any{
+		"outcome_id": "outc_1", "description": "produce report",
+		"max_iterations": float64(3),
+	}
+	inlinePayload := make(map[string]any, len(basePayload)+1)
+	for key, value := range basePayload {
+		inlinePayload[key] = value
+	}
+	inlinePayload["rubric"] = map[string]any{
+		"type": "text", "content": rubricContent,
+	}
+	filePayload := make(map[string]any, len(basePayload)+1)
+	for key, value := range basePayload {
+		filePayload[key] = value
+	}
+	filePayload["rubric"] = map[string]any{
+		"type": "file", "file_id": "file_rubric",
+	}
+	filePayload = domain.WithOutcomeRubricContent(filePayload, rubricContent)
+
+	prepare := func(payload map[string]any) PrepareTurnResult {
+		trigger := domain.Event{
+			ID: "sevt_outcome", Sequence: 1, Type: domain.EvUserDefineOutcome,
+			Payload: payload, ProcessedAt: &processedAt,
+		}
+		source := &outcomePrepareSource{
+			fakeSource: newFakeSource([]domain.Event{trigger}),
+			session: domain.Session{
+				ID: "sess_outcome", Status: domain.StatusRunning,
+				AgentSnapshot: domain.Agent{Model: domain.Model{ID: "model"}},
+				Outcomes: []domain.OutcomeEvaluation{{
+					OutcomeID: "outc_1", Description: "produce report", Result: "running",
+				}},
+			},
+		}
+		prepared, err := NewActivities(
+			nil, source, nil, nil, &testIDGen{},
+		).PrepareTurn(context.Background(), PrepareTurnInput{
+			SessionID: "sess_outcome", TriggerEventID: trigger.ID,
+		})
+		require.NoError(t, err)
+		return prepared
+	}
+
+	inline := prepare(inlinePayload)
+	file := prepare(filePayload)
+	require.Equal(t, inline.Request.Messages, file.Request.Messages)
+	require.Equal(t, inline.Outcome, file.Outcome)
+	require.Equal(t, map[string]any{
+		"type": "text", "content": rubricContent,
+	}, file.Outcome.Rubric)
+	inlinePrompt, err := outcomeEvaluationPrompt(*inline.Outcome, inline.Request.Messages, 0)
+	require.NoError(t, err)
+	filePrompt, err := outcomeEvaluationPrompt(*file.Outcome, file.Request.Messages, 0)
+	require.NoError(t, err)
+	require.Equal(t, inlinePrompt, filePrompt)
+}
+
 type outcomeModel struct {
 	request  model.Request
 	response model.Response

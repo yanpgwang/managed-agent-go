@@ -46,6 +46,32 @@ func TestProjectMessages_PreservesImageAndDocumentBlocks(t *testing.T) {
 	}
 }
 
+func TestProjectMessages_FileOutcomeRubricMatchesInlineText(t *testing.T) {
+	const content = "# Quality\n- cites evidence\n- produces report.md"
+	inline := Event{Type: EvUserDefineOutcome, Payload: map[string]any{
+		"description": "produce a report",
+		"rubric": map[string]any{
+			"type": "text", "content": content,
+		},
+		"max_iterations": float64(4),
+	}}
+	filePayload := WithOutcomeRubricContent(map[string]any{
+		"description": "produce a report",
+		"rubric": map[string]any{
+			"type": "file", "file_id": "file_rubric",
+		},
+		"max_iterations": float64(4),
+	}, content)
+	file := Event{Type: EvUserDefineOutcome, Payload: filePayload}
+
+	if got, want := ProjectMessages([]Event{file}), ProjectMessages([]Event{inline}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("file projection = %#v, want inline projection %#v", got, want)
+	}
+	if got, ok := OutcomeRubricContent(filePayload); !ok || got != content {
+		t.Fatalf("resolved file rubric = %q, %v", got, ok)
+	}
+}
+
 func TestProjectMessages_PreservesRichToolResultContent(t *testing.T) {
 	events := []Event{
 		{ID: "use_1", Type: EvAgentCustomToolUse, Payload: map[string]any{

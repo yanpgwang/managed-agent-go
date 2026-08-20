@@ -17,10 +17,11 @@ import (
 )
 
 const (
-	DefaultFileListLimit       = 20
-	MaxFileListLimit           = 1000
-	MaxFileBytes         int64 = 500 << 20
-	fileCleanupTimeout         = 10 * time.Second
+	DefaultFileListLimit        = 20
+	MaxFileListLimit            = 1000
+	MaxFileBytes          int64 = 500 << 20
+	fileCleanupTimeout          = 10 * time.Second
+	maxOutcomeRubricBytes int64 = domain.MaxOutcomeRubricCharacters * utf8.UTFMax
 )
 
 // ErrBlobTooLarge lets a streaming blob implementation stop after one byte
@@ -55,9 +56,10 @@ type FileDownload struct {
 	Body io.ReadCloser
 }
 
-// FileRepository owns metadata and lifecycle intents. BeginUpload must commit
-// before blob I/O; CompleteUpload is the only transition that makes a file
-// visible. BeginDelete hides a file before object deletion begins.
+// FileRepository owns workspace-scoped metadata and lifecycle intents.
+// BeginUpload must commit before blob I/O; CompleteUpload is the only
+// transition that makes a file visible. Get returns only ready Files, and
+// BeginDelete hides a file before object deletion begins.
 type FileRepository interface {
 	BeginUpload(context.Context, domain.File) error
 	CompleteUpload(context.Context, string, BlobInfo) (domain.File, error)
@@ -188,6 +190,63 @@ func (s *FileService) Download(ctx context.Context, id string) (FileDownload, er
 		return FileDownload{}, err
 	}
 	return FileDownload{File: file, Body: body}, nil
+}
+
+// ReadOutcomeRubric returns validated text from a reusable top-level File.
+// Unlike the public content endpoint, this internal admission path may read
+// non-downloadable client uploads. Reads remain bounded to the largest valid
+// UTF-8 encoding of the documented character limit.
+func (s *FileService) ReadOutcomeRubric(ctx context.Context, id string) (string, error) {
+	file, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if file.Scope != nil {
+		return "", domain.Validation("file outcome rubric must reference a top-level File")
+	}
+	if file.SizeBytes == 0 {
+		return "", domain.Validation("file outcome rubric must not be empty")
+	}
+	if file.SizeBytes < 0 {
+		return "", errors.New("file outcome rubric has invalid stored size")
+	}
+	if file.SizeBytes > maxOutcomeRubricBytes {
+		return "", domain.Validation(
+			"file outcome rubric content must contain at most 262144 characters",
+		)
+	}
+	body, err := s.blobs.Open(ctx, file.BlobKey)
+	if err != nil {
+		return "", err
+	}
+	defer body.Close() //nolint:errcheck // the bounded read reports content errors
+
+	data, err := io.ReadAll(io.LimitReader(body, maxOutcomeRubricBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(data)) > maxOutcomeRubricBytes {
+		return "", domain.Validation(
+			"file outcome rubric content must contain at most 262144 characters",
+		)
+	}
+	info := ComputeBlobInfo(data)
+	if info.SizeBytes != file.SizeBytes ||
+		!strings.EqualFold(info.ChecksumSHA256, file.ChecksumSHA256) {
+		return "", errors.New("file outcome rubric blob failed integrity verification")
+	}
+	if len(data) == 0 {
+		return "", domain.Validation("file outcome rubric must not be empty")
+	}
+	if !utf8.Valid(data) {
+		return "", domain.Validation("file outcome rubric must contain valid UTF-8")
+	}
+	if utf8.RuneCount(data) > domain.MaxOutcomeRubricCharacters {
+		return "", domain.Validation(
+			"file outcome rubric content must contain at most 262144 characters",
+		)
+	}
+	return string(data), nil
 }
 
 func (s *FileService) Delete(ctx context.Context, id string) (domain.File, error) {
