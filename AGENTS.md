@@ -22,10 +22,20 @@ documentation, and pull-request requirements.
 - The stable [Claude Managed Agents documentation](https://platform.claude.com/docs/en/managed-agents/overview)
   and the pinned official Go SDK define the target contract. Do not maintain a
   separate Mango product roadmap.
-- `docs/compatibility.md` is the current delta ledger. GitHub Issues define
-  active engineering work.
-- Before implementing substantial compatibility work, read only the relevant
-  official CMA guide, API reference, and compatibility row.
+- `docs/compatibility.md` is a navigation aid and public delta ledger, not the
+  sole evidence of what Mango currently implements. GitHub Issues define active
+  engineering work.
+- Before selecting or implementing substantial compatibility work, read the
+  relevant official CMA guide, API reference, and compatibility row, then
+  verify the current Mango behavior in the relevant source code, migrations,
+  OpenAPI definitions, and executable HTTP, SDK, persistence, workflow, and
+  service tests. Use the official documentation and pinned SDK as the authority
+  for the target contract; use the implementation and tests as the authority
+  for Mango's current behavior.
+- If implementation evidence contradicts `docs/compatibility.md` or other API
+  documentation, correct the documentation promptly. Do not select work, claim
+  support, or close an Issue based only on a compatibility row that has not been
+  verified against the current code and tests.
 - Select one user-visible, end-to-end gap. State its acceptance criteria and
   non-goals before implementation.
 - Prefer stable CMA workflows. Do not implement research-preview capabilities
