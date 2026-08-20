@@ -57,7 +57,7 @@ func (s *SessionResourceService) PrepareForSession(
 	}
 	if !s.admissionEnabled {
 		return nil, domain.Unsupported(
-			"File resources require a sandbox provider with isolated read-only mounts",
+			"File resources require a sandbox provider with materialization support",
 		)
 	}
 	if len(inputs) > MaxSessionResources {
@@ -74,7 +74,7 @@ func (s *SessionResourceService) PrepareForSession(
 	}
 	if session.EnvironmentType != "cloud" {
 		return nil, domain.Unsupported(
-			"File resources require a cloud Environment with an isolated read-only mount provider",
+			"File resources require a cloud Environment with a capable sandbox provider",
 		)
 	}
 

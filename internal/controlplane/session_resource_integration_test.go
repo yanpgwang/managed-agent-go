@@ -433,9 +433,9 @@ func (*resourceSandbox) Root() string { return "/workspace" }
 
 func (*resourceSandbox) Destroy(context.Context) error { return nil }
 
-func (s *resourceSandbox) HasReadOnlyFile(
+func (s *resourceSandbox) HasFileResource(
 	_ context.Context,
-	mount sandbox.ReadOnlyFileMount,
+	mount sandbox.FileResourceMount,
 ) (bool, error) {
 	data, ok := s.files[mount.RuntimePath]
 	if !ok {
@@ -446,9 +446,9 @@ func (s *resourceSandbox) HasReadOnlyFile(
 		info.ChecksumSHA256 == mount.ChecksumSHA256, nil
 }
 
-func (s *resourceSandbox) ImportReadOnlyFile(
+func (s *resourceSandbox) ImportFileResource(
 	_ context.Context,
-	mount sandbox.ReadOnlyFileMount,
+	mount sandbox.FileResourceMount,
 	content io.Reader,
 ) error {
 	data, err := io.ReadAll(content)
@@ -463,7 +463,7 @@ func (s *resourceSandbox) ImportReadOnlyFile(
 	return nil
 }
 
-func (s *resourceSandbox) RemoveReadOnlyFile(_ context.Context, path string, _ string) error {
+func (s *resourceSandbox) RemoveFileResource(_ context.Context, path string, _ string) error {
 	delete(s.files, path)
 	return nil
 }

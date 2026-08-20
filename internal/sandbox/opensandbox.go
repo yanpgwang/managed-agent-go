@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"path"
 	"sort"
 	"strings"
@@ -40,6 +41,7 @@ type openSandboxRemote interface {
 	WriteFile(context.Context, string, []byte) error
 	ApplyLimitedNetwork(context.Context, []string) error
 	Destroy(context.Context) error
+	remoteFileResourceDataPlane
 }
 
 type openSandboxService interface {
@@ -98,6 +100,8 @@ func (*openSandboxProvider) SupportsPackageSetup() bool { return true }
 
 func (*openSandboxProvider) SupportsLimitedNetwork() bool { return true }
 
+func (*openSandboxProvider) SupportsFileResources() bool { return true }
+
 func (p *openSandboxProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -128,11 +132,7 @@ func (p *openSandboxProvider) Create(
 		}
 		return Ref{}, nil, fmt.Errorf("sandbox: opensandbox create: %w", err)
 	}
-	box := &openSandboxBox{
-		remote:  remote,
-		root:    p.root,
-		timeout: spec.Timeout,
-	}
+	box := newOpenSandboxBox(remote, p.root, spec.Timeout)
 	if err := box.ensureRoot(ctx); err != nil {
 		_ = remote.Destroy(context.Background())
 		return Ref{}, nil, err
@@ -171,11 +171,7 @@ func (p *openSandboxProvider) Attach(
 		}
 		return nil, fmt.Errorf("sandbox: opensandbox connect: %w", err)
 	}
-	box := &openSandboxBox{
-		remote:  remote,
-		root:    p.root,
-		timeout: spec.Timeout,
-	}
+	box := newOpenSandboxBox(remote, p.root, spec.Timeout)
 	if err := box.ensureRoot(ctx); err != nil {
 		return nil, err
 	}
@@ -194,9 +190,21 @@ func (p *openSandboxProvider) attachResource(
 }
 
 type openSandboxBox struct {
-	remote  openSandboxRemote
-	root    string
-	timeout time.Duration
+	remote    openSandboxRemote
+	root      string
+	timeout   time.Duration
+	resources *remoteFileResources
+}
+
+func newOpenSandboxBox(
+	remote openSandboxRemote,
+	root string,
+	timeout time.Duration,
+) *openSandboxBox {
+	return &openSandboxBox{
+		remote: remote, root: root, timeout: timeout,
+		resources: newRemoteFileResources(OpenSandboxProviderName, remote),
+	}
 }
 
 func (s *openSandboxBox) Root() string { return s.root }
@@ -209,23 +217,7 @@ func (s *openSandboxBox) ApplyLimitedNetwork(
 }
 
 func (s *openSandboxBox) ensureRoot(ctx context.Context) error {
-	_, stderr, code, err := s.remote.Exec(
-		ctx,
-		"mkdir -p "+shellQuote(s.root),
-		"/",
-		s.timeout,
-	)
-	if err != nil {
-		return fmt.Errorf("sandbox: opensandbox create workspace: %w", err)
-	}
-	if code != 0 {
-		return fmt.Errorf(
-			"sandbox: opensandbox create workspace failed (exit %d): %s",
-			code,
-			strings.TrimSpace(stderr),
-		)
-	}
-	return nil
+	return s.resources.ensureDirectory(ctx, s.root, 0o777)
 }
 
 func (s *openSandboxBox) Exec(
@@ -256,7 +248,7 @@ func (s *openSandboxBox) ReadFile(
 	ctx context.Context,
 	value string,
 ) ([]byte, error) {
-	full, err := containedRemotePath(s.root, value)
+	full, err := remoteToolPath(s.root, value, SessionUploadsRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -268,27 +260,37 @@ func (s *openSandboxBox) WriteFile(
 	value string,
 	data []byte,
 ) error {
-	full, err := containedRemotePath(s.root, value)
+	full, err := remoteToolPath(s.root, value, SessionUploadsRoot)
 	if err != nil {
 		return err
 	}
-	_, stderr, code, err := s.remote.Exec(
-		ctx,
-		"mkdir -p "+shellQuote(path.Dir(full)),
-		s.root,
-		s.timeout,
-	)
-	if err != nil {
+	if err := s.resources.ensureDirectory(ctx, path.Dir(full), 0o777); err != nil {
 		return fmt.Errorf("sandbox: opensandbox create parent: %w", err)
 	}
-	if code != 0 {
-		return fmt.Errorf(
-			"sandbox: opensandbox create parent failed (exit %d): %s",
-			code,
-			strings.TrimSpace(stderr),
-		)
-	}
 	return s.remote.WriteFile(ctx, full, data)
+}
+
+func (s *openSandboxBox) HasFileResource(
+	ctx context.Context,
+	mount FileResourceMount,
+) (bool, error) {
+	return s.resources.HasFileResource(ctx, mount)
+}
+
+func (s *openSandboxBox) ImportFileResource(
+	ctx context.Context,
+	mount FileResourceMount,
+	content io.Reader,
+) error {
+	return s.resources.ImportFileResource(ctx, mount, content)
+}
+
+func (s *openSandboxBox) RemoveFileResource(
+	ctx context.Context,
+	runtimePath string,
+	identity string,
+) error {
+	return s.resources.RemoveFileResource(ctx, runtimePath, identity)
 }
 
 func (s *openSandboxBox) Destroy(ctx context.Context) error {
@@ -489,6 +491,76 @@ func (s *openSandboxSDKRemote) WriteFile(
 			},
 		},
 	)
+}
+
+func (s *openSandboxSDKRemote) ResourceCreateDirectory(
+	ctx context.Context,
+	directory string,
+	permissions remoteFilePermissions,
+) error {
+	return s.sandbox.CreateDirectory(
+		ctx, directory, opensandbox.OctalMode(os.FileMode(permissions.Mode)),
+	)
+}
+
+func (s *openSandboxSDKRemote) ResourceUpload(
+	ctx context.Context,
+	filePath string,
+	content io.Reader,
+	permissions remoteFilePermissions,
+) error {
+	return s.sandbox.UploadFile(ctx, content, opensandbox.UploadFileOptions{
+		FileName: path.Base(filePath),
+		Metadata: opensandbox.FileMetadata{
+			Path: filePath, Mode: opensandbox.OctalMode(os.FileMode(permissions.Mode)),
+		},
+	})
+}
+
+func (s *openSandboxSDKRemote) ResourceOpen(
+	ctx context.Context,
+	filePath string,
+) (io.ReadCloser, error) {
+	return s.sandbox.DownloadFile(ctx, filePath, "")
+}
+
+func (s *openSandboxSDKRemote) ResourceStat(
+	ctx context.Context,
+	filePath string,
+) (remoteFileInfo, error) {
+	items, err := s.sandbox.GetFileInfo(ctx, filePath)
+	if err != nil {
+		return remoteFileInfo{}, err
+	}
+	item, ok := items[filePath]
+	if !ok {
+		return remoteFileInfo{}, &opensandbox.APIError{
+			StatusCode: http.StatusNotFound,
+			Response: opensandbox.ErrorResponse{
+				Code: "not_found", Message: "file metadata is missing",
+			},
+		}
+	}
+	return openSandboxRemoteFileInfo(item), nil
+}
+
+func (s *openSandboxSDKRemote) ResourceRemoveFile(
+	ctx context.Context,
+	filePath string,
+) error {
+	return s.sandbox.DeleteFiles(ctx, []string{filePath})
+}
+
+func (*openSandboxSDKRemote) ResourceIsNotFound(err error) bool {
+	return isOpenSandboxNotFound(err)
+}
+
+func openSandboxRemoteFileInfo(item opensandbox.FileInfo) remoteFileInfo {
+	return remoteFileInfo{
+		SizeBytes: item.Size,
+		Regular:   item.Type == "file",
+		Directory: item.Type == "directory",
+	}
 }
 
 func (s *openSandboxSDKRemote) ApplyLimitedNetwork(

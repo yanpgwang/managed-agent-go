@@ -25,3 +25,24 @@ Mango's bounded UTF-8 projection, private admission snapshot, S3-compatible
 storage, and explicit rejection of multimodal File sources are local design
 choices documented in [Files](api/files.md) and the
 [compatibility ledger](compatibility.md).
+
+## File-backed Session Resources
+
+- The [Managed Agents Files guide](https://platform.claude.com/docs/en/managed-agents/files)
+  defines independently copied File resources, their read-only presentation
+  beneath `/mnt/session/uploads`, optional mount paths, and runtime add/delete.
+- `github.com/anthropics/anthropic-sdk-go` at the version pinned in `go.mod`
+  supplies the Session Resource request and response unions exercised by Mango's
+  HTTP/SDK compatibility tests.
+- OpenSandbox and Daytona behavior is implemented against their pinned official
+  Go clients. The [OpenSandbox Go SDK](https://github.com/alibaba/OpenSandbox/blob/main/sdks/sandbox/go/README.md)
+  and [Daytona filesystem guide](https://www.daytona.io/docs/file-system-operations/)
+  define streaming upload/download, metadata and permission operations,
+  directory management, and move/delete; these provider APIs are implementation
+  dependencies rather than CMA compatibility sources.
+
+Mango's provider-owned marker format and retry algorithm are independent local
+design choices documented in [Sandbox backends](sandboxes.md). OpenSandbox and
+Daytona intentionally stop at writable sandbox-local copies in the current
+slice; this is recorded as a CMA compatibility limitation rather than inferred
+from the provider APIs.

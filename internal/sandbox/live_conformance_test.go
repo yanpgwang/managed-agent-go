@@ -50,7 +50,7 @@ func TestCubeLiveConformance(t *testing.T) {
 
 func TestOpenSandboxLiveConformance(t *testing.T) {
 	requireLive(t, "MANGO_LIVE_OPENSANDBOX")
-	runLiveConformance(t, func(t *testing.T) sandbox.Provider {
+	factory := func(t *testing.T) sandbox.Provider {
 		provider, err := sandbox.NewOpenSandboxProvider(
 			sandbox.OpenSandboxConfig{
 				BaseURL:  os.Getenv("OPEN_SANDBOX_DOMAIN"),
@@ -63,12 +63,14 @@ func TestOpenSandboxLiveConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		return provider
-	})
+	}
+	runLiveConformance(t, factory)
+	runLiveFileResourceConformance(t, factory)
 }
 
 func TestDaytonaLiveConformance(t *testing.T) {
 	requireLive(t, "MANGO_LIVE_DAYTONA")
-	runLiveConformance(t, func(t *testing.T) sandbox.Provider {
+	factory := func(t *testing.T) sandbox.Provider {
 		provider, err := sandbox.NewDaytonaProvider(sandbox.DaytonaConfig{
 			APIURL:           os.Getenv("DAYTONA_API_URL"),
 			APIKey:           os.Getenv("DAYTONA_API_KEY"),
@@ -81,6 +83,17 @@ func TestDaytonaLiveConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		return provider
+	}
+	runLiveConformance(t, factory)
+	runLiveFileResourceConformance(t, factory)
+}
+
+func runLiveFileResourceConformance(t *testing.T, factory sandboxtest.Factory) {
+	t.Helper()
+	sandboxtest.RunFileResources(t, sandboxtest.Config{
+		NewProvider: factory,
+		Spec:        sandbox.Spec{Timeout: 2 * time.Minute, Network: "bridge"},
+		ShellPath:   "/bin/sh",
 	})
 }
 

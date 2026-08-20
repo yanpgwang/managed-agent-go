@@ -68,15 +68,25 @@ production security claim.
 
 File-backed Session Resources require more than ordinary workspace writes: the
 provider must stream an independently stored object to its documented absolute
-path, publish it atomically, make it read-only inside the sandbox, and remove it
-idempotently after a crash. Provider capability admission is explicit.
+path and remove it idempotently after a crash. Provider capability admission is
+explicit. CMA documents the mounted copy as read-only; Mango records providers
+that do not yet enforce that property as limited rather than rejecting their
+core materialization support.
 
-Docker is currently the only adapter that advertises this capability. It stages
-validated bytes in a provider-owned host directory and bind-mounts that
-directory read-only at `/mnt/session/uploads`. The local-process provider would
-have to write into the worker host's absolute `/mnt` path and therefore rejects
-the feature. Current remote adapters also reject it until their service APIs
-can prove an equivalent isolated read-only mount contract.
+Docker stages validated bytes in a provider-owned host directory and
+bind-mounts that directory read-only at `/mnt/session/uploads`. OpenSandbox and
+Daytona use their pinned official Go SDK filesystem clients to create the
+uploads tree, stream and validate File bytes, record the applied resource
+identity, and delete the copy. They do not call a provider CLI or an in-sandbox
+shell command for materialization. Their current copies are writable by the
+Agent. Sandbox edits remain local and do not mutate the S3-backed source or the
+downloadable Session File; a later resource with a new identity replaces the
+path, and an interrupted import is retried before the next tool.
+
+The local-process provider would have to write into the worker host's absolute
+`/mnt` path and therefore rejects the feature. E2B and Cube remain fail-closed:
+the pinned compatible Go data-plane client accepts uploads as `[]byte` and does
+not satisfy the streaming path required for Mango's 500 MB File limit.
 
 ## Session output mounts
 

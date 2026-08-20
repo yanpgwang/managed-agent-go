@@ -6,6 +6,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,163 @@ import (
 
 	"github.com/yanpgwang/mango/internal/sandbox"
 )
+
+// RunFileResources exercises the provider-neutral File Resource materialization
+// contract. It is intentionally separate from Run because providers must opt in
+// to the absolute uploads path and runtime add/delete lifecycle.
+func RunFileResources(t *testing.T, cfg Config) {
+	t.Helper()
+	if cfg.NewProvider == nil {
+		t.Fatal("sandboxtest: NewProvider is required")
+	}
+	if cfg.Spec.Timeout == 0 {
+		cfg.Spec.Timeout = 30 * time.Second
+	}
+	if cfg.ShellPath == "" {
+		cfg.ShellPath = "/bin/sh"
+	}
+	ctx := context.Background()
+	provider := cfg.NewProvider(t)
+	capability, ok := provider.(sandbox.FileResourceProvider)
+	if !ok || !capability.SupportsFileResources() {
+		t.Fatalf("provider %q does not advertise File Resources", provider.Name())
+	}
+	session := sessionKey(t)
+	ref, box, err := provider.Create(ctx, session, cfg.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	resources, ok := box.(sandbox.FileResourceSandbox)
+	if !ok {
+		t.Fatalf("provider %q sandbox does not expose File Resources", provider.Name())
+	}
+
+	content := []byte("portable File Resource\n")
+	mount := fileResourceMount("/mnt/session/uploads/nested/data.txt", "sesrsc_first", content)
+	present, err := resources.HasFileResource(ctx, mount)
+	if err != nil || present {
+		t.Fatalf("initial HasFileResource = %t, %v", present, err)
+	}
+	if err := resources.ImportFileResource(ctx, mount, bytes.NewReader(content)); err != nil {
+		t.Fatalf("ImportFileResource: %v", err)
+	}
+	assertMountedFile(t, ctx, box, resources, mount, content, cfg.ShellPath)
+
+	replacementContent := []byte("replacement\n")
+	replacement := fileResourceMount(mount.RuntimePath, "sesrsc_second", replacementContent)
+	if err := resources.ImportFileResource(
+		ctx, replacement, &failingReader{data: []byte("partial")},
+	); err == nil {
+		t.Fatal("partial replacement unexpectedly succeeded")
+	}
+	if err := resources.RemoveFileResource(
+		ctx, replacement.RuntimePath, mount.Identity,
+	); err != nil {
+		t.Fatalf("stale removal during interrupted replacement: %v", err)
+	}
+	if err := resources.RemoveFileResource(
+		ctx, replacement.RuntimePath, replacement.Identity,
+	); err != nil {
+		t.Fatalf("remove interrupted replacement: %v", err)
+	}
+	if err := resources.ImportFileResource(
+		ctx, replacement, bytes.NewReader(replacementContent),
+	); err != nil {
+		t.Fatalf("replace File Resource: %v", err)
+	}
+	if err := resources.RemoveFileResource(
+		ctx, replacement.RuntimePath, mount.Identity,
+	); err != nil {
+		t.Fatalf("stale identity removal: %v", err)
+	}
+	assertMountedFile(t, ctx, box, resources, replacement, replacementContent, cfg.ShellPath)
+
+	restarted := cfg.NewProvider(t)
+	attached, err := restarted.Attach(ctx, session, ref, cfg.Spec)
+	if err != nil {
+		t.Fatalf("Attach File Resource sandbox: %v", err)
+	}
+	attachedResources, ok := attached.(sandbox.FileResourceSandbox)
+	if !ok {
+		t.Fatalf("attached provider %q sandbox lost File Resources", provider.Name())
+	}
+	assertMountedFile(
+		t, ctx, attached, attachedResources, replacement, replacementContent, cfg.ShellPath,
+	)
+	if err := attachedResources.RemoveFileResource(
+		ctx, replacement.RuntimePath, replacement.Identity,
+	); err != nil {
+		t.Fatalf("RemoveFileResource: %v", err)
+	}
+	if err := attachedResources.RemoveFileResource(
+		ctx, replacement.RuntimePath, replacement.Identity,
+	); err != nil {
+		t.Fatalf("idempotent RemoveFileResource: %v", err)
+	}
+	present, err = attachedResources.HasFileResource(ctx, replacement)
+	if err != nil || present {
+		t.Fatalf("HasFileResource after removal = %t, %v", present, err)
+	}
+
+	invalid := fileResourceMount("/mnt/session/uploads/../escape", "sesrsc_invalid", content)
+	if err := attachedResources.ImportFileResource(
+		ctx, invalid, bytes.NewReader(content),
+	); err == nil || !sandbox.IsPermanent(err) {
+		t.Fatalf("invalid File Resource path error = %v, want permanent", err)
+	}
+}
+
+func assertMountedFile(
+	t *testing.T,
+	ctx context.Context,
+	box sandbox.Sandbox,
+	resources sandbox.FileResourceSandbox,
+	mount sandbox.FileResourceMount,
+	want []byte,
+	shellPath string,
+) {
+	t.Helper()
+	present, err := resources.HasFileResource(ctx, mount)
+	if err != nil || !present {
+		t.Fatalf("HasFileResource = %t, %v", present, err)
+	}
+	got, err := box.ReadFile(ctx, mount.RuntimePath)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("ReadFile mounted resource = %q, %v", got, err)
+	}
+	result, err := box.Exec(ctx, sandbox.Command{
+		Path: shellPath, Args: []string{"-c", "cat " + mount.RuntimePath},
+	})
+	if err != nil || result.ExitCode != 0 || !bytes.Equal(result.Stdout, want) {
+		t.Fatalf("shell read mounted resource: result=%+v err=%v", result, err)
+	}
+}
+
+func fileResourceMount(
+	runtimePath string,
+	identity string,
+	content []byte,
+) sandbox.FileResourceMount {
+	checksum := sha256.Sum256(content)
+	return sandbox.FileResourceMount{
+		Identity: identity, RuntimePath: runtimePath,
+		SizeBytes: int64(len(content)), ChecksumSHA256: fmt.Sprintf("%x", checksum[:]),
+	}
+}
+
+type failingReader struct {
+	data []byte
+	done bool
+}
+
+func (r *failingReader) Read(buffer []byte) (int, error) {
+	if !r.done {
+		r.done = true
+		return copy(buffer, r.data), nil
+	}
+	return 0, errors.New("injected stream failure")
+}
 
 // Factory returns a fresh client for the same provider deployment. It may call
 // t.Skip when an optional daemon or credential is unavailable.

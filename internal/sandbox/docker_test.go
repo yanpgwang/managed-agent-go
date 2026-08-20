@@ -866,11 +866,11 @@ func TestDocker_CreateIsIdempotentAndAttachPreservesWorkspace(t *testing.T) {
 		t.Fatalf("first Docker sandbox does not expose FileResourceSandbox: %T", first)
 	}
 	resourceContent := []byte("restored mount")
-	resourceMount := testReadOnlyMount(
+	resourceMount := testFileResourceMount(
 		SessionUploadsRoot+"/restart.txt", resourceContent,
 	)
 	resourceMount.Identity = "sesrsc_restart"
-	if err := firstResources.ImportReadOnlyFile(
+	if err := firstResources.ImportFileResource(
 		ctx, resourceMount, bytes.NewReader(resourceContent),
 	); err != nil {
 		t.Fatalf("import before worker restart: %v", err)
@@ -910,7 +910,7 @@ func TestDocker_CreateIsIdempotentAndAttachPreservesWorkspace(t *testing.T) {
 	if !ok {
 		t.Fatalf("attached Docker sandbox does not expose FileResourceSandbox: %T", attached)
 	}
-	present, err := resources.HasReadOnlyFile(ctx, resourceMount)
+	present, err := resources.HasFileResource(ctx, resourceMount)
 	if err != nil || !present {
 		t.Fatalf("attached sandbox did not recognize staged resource: present=%t err=%v", present, err)
 	}
@@ -990,15 +990,15 @@ func TestDocker_AttachLegacyContainerAllowsResourceDetach(t *testing.T) {
 	}
 	resources := box.(FileResourceSandbox)
 	content := []byte("resource")
-	mount := testReadOnlyMount(SessionUploadsRoot+"/legacy.txt", content)
-	present, err := resources.HasReadOnlyFile(ctx, mount)
+	mount := testFileResourceMount(SessionUploadsRoot+"/legacy.txt", content)
+	present, err := resources.HasFileResource(ctx, mount)
 	if err != nil || present {
-		t.Fatalf("legacy HasReadOnlyFile = %t, err=%v", present, err)
+		t.Fatalf("legacy HasFileResource = %t, err=%v", present, err)
 	}
-	if err := resources.ImportReadOnlyFile(ctx, mount, bytes.NewReader(content)); err == nil || !IsPermanent(err) {
+	if err := resources.ImportFileResource(ctx, mount, bytes.NewReader(content)); err == nil || !IsPermanent(err) {
 		t.Fatalf("legacy import error = %v, want permanent unsupported mount", err)
 	}
-	if err := resources.RemoveReadOnlyFile(ctx, mount.RuntimePath, mount.Identity); err != nil {
+	if err := resources.RemoveFileResource(ctx, mount.RuntimePath, mount.Identity); err != nil {
 		t.Fatalf("legacy detach must be a no-op: %v", err)
 	}
 	archive, expanded := testSkillArchive(t, "legacy", map[string]skillTestFile{
@@ -1029,20 +1029,20 @@ func TestDocker_FileResourceMountIsAtomicAndReadOnly(t *testing.T) {
 		t.Fatalf("Docker sandbox does not expose FileResourceSandbox: %T", sb)
 	}
 	content := []byte("durable resource\n")
-	mount := testReadOnlyMount("/mnt/session/uploads/nested/data.txt", content)
+	mount := testFileResourceMount("/mnt/session/uploads/nested/data.txt", content)
 
-	present, err := resources.HasReadOnlyFile(context.Background(), mount)
+	present, err := resources.HasFileResource(context.Background(), mount)
 	if err != nil || present {
-		t.Fatalf("initial HasReadOnlyFile = %t, err=%v", present, err)
+		t.Fatalf("initial HasFileResource = %t, err=%v", present, err)
 	}
-	if err := resources.ImportReadOnlyFile(
+	if err := resources.ImportFileResource(
 		context.Background(), mount, bytes.NewReader(content),
 	); err != nil {
 		t.Fatal(err)
 	}
-	present, err = resources.HasReadOnlyFile(context.Background(), mount)
+	present, err = resources.HasFileResource(context.Background(), mount)
 	if err != nil || !present {
-		t.Fatalf("HasReadOnlyFile after import = %t, err=%v", present, err)
+		t.Fatalf("HasFileResource after import = %t, err=%v", present, err)
 	}
 	readByTool, err := sb.ReadFile(
 		context.Background(), "/mnt/session/uploads/nested/data.txt",
@@ -1069,8 +1069,8 @@ func TestDocker_FileResourceMountIsAtomicAndReadOnly(t *testing.T) {
 		t.Fatalf("write to read-only mount: result=%+v err=%v", result, err)
 	}
 
-	replacement := testReadOnlyMount(mount.RuntimePath, []byte("replacement"))
-	if err := resources.ImportReadOnlyFile(
+	replacement := testFileResourceMount(mount.RuntimePath, []byte("replacement"))
+	if err := resources.ImportFileResource(
 		context.Background(), replacement, &readerThatFails{data: []byte("partial")},
 	); err == nil {
 		t.Fatal("partial replacement unexpectedly succeeded")
@@ -1082,37 +1082,37 @@ func TestDocker_FileResourceMountIsAtomicAndReadOnly(t *testing.T) {
 		t.Fatalf("failed replacement changed visible file: result=%+v err=%v", result, err)
 	}
 
-	invalid := testReadOnlyMount("/mnt/session/uploads/../escape", content)
-	if err := resources.ImportReadOnlyFile(
+	invalid := testFileResourceMount("/mnt/session/uploads/../escape", content)
+	if err := resources.ImportFileResource(
 		context.Background(), invalid, bytes.NewReader(content),
 	); err == nil {
 		t.Fatal("path traversal unexpectedly succeeded")
 	}
-	control := testReadOnlyMount("/mnt/session/uploads/line\nbreak", content)
-	if err := resources.ImportReadOnlyFile(
+	control := testFileResourceMount("/mnt/session/uploads/line\nbreak", content)
+	if err := resources.ImportFileResource(
 		context.Background(), control, bytes.NewReader(content),
 	); err == nil {
 		t.Fatal("control character in path unexpectedly succeeded")
 	}
-	if err := resources.RemoveReadOnlyFile(context.Background(), mount.RuntimePath, mount.Identity); err != nil {
+	if err := resources.RemoveFileResource(context.Background(), mount.RuntimePath, mount.Identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := resources.RemoveReadOnlyFile(context.Background(), mount.RuntimePath, mount.Identity); err != nil {
+	if err := resources.RemoveFileResource(context.Background(), mount.RuntimePath, mount.Identity); err != nil {
 		t.Fatalf("idempotent remove: %v", err)
 	}
-	present, err = resources.HasReadOnlyFile(context.Background(), mount)
+	present, err = resources.HasFileResource(context.Background(), mount)
 	if err != nil || present {
-		t.Fatalf("HasReadOnlyFile after remove = %t, err=%v", present, err)
+		t.Fatalf("HasFileResource after remove = %t, err=%v", present, err)
 	}
 	parentContent := []byte("parent replacement")
-	parent := testReadOnlyMount("/mnt/session/uploads/nested", parentContent)
+	parent := testFileResourceMount("/mnt/session/uploads/nested", parentContent)
 	parent.Identity = "sesrsc_parent"
-	if err := resources.ImportReadOnlyFile(
+	if err := resources.ImportFileResource(
 		context.Background(), parent, bytes.NewReader(parentContent),
 	); err != nil {
 		t.Fatalf("import parent after nested deletion: %v", err)
 	}
-	if err := resources.RemoveReadOnlyFile(
+	if err := resources.RemoveFileResource(
 		context.Background(), parent.RuntimePath, mount.Identity,
 	); err != nil {
 		t.Fatalf("stale identity removal: %v", err)
@@ -1123,7 +1123,7 @@ func TestDocker_FileResourceMountIsAtomicAndReadOnly(t *testing.T) {
 	if err != nil || result.ExitCode != 0 || !bytes.Equal(result.Stdout, parentContent) {
 		t.Fatalf("stale removal changed replacement: result=%+v err=%v", result, err)
 	}
-	if err := resources.RemoveReadOnlyFile(
+	if err := resources.RemoveFileResource(
 		context.Background(), parent.RuntimePath, parent.Identity,
 	); err != nil {
 		t.Fatalf("remove parent replacement: %v", err)
@@ -1373,14 +1373,14 @@ func TestDocker_FileResourceImportStreamsLargeContent(t *testing.T) {
 	if _, err := io.CopyN(hash, zeroReader{}, size); err != nil {
 		t.Fatal(err)
 	}
-	mount := ReadOnlyFileMount{
+	mount := FileResourceMount{
 		Identity:       "sesrsc_large",
 		RuntimePath:    SessionUploadsRoot + "/large.bin",
 		SizeBytes:      size,
 		ChecksumSHA256: hex.EncodeToString(hash.Sum(nil)),
 	}
 	reader := &trackingZeroReader{remaining: size}
-	if err := box.ImportReadOnlyFile(context.Background(), mount, reader); err != nil {
+	if err := box.ImportFileResource(context.Background(), mount, reader); err != nil {
 		t.Fatal(err)
 	}
 	if reader.maxRequest > 1<<20 {
@@ -1411,8 +1411,8 @@ func TestDocker_FileResourceDirectoryModesIgnoreUmask(t *testing.T) {
 
 	box := &dockerSandbox{resourceRoot: root, resourceMountReady: true}
 	content := []byte("mode check")
-	mount := testReadOnlyMount(SessionUploadsRoot+"/nested/mode.txt", content)
-	if err := box.ImportReadOnlyFile(context.Background(), mount, bytes.NewReader(content)); err != nil {
+	mount := testFileResourceMount(SessionUploadsRoot+"/nested/mode.txt", content)
+	if err := box.ImportFileResource(context.Background(), mount, bytes.NewReader(content)); err != nil {
 		t.Fatal(err)
 	}
 	for target, want := range map[string]os.FileMode{
@@ -1546,9 +1546,9 @@ func TestDocker_DefaultResourceDirectoryFallsBackWithoutHome(t *testing.T) {
 	}
 }
 
-func testReadOnlyMount(runtimePath string, content []byte) ReadOnlyFileMount {
+func testFileResourceMount(runtimePath string, content []byte) FileResourceMount {
 	sum := sha256.Sum256(content)
-	return ReadOnlyFileMount{
+	return FileResourceMount{
 		Identity: "sesrsc_test", RuntimePath: runtimePath, SizeBytes: int64(len(content)),
 		ChecksumSHA256: hex.EncodeToString(sum[:]),
 	}
