@@ -351,6 +351,9 @@ func runFakeRemoteSkillBundleContract(
 	assertFakeRemoteSkillMarkerRepairs(
 		t, ctx, store, ref, box, skills, mount, archive,
 	)
+	assertFakeRemoteSkillLayoutRepairs(
+		t, ctx, store, ref, box, skills, mount, archive, childMount, childArchive,
+	)
 
 	attached, err := open().Attach(ctx, sessionKey, ref, Spec{Timeout: 5 * time.Second})
 	if err != nil {
@@ -363,6 +366,123 @@ func runFakeRemoteSkillBundleContract(
 	assertFakeRemoteSkill(
 		t, ctx, attached, attachedSkills, mount, "Analyze reports",
 	)
+}
+
+func assertFakeRemoteSkillLayoutRepairs(
+	t *testing.T,
+	ctx context.Context,
+	store *fakeRemoteStore,
+	ref Ref,
+	box Sandbox,
+	skills SkillBundleSandbox,
+	primary ReadOnlySkillMount,
+	primaryArchive []byte,
+	child ReadOnlySkillMount,
+	childArchive []byte,
+) {
+	t.Helper()
+	resource, err := store.get(ref.ID)
+	if err != nil {
+		t.Fatalf("resolve fake remote Skill resource: %v", err)
+	}
+	localPath := func(remotePath string) string {
+		t.Helper()
+		relative, pathErr := fakeRelativePath(remotePath)
+		if pathErr != nil {
+			t.Fatalf("resolve fake remote path %s: %v", remotePath, pathErr)
+		}
+		return filepath.Join(resource.root, filepath.FromSlash(relative))
+	}
+	assertMode := func(filePath string, want os.FileMode) {
+		t.Helper()
+		info, statErr := os.Lstat(filePath)
+		if statErr != nil || info.Mode().Perm() != want {
+			t.Fatalf("fake remote Skill path %s mode = %v, %v", filePath, info, statErr)
+		}
+	}
+
+	controlRoot := localPath(remoteSkillControlRoot)
+	if err := os.Chmod(controlRoot, 0); err != nil {
+		t.Fatalf("remove fake remote Skill control access: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, primary, "Analyze reports")
+	assertMode(controlRoot, 0o700)
+
+	skillsRoot := localPath(SessionSkillsRoot)
+	if err := os.Chmod(skillsRoot, 0); err != nil {
+		t.Fatalf("remove fake remote Skill root access: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, primary, "Analyze reports")
+	assertMode(skillsRoot, 0o755)
+
+	childParent := localPath(path.Dir(child.RuntimePath))
+	if err := makeFakeRemoteTreeWritable(childParent); err != nil {
+		t.Fatalf("make fake child Skill layout removable: %v", err)
+	}
+	if err := os.RemoveAll(childParent); err != nil {
+		t.Fatalf("remove fake child Skill layout: %v", err)
+	}
+	symlinkTarget := filepath.Join(resource.root, "skill-layout-symlink-target")
+	if err := os.Mkdir(symlinkTarget, 0o700); err != nil {
+		t.Fatalf("create fake Skill layout symlink target: %v", err)
+	}
+	sentinel := filepath.Join(symlinkTarget, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
+		t.Fatalf("write fake Skill layout sentinel: %v", err)
+	}
+	if err := os.Chmod(sentinel, 0o400); err != nil {
+		t.Fatalf("harden fake Skill layout sentinel: %v", err)
+	}
+	if err := os.Chmod(symlinkTarget, 0o500); err != nil {
+		t.Fatalf("harden fake Skill layout symlink target: %v", err)
+	}
+	if err := os.Symlink(symlinkTarget, childParent); err != nil {
+		t.Fatalf("replace fake child Skill layout with symlink: %v", err)
+	}
+	present, err := skills.HasReadOnlySkill(ctx, child)
+	if err != nil || present {
+		t.Fatalf("symlinked child Skill layout presence = %t, %v", present, err)
+	}
+	if err := skills.ImportReadOnlySkill(
+		ctx, child, bytes.NewReader(childArchive),
+	); err != nil {
+		t.Fatalf("repair symlinked child Skill layout: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, child, "Child reports")
+	parentInfo, err := os.Lstat(childParent)
+	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 ||
+		parentInfo.Mode().Perm() != 0o755 {
+		t.Fatalf("repaired child Skill parent = %v, %v", parentInfo, err)
+	}
+	assertMode(symlinkTarget, 0o500)
+	assertMode(sentinel, 0o400)
+	body, err := os.ReadFile(sentinel)
+	if err != nil || string(body) != "unchanged" {
+		t.Fatalf("fake Skill layout symlink target = %q, %v", body, err)
+	}
+
+	// A missing marker after control-root repair must remain rematerializable.
+	if err := os.Remove(localPath(remoteSkillMarkerPath(primary))); err != nil {
+		t.Fatalf("remove primary Skill marker after layout recovery: %v", err)
+	}
+	if err := skills.ImportReadOnlySkill(
+		ctx, primary, bytes.NewReader(primaryArchive),
+	); err != nil {
+		t.Fatalf("rematerialize primary Skill after layout recovery: %v", err)
+	}
+}
+
+func makeFakeRemoteTreeWritable(root string) error {
+	return filepath.Walk(root, func(filePath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		mode := os.FileMode(0o600)
+		if info.IsDir() {
+			mode = 0o700
+		}
+		return os.Chmod(filePath, mode)
+	})
 }
 
 func assertFakeRemoteSkillMarkerRepairs(
@@ -500,6 +620,51 @@ func assertFakeRemoteSkill(
 	body, err := box.ReadFile(ctx, resolvedSkillRuntimePath(mount)+"/SKILL.md")
 	if err != nil || !bytes.Contains(body, []byte(want)) {
 		t.Fatalf("read materialized Skill = %q, %v", body, err)
+	}
+}
+
+func TestRemoteSkillCommandFailureDiagnostics(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    *Result
+		want      string
+		doNotWant string
+	}{
+		{
+			name: "combined provider output falls back to stdout",
+			result: &Result{
+				ExitCode: 7,
+				Stdout:   []byte("combined provider failure"),
+			},
+			want: "combined provider failure",
+		},
+		{
+			name: "stderr remains authoritative",
+			result: &Result{
+				ExitCode: 8,
+				Stdout:   []byte("ordinary output"),
+				Stderr:   []byte("specific failure"),
+			},
+			want:      "specific failure",
+			doNotWant: "ordinary output",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reconciler := &remoteSkillBundles{
+				provider: DaytonaProviderName,
+				execute: func(context.Context, Command) (*Result, error) {
+					return test.result, nil
+				},
+			}
+			err := reconciler.runCommand(context.Background(), "publish Skill", "true")
+			if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("runCommand error = %v, want permanent error containing %q", err, test.want)
+			}
+			if test.doNotWant != "" && strings.Contains(err.Error(), test.doNotWant) {
+				t.Fatalf("runCommand error = %v, do not want %q", err, test.doNotWant)
+			}
+		})
 	}
 }
 

@@ -83,6 +83,22 @@ func (r *remoteSkillBundles) hasReadOnlySkill(
 	mount ReadOnlySkillMount,
 ) (bool, error) {
 	marker, err := r.readMarker(ctx, mount)
+	if err != nil && ctx.Err() == nil &&
+		!r.resources.files.ResourceIsNotFound(err) &&
+		!errors.Is(err, errInvalidRemoteSkillMarker) {
+		// A privileged sandbox shell can make adapter-owned directories
+		// inaccessible between tool steps. Repair only after an access failure so
+		// the normal pre-tool path does not gain extra shell round-trips. A real
+		// provider transport failure survives the retry and is still returned.
+		if layoutErr := r.ensureLayout(ctx, mount); layoutErr != nil {
+			return false, fmt.Errorf(
+				"sandbox: %s repair Skill layout after marker access failure: %w",
+				r.provider,
+				errors.Join(err, layoutErr),
+			)
+		}
+		marker, err = r.readMarker(ctx, mount)
+	}
 	if r.resources.files.ResourceIsNotFound(err) {
 		return false, nil
 	}
@@ -100,6 +116,16 @@ func (r *remoteSkillBundles) hasReadOnlySkill(
 
 	target := resolvedSkillRuntimePath(mount)
 	targetInfo, err := r.resources.files.ResourceStat(ctx, target)
+	if err != nil && ctx.Err() == nil && !r.resources.files.ResourceIsNotFound(err) {
+		if layoutErr := r.ensureLayout(ctx, mount); layoutErr != nil {
+			return false, fmt.Errorf(
+				"sandbox: %s repair Skill layout after runtime access failure: %w",
+				r.provider,
+				errors.Join(err, layoutErr),
+			)
+		}
+		targetInfo, err = r.resources.files.ResourceStat(ctx, target)
+	}
 	if r.resources.files.ResourceIsNotFound(err) {
 		return false, nil
 	}
@@ -305,7 +331,7 @@ func (r *remoteSkillBundles) ensureLayout(
 		{remoteSkillMarkerRoot, 0o700},
 		{SessionSkillsRoot, 0o755},
 	} {
-		if err := r.resources.ensureDirectory(ctx, directory.path, directory.mode); err != nil {
+		if err := r.ensureSkillDirectory(ctx, directory.path, directory.mode); err != nil {
 			return err
 		}
 	}
@@ -318,11 +344,42 @@ func (r *remoteSkillBundles) ensureLayout(
 			continue
 		}
 		parent = path.Join(parent, component)
-		if err := r.resources.ensureDirectory(ctx, parent, 0o755); err != nil {
+		if err := r.ensureSkillDirectory(ctx, parent, 0o755); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (r *remoteSkillBundles) ensureSkillDirectory(
+	ctx context.Context,
+	directory string,
+	mode int,
+) error {
+	quoted := shellQuote(directory)
+	modeDigits := remotePermissionDigits(mode)
+	// These paths are owned by the Skill adapter. A sandbox-local shell may
+	// replace one with a symlink or non-directory entry after an earlier tool.
+	// Unlink symlinks without following them, remove other non-directories, and
+	// restore access to an existing real directory before asking the provider
+	// data plane to create a missing one.
+	prepare := "set -eu\n" +
+		"if [ -L " + quoted + " ]; then rm -f " + quoted +
+		"; elif [ -e " + quoted + " ] && [ ! -d " + quoted + " ]; then rm -f " + quoted +
+		"; elif [ -d " + quoted + " ]; then chmod " + modeDigits + " " + quoted + "; fi\n"
+	if err := r.runCommand(ctx, "prepare Skill directory", prepare); err != nil {
+		return err
+	}
+	if err := r.resources.ensureDirectory(ctx, directory, mode); err != nil {
+		return err
+	}
+	// Provider create APIs do not consistently honor modes. Re-check without
+	// following a raced symlink and apply the Mango-owned directory mode through
+	// the same isolated command boundary used for publication.
+	finish := "set -eu\n" +
+		"if [ -L " + quoted + " ] || [ ! -d " + quoted + " ]; then exit 1; fi\n" +
+		"chmod " + modeDigits + " " + quoted + "\n"
+	return r.runCommand(ctx, "finish Skill directory", finish)
 }
 
 func remoteSkillPublishPaths(mount ReadOnlySkillMount) (string, string, string) {
@@ -552,8 +609,15 @@ func (r *remoteSkillBundles) runCommand(
 		message := "command exited without a result"
 		if result != nil {
 			message = fmt.Sprintf("command exited with code %d", result.ExitCode)
-			if stderr := strings.TrimSpace(string(result.Stderr)); stderr != "" {
-				message += ": " + stderr
+			diagnostic := strings.TrimSpace(string(result.Stderr))
+			if diagnostic == "" {
+				// Daytona's pinned SDK exposes one combined Result value, which its
+				// adapter maps to stdout. Preserve useful failures without duplicating
+				// successful command output across the public stdout/stderr streams.
+				diagnostic = strings.TrimSpace(string(result.Stdout))
+			}
+			if diagnostic != "" {
+				message += ": " + diagnostic
 			}
 		}
 		return Permanent(fmt.Errorf(
