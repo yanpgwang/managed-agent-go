@@ -126,7 +126,10 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.E2BProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup: true,
+				PackageSetup:   true,
+				FileResources:  true,
+				SessionOutputs: true,
+				SkillBundles:   true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				idleTimeout, err := envDuration(e2bIdleTimeoutEnv)
@@ -145,7 +148,10 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.CubeProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup: true,
+				PackageSetup:   true,
+				FileResources:  true,
+				SessionOutputs: true,
+				SkillBundles:   true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				proxyPort, err := envPositiveInt(cubeProxyPortEnv)
@@ -175,6 +181,7 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 				LimitedNetwork: true,
 				FileResources:  true,
 				SessionOutputs: true,
+				SkillBundles:   true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				useProxy, err := envBool(openSandboxUseProxyEnv)
@@ -198,6 +205,7 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 				PackageSetup:   true,
 				FileResources:  true,
 				SessionOutputs: true,
+				SkillBundles:   true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				autoPauseMinutes, err := envPositiveInt(daytonaAutoPauseEnv)

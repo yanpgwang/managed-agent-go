@@ -132,9 +132,7 @@ func TestSandboxProviderRegistry_AdvertisesRuntimeCapabilities(t *testing.T) {
 				wantLimitedNetwork,
 			)
 		}
-		wantSessionOutputs := name == sandbox.DockerProviderName ||
-			name == sandbox.OpenSandboxProviderName ||
-			name == sandbox.DaytonaProviderName
+		wantSessionOutputs := name != sandbox.LocalProviderName
 		if capabilities.SessionOutputs != wantSessionOutputs {
 			t.Errorf(
 				"%s SessionOutputs = %v, want %v",
@@ -143,15 +141,22 @@ func TestSandboxProviderRegistry_AdvertisesRuntimeCapabilities(t *testing.T) {
 				wantSessionOutputs,
 			)
 		}
-		wantFileResources := name == sandbox.DockerProviderName ||
-			name == sandbox.OpenSandboxProviderName ||
-			name == sandbox.DaytonaProviderName
+		wantFileResources := name != sandbox.LocalProviderName
 		if capabilities.FileResources != wantFileResources {
 			t.Errorf(
 				"%s FileResources = %v, want %v",
 				name,
 				capabilities.FileResources,
 				wantFileResources,
+			)
+		}
+		wantSkillBundles := name != sandbox.LocalProviderName
+		if capabilities.SkillBundles != wantSkillBundles {
+			t.Errorf(
+				"%s SkillBundles = %v, want %v",
+				name,
+				capabilities.SkillBundles,
+				wantSkillBundles,
 			)
 		}
 	}

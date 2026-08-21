@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	maxDockerSkillArchiveBytes int64 = 30_000_000
-	maxDockerSkillFiles              = 1000
-	dockerSkillTempPrefix            = ".mango-skill-"
+	maxSkillArchiveBytes  int64 = 30_000_000
+	maxSkillFiles               = 1000
+	dockerSkillTempPrefix       = ".mango-skill-"
 )
 
 func validateReadOnlySkillMount(mount ReadOnlySkillMount) error {
@@ -37,12 +37,12 @@ func validateReadOnlySkillMount(mount ReadOnlySkillMount) error {
 	if !validSkillArchiveRoot(mount.ArchiveRoot, mount.Name) {
 		return errors.New("sandbox: Skill archive root is invalid")
 	}
-	if mount.SizeBytes < 0 || mount.SizeBytes >= maxDockerSkillArchiveBytes {
+	if mount.SizeBytes < 0 || mount.SizeBytes >= maxSkillArchiveBytes {
 		return errors.New("sandbox: Skill archive size is invalid")
 	}
 	if mount.UncompressedSizeBytes != domain.UnknownSkillUncompressedSize &&
 		(mount.UncompressedSizeBytes < 0 ||
-			mount.UncompressedSizeBytes >= maxDockerSkillArchiveBytes) {
+			mount.UncompressedSizeBytes >= maxSkillArchiveBytes) {
 		return errors.New("sandbox: Skill expanded size is invalid")
 	}
 	decoded, err := hex.DecodeString(mount.ChecksumSHA256)
@@ -189,7 +189,7 @@ func validMaterializedSkillTree(
 	}
 	limit := expectedBytes
 	if limit == domain.UnknownSkillUncompressedSize {
-		limit = maxDockerSkillArchiveBytes - 1
+		limit = maxSkillArchiveBytes - 1
 	}
 	var total int64
 	foundSkillMD := false
@@ -273,27 +273,10 @@ func (s *dockerSandbox) ImportReadOnlySkill(
 	archiveName := archive.Name()
 	defer os.Remove(archiveName) //nolint:errcheck // best-effort retry cleanup
 
-	hash := sha256.New()
-	limited := &io.LimitedReader{R: content, N: mount.SizeBytes + 1}
-	written, copyErr := io.Copy(io.MultiWriter(archive, hash), limited)
-	if copyErr != nil {
-		archive.Close() //nolint:errcheck // copy error is authoritative
-		return fmt.Errorf("sandbox: stream Skill archive: %w", copyErr)
-	}
-	if written != mount.SizeBytes {
-		archive.Close() //nolint:errcheck // size mismatch is authoritative
-		return fmt.Errorf(
-			"sandbox: Skill archive size mismatch: received %d bytes, expected %d",
-			written, mount.SizeBytes,
-		)
-	}
-	if checksum := hex.EncodeToString(hash.Sum(nil)); checksum != mount.ChecksumSHA256 {
-		archive.Close() //nolint:errcheck // checksum mismatch is authoritative
-		return errors.New("sandbox: Skill archive checksum mismatch")
-	}
-	if err := archive.Sync(); err != nil {
-		archive.Close() //nolint:errcheck // sync error is authoritative
-		return fmt.Errorf("sandbox: sync Skill archive: %w", err)
+	written, err := storeVerifiedSkillArchive(archive, mount, content)
+	if err != nil {
+		archive.Close() //nolint:errcheck // validation error is authoritative
+		return err
 	}
 
 	staging, err := os.MkdirTemp(skillsRoot, dockerSkillTempPrefix+mount.Name+"-")
@@ -363,13 +346,13 @@ func extractCanonicalSkill(
 	if err != nil {
 		return errors.New("sandbox: stored Skill archive is invalid")
 	}
-	if len(reader.File) == 0 || len(reader.File) > maxDockerSkillFiles {
+	if len(reader.File) == 0 || len(reader.File) > maxSkillFiles {
 		return errors.New("sandbox: stored Skill archive has an invalid file count")
 	}
 	seen := make(map[string]struct{}, len(reader.File))
 	expandedLimit := mount.UncompressedSizeBytes
 	if expandedLimit == domain.UnknownSkillUncompressedSize {
-		expandedLimit = maxDockerSkillArchiveBytes - 1
+		expandedLimit = maxSkillArchiveBytes - 1
 	}
 	var total int64
 	foundSkillMD := false
@@ -433,6 +416,35 @@ func extractCanonicalSkill(
 		return errors.New("sandbox: stored Skill archive does not match its metadata")
 	}
 	return nil
+}
+
+// storeVerifiedSkillArchive is shared by local-mount and remote-provider
+// materializers so the same byte count and digest define the canonical bundle
+// before either implementation extracts or publishes it.
+func storeVerifiedSkillArchive(
+	archive *os.File,
+	mount ReadOnlySkillMount,
+	content io.Reader,
+) (int64, error) {
+	hash := sha256.New()
+	limited := &io.LimitedReader{R: content, N: mount.SizeBytes + 1}
+	written, err := io.Copy(io.MultiWriter(archive, hash), limited)
+	if err != nil {
+		return 0, fmt.Errorf("sandbox: stream Skill archive: %w", err)
+	}
+	if written != mount.SizeBytes {
+		return 0, fmt.Errorf(
+			"sandbox: Skill archive size mismatch: received %d bytes, expected %d",
+			written, mount.SizeBytes,
+		)
+	}
+	if checksum := hex.EncodeToString(hash.Sum(nil)); checksum != mount.ChecksumSHA256 {
+		return 0, errors.New("sandbox: Skill archive checksum mismatch")
+	}
+	if err := archive.Sync(); err != nil {
+		return 0, fmt.Errorf("sandbox: sync Skill archive: %w", err)
+	}
+	return written, nil
 }
 
 func skillArchiveRelativePath(raw string, archiveRoot string) (string, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 
@@ -338,6 +339,24 @@ type fixedSandboxLease struct {
 	spec sandbox.Spec
 }
 
+// localSkillPathSandbox gives the unit test's local filesystem the same
+// absolute Skill-read contract implemented by Skill-capable providers. The
+// local provider itself intentionally remains incapable of custom Skills.
+type localSkillPathSandbox struct {
+	sandbox.Sandbox
+}
+
+func (s localSkillPathSandbox) ReadFile(
+	ctx context.Context,
+	value string,
+) ([]byte, error) {
+	if !strings.HasPrefix(value, domain.SessionSkillsRoot+"/") {
+		return nil, errors.New("test sandbox requires an absolute Skill runtime path")
+	}
+	value = strings.TrimPrefix(value, "/workspace/")
+	return s.Sandbox.ReadFile(ctx, value)
+}
+
 func (l *fixedSandboxLease) Acquire(
 	_ context.Context,
 	_ string,
@@ -407,7 +426,7 @@ func TestExecuteTool_RuntimeSkillLoadsFullInstructionsWithoutReadTool(t *testing
 		nil,
 		source,
 		journal,
-		&fixedSandboxLease{box: box},
+		&fixedSandboxLease{box: localSkillPathSandbox{Sandbox: box}},
 		&testIDGen{},
 	)
 
@@ -470,7 +489,9 @@ func TestExecuteTool_RuntimeSkillUsesThreadAgentScope(t *testing.T) {
 	}
 	journal := &memoryMCPJournal{}
 	activities := NewActivities(
-		nil, source, journal, &fixedSandboxLease{box: box}, &testIDGen{},
+		nil, source, journal,
+		&fixedSandboxLease{box: localSkillPathSandbox{Sandbox: box}},
+		&testIDGen{},
 	)
 	result, err := activities.ExecuteTool(ctx, ExecuteToolInput{
 		SessionID: "sess_child_skill", ThreadID: "sthr_child",
@@ -518,7 +539,9 @@ func TestExecuteTool_RuntimeSkillStartedStepIsSafelyReloaded(t *testing.T) {
 		skills: []domain.SkillVersion{{Name: "report-tools"}},
 	}
 	result, err := NewActivities(
-		nil, source, journal, &fixedSandboxLease{box: box}, &testIDGen{},
+		nil, source, journal,
+		&fixedSandboxLease{box: localSkillPathSandbox{Sandbox: box}},
+		&testIDGen{},
 	).ExecuteTool(ctx, ExecuteToolInput{
 		SessionID: "sess_started_skill", TriggerEventID: "sevt_trigger",
 		AttemptID: "ratm_started_skill", Ordinal: 0,

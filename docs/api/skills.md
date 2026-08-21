@@ -38,14 +38,17 @@ archive that is still executable.
 
 ## Runtime behavior
 
-Docker-backed cloud Sessions initially expose only Skill name, description,
-and instruction path metadata. A private `Skill` dispatcher selects the
-immutable bundle, returns `Launching skill: <name>`, and injects the complete
-main instruction file on demand. Supporting files and scripts remain available
-through ordinary sandbox tools.
+Docker, E2B, CubeSandbox, OpenSandbox, and Daytona Sessions initially expose
+only Skill name, description, and instruction path metadata. A private `Skill`
+dispatcher selects the immutable bundle, returns `Launching skill: <name>`,
+and injects the complete main instruction file on demand. Supporting files and
+scripts remain available through ordinary sandbox tools. Docker presents a
+read-only bind mount; remote adapters present a permission-hardened local copy
+and preserve the canonical archive in Mango storage.
 
 Primary and `self` Agent bundles use `/workspace/skills/<name>/`; external
 roster Agents use isolated namespaces below `/workspace/skills/.agents/`.
 
-External managed catalogs, repository auto-loading, self-hosted runtime
-activation, and current remote-sandbox activation are not implemented.
+External managed catalogs, repository auto-loading, and Environment Worker
+runtime activation are not implemented. The exact remote-copy boundary is
+documented in [Sandbox backends](../sandboxes.md#custom-skill-mounts).

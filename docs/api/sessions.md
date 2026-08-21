@@ -71,15 +71,20 @@ until the Session is physically deleted. The pin migration backfills concrete,
 still-ready custom references from existing Session snapshots; former opaque
 values remain readable but are not treated as executable references. Up to 500
 Skills are accepted, subject to a 500 MB aggregate expanded-size limit and
-unique runtime names. In Docker-backed cloud Sessions, pinned archives are
-verified and exposed read-only at
-`/workspace/skills/<name>/`. The model first receives every Skill name plus
+unique runtime names. Docker, E2B, CubeSandbox, OpenSandbox, and Daytona verify
+pinned archives and expose them at `/workspace/skills/<name>/`; external roster
+Agents use isolated subdirectories below `/workspace/skills/.agents/`. Docker
+enforces a read-only bind mount, while remote providers expose a
+permission-hardened sandbox-local copy and reject ordinary file-tool writes to
+the Skill root. The model first receives every Skill name plus
 descriptions bounded to one percent of the configured context window.
 When it invokes the private `Skill` dispatcher, the runtime returns
 `Launching skill: <name>` and injects the complete selected `SKILL.md`, prefixed
 with its base directory, into the provider conversation. Referenced supporting
-files remain on disk for ordinary `read` or `bash` access. Local, self-hosted,
-and current remote-provider Sessions reject custom Skill execution.
+files remain on disk for ordinary `read` or `bash` access. Local and Environment
+Worker Sessions reject custom Skill execution. See
+[Sandbox backends](../sandboxes.md#custom-skill-mounts) for the remote-copy
+limitation.
 
 Optional `initial_events` may contain up to 50 `user.message` or
 `user.define_outcome` objects. A non-empty list starts execution immediately.

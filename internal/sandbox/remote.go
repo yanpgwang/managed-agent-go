@@ -130,6 +130,25 @@ func remoteToolPath(
 	return "", fmt.Errorf("sandbox: path %q is outside the authorized runtime roots", value)
 }
 
+// remoteWritableToolPath preserves normal workspace writes while reserving
+// the custom Skill tree for the bundle reconciler. This explicit check matters
+// for /workspace providers, where the Skill root is otherwise a child of the
+// ordinary workspace root.
+func remoteWritableToolPath(
+	root string,
+	value string,
+	additionalRoots ...string,
+) (string, error) {
+	full, err := remoteToolPath(root, value, additionalRoots...)
+	if err != nil {
+		return "", err
+	}
+	if pathWithinRemoteRoot(SessionSkillsRoot, full) {
+		return "", fmt.Errorf("sandbox: path %q is read-only", value)
+	}
+	return full, nil
+}
+
 func pathWithinRemoteRoot(root string, value string) bool {
 	root = path.Clean(root)
 	value = path.Clean(value)
@@ -141,6 +160,24 @@ func commandTimeout(ctx context.Context, timeout time.Duration) (context.Context
 		return ctx, func() {}
 	}
 	return context.WithTimeout(ctx, timeout)
+}
+
+// remoteOperationCommandTimeout lets provider maintenance operations use the
+// caller's wider deadline instead of inheriting the shorter per-tool timeout.
+// Callers without a deadline retain the sandbox timeout as a safe fallback.
+func remoteOperationCommandTimeout(
+	ctx context.Context,
+	fallback time.Duration,
+) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return fallback
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
 }
 
 func remoteCommandLine(cmd Command) string {

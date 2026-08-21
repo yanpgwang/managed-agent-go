@@ -91,3 +91,27 @@ remain Mango-owned behavior. E2B and Cube adopt the same repeatability and
 cleanup contract but buffer each archive in worker memory as an explicit
 Preview limitation; their SDK similarity alone is not treated as evidence of
 support, so they run the same offline and opt-in live conformance suites.
+
+## Custom Skills
+
+- The public [Claude Managed Agents Skills guide](https://platform.claude.com/docs/en/managed-agents/skills)
+  describes version-pinned custom Skill directories, a required `SKILL.md`,
+  supporting scripts and resources, filesystem paths announced to the Agent,
+  and instruction loading when relevant.
+- The public [Agent Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
+  describes progressive disclosure and treats executable Skill bundles as part
+  of the Agent's trust boundary.
+- Mango adopted those useful user-problem and lifecycle concepts: canonical zip
+  validation, immutable Version pins, name/description discovery, on-demand
+  `SKILL.md` injection, and supporting files in the sandbox. Mango owns its
+  `/v1` resource contract, S3 archive lifecycle, Agent-scoped runtime paths,
+  private dispatcher, recovery behavior, and provider capability admission.
+- Materialization for E2B, CubeSandbox, OpenSandbox, and Daytona reuses the
+  same Mango contract through their pinned official filesystem clients. Mango's
+  worker-side validation, sibling staging publication, provider-owned marker,
+  instruction checksum, write-tool denial, and shared conformance suite are
+  local design choices.
+- Mango did not adopt Anthropic beta headers, hosted authentication, the
+  `anthropic` managed catalog, cloud-only repository scanning, rollout timing,
+  or a requirement to mirror hosted/self-hosted feature differences. Repository
+  Skills and Environment Worker activation remain separate product decisions.

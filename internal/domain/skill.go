@@ -83,9 +83,10 @@ func (r SkillRuntime) SkillPath(name string) string {
 }
 
 const (
-	// SessionSkillsRoot is the Docker runtime directory containing immutable
-	// custom Skills. Each Skill is re-rooted beneath its validated frontmatter
-	// name, independent of the uploaded archive directory's original casing.
+	// SessionSkillsRoot is the provider-independent runtime directory containing
+	// immutable-source custom Skills. Each Skill is re-rooted beneath its
+	// validated frontmatter name, independent of the uploaded archive
+	// directory's original casing.
 	SessionSkillsRoot = "/workspace/skills"
 
 	// UnknownSkillUncompressedSize marks Versions created before the runtime

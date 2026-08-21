@@ -2157,17 +2157,14 @@ func (a *Activities) ExecuteTool(ctx context.Context, in ExecuteToolInput) (Exec
 					IsError: true,
 				}
 			} else {
-				// Sandbox file APIs are workspace-relative even though the
-				// model-visible base directory is absolute.
 				runtimePath := runtime.SkillPath(name)
-				relativePath := strings.TrimPrefix(runtimePath, "/workspace/")
-				if relativePath == runtimePath {
-					out.FatalError = "custom Skill runtime path is outside /workspace"
+				if !strings.HasPrefix(runtimePath, domain.SessionSkillsRoot+"/") {
+					out.FatalError = "custom Skill runtime path is outside the Skill root"
 					return out, nil
 				}
 				body, readErr := box.ReadFile(
 					ctx,
-					relativePath+"/SKILL.md",
+					runtimePath+"/SKILL.md",
 				)
 				switch {
 				case readErr != nil:

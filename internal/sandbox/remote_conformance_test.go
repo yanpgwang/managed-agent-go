@@ -178,6 +178,496 @@ func TestRemoteSessionOutputConformance(t *testing.T) {
 	}
 }
 
+func TestRemoteSkillBundleConformance(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*fakeRemoteStore) Provider
+	}{
+		{
+			name: E2BProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					E2BProviderName,
+					&fakeE2BService{store: store},
+					remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: CubeProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					CubeProviderName,
+					&fakeE2BService{store: store},
+					remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: OpenSandboxProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newOpenSandboxProvider(
+					&fakeOpenSandboxService{store: store}, remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: DaytonaProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newDaytonaProvider(
+					&fakeDaytonaService{store: store}, defaultDaytonaRoot,
+				)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeRemoteStore(t.TempDir())
+			runFakeRemoteSkillBundleContract(
+				t, store, func() Provider { return test.open(store) },
+			)
+		})
+	}
+}
+
+func runFakeRemoteSkillBundleContract(
+	t *testing.T,
+	store *fakeRemoteStore,
+	open func() Provider,
+) {
+	t.Helper()
+	ctx := context.Background()
+	provider := open()
+	capability, ok := provider.(SkillBundleProvider)
+	if !ok || !capability.SupportsSkillBundles() {
+		t.Fatalf("provider %q does not advertise custom Skills", provider.Name())
+	}
+	archive, expanded := testSkillArchive(t, "Report_Tool", map[string]skillTestFile{
+		"SKILL.md": {
+			body: []byte("---\nname: report-tool\ndescription: Analyze reports\n---\nUse the helper.\n"),
+			mode: 0o644,
+		},
+		"scripts/run.sh": {
+			body: []byte("#!/bin/sh\nprintf skill-ok"),
+			mode: 0o755,
+		},
+	})
+	mount := testReadOnlySkillMount(
+		"skill_reports@100", "report-tool", "Report_Tool", archive, expanded,
+	)
+	sessionKey := "sesn-skills-" + strings.NewReplacer("/", "-", " ", "-").
+		Replace(strings.ToLower(t.Name()))
+	ref, box, err := provider.Create(ctx, sessionKey, Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	skills, ok := box.(SkillBundleSandbox)
+	if !ok {
+		t.Fatalf("sandbox %T does not expose custom Skills", box)
+	}
+	if err := skills.ImportReadOnlySkill(
+		ctx, mount, &readerThatFails{data: archive[:len(archive)/2]},
+	); err == nil {
+		t.Fatal("interrupted Skill archive import unexpectedly succeeded")
+	}
+	present, err := skills.HasReadOnlySkill(ctx, mount)
+	if err != nil || present {
+		t.Fatalf("interrupted Skill import presence = %t, %v", present, err)
+	}
+	if err := skills.ImportReadOnlySkill(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("initial Skill import: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+	if err := box.WriteFile(
+		ctx, resolvedSkillRuntimePath(mount)+"/SKILL.md", []byte("changed"),
+	); err == nil {
+		t.Fatal("WriteFile accepted the immutable Skill runtime path")
+	}
+	if pathWithinRemoteRoot(box.Root(), resolvedSkillRuntimePath(mount)) {
+		relative := strings.TrimPrefix(
+			resolvedSkillRuntimePath(mount), strings.TrimSuffix(box.Root(), "/")+"/",
+		)
+		if err := box.WriteFile(
+			ctx, relative+"/SKILL.md", []byte("changed"),
+		); err == nil {
+			t.Fatal("WriteFile accepted a workspace-relative Skill runtime path")
+		}
+	}
+	result, err := box.Exec(ctx, Command{
+		Path: "/bin/sh",
+		Args: []string{
+			"-c",
+			"test -x " + resolvedSkillRuntimePath(mount) + "/scripts/run.sh && " +
+				resolvedSkillRuntimePath(mount) + "/scripts/run.sh",
+		},
+	})
+	if err != nil || result.ExitCode != 0 || string(result.Stdout) != "skill-ok" {
+		t.Fatalf("execute Skill helper: result=%+v err=%v", result, err)
+	}
+
+	childArchive, childExpanded := testSkillArchive(
+		t, "Report_Tool", map[string]skillTestFile{
+			"SKILL.md": {
+				body: []byte("---\nname: report-tool\ndescription: Child reports\n---\nChild scope.\n"),
+				mode: 0o644,
+			},
+		},
+	)
+	childMount := testReadOnlySkillMount(
+		"skill_reports@200", "report-tool", "Report_Tool",
+		childArchive, childExpanded,
+	)
+	childMount.RuntimePath = SessionSkillsRoot +
+		"/.agents/0123456789abcdef01234567/report-tool"
+	if err := skills.ImportReadOnlySkill(
+		ctx, childMount, bytes.NewReader(childArchive),
+	); err != nil {
+		t.Fatalf("Agent-scoped Skill import: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, childMount, "Child reports")
+	assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+
+	// Remote providers cannot expose a native read-only bind mount. Their
+	// sandbox-local copy is permission-hardened, while reconciliation detects
+	// and repairs changes to the instruction entrypoint before the next tool.
+	result, err = box.Exec(ctx, Command{
+		Path: "/bin/sh",
+		Args: []string{"-c", "chmod u+w " + resolvedSkillRuntimePath(mount) +
+			"/SKILL.md && printf corrupted > " +
+			resolvedSkillRuntimePath(mount) + "/SKILL.md"},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("simulate sandbox-local Skill corruption: result=%+v err=%v", result, err)
+	}
+	present, err = skills.HasReadOnlySkill(ctx, mount)
+	if err != nil || present {
+		t.Fatalf("corrupted Skill presence = %t, %v", present, err)
+	}
+	if err := skills.ImportReadOnlySkill(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("repair Skill: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+	assertFakeRemoteSkillMarkerRepairs(
+		t, ctx, store, ref, box, skills, mount, archive,
+	)
+	assertFakeRemoteSkillLayoutRepairs(
+		t, ctx, store, ref, box, skills, mount, archive, childMount, childArchive,
+	)
+
+	attached, err := open().Attach(ctx, sessionKey, ref, Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("attach Skill sandbox: %v", err)
+	}
+	attachedSkills, ok := attached.(SkillBundleSandbox)
+	if !ok {
+		t.Fatalf("attached sandbox %T does not expose custom Skills", attached)
+	}
+	assertFakeRemoteSkill(
+		t, ctx, attached, attachedSkills, mount, "Analyze reports",
+	)
+}
+
+func assertFakeRemoteSkillLayoutRepairs(
+	t *testing.T,
+	ctx context.Context,
+	store *fakeRemoteStore,
+	ref Ref,
+	box Sandbox,
+	skills SkillBundleSandbox,
+	primary ReadOnlySkillMount,
+	primaryArchive []byte,
+	child ReadOnlySkillMount,
+	childArchive []byte,
+) {
+	t.Helper()
+	resource, err := store.get(ref.ID)
+	if err != nil {
+		t.Fatalf("resolve fake remote Skill resource: %v", err)
+	}
+	localPath := func(remotePath string) string {
+		t.Helper()
+		relative, pathErr := fakeRelativePath(remotePath)
+		if pathErr != nil {
+			t.Fatalf("resolve fake remote path %s: %v", remotePath, pathErr)
+		}
+		return filepath.Join(resource.root, filepath.FromSlash(relative))
+	}
+	assertMode := func(filePath string, want os.FileMode) {
+		t.Helper()
+		info, statErr := os.Lstat(filePath)
+		if statErr != nil || info.Mode().Perm() != want {
+			t.Fatalf("fake remote Skill path %s mode = %v, %v", filePath, info, statErr)
+		}
+	}
+
+	controlRoot := localPath(remoteSkillControlRoot)
+	if err := os.Chmod(controlRoot, 0); err != nil {
+		t.Fatalf("remove fake remote Skill control access: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, primary, "Analyze reports")
+	assertMode(controlRoot, 0o700)
+
+	skillsRoot := localPath(SessionSkillsRoot)
+	if err := os.Chmod(skillsRoot, 0); err != nil {
+		t.Fatalf("remove fake remote Skill root access: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, primary, "Analyze reports")
+	assertMode(skillsRoot, 0o755)
+
+	childParent := localPath(path.Dir(child.RuntimePath))
+	if err := makeFakeRemoteTreeWritable(childParent); err != nil {
+		t.Fatalf("make fake child Skill layout removable: %v", err)
+	}
+	if err := os.RemoveAll(childParent); err != nil {
+		t.Fatalf("remove fake child Skill layout: %v", err)
+	}
+	symlinkTarget := filepath.Join(resource.root, "skill-layout-symlink-target")
+	if err := os.Mkdir(symlinkTarget, 0o700); err != nil {
+		t.Fatalf("create fake Skill layout symlink target: %v", err)
+	}
+	sentinel := filepath.Join(symlinkTarget, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
+		t.Fatalf("write fake Skill layout sentinel: %v", err)
+	}
+	if err := os.Chmod(sentinel, 0o400); err != nil {
+		t.Fatalf("harden fake Skill layout sentinel: %v", err)
+	}
+	if err := os.Chmod(symlinkTarget, 0o500); err != nil {
+		t.Fatalf("harden fake Skill layout symlink target: %v", err)
+	}
+	if err := os.Symlink(symlinkTarget, childParent); err != nil {
+		t.Fatalf("replace fake child Skill layout with symlink: %v", err)
+	}
+	present, err := skills.HasReadOnlySkill(ctx, child)
+	if err != nil || present {
+		t.Fatalf("symlinked child Skill layout presence = %t, %v", present, err)
+	}
+	if err := skills.ImportReadOnlySkill(
+		ctx, child, bytes.NewReader(childArchive),
+	); err != nil {
+		t.Fatalf("repair symlinked child Skill layout: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, child, "Child reports")
+	parentInfo, err := os.Lstat(childParent)
+	if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 ||
+		parentInfo.Mode().Perm() != 0o755 {
+		t.Fatalf("repaired child Skill parent = %v, %v", parentInfo, err)
+	}
+	assertMode(symlinkTarget, 0o500)
+	assertMode(sentinel, 0o400)
+	body, err := os.ReadFile(sentinel)
+	if err != nil || string(body) != "unchanged" {
+		t.Fatalf("fake Skill layout symlink target = %q, %v", body, err)
+	}
+
+	// A missing marker after control-root repair must remain rematerializable.
+	if err := os.Remove(localPath(remoteSkillMarkerPath(primary))); err != nil {
+		t.Fatalf("remove primary Skill marker after layout recovery: %v", err)
+	}
+	if err := skills.ImportReadOnlySkill(
+		ctx, primary, bytes.NewReader(primaryArchive),
+	); err != nil {
+		t.Fatalf("rematerialize primary Skill after layout recovery: %v", err)
+	}
+}
+
+func makeFakeRemoteTreeWritable(root string) error {
+	return filepath.Walk(root, func(filePath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		mode := os.FileMode(0o600)
+		if info.IsDir() {
+			mode = 0o700
+		}
+		return os.Chmod(filePath, mode)
+	})
+}
+
+func assertFakeRemoteSkillMarkerRepairs(
+	t *testing.T,
+	ctx context.Context,
+	store *fakeRemoteStore,
+	ref Ref,
+	box Sandbox,
+	skills SkillBundleSandbox,
+	mount ReadOnlySkillMount,
+	archive []byte,
+) {
+	t.Helper()
+	resource, err := store.get(ref.ID)
+	if err != nil {
+		t.Fatalf("resolve fake remote Skill resource: %v", err)
+	}
+	markerRelative, err := fakeRelativePath(remoteSkillMarkerPath(mount))
+	if err != nil {
+		t.Fatalf("resolve fake remote Skill marker: %v", err)
+	}
+	markerPath := filepath.Join(resource.root, filepath.FromSlash(markerRelative))
+	stagingPath := markerPath + "-staging"
+	symlinkTarget := markerPath + "-symlink-target"
+
+	corruptions := []struct {
+		name    string
+		corrupt func(string) error
+		verify  func(*testing.T)
+	}{
+		{
+			name: "empty",
+			corrupt: func(marker string) error {
+				return os.WriteFile(marker, nil, 0o600)
+			},
+		},
+		{
+			name: "oversized",
+			corrupt: func(marker string) error {
+				return os.WriteFile(
+					marker, bytes.Repeat([]byte("x"), remoteSkillMarkerLimit+1), 0o600,
+				)
+			},
+		},
+		{
+			name: "invalid-json",
+			corrupt: func(marker string) error {
+				return os.WriteFile(marker, []byte("not-json\n"), 0o600)
+			},
+		},
+		{
+			name: "directory",
+			corrupt: func(marker string) error {
+				if err := os.Mkdir(marker, 0o700); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(marker, "partial"), []byte("x"), 0o600)
+			},
+		},
+		{
+			name: "symlink",
+			corrupt: func(marker string) error {
+				if err := os.WriteFile(symlinkTarget, []byte("unchanged"), 0o600); err != nil {
+					return err
+				}
+				if err := os.Chmod(symlinkTarget, 0o400); err != nil {
+					return err
+				}
+				if err := os.Symlink(symlinkTarget, marker); err != nil {
+					return err
+				}
+				return os.Symlink(symlinkTarget, stagingPath)
+			},
+			verify: func(t *testing.T) {
+				t.Helper()
+				body, err := os.ReadFile(symlinkTarget)
+				if err != nil || string(body) != "unchanged" {
+					t.Fatalf("Skill marker symlink target = %q, %v", body, err)
+				}
+				info, err := os.Stat(symlinkTarget)
+				if err != nil || info.Mode().Perm() != 0o400 {
+					t.Fatalf("Skill marker symlink target mode = %v, %v", info, err)
+				}
+			},
+		},
+	}
+
+	for _, corruption := range corruptions {
+		t.Run("repairs-marker-"+corruption.name, func(t *testing.T) {
+			for _, item := range []string{markerPath, stagingPath, symlinkTarget} {
+				if err := os.RemoveAll(item); err != nil {
+					t.Fatalf("clear fake remote Skill marker fixture: %v", err)
+				}
+			}
+			if err := corruption.corrupt(markerPath); err != nil {
+				t.Fatalf("corrupt fake remote Skill marker: %v", err)
+			}
+			present, err := skills.HasReadOnlySkill(ctx, mount)
+			if err != nil || present {
+				t.Fatalf("corrupt marker presence = %t, %v", present, err)
+			}
+			if err := skills.ImportReadOnlySkill(
+				ctx, mount, bytes.NewReader(archive),
+			); err != nil {
+				t.Fatalf("repair fake remote Skill marker: %v", err)
+			}
+			assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+			info, err := os.Lstat(markerPath)
+			if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				t.Fatalf("repaired Skill marker mode = %v, %v", info, err)
+			}
+			if _, err := os.Lstat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("repaired Skill marker left staging entry: %v", err)
+			}
+			if corruption.verify != nil {
+				corruption.verify(t)
+			}
+		})
+	}
+}
+
+func assertFakeRemoteSkill(
+	t *testing.T,
+	ctx context.Context,
+	box Sandbox,
+	skills SkillBundleSandbox,
+	mount ReadOnlySkillMount,
+	want string,
+) {
+	t.Helper()
+	present, err := skills.HasReadOnlySkill(ctx, mount)
+	if err != nil || !present {
+		t.Fatalf("HasReadOnlySkill = %t, %v", present, err)
+	}
+	body, err := box.ReadFile(ctx, resolvedSkillRuntimePath(mount)+"/SKILL.md")
+	if err != nil || !bytes.Contains(body, []byte(want)) {
+		t.Fatalf("read materialized Skill = %q, %v", body, err)
+	}
+}
+
+func TestRemoteSkillCommandFailureDiagnostics(t *testing.T) {
+	tests := []struct {
+		name      string
+		result    *Result
+		want      string
+		doNotWant string
+	}{
+		{
+			name: "combined provider output falls back to stdout",
+			result: &Result{
+				ExitCode: 7,
+				Stdout:   []byte("combined provider failure"),
+			},
+			want: "combined provider failure",
+		},
+		{
+			name: "stderr remains authoritative",
+			result: &Result{
+				ExitCode: 8,
+				Stdout:   []byte("ordinary output"),
+				Stderr:   []byte("specific failure"),
+			},
+			want:      "specific failure",
+			doNotWant: "ordinary output",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reconciler := &remoteSkillBundles{
+				provider: DaytonaProviderName,
+				execute: func(context.Context, Command) (*Result, error) {
+					return test.result, nil
+				},
+			}
+			err := reconciler.runCommand(context.Background(), "publish Skill", "true")
+			if err == nil || !IsPermanent(err) || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("runCommand error = %v, want permanent error containing %q", err, test.want)
+			}
+			if test.doNotWant != "" && strings.Contains(err.Error(), test.doNotWant) {
+				t.Fatalf("runCommand error = %v, do not want %q", err, test.doNotWant)
+			}
+		})
+	}
+}
+
 func TestRemoteSessionOutputUsesOperationDeadline(t *testing.T) {
 	const sandboxTimeout = 5 * time.Second
 	tests := []struct {
@@ -834,6 +1324,10 @@ func (h *fakeRemoteHandle) exec(
 	command = strings.ReplaceAll(command, SessionOutputsRoot, outputs)
 	outputControl, _ := h.fullPath(remoteSessionOutputControlRoot)
 	command = strings.ReplaceAll(command, remoteSessionOutputControlRoot, outputControl)
+	skillControl, _ := h.fullPath(remoteSkillControlRoot)
+	command = strings.ReplaceAll(command, remoteSkillControlRoot, skillControl)
+	skills, _ := h.fullPath(SessionSkillsRoot)
+	command = strings.ReplaceAll(command, SessionSkillsRoot, skills)
 	process := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	process.Dir = h.resource.root
 	process.Env = []string{"PATH=/usr/bin:/bin", "COPYFILE_DISABLE=1"}
@@ -1101,6 +1595,17 @@ type fakeE2BRemote struct {
 	fakeRemoteHandle
 }
 
+func (s *fakeE2BRemote) ResourceUpload(
+	ctx context.Context,
+	filePath string,
+	content io.Reader,
+	_ remoteFilePermissions,
+) error {
+	return s.fakeRemoteHandle.ResourceUpload(
+		ctx, filePath, content, remoteFilePermissions{Mode: 0o600},
+	)
+}
+
 func (s *fakeE2BRemote) Exec(
 	ctx context.Context,
 	command string,
@@ -1287,6 +1792,17 @@ func fakeDaytonaResource(
 }
 
 type fakeDaytonaRemote struct{ fakeRemoteHandle }
+
+func (s *fakeDaytonaRemote) ResourceUpload(
+	ctx context.Context,
+	filePath string,
+	content io.Reader,
+	_ remoteFilePermissions,
+) error {
+	return s.fakeRemoteHandle.ResourceUpload(
+		ctx, filePath, content, remoteFilePermissions{Mode: 0o600},
+	)
+}
 
 func (s *fakeDaytonaRemote) Exec(
 	ctx context.Context,
