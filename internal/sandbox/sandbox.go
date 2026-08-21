@@ -183,6 +183,12 @@ const SessionUploadsRoot = domain.SessionUploadsRoot
 // become downloadable Session-scoped Files at an idle boundary.
 const SessionOutputsRoot = domain.SessionOutputsRoot
 
+// SessionSkillsRoot is the provider-independent runtime directory containing
+// immutable custom Skill trees. A sandbox workspace may live elsewhere (for
+// example Daytona uses /home/daytona), so callers must not derive this path
+// from Sandbox.Root.
+const SessionSkillsRoot = domain.SessionSkillsRoot
+
 // SessionOutputProvider declares support for the Mango deliverable
 // directory. Providers opt in because exporting an arbitrary workspace is not
 // equivalent to confining and streaming /mnt/session/outputs.
@@ -304,9 +310,10 @@ type ReadOnlySkillMount struct {
 	ChecksumSHA256        string
 }
 
-// SkillBundleProvider declares support for isolated, read-only custom Skill
-// trees. Other sandbox adapters can implement the same capability without
-// exposing provider-specific staging details to orchestration.
+// SkillBundleProvider declares support for isolated custom Skill trees whose
+// canonical source is immutable. Providers with a native read-only mount may
+// enforce immutability at the filesystem boundary; other providers must
+// permission-harden and reconcile their sandbox-local copy.
 type SkillBundleProvider interface {
 	SupportsSkillBundles() bool
 }

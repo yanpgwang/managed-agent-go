@@ -238,10 +238,14 @@ Only a completed `ready` Version is public; restart reconciliation deletes
 orphaned uploading archives and completes interrupted deletions. Agent and
 Session inputs resolve `latest` to an immutable Version, and PostgreSQL commits
 Version pins for every distinct resolved roster Agent scope with the Session
-projection so archive deletion cannot race admission. Before a Docker sandbox
+projection so archive deletion cannot race admission. Before a capable sandbox
 tool runs, the worker selects the current Thread Agent scope, reads only those
 relational pins, verifies the corresponding object bytes and archive entries,
-and atomically publishes a read-only tree. Primary/self scopes retain
+and publishes an immutable-source tree. Docker uses a provider-owned read-only
+bind mount. E2B, CubeSandbox, OpenSandbox, and Daytona use a shared remote
+materializer over their SDK file data planes, a sibling staging tree, hardened
+modes, and a durable marker plus instruction checksum. Primary/self scopes
+retain
 `/workspace/skills/<name>/`; external roster Agents use stable namespaces below
 `/workspace/skills/.agents/` so equal runtime names cannot collide.
 `PrepareTurn` projects bounded JSON-encoded name, description, and `SKILL.md`
@@ -251,7 +255,9 @@ normal tool result first, then adds a sibling user-text block containing
 block is stored in the provider transcript; only supporting files require later
 `read` or `bash` calls. The same provider-owned root, lock, attach inspection,
 stale-root audit, and destruction path serve File and Skill staging without
-merging their resource models.
+merging their resource models. Remote shell users can change hardened modes, so
+the next pre-tool pass repairs detectable instruction damage; this does not
+weaken the immutable archive stored by Mango.
 
 For a large tool result:
 

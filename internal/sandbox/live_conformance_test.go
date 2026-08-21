@@ -29,6 +29,7 @@ func TestE2BLiveConformance(t *testing.T) {
 	runLiveConformance(t, factory)
 	runLiveFileResourceConformance(t, factory)
 	runLiveSessionOutputConformance(t, factory)
+	runLiveSkillBundleConformance(t, factory)
 }
 
 func TestCubeLiveConformance(t *testing.T) {
@@ -52,6 +53,7 @@ func TestCubeLiveConformance(t *testing.T) {
 	runLiveConformance(t, factory)
 	runLiveFileResourceConformance(t, factory)
 	runLiveSessionOutputConformance(t, factory)
+	runLiveSkillBundleConformance(t, factory)
 }
 
 func TestOpenSandboxLiveConformance(t *testing.T) {
@@ -73,6 +75,7 @@ func TestOpenSandboxLiveConformance(t *testing.T) {
 	runLiveConformance(t, factory)
 	runLiveFileResourceConformance(t, factory)
 	runLiveSessionOutputConformance(t, factory)
+	runLiveSkillBundleConformance(t, factory)
 }
 
 func TestDaytonaLiveConformance(t *testing.T) {
@@ -94,6 +97,7 @@ func TestDaytonaLiveConformance(t *testing.T) {
 	runLiveConformance(t, factory)
 	runLiveFileResourceConformance(t, factory)
 	runLiveSessionOutputConformance(t, factory)
+	runLiveSkillBundleConformance(t, factory)
 }
 
 func runLiveFileResourceConformance(t *testing.T, factory sandboxtest.Factory) {
@@ -108,6 +112,15 @@ func runLiveFileResourceConformance(t *testing.T, factory sandboxtest.Factory) {
 func runLiveSessionOutputConformance(t *testing.T, factory sandboxtest.Factory) {
 	t.Helper()
 	sandboxtest.RunSessionOutputs(t, sandboxtest.Config{
+		NewProvider: factory,
+		Spec:        sandbox.Spec{Timeout: 2 * time.Minute, Network: "bridge"},
+		ShellPath:   "/bin/sh",
+	})
+}
+
+func runLiveSkillBundleConformance(t *testing.T, factory sandboxtest.Factory) {
+	t.Helper()
+	sandboxtest.RunSkillBundles(t, sandboxtest.Config{
 		NewProvider: factory,
 		Spec:        sandbox.Spec{Timeout: 2 * time.Minute, Network: "bridge"},
 		ShellPath:   "/bin/sh",

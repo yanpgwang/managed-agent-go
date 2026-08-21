@@ -104,6 +104,8 @@ func (*openSandboxProvider) SupportsFileResources() bool { return true }
 
 func (*openSandboxProvider) SupportsSessionOutputs() bool { return true }
 
+func (*openSandboxProvider) SupportsSkillBundles() bool { return true }
+
 func (p *openSandboxProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -196,6 +198,7 @@ type openSandboxBox struct {
 	root      string
 	timeout   time.Duration
 	resources *remoteFileResources
+	skills    *remoteSkillBundles
 	sync      remoteResourceSynchronization
 }
 
@@ -204,10 +207,20 @@ func newOpenSandboxBox(
 	root string,
 	timeout time.Duration,
 ) *openSandboxBox {
-	return &openSandboxBox{
+	box := &openSandboxBox{
 		remote: remote, root: root, timeout: timeout,
 		resources: newRemoteFileResources(OpenSandboxProviderName, remote),
 	}
+	box.skills = newRemoteSkillBundles(
+		OpenSandboxProviderName,
+		box.resources,
+		func(ctx context.Context, command Command) (*Result, error) {
+			return box.exec(
+				ctx, command, remoteOperationCommandTimeout(ctx, box.timeout),
+			)
+		},
+	)
+	return box
 }
 
 func (s *openSandboxBox) Root() string { return s.root }
@@ -263,7 +276,7 @@ func (s *openSandboxBox) ReadFile(
 	value string,
 ) ([]byte, error) {
 	full, err := remoteToolPath(
-		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot, SessionSkillsRoot,
 	)
 	if err != nil {
 		return nil, err
@@ -276,7 +289,7 @@ func (s *openSandboxBox) WriteFile(
 	value string,
 	data []byte,
 ) error {
-	full, err := remoteToolPath(
+	full, err := remoteWritableToolPath(
 		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
 	)
 	if err != nil {
@@ -311,6 +324,21 @@ func (s *openSandboxBox) RemoveFileResource(
 	return s.resources.RemoveFileResource(ctx, runtimePath, identity)
 }
 
+func (s *openSandboxBox) HasReadOnlySkill(
+	ctx context.Context,
+	mount ReadOnlySkillMount,
+) (bool, error) {
+	return s.skills.HasReadOnlySkill(ctx, mount)
+}
+
+func (s *openSandboxBox) ImportReadOnlySkill(
+	ctx context.Context,
+	mount ReadOnlySkillMount,
+	content io.Reader,
+) error {
+	return s.skills.ImportReadOnlySkill(ctx, mount, content)
+}
+
 func (s *openSandboxBox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {
 	return openRemoteSessionOutputs(
 		ctx,
@@ -320,7 +348,7 @@ func (s *openSandboxBox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser,
 			return s.exec(
 				executeCtx,
 				command,
-				remoteSessionOutputCommandTimeout(executeCtx, s.timeout),
+				remoteOperationCommandTimeout(executeCtx, s.timeout),
 			)
 		},
 	)
@@ -352,6 +380,8 @@ func (s *openSandboxBox) Destroy(ctx context.Context) error {
 	}
 	return nil
 }
+
+var _ SkillBundleSandbox = (*openSandboxBox)(nil)
 
 type openSandboxSDKService struct {
 	config  opensandbox.ConnectionConfig

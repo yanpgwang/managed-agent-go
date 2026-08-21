@@ -72,10 +72,10 @@ Memory, or network enforcement.
 |---|---:|---:|---:|---:|---:|---:|
 | Local process | No | No | No | No | No | No |
 | Docker | Yes | Yes, read-only | Yes | Yes, read-only | Yes | No |
-| E2B | Yes | Yes, buffered writable-copy limitation | Yes, buffered | No | No | No |
-| CubeSandbox | Yes | Yes, buffered writable-copy limitation | Yes, buffered | No | No | No |
-| OpenSandbox | Yes | Yes, writable-copy limitation | Yes | No | No | Yes |
-| Daytona | Yes | Yes, writable-copy limitation | Yes | No | No | No |
+| E2B | Yes | Yes, buffered writable-copy limitation | Yes, buffered | Yes, buffered hardened-copy limitation | No | No |
+| CubeSandbox | Yes | Yes, buffered writable-copy limitation | Yes, buffered | Yes, buffered hardened-copy limitation | No | No |
+| OpenSandbox | Yes | Yes, writable-copy limitation | Yes | Yes, hardened-copy limitation | No | Yes |
+| Daytona | Yes | Yes, writable-copy limitation | Yes | Yes, hardened-copy limitation | No | No |
 
 `No` means the adapter rejects admission for that capability; it does not mean
 the external provider could never implement it. Preview backends retain their
@@ -140,20 +140,42 @@ be recreated rather than silently producing an empty export.
 ## Custom Skill mounts
 
 Custom Skill execution uses a separate provider capability because a bundle is
-an immutable directory tree, not a File Resource. Docker stages pinned
-canonical archives beneath the same provider-owned per-Session root, verifies
-their compressed size and SHA-256, revalidates archive paths and entry types,
-and atomically publishes each tree beneath `/workspace/skills/<name>/`. The
-complete `skills` directory is an unconditional read-only bind mount on new
-containers, so attach after worker restart can recover the same host root.
+an immutable directory tree, not a File Resource. Every capable adapter
+verifies the compressed size and SHA-256, revalidates archive paths and entry
+types, and publishes each pinned tree beneath `/workspace/skills/<name>/` or an
+Agent-scoped directory below `/workspace/skills/.agents/`.
 
-The worker checks the marker and materialized tree before every relevant tool
-step, repairs missing or damaged staging, and removes abandoned extraction
-directories. Sandbox destruction removes the shared root containing File,
-output, and Skill staging. Containers created before this mount existed fail
-closed for pinned Skills and must be recreated; Docker cannot add a bind mount
-to a live container. Local execution, CMA `self_hosted` Environment execution,
-and current remote adapters do not advertise the capability.
+Docker stages canonical archives beneath the provider-owned per-Session host
+root and exposes the complete `skills` directory through an unconditional
+read-only bind mount. Attach after worker restart recovers the same host root.
+E2B, CubeSandbox, OpenSandbox, and Daytona instead use one shared remote
+materializer over their official SDK file clients. It validates and extracts
+the archive in a bounded worker temporary directory, uploads a sibling staging
+tree, makes that tree non-writable, publishes it inside the sandbox filesystem,
+and records an adapter-owned identity plus `SKILL.md` checksum. OpenSandbox and
+Daytona stream files; the current E2B/Cube-compatible SDK buffers each file.
+
+Remote providers do not expose a native read-only bind mount through these
+adapters. Mango's `write` and `edit` boundary rejects the Skill root and the
+tree receives non-writable modes, but `bash` running with sufficient sandbox
+privileges can still change its content. Before every tool, reconciliation
+verifies the immutable identity and main instruction bytes and repairs
+detectable changes.
+
+The canonical S3 archive is never modified. This is a Preview limitation, not
+equivalence to Docker's filesystem-enforced read-only mount; supporting-file
+changes that preserve the main instruction entrypoint may remain local until a
+new identity or other detectable damage causes rematerialization.
+
+Remote images must provide a POSIX `/bin/sh` plus `chmod`, `mv`, and `rm` for
+permission restoration, same-filesystem publication, rollback, and cleanup.
+
+The worker checks provider markers before every relevant tool step, repairs
+detectable damage, and removes abandoned extraction directories. Sandbox
+destruction removes provider-owned Skill state with the sandbox. Docker
+containers created before its mount existed fail closed for pinned Skills and
+must be recreated; Docker cannot add a bind mount to a live container. Local
+execution and Environment Worker execution do not advertise the capability.
 
 ## Memory Store mounts
 
@@ -267,7 +289,8 @@ For local development, `make dev-env-init` creates
 `scripts/with-dev-env <command>` loads it explicitly and works across
 worktrees.
 
-Live conformance is opt-in:
+Live conformance is opt-in. Each provider gate exercises lifecycle, File
+Resources, Session Outputs, and custom Skill materialization:
 
 ```bash
 scripts/with-dev-env env MANGO_LIVE_E2B=1 \

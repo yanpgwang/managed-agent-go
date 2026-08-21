@@ -199,6 +199,8 @@ func (*e2bLikeProvider) SupportsFileResources() bool { return true }
 
 func (*e2bLikeProvider) SupportsSessionOutputs() bool { return true }
 
+func (*e2bLikeProvider) SupportsSkillBundles() bool { return true }
+
 func (p *e2bLikeProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -330,6 +332,7 @@ type e2bLikeSandbox struct {
 	root         string
 	timeout      time.Duration
 	resources    *remoteFileResources
+	skills       *remoteSkillBundles
 	sync         remoteResourceSynchronization
 }
 
@@ -339,13 +342,23 @@ func newE2BLikeSandbox(
 	root string,
 	timeout time.Duration,
 ) *e2bLikeSandbox {
-	return &e2bLikeSandbox{
+	box := &e2bLikeSandbox{
 		providerName: providerName,
 		remote:       remote,
 		root:         root,
 		timeout:      timeout,
 		resources:    newRemoteFileResources(providerName, remote),
 	}
+	box.skills = newRemoteSkillBundles(
+		providerName,
+		box.resources,
+		func(ctx context.Context, command Command) (*Result, error) {
+			return box.exec(
+				ctx, command, remoteOperationCommandTimeout(ctx, box.timeout),
+			)
+		},
+	)
+	return box
 }
 
 func (s *e2bLikeSandbox) Root() string { return s.root }
@@ -408,7 +421,7 @@ func (s *e2bLikeSandbox) ReadFile(
 	value string,
 ) ([]byte, error) {
 	full, err := remoteToolPath(
-		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot, SessionSkillsRoot,
 	)
 	if err != nil {
 		return nil, err
@@ -421,7 +434,7 @@ func (s *e2bLikeSandbox) WriteFile(
 	value string,
 	data []byte,
 ) error {
-	full, err := remoteToolPath(
+	full, err := remoteWritableToolPath(
 		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
 	)
 	if err != nil {
@@ -456,6 +469,21 @@ func (s *e2bLikeSandbox) RemoveFileResource(
 	return s.resources.RemoveFileResource(ctx, runtimePath, identity)
 }
 
+func (s *e2bLikeSandbox) HasReadOnlySkill(
+	ctx context.Context,
+	mount ReadOnlySkillMount,
+) (bool, error) {
+	return s.skills.HasReadOnlySkill(ctx, mount)
+}
+
+func (s *e2bLikeSandbox) ImportReadOnlySkill(
+	ctx context.Context,
+	mount ReadOnlySkillMount,
+	content io.Reader,
+) error {
+	return s.skills.ImportReadOnlySkill(ctx, mount, content)
+}
+
 func (s *e2bLikeSandbox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {
 	return openRemoteSessionOutputs(
 		ctx,
@@ -465,7 +493,7 @@ func (s *e2bLikeSandbox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser,
 			return s.exec(
 				executeCtx,
 				command,
-				remoteSessionOutputCommandTimeout(executeCtx, s.timeout),
+				remoteOperationCommandTimeout(executeCtx, s.timeout),
 			)
 		},
 	)
@@ -497,6 +525,8 @@ func (s *e2bLikeSandbox) Destroy(ctx context.Context) error {
 	}
 	return nil
 }
+
+var _ SkillBundleSandbox = (*e2bLikeSandbox)(nil)
 
 type cubeSDKService struct {
 	name        string

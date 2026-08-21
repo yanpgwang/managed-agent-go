@@ -33,7 +33,9 @@ tags:
   - name: Files
     description: Durable file metadata and S3-compatible byte storage.
   - name: Skills
-    description: Custom filesystem Skills with immutable archived Versions.
+    description: >-
+      Custom filesystem Skills with immutable archived Versions and
+      provider-capability-gated Session materialization.
   - name: Memory
     description: Persistent path-addressed Memory Stores with immutable audit Versions.
   - name: Vaults
@@ -3565,6 +3567,9 @@ components:
           maxLength: 2048
     CustomSkillReferenceInput:
       type: object
+      description: >-
+        Mango-owned custom Skill reference resolved to an immutable Version
+        before Session execution in a Skill-capable sandbox.
       additionalProperties: false
       required: [type, skill_id]
       properties:

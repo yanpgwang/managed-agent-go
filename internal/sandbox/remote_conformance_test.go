@@ -178,6 +178,205 @@ func TestRemoteSessionOutputConformance(t *testing.T) {
 	}
 }
 
+func TestRemoteSkillBundleConformance(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*fakeRemoteStore) Provider
+	}{
+		{
+			name: E2BProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					E2BProviderName,
+					&fakeE2BService{store: store},
+					remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: CubeProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					CubeProviderName,
+					&fakeE2BService{store: store},
+					remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: OpenSandboxProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newOpenSandboxProvider(
+					&fakeOpenSandboxService{store: store}, remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: DaytonaProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newDaytonaProvider(
+					&fakeDaytonaService{store: store}, defaultDaytonaRoot,
+				)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeRemoteStore(t.TempDir())
+			runFakeRemoteSkillBundleContract(
+				t, func() Provider { return test.open(store) },
+			)
+		})
+	}
+}
+
+func runFakeRemoteSkillBundleContract(t *testing.T, open func() Provider) {
+	t.Helper()
+	ctx := context.Background()
+	provider := open()
+	capability, ok := provider.(SkillBundleProvider)
+	if !ok || !capability.SupportsSkillBundles() {
+		t.Fatalf("provider %q does not advertise custom Skills", provider.Name())
+	}
+	archive, expanded := testSkillArchive(t, "Report_Tool", map[string]skillTestFile{
+		"SKILL.md": {
+			body: []byte("---\nname: report-tool\ndescription: Analyze reports\n---\nUse the helper.\n"),
+			mode: 0o644,
+		},
+		"scripts/run.sh": {
+			body: []byte("#!/bin/sh\nprintf skill-ok"),
+			mode: 0o755,
+		},
+	})
+	mount := testReadOnlySkillMount(
+		"skill_reports@100", "report-tool", "Report_Tool", archive, expanded,
+	)
+	sessionKey := "sesn-skills-" + strings.NewReplacer("/", "-", " ", "-").
+		Replace(strings.ToLower(t.Name()))
+	ref, box, err := provider.Create(ctx, sessionKey, Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	skills, ok := box.(SkillBundleSandbox)
+	if !ok {
+		t.Fatalf("sandbox %T does not expose custom Skills", box)
+	}
+	if err := skills.ImportReadOnlySkill(
+		ctx, mount, &readerThatFails{data: archive[:len(archive)/2]},
+	); err == nil {
+		t.Fatal("interrupted Skill archive import unexpectedly succeeded")
+	}
+	present, err := skills.HasReadOnlySkill(ctx, mount)
+	if err != nil || present {
+		t.Fatalf("interrupted Skill import presence = %t, %v", present, err)
+	}
+	if err := skills.ImportReadOnlySkill(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("initial Skill import: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+	if err := box.WriteFile(
+		ctx, resolvedSkillRuntimePath(mount)+"/SKILL.md", []byte("changed"),
+	); err == nil {
+		t.Fatal("WriteFile accepted the immutable Skill runtime path")
+	}
+	if pathWithinRemoteRoot(box.Root(), resolvedSkillRuntimePath(mount)) {
+		relative := strings.TrimPrefix(
+			resolvedSkillRuntimePath(mount), strings.TrimSuffix(box.Root(), "/")+"/",
+		)
+		if err := box.WriteFile(
+			ctx, relative+"/SKILL.md", []byte("changed"),
+		); err == nil {
+			t.Fatal("WriteFile accepted a workspace-relative Skill runtime path")
+		}
+	}
+	result, err := box.Exec(ctx, Command{
+		Path: "/bin/sh",
+		Args: []string{
+			"-c",
+			"test -x " + resolvedSkillRuntimePath(mount) + "/scripts/run.sh && " +
+				resolvedSkillRuntimePath(mount) + "/scripts/run.sh",
+		},
+	})
+	if err != nil || result.ExitCode != 0 || string(result.Stdout) != "skill-ok" {
+		t.Fatalf("execute Skill helper: result=%+v err=%v", result, err)
+	}
+
+	childArchive, childExpanded := testSkillArchive(
+		t, "Report_Tool", map[string]skillTestFile{
+			"SKILL.md": {
+				body: []byte("---\nname: report-tool\ndescription: Child reports\n---\nChild scope.\n"),
+				mode: 0o644,
+			},
+		},
+	)
+	childMount := testReadOnlySkillMount(
+		"skill_reports@200", "report-tool", "Report_Tool",
+		childArchive, childExpanded,
+	)
+	childMount.RuntimePath = SessionSkillsRoot +
+		"/.agents/0123456789abcdef01234567/report-tool"
+	if err := skills.ImportReadOnlySkill(
+		ctx, childMount, bytes.NewReader(childArchive),
+	); err != nil {
+		t.Fatalf("Agent-scoped Skill import: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, childMount, "Child reports")
+	assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+
+	// Remote providers cannot expose a native read-only bind mount. Their
+	// sandbox-local copy is permission-hardened, while reconciliation detects
+	// and repairs changes to the instruction entrypoint before the next tool.
+	result, err = box.Exec(ctx, Command{
+		Path: "/bin/sh",
+		Args: []string{"-c", "chmod u+w " + resolvedSkillRuntimePath(mount) +
+			"/SKILL.md && printf corrupted > " +
+			resolvedSkillRuntimePath(mount) + "/SKILL.md"},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("simulate sandbox-local Skill corruption: result=%+v err=%v", result, err)
+	}
+	present, err = skills.HasReadOnlySkill(ctx, mount)
+	if err != nil || present {
+		t.Fatalf("corrupted Skill presence = %t, %v", present, err)
+	}
+	if err := skills.ImportReadOnlySkill(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("repair Skill: %v", err)
+	}
+	assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+
+	attached, err := open().Attach(ctx, sessionKey, ref, Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("attach Skill sandbox: %v", err)
+	}
+	attachedSkills, ok := attached.(SkillBundleSandbox)
+	if !ok {
+		t.Fatalf("attached sandbox %T does not expose custom Skills", attached)
+	}
+	assertFakeRemoteSkill(
+		t, ctx, attached, attachedSkills, mount, "Analyze reports",
+	)
+}
+
+func assertFakeRemoteSkill(
+	t *testing.T,
+	ctx context.Context,
+	box Sandbox,
+	skills SkillBundleSandbox,
+	mount ReadOnlySkillMount,
+	want string,
+) {
+	t.Helper()
+	present, err := skills.HasReadOnlySkill(ctx, mount)
+	if err != nil || !present {
+		t.Fatalf("HasReadOnlySkill = %t, %v", present, err)
+	}
+	body, err := box.ReadFile(ctx, resolvedSkillRuntimePath(mount)+"/SKILL.md")
+	if err != nil || !bytes.Contains(body, []byte(want)) {
+		t.Fatalf("read materialized Skill = %q, %v", body, err)
+	}
+}
+
 func TestRemoteSessionOutputUsesOperationDeadline(t *testing.T) {
 	const sandboxTimeout = 5 * time.Second
 	tests := []struct {
@@ -834,6 +1033,10 @@ func (h *fakeRemoteHandle) exec(
 	command = strings.ReplaceAll(command, SessionOutputsRoot, outputs)
 	outputControl, _ := h.fullPath(remoteSessionOutputControlRoot)
 	command = strings.ReplaceAll(command, remoteSessionOutputControlRoot, outputControl)
+	skillControl, _ := h.fullPath(remoteSkillControlRoot)
+	command = strings.ReplaceAll(command, remoteSkillControlRoot, skillControl)
+	skills, _ := h.fullPath(SessionSkillsRoot)
+	command = strings.ReplaceAll(command, SessionSkillsRoot, skills)
 	process := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	process.Dir = h.resource.root
 	process.Env = []string{"PATH=/usr/bin:/bin", "COPYFILE_DISABLE=1"}
@@ -1101,6 +1304,17 @@ type fakeE2BRemote struct {
 	fakeRemoteHandle
 }
 
+func (s *fakeE2BRemote) ResourceUpload(
+	ctx context.Context,
+	filePath string,
+	content io.Reader,
+	_ remoteFilePermissions,
+) error {
+	return s.fakeRemoteHandle.ResourceUpload(
+		ctx, filePath, content, remoteFilePermissions{Mode: 0o600},
+	)
+}
+
 func (s *fakeE2BRemote) Exec(
 	ctx context.Context,
 	command string,
@@ -1287,6 +1501,17 @@ func fakeDaytonaResource(
 }
 
 type fakeDaytonaRemote struct{ fakeRemoteHandle }
+
+func (s *fakeDaytonaRemote) ResourceUpload(
+	ctx context.Context,
+	filePath string,
+	content io.Reader,
+	_ remoteFilePermissions,
+) error {
+	return s.fakeRemoteHandle.ResourceUpload(
+		ctx, filePath, content, remoteFilePermissions{Mode: 0o600},
+	)
+}
 
 func (s *fakeDaytonaRemote) Exec(
 	ctx context.Context,
