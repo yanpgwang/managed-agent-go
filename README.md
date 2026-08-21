@@ -108,8 +108,9 @@ make local-down
 The [capability summary](https://yanpgwang.github.io/mango/capabilities)
 states the user-visible boundary. Persistent child-Agent orchestration,
 provider-neutral Advisor consultations, and shared Session budgets are
-implemented; active product work belongs in focused
-[GitHub Issues](https://github.com/yanpgwang/mango/issues).
+implemented. Active product work may live directly in focused pull requests;
+[GitHub Issues](https://github.com/yanpgwang/mango/issues) are used when
+discussion, sequencing, or longer-term tracking is useful.
 
 ## Architecture
 

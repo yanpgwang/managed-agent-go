@@ -1,3 +1,7 @@
+## Problem, rationale, and scope
+
+<!-- State the Mango user/operator problem, acceptance criteria, and non-goals. An Issue is optional. -->
+
 ## What changed
 
 <!-- Describe the problem and the smallest useful solution. -->
@@ -8,7 +12,7 @@
 
 ## API impact and design provenance
 
-<!-- Describe public API impact. Link material design sources and record what Mango adopted, changed, or rejected and why. -->
+<!-- Describe public API impact. For analogous CMA or external designs, record what Mango adopted, adapted, or rejected and why. Explain any new Mango-specific concept instead of inventing one silently. -->
 
 ## Durability and security
 
@@ -16,6 +20,7 @@
 
 ## Checklist
 
+- [ ] The problem, acceptance criteria, and non-goals are recorded here or in a linked design document/Issue.
 - [ ] Tests cover the changed behavior.
 - [ ] Public behavior is documented.
 - [ ] Material external design influences and Mango-owned decisions are recorded.

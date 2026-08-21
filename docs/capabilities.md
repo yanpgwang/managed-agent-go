@@ -81,5 +81,6 @@ PostgreSQL/Temporal/NATS/MinIO/Docker service tests.
 Mango has not published a versioned release. Published versions will appear in
 [GitHub Releases](https://github.com/yanpgwang/mango/releases). Follow Mango's
 [API reference](api/overview.md) for the current wire surface, this page for
-operational boundaries, and [GitHub Issues](https://github.com/yanpgwang/mango/issues)
-for active work.
+operational boundaries, and current
+[pull requests](https://github.com/yanpgwang/mango/pulls) or optional
+[Issues](https://github.com/yanpgwang/mango/issues) for active work.
