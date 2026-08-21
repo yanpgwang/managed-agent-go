@@ -28,7 +28,7 @@ Deleting a Session cascades to its Threads.
 Each Thread owns an independent PostgreSQL projection of its immutable Agent
 snapshot, status, cumulative usage, and timing. The primary Thread has a null
 `parent_thread_id`. Its Agent omits `multiagent`; the resolved coordinator
-roster remains on `Session.agent`, matching the upstream response boundary.
+roster remains on `Session.agent` as part of the current Mango response shape.
 
 The runtime updates an owning Thread before recomputing the Session aggregate in
 the same PostgreSQL transaction. The Session remains running while any Thread

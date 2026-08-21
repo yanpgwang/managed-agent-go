@@ -16,7 +16,8 @@ and `send_to_agent` model tools and decides when to call them.
 ## Prerequisites
 
 - Complete [Getting started](../getting-started.md).
-- Use a Messages-compatible model that can call tools. The deterministic local
+- Use the current Messages-shaped model adapter with a model that can call
+  tools. The deterministic local
   model is useful for platform smoke tests but does not make open-ended
   delegation decisions.
 - Keep every roster Agent on the same `inference_geo` value, or leave it unset
@@ -96,9 +97,9 @@ the executor decides when to call the ordinary private `advisor({})` tool.
 Mango quotes the executor's current system prompt, tool definitions, transcript,
 and partial response into a separate tool-free request to the configured model.
 Every consultation appears afterward as an automatically terminating
-`anthropic.advisor` Thread with its own events and usage. The reserved name is
-kept for CMA wire compatibility; the inference itself is not tied to
-Anthropic's provider-native Advisor beta.
+`anthropic.advisor` Thread with its own events and usage. That is the current
+reserved name, not a compatibility commitment; the inference itself is
+provider-neutral.
 
 ## Start and prompt the Session
 
@@ -173,8 +174,7 @@ child. Include a child ID to interrupt only that Thread.
 - Provider usage is recorded per model request on the owning Thread and charged
   atomically to the shared Session list-cost budget. Concurrent requests may
   overshoot because each is admitted before it starts.
-- Exact hosted preview suppression for report-only coordinator turns remains a
-  compatibility boundary.
+- Report-only coordinator turns do not yet have a dedicated preview policy.
 
 See [Session Threads](../api/session-threads.md) for the HTTP contract and
-[API compatibility](../compatibility.md) for the current support boundary.
+[capabilities and limits](../capabilities.md) for the current support boundary.

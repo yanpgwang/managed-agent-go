@@ -24,7 +24,7 @@ scope; end-user identity and enterprise RBAC remain outside Mango. See
 
 ```mermaid
 flowchart LR
-  Client["Managed Agents client"] --> API["HTTP API"]
+  Client["Mango client"] --> API["HTTP API"]
   API --> PG[("PostgreSQL resources<br/>events + outbox")]
   API --> Objects[("S3-compatible<br/>Files + Skill archives")]
   API --> Temporal["Temporal frontend"]
@@ -33,7 +33,7 @@ flowchart LR
   Relay --> Temporal
   Temporal --> Worker["Temporal worker"]
   Worker --> PG
-  Worker --> Model["Messages API"]
+  Worker --> Model["Model provider"]
   Worker --> Sandbox["Sandbox provider"]
   Worker --> NATS
   NATS --> API
@@ -63,7 +63,7 @@ Each Thread continues model conversations from its own lossless Provider
 Transcript. Every transcript row has a database foreign key to its public
 trigger event, and Thread ownership is derived from that event rather than
 duplicated, so private context cannot drift between Threads. The causal
-public-event projection remains only as a compatibility fallback for histories
+public-event projection remains only as a legacy fallback for histories
 created before transcript support. Compacted Thread projections are preserved as
 immutable internal snapshots, and the owning Thread emits the documented
 context-compaction event. This separation is required for native server-tool
@@ -89,7 +89,7 @@ cannot overwrite one another in the shared filesystem.
 `internal/httpapi` owns request decoding and response encoding.
 `internal/domain` models persisted resources and execution facts. Mapping is
 explicit in both directions so internal sequence numbers, run states, and
-storage details cannot leak into the compatibility wire.
+storage details cannot leak into the public wire API.
 
 ### Public history and execution bookkeeping are different things
 
@@ -167,7 +167,7 @@ periodically reconcile their durable cursor and never treat a wakeup as data.
 Worker Versioning and promotion of remote sandbox adapters through repeatable
 live conformance are still required before production rolling deployments.
 
-Workflow changes use Temporal version markers where replay compatibility
+Workflow changes use Temporal version markers where replay safety
 requires them, and `internal/temporal` carries an offline `worker.WorkflowReplayer`
 harness that replays synthetic pre-change histories against the current code.
 The harness covers every recorded prefix of the ordered turn-level version
@@ -207,8 +207,6 @@ The strongest current risks are semantic rather than structural:
    dominates stale wake delivery. Session deletion enumerates and stops every
    child before primary Workflow and sandbox cleanup.
 
-Current API support is tracked in the [compatibility matrix](compatibility.md);
-the upstream target is the
-[Claude Managed Agents documentation](https://platform.claude.com/docs/en/managed-agents/overview),
-and focused engineering work is tracked in
-[GitHub Issues](https://github.com/yanpgwang/mango/issues).
+Current API support is tracked in [capabilities and limits](capabilities.md).
+[Product direction](product.md) defines how Mango selects work, and focused
+engineering belongs in [GitHub Issues](https://github.com/yanpgwang/mango/issues).

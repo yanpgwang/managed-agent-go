@@ -30,7 +30,7 @@ message creation.
 
 - The offline fake is deterministic and keeps the default binary and test suite
   network-free.
-- The real client targets an Anthropic-shaped `/v1/messages` endpoint and
+- The real client targets a Messages-shaped `/v1/messages` endpoint and
   supports API-key or bearer authentication.
 
 Conversation ownership remains in this server. This is why earlier
@@ -104,10 +104,10 @@ Docker `config.json` selected by `DOCKER_CONFIG` or `~/.docker`. Inline `auths`,
 `credsStore`, and per-registry `credHelpers` are supported; a configured native
 credential helper must be installed on the worker. Containers use a separate
 filesystem, Linux namespaces/cgroups, configurable resource limits, and no
-networking for direct provider calls. The Managed Agents cloud Environment path
-explicitly requests `bridge` networking because the public Environment default
-is unrestricted. This is the recommended sandbox for a real model, and it
-satisfies the startup guard without the unsafe override.
+networking for direct provider calls. Mango's cloud Environment path explicitly
+requests `bridge` networking because the public Environment default is
+unrestricted. This is the recommended sandbox for a real model, and it satisfies
+the startup guard without the unsafe override.
 
 Containers share the host kernel. This provider has not been audited for
 hostile multi-tenant use; stronger isolation such as gVisor or a remote sandbox

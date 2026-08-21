@@ -5,9 +5,9 @@ slug: /api/environment-work
 
 # Environment Work
 
-Environment Work is the activation and lease protocol used by Anthropic's
-prebuilt Environment workers for `self_hosted` Environments. It is not a second
-Agent runtime. The worker claims a Session, listens to the existing Session
+Environment Work is Mango's activation and lease protocol for `self_hosted`
+Environments. It is not a second Agent runtime. A worker claims a Session,
+listens to the existing Session
 event stream, executes `agent_toolset_20260401` tools in customer-hosted
 infrastructure, and posts results through the existing `user.tool_result`
 event.
@@ -41,28 +41,24 @@ The API exposes Get, Update, List, Ack, Heartbeat, Poll, Stats, and Stop beneath
 /v1/environments/{environment_id}/work
 ```
 
-The official Go SDK `environments.NewWorkPoller` is exercised directly in the
-repository compatibility suite. Stop returns `204 No Content`, matching the
-hosted worker protocol and the SDK helper's response-body bypass. An empty Poll
-returns an empty JSON object, which the current official Go helper recognizes
-as a drained queue.
+Stop returns `204 No Content`, and an empty Poll returns an empty JSON object.
 
 ## Skills and Session state
 
-The official `EnvironmentWorker` retrieves the Session's immutable Agent
-snapshot and downloads its pinned custom Skill Versions into the worker
-workspace before running tools. This path is independent of Mango's cloud
-sandbox adapter capability: a cloud Session still requires a Skill-capable
+An Environment worker retrieves the Session's immutable Agent snapshot and
+downloads its pinned custom Skill Versions into the worker workspace before
+running tools. This path is independent of Mango's cloud sandbox adapter
+capability: a cloud Session still requires a Skill-capable
 adapter, while a self-hosted Session may use Skills whenever the Skills API and
 object store are configured.
 
 ## Security boundary
 
-The official worker sends an Environment key as a bearer credential for Work,
-Session, event, and Skill requests. Mango authenticates that credential as a
-Workspace API key and limits all of those resources to the same Workspace. It
-does not issue narrower Environment-worker credentials, so Work `secret`
-remains `null`. A surrounding control plane should add Environment-specific
-policy before exposing this surface to untrusted workers.
+Workers send an Environment key as a bearer credential for Work, Session,
+event, and Skill requests. Mango authenticates that credential as a Workspace
+API key and limits all of those resources to the same Workspace. It does not
+issue narrower Environment-worker credentials, so Work `secret` remains
+`null`. A surrounding control plane should add Environment-specific policy
+before exposing this surface to untrusted workers.
 
-See [API compatibility](../compatibility.md) for the current support boundary.
+See [capabilities and limits](../capabilities.md) for the current support boundary.

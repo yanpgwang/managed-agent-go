@@ -71,8 +71,7 @@ independent context, events, usage, and Workflow state. See the
 [multi-agent guide](../guides/multi-agent.md) for an end-to-end example and
 [Session Threads](session-threads.md) for the public observation API.
 
-The pinned Anthropic Go SDK v1.63.1 also exposes one optional `advisor` roster
-entry:
+Mango also supports one optional `advisor` roster entry:
 
 ```json
 {"type":"advisor","model":"claude-opus-5"}
@@ -84,15 +83,15 @@ entries and ordinary Agents with that name. The Advisor is available only to
 the primary Agent; it does not appear in `list_agents` and cannot be targeted by
 `send_to_agent`. Mango exposes it to the executor as an ordinary no-argument
 client tool, runs the configured Advisor model in a separate tool-free request,
-and returns the review through an ordinary tool result. The harness therefore
-does not depend on Anthropic's provider-native Advisor beta or an
-executor/Advisor compatibility matrix. Ordinary child limits such as
-`max_uses` and `max_tokens` do not apply to this roster variant.
+and returns the review through an ordinary tool result. The implementation is
+provider-neutral. Ordinary child limits such as `max_uses` and `max_tokens` do
+not apply to this roster variant.
 
-Agents written by releases that accepted opaque `multiagent` objects remain
-readable without inventing historical version pins. An unresolved legacy
-topology is read-only: replace or clear `multiagent` before changing the Agent
-or creating a new Session.
+The current implementation contains a cleanup path for opaque `multiagent`
+objects written by earlier development checkouts. This is not a supported
+compatibility contract and may be removed directly from `/v1`. While it exists,
+an unresolved value is read-only: replace or clear `multiagent` before changing
+the Agent or creating a new Session.
 
 Custom Skills use the documented tagged reference:
 
@@ -105,14 +104,14 @@ stores the concrete immutable Version in the Agent response and version
 history. Updating unrelated Agent fields preserves that pin; replacing
 `skills` resolves the replacement list again. The latest active Agent Version
 also holds a relational retention pin, so its Skill archive cannot be deleted
-until the list is replaced or the Agent is archived. Anthropic-managed
-references return `422` because Mango does not mirror their archives.
+until the list is replaced or the Agent is archived. External managed-catalog
+references return `422` because Mango does not mirror those archives.
 
-Agents stored before tagged references were enforced may still return a
-read-only legacy Skill value. The OpenAPI response union marks that compatibility
-branch explicitly. Mango preserves the value across reads and unrelated Agent
-updates, but it must be replaced with current custom references before the
-Agent can start a new Session.
+The current implementation can also read an untagged Skill value written by an
+earlier development checkout. This cleanup branch is not a compatibility
+promise and may be removed directly from `/v1`. While it exists, the value is
+read-only and must be replaced with a current custom reference before the Agent
+can start a new Session.
 
 A successful create returns `200` and version `1`.
 

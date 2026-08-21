@@ -114,9 +114,9 @@ message, tool-call, and execution-status stores.
 
 ## Workflow turn
 
-A Workflow turn is internal execution bookkeeping, not a public Managed Agents
-resource. PostgreSQL records the trigger and committed output; Temporal records
-the durable orchestration history and Activity results.
+A Workflow turn is internal execution bookkeeping, not a public Mango resource.
+PostgreSQL records the trigger and committed output; Temporal records the
+durable orchestration history and Activity results.
 
 ```text
 admitted → executing → completed

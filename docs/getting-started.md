@@ -166,15 +166,16 @@ worker startup and never silently falls back to local host execution. Remote
 provider variables and live-test commands are listed in
 [Sandbox backends](sandboxes.md).
 
-The configured endpoint must expose an Anthropic-shaped `/v1/messages` API.
+The current built-in external-model adapter expects a Messages-shaped
+`/v1/messages` API. This adapter constraint does not define Mango's public API
+or permanently limit future model integrations.
 Do not run workers with different model or sandbox configuration on the same
 Temporal Task Queue. Keep credentials in the environment and never commit them.
 
-Only this model endpoint is called: the credential does not need access to a
-separate hosted Managed Agents service. Whether a Claude Code-oriented key is
-usable therefore depends on whether its gateway permits authenticated
-`POST /v1/messages` requests with streaming; the following opt-in smoke tests
-answer that directly:
+Only this model endpoint is called; Mango does not call a separate hosted agent
+service. Whether a credential is usable depends on whether its gateway permits
+authenticated `POST /v1/messages` requests with streaming. The following
+opt-in smoke tests answer that directly:
 
 ```bash
 # Checks the external Messages endpoint only. This makes a real, potentially

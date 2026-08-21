@@ -1,54 +1,67 @@
 # Repository instructions
 
-Follow `CONTRIBUTING.md` for testing, compatibility, durability, security,
-documentation, and pull-request requirements.
+Follow `CONTRIBUTING.md` for testing, durability, security, documentation, and
+pull-request requirements.
 
 ## Product boundary
 
-- Mango is an independent, self-hosted implementation of the documented Claude
-  Managed Agents contract. It must never proxy or delegate Sessions, Files,
-  sandbox execution, scheduling, persistence, or other Managed Agents behavior
-  to Anthropic's hosted Managed Agents service.
-- The only required external AI dependency is an Anthropic Messages-compatible
-  endpoint. Runtime model execution calls `/v1/messages` with one external
-  model credential; the endpoint, model, and authentication style are ordinary
-  configuration rather than additional credentials.
-- Official CMA documentation and the pinned SDK are specification and client
-  compatibility sources, not runtime dependencies. Development, CI, and
-  production must not require hosted Managed Agents credentials.
+- Mango is an independent, self-hosted runtime for durable AI agents. Mango
+  owns its public API, lifecycle semantics, roadmap, and release policy.
+- Mango must never proxy or delegate Sessions, Files, sandbox execution,
+  scheduling, persistence, or other runtime behavior to a hosted agent service.
+- The current model adapter calls a Messages-shaped `/v1/messages` endpoint.
+  That adapter is replaceable infrastructure, not a requirement that Mango's
+  public API or future model integrations remain tied to Anthropic.
+- External API documentation and SDKs may be used as clean-room design
+  references. They do not define Mango's target contract and are not runtime
+  dependencies. Development, CI, and production must not require hosted agent
+  credentials.
 
-## Compatibility-driven development
+## Development API policy
 
-- The stable [Claude Managed Agents documentation](https://platform.claude.com/docs/en/managed-agents/overview)
-  and the pinned official Go SDK define the target contract. Do not maintain a
-  separate Mango product roadmap.
-- `docs/compatibility.md` is a navigation aid and public delta ledger, not the
-  sole evidence of what Mango currently implements. GitHub Issues define active
-  engineering work.
-- Before selecting or implementing substantial compatibility work, read the
-  relevant official CMA guide, API reference, and compatibility row, then
-  verify the current Mango behavior in the relevant source code, migrations,
-  OpenAPI definitions, and executable HTTP, SDK, persistence, workflow, and
-  service tests. Use the official documentation and pinned SDK as the authority
-  for the target contract; use the implementation and tests as the authority
-  for Mango's current behavior.
-- If implementation evidence contradicts `docs/compatibility.md` or other API
-  documentation, correct the documentation promptly. Do not select work, claim
-  support, or close an Issue based only on a compatibility row that has not been
-  verified against the current code and tests.
-- Select one user-visible, end-to-end gap. State its acceptance criteria and
-  non-goals before implementation.
-- Prefer stable CMA workflows. Do not implement research-preview capabilities
-  unless the task explicitly selects them.
-- Implement the smallest safe slice that closes the selected gap. Expand
+- Mango currently has no customers and no supported stable release. Until the
+  maintainers explicitly change that status, backward compatibility does not
+  exist as a product requirement.
+- `/v1` is the single development API namespace. Change its routes, fields,
+  schemas, and behavior in place when that improves Mango. Do not create `/v2`,
+  dual behavior, deprecation windows, legacy shims, or translation layers for
+  compatibility with an earlier commit or an external SDK.
+- Existing tests, fixtures, database rows, and vendor-shaped fields are evidence
+  of the current implementation, not compatibility obligations. Update or
+  remove them with the design they cover. Development databases may be rebuilt;
+  do not retain code solely to read data written by an earlier checkout.
+- Keep an existing behavior only because it remains the right Mango design, not
+  because changing it would be breaking. Only an explicit maintainer decision
+  establishing a supported release or real customer migration can change this
+  rule.
+
+## Product-driven development
+
+- Mango's documented HTTP API and observable runtime behavior define the
+  product contract. GitHub Issues define active engineering work and may form a
+  Mango-specific roadmap.
+- `docs/product.md` defines product direction. `docs/capabilities.md` records
+  Mango's current capabilities and limitations; it is not a delta ledger
+  against another service.
+- Before substantial API, persistence, or runtime work, verify current behavior
+  in source code, migrations, OpenAPI definitions, and executable HTTP,
+  persistence, workflow, and service tests. Use Mango's implementation and
+  documentation as the authority for current behavior.
+- Select one user-visible, end-to-end problem. State its acceptance criteria
+  and non-goals before implementation. A feature needs a Mango user or operator
+  rationale; similarity to an external product is not sufficient.
+- Implement the smallest safe slice that solves the selected problem. Expand
   internal architecture only when required for observable correctness,
-  durability, recovery, or security.
-- When public CMA behavior is ambiguous, choose a conservative self-hosted
-  behavior, document the limitation, and test the official SDK against Mango.
-  Observation of a hosted upstream service is optional clean-room research,
-  requires an explicitly authorized task, and cannot gate implementation,
-  testing, deployment, or operation.
+  durability, recovery, security, or operability.
+- Mango is pre-release. Public API, storage, and workflow changes may be
+  breaking when they materially improve the product. Update code, migrations,
+  OpenAPI, documentation, and tests together on the existing `/v1` surface.
+- External contracts may inspire resource models, workflows, or edge cases.
+  Record useful provenance, but adapt the design to Mango's self-hosted trust
+  boundary and reject constraints that do not serve Mango users.
+- Do not add research-preview or vendor-specific surfaces unless a Mango issue
+  explicitly selects them for an independent product reason.
 - Stop when the acceptance criteria and required tests pass. Record adjacent
-  gaps as separate Issues instead of expanding the current change.
-- A completed compatibility change must update the affected API documentation
-  and `docs/compatibility.md`.
+  work as separate Issues instead of expanding the current change.
+- A completed user-visible change must update the affected API documentation,
+  `internal/httpapi/openapi.yaml`, and the capability summary when applicable.

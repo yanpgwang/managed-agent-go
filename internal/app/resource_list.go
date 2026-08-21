@@ -54,8 +54,8 @@ type ResourcePageBoundary struct {
 }
 
 const (
-	// The Agent and Agent Version list bounds are documented by the public API
-	// and official SDK.
+	// The Agent and Agent Version list bounds are documented by Mango's public
+	// API.
 	DefaultAgentListLimit = 20
 	MaxAgentListLimit     = 100
 

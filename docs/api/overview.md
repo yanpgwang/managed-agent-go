@@ -5,17 +5,16 @@ slug: /api
 
 # API overview
 
-The server exposes 90 operations from its pinned Claude Managed Agents, Files,
-Skills, Memory, Vault, Deployment, Environment Work, and Session Thread HTTP
-contract under `/v1`. Operation presence does not imply unrestricted support
-for every hosted behavior. The official Go SDK is pinned at v1.63.1; its five
-Dreams research-preview operations are not currently exposed.
+The server exposes Mango's current Agent, Environment, Session, Event, File,
+Skill, Memory, Vault, Deployment, Environment Work, and Session Thread HTTP
+surface under `/v1`. Operation presence does not imply unrestricted support
+for every workflow; resource-specific limitations are documented explicitly.
 
 :::info
 
 This reference documents repository behavior. See
-[API compatibility](../compatibility.md) for exactly what is supported,
-limited, in preview, or not supported.
+[capabilities and limits](../capabilities.md) for what is supported, limited,
+or still in preview. Mango's API is not defined by a third-party SDK.
 
 :::
 
@@ -56,7 +55,7 @@ Resource-specific request shapes are covered in:
 
 Every protected route requires an API key. The default development stack uses
 `sk-mango-local-development`. Run with `-strict` to additionally require the
-CMA compatibility headers:
+vendor-named headers currently used by strict mode:
 
 ```http
 x-api-key: sk-mango-local-development
@@ -75,15 +74,13 @@ than 30 MB.
 
 Memory routes require `anthropic-beta: agent-memory-2026-07-22`. Do not combine
 that header with `managed-agents-2026-04-01` on Memory routes. Session creation
-continues to use the Managed Agents beta when attaching a Memory Store.
-
-Dreams require the separate `dreaming-2026-04-21` preview upstream. Mango does
-not currently serve `/v1/dreams` or claim the v1.63.1 `output_behavior` union.
+currently uses `managed-agents-2026-04-01` when attaching a Memory Store. These
+header names are current implementation details, not compatibility promises.
 
 `authorization: Bearer <key>` may replace `x-api-key`, but sending both is an
 authentication error. Each key resolves to exactly one Workspace, and every
 key for that Workspace can access the same resources. Workspace IDs are not
-added to CMA request or response bodies.
+added to public request or response bodies.
 
 Mango intentionally has no end-user or role model. A surrounding SaaS may map
 many users to a Workspace and apply its own RBAC before calling Mango. Use the
@@ -102,7 +99,8 @@ to 500 MB and requires configured S3-compatible storage.
 
 ## Errors
 
-Errors use a Claude-compatible envelope:
+Errors use Mango's current error envelope, whose shape is retained from the
+original `/v1` design:
 
 ```json
 {
@@ -129,8 +127,8 @@ Errors use a Claude-compatible envelope:
 A failed Memory SHA-256 precondition is the more specific
 `409 memory_precondition_failed_error`.
 
-These mappings are Mango's public contract for the supported API subset. See
-the [compatibility matrix](../compatibility.md) for parity limits.
+These mappings are Mango's current public contract. See
+[capabilities and limits](../capabilities.md) for behavioral boundaries.
 
 ## Pagination
 
@@ -157,7 +155,7 @@ Session Resource lists use a forward-only opaque `page` cursor. Omitting
 `limit` returns all resources for the Session, whose active-resource limit is
 500.
 
-Files use their upstream ID-based pagination instead: `after_id` and
+Files currently use ID-based pagination: `after_id` and
 `before_id` select a direction, while the response contains `has_more`,
 `first_id`, and `last_id`. The two direction parameters cannot be combined.
 
@@ -169,17 +167,13 @@ parent Vault ID and archive filter.
 ## OpenAPI
 
 The running server exposes `/openapi.yaml`, sourced from
-`internal/httpapi/openapi.yaml`. All 21 core operations, ten Deployment and
-Deployment Run operations, five Files operations, five Session Resources
-operations, nine custom Skills operations, fourteen Memory operations,
-thirteen Vault/Credential operations, eight Environment Work operations, and
-five Session Thread/Thread Event operations define
-stable operation IDs, path and query parameters, request and response schemas,
-list envelopes, and shared error responses. The Session Event
-contract includes the seven client-submittable variants, the 25 persisted core
-variants, and the ephemeral SSE `event_start` and `event_delta` preview frames.
+`internal/httpapi/openapi.yaml`. It defines Mango's operation IDs, path and
+query parameters, request and response schemas, list envelopes, and shared
+error responses. The Session Event contract includes the client-submittable
+and persisted variants plus ephemeral SSE `event_start` and `event_delta`
+preview frames.
 
-Together these are Mango's 90 pinned HTTP operations. Repository tests keep all
-local references resolvable and lock both the core operation inventory and the
-event unions. The five SDK Dreams operations remain an explicitly separate,
-unsupported research-preview surface.
+Repository tests keep local references resolvable and lock the intended
+operation inventory and event unions. During alpha, Mango may change that
+inventory in place when the implementation, OpenAPI, documentation, and tests
+move together for a clear product reason.

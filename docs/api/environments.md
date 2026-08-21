@@ -150,8 +150,8 @@ Deleting an environment referenced by a session returns `409`.
 }
 ```
 
-The default cloud response includes the official SDK's resolved
-unrestricted-network and empty-package defaults. Configured package lists,
+The default cloud response includes Mango's resolved unrestricted-network and
+empty-package defaults. Configured package lists,
 description, metadata, and self-hosted scope persist across create, get, list,
 update, and archive. A package-manager error prevents sandbox binding and tool
 execution; a later retry resumes provisioning from the durable intent. The

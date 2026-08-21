@@ -1,16 +1,17 @@
 # Contributing to mango
 
-Thanks for helping improve the project. This repository is a clean-room,
-self-hosted runtime with a Claude-compatible integration surface, so changes
-should preserve a clear line between observed public behavior and original
-internal design.
+Thanks for helping improve the project. Mango is an independent, self-hosted
+runtime with its own product contract. Some of its original resource and wire
+design was informed by public agent-platform specifications, so changes must
+preserve a clear line between external design research and Mango's original
+implementation and product decisions.
 
 ## Before opening a change
 
 For substantial API, persistence, or runtime changes, open an issue describing:
 
 - the user-visible problem;
-- the official source for any compatibility claim;
+- the Mango user or operator rationale and any relevant design references;
 - the durability, retry, and security implications;
 - a small independently testable delivery slice.
 
@@ -78,20 +79,35 @@ The live targets require the `MANGO_MODEL_*` variables documented in
 the getting-started guide. They are intentionally not run in public CI and must
 never print or persist API keys.
 
-## Compatibility changes
+## Public API changes
 
 When changing the public HTTP surface:
 
-1. cite an official source in `docs/provenance.md`;
+1. describe the Mango workflow and acceptance criteria in the Issue or pull
+   request;
 2. add or update raw HTTP golden tests for exact JSON and status behavior;
-3. add an official SDK black-box test when the SDK exposes the capability;
-4. update `docs/compatibility.md` when the supported integration surface or a
-   user-visible limitation changes;
-5. update the API docs and embedded `internal/httpapi/openapi.yaml`.
+3. update the API docs and embedded `internal/httpapi/openapi.yaml`;
+4. update `docs/capabilities.md` when a capability or user-visible limitation
+   changes;
+5. document data migration and rollback implications when persisted state
+   changes;
+6. update or remove obsolete wire tests when an intentional API change makes
+   their old assumptions invalid.
 
-Do not copy upstream implementation code or internal types. Official public
-documentation and public SDK behavior may establish the wire contract; internal
-design must remain this project's own.
+Mango is pre-release. A public API may change in place when the change has a
+clear product rationale and updates the implementation, OpenAPI, documentation,
+and tests as one slice. Mango currently has no customers or supported releases,
+so every API change targets `/v1` directly. Do not add `/v2`, version
+negotiation, legacy shims, dual behavior, deprecation windows, or data readers
+for earlier development snapshots. Update or remove old tests and fixtures
+instead. Development databases may be recreated when the schema changes.
+
+External documentation and public SDK behavior may inform design research, but
+they do not establish Mango's wire contract. Cite material influences in
+`docs/provenance.md`. Do not copy external implementation code or internal
+types; Mango's implementation and product decisions must remain its own. An
+existing third-party client test is not, by itself, a reason to preserve an API
+shape.
 
 ## Sandbox backend changes
 
@@ -124,7 +140,7 @@ Keep each pull request focused. Include:
 
 - a concise problem and solution statement;
 - tests that fail without the change;
-- compatibility and migration impact;
+- API and migration impact;
 - security considerations for tools, sandboxes, credentials, or external calls;
 - documentation updates for user-visible behavior.
 

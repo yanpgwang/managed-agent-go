@@ -102,10 +102,11 @@ non-null budget sets a Session-wide ceiling in integer USD cents:
 }
 ```
 
-Budgeted Sessions require canonical Anthropic model IDs with known public list
-prices for the coordinator and every resolved roster member. A router may still
-forward those requests, but an opaque router-defined model alias is not assigned
-a guessed price.
+Budgeted Sessions require model IDs present in Mango's built-in price catalog,
+which currently contains canonical Anthropic model IDs and published list
+prices, for the coordinator and every resolved roster member. A router may
+still forward those requests, but an opaque router-defined model alias is not
+assigned a guessed price.
 `resources` accepts File inputs and up to eight Memory Store inputs when the
 corresponding Docker sandbox capability is configured:
 
@@ -128,7 +129,7 @@ local-process, E2B, and Cube resources return `422`.
 with the Session: for an MCP endpoint, the first Vault containing a matching
 credential wins. Admission requires the Vault keyring to be configured and
 rejects missing, archived, empty, or duplicate references. Updating
-`vault_ids` after creation remains unsupported, matching the upstream contract.
+`vault_ids` after creation remains unsupported by the current Mango contract.
 
 ## Get and update
 
@@ -167,7 +168,7 @@ The update body accepts `agent`, `metadata`, `title`, and `budget`:
 - **An `agent` update requires an `idle` session.** A request that arrives while
   a turn is in flight returns `409`; send an untargeted `user.interrupt` first.
   `title` and `metadata` carry no such precondition.
-- `vault_ids` is rejected on update, matching the official Update Session API.
+- `vault_ids` is rejected on update by the current Mango API.
 - A Session created with a budget may replace it or set `budget: null` to remove
   it. A changed maximum must be strictly greater than the exact list cost already
   consumed. A Session created without a budget cannot add one later, and a
@@ -234,14 +235,15 @@ The response embeds the resolved agent snapshot and includes nullable `budget`,
 `stats` and `usage` are cumulative live projections, and
 `outcome_evaluations` reflects each admitted outcome. `resources` embeds active
 File and Memory Store Resource objects. Ordered `vault_ids` are resolved at
-creation; update-time vault replacement is rejected, matching the official API.
+creation; update-time vault replacement is rejected.
 `usage` aggregates provider-reported token, prompt-cache, Web Fetch, and Web
 Search counters across every Session Thread. `usage.list_cost` is calculated
-from Anthropic public Messages rates, the Web Search request rate, and $0.08 per
-Session active hour, then rounded to the nearest cent for the public monetary
-projection. Thread list cost excludes Session runtime. Accounting remains exact
-internally, and model-request admission checks the shared ceiling before every
-request; an already in-flight request may take the Session over its limit.
+from Mango's current built-in price catalog, the Web Search request rate, and
+$0.08 per Session active hour, then rounded to the nearest cent for the public
+monetary projection. Thread list cost excludes Session runtime. Accounting
+remains exact internally, and model-request admission checks the shared ceiling
+before every request; an already in-flight request may take the Session over its
+limit.
 Provider-reported tokens remain visible even when a response-level billing rule
 makes their list cost zero, such as an unbilled Claude Fable 5 refusal.
 
@@ -260,4 +262,4 @@ idle. List them with `GET /v1/files?scope_id={session_id}` and download them
 through the Files content endpoint. See [Files](files.md#session-outputs) for
 limits and provider constraints.
 
-See [Claude API coverage](../compatibility.md).
+See [capabilities and limits](../capabilities.md).

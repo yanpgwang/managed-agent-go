@@ -3,8 +3,9 @@ import type {SidebarsConfig} from '@docusaurus/plugin-content-docs';
 const sidebars: SidebarsConfig = {
   docs: [
     'intro',
+    'product',
     'getting-started',
-    'compatibility',
+    'capabilities',
     {
       type: 'category',
       label: 'Guides',

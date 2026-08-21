@@ -4,7 +4,7 @@ import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
   title: 'Mango',
-  tagline: 'A self-hosted implementation of the Claude Managed Agents API',
+  tagline: 'A self-hosted, durable runtime for long-running AI agents',
   favicon: 'img/mango-mark.svg',
 
   future: {
@@ -99,16 +99,16 @@ const config: Config = {
           title: 'Resources',
           items: [
             {
-              label: 'API compatibility',
-              to: '/compatibility',
+              label: 'Capabilities',
+              to: '/capabilities',
+            },
+            {
+              label: 'Product direction',
+              to: '/product',
             },
             {
               label: 'Releases',
               href: 'https://github.com/yanpgwang/mango/releases',
-            },
-            {
-              label: 'Claude Managed Agents',
-              href: 'https://platform.claude.com/docs/en/managed-agents/overview',
             },
             {
               label: 'GitHub',
