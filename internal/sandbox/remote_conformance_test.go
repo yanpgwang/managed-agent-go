@@ -80,6 +80,26 @@ func TestRemoteFileResourceConformance(t *testing.T) {
 		open func(*fakeRemoteStore) Provider
 	}{
 		{
+			name: E2BProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					E2BProviderName,
+					&fakeE2BService{store: store},
+					remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: CubeProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					CubeProviderName,
+					&fakeE2BService{store: store},
+					remoteDefaultRoot,
+				)
+			},
+		},
+		{
 			name: OpenSandboxProviderName,
 			open: func(store *fakeRemoteStore) Provider {
 				return newOpenSandboxProvider(
@@ -111,6 +131,26 @@ func TestRemoteSessionOutputConformance(t *testing.T) {
 		name string
 		open func(*fakeRemoteStore) Provider
 	}{
+		{
+			name: E2BProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					E2BProviderName,
+					&fakeE2BService{store: store},
+					remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: CubeProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					CubeProviderName,
+					&fakeE2BService{store: store},
+					remoteDefaultRoot,
+				)
+			},
+		},
 		{
 			name: OpenSandboxProviderName,
 			open: func(store *fakeRemoteStore) Provider {
@@ -144,6 +184,38 @@ func TestRemoteSessionOutputUsesOperationDeadline(t *testing.T) {
 		name string
 		box  func(*fakeRemoteStore, *fakeRemoteResource) SessionOutputSandbox
 	}{
+		{
+			name: E2BProviderName,
+			box: func(
+				store *fakeRemoteStore,
+				resource *fakeRemoteResource,
+			) SessionOutputSandbox {
+				return newE2BLikeSandbox(
+					E2BProviderName,
+					&fakeE2BRemote{fakeRemoteHandle: fakeRemoteHandle{
+						store: store, resource: resource,
+					}},
+					remoteDefaultRoot,
+					sandboxTimeout,
+				)
+			},
+		},
+		{
+			name: CubeProviderName,
+			box: func(
+				store *fakeRemoteStore,
+				resource *fakeRemoteResource,
+			) SessionOutputSandbox {
+				return newE2BLikeSandbox(
+					CubeProviderName,
+					&fakeE2BRemote{fakeRemoteHandle: fakeRemoteHandle{
+						store: store, resource: resource,
+					}},
+					remoteDefaultRoot,
+					sandboxTimeout,
+				)
+			},
+		},
 		{
 			name: OpenSandboxProviderName,
 			box: func(
@@ -377,11 +449,16 @@ func runFakeRemoteFileResourceContract(
 	content := []byte("remote resource\n")
 	mount := testFileResourceMount(SessionUploadsRoot+"/nested/data.txt", content)
 	mount.Identity = "sesrsc_remote_first"
+	execCalls := store.execCallCount(ref.ID)
 	if err := resources.ImportFileResource(ctx, mount, bytes.NewReader(content)); err != nil {
 		t.Fatal(err)
 	}
-	if calls := store.execCallCount(ref.ID); calls != 0 {
-		t.Fatalf("File Resource import used Exec %d time(s), want SDK-only operations", calls)
+	if calls := store.execCallCount(ref.ID); calls != execCalls {
+		t.Fatalf(
+			"File Resource import used Exec: got %d call(s), want %d",
+			calls,
+			execCalls,
+		)
 	}
 	assertFakeRemoteResource(t, ctx, box, resources, mount, content)
 	edited := []byte("agent-edited resource\n")
@@ -390,7 +467,7 @@ func runFakeRemoteFileResourceContract(
 	}
 	assertFakeRemoteResource(t, ctx, box, resources, mount, edited)
 
-	execCalls := store.execCallCount(ref.ID)
+	execCalls = store.execCallCount(ref.ID)
 	replacementContent := []byte("remote replacement\n")
 	replacement := testFileResourceMount(mount.RuntimePath, replacementContent)
 	replacement.Identity = "sesrsc_remote_second"
@@ -1028,8 +1105,9 @@ func (s *fakeE2BRemote) Exec(
 	ctx context.Context,
 	command string,
 	_ string,
-	_ time.Duration,
+	timeout time.Duration,
 ) (string, string, int, error) {
+	s.store.recordExecTimeout(s.resource.id, timeout)
 	return s.exec(ctx, command)
 }
 

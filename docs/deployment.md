@@ -79,12 +79,14 @@ concurrent upload, Session Resource copy, or Session output publication. These
 are explicit limits until distributed intent leasing and direct multipart
 object-store operations are implemented.
 
-File-backed Session Resources require `MANGO_SANDBOX=docker`, `opensandbox`, or
-`daytona`; the remote providers currently expose writable sandbox-local copies.
-Automatic Session output publication requires `MANGO_SANDBOX=docker`,
-`opensandbox`, or `daytona`. OpenSandbox and Daytona images must provide
-`/bin/sh` and `tar`; output archives stream through the provider SDK and are
-removed after each snapshot. A Docker worker must run where the selected Docker
+File-backed Session Resources require `MANGO_SANDBOX=docker`, `e2b`, `cube`,
+`opensandbox`, or `daytona`; the remote providers currently expose writable
+sandbox-local copies. Automatic Session output publication supports the same
+providers. Every remote image must provide `/bin/sh` and `tar`; output archives
+are removed after each snapshot. OpenSandbox and Daytona stream file transfers,
+while E2B and Cube buffer each File Resource and output archive in worker
+memory, so operators must provision memory for the largest accepted transfer.
+A Docker worker must run where the selected Docker
 Engine API is reachable; the provider uses the Moby Go client directly and does
 not require a `docker` CLI binary. Configure a non-default daemon with
 `DOCKER_HOST` and the standard Docker TLS environment variables. The daemon
@@ -93,7 +95,7 @@ must be able to bind the worker's provider-owned staging directory. Set
 host volume; the default is `mango-resources` beneath the process
 user's home directory. The API and every worker
 on the task queue must agree on the sandbox provider and object-store
-configuration. The local-process, E2B, and Cube adapters reject File Resources.
+configuration. The local-process adapter rejects File Resources.
 
 Memory API contents and immutable Versions live entirely in PostgreSQL and do
 not require S3-compatible storage. Memory-backed Session Resources do require

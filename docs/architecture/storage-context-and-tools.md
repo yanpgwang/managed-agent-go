@@ -203,16 +203,18 @@ Session-scoped File object and records a durable desired mount.
 Before each sandbox tool execution a capable adapter ensures that the requested
 identity exists beneath `/mnt/session/uploads`. Docker streams into
 provider-owned staging, verifies size and SHA-256, atomically publishes it, and
-exposes the staging directory read-only. OpenSandbox and Daytona stream through
-their official SDK clients and record an identity marker after validation; the
-current remote copies are writable and sandbox-local edits do not update the
-S3-backed Session File. Deletion records a tombstone until the worker removes
-the applied copy. Local, E2B, and Cube adapters reject the feature.
+exposes the staging directory read-only. Remote adapters use their official SDK
+clients and record an identity marker after validation; OpenSandbox and Daytona
+stream the transfer, while E2B and Cube buffer each complete File in worker
+memory. The current remote copies are writable and sandbox-local edits do not
+update the S3-backed Session File. Deletion records a tombstone until the worker
+removes the applied copy. The local adapter rejects the feature.
 
-Docker, OpenSandbox, and Daytona expose a writable
+Docker, E2B, CubeSandbox, OpenSandbox, and Daytona expose a writable
 `/mnt/session/outputs` boundary. Docker uses a provider-owned bind mount and
 the Engine archive API; the remote adapters create a unique temporary archive
-and stream it through their official SDK file clients. Before the primary
+and open it through their official SDK file clients. E2B and Cube buffer the
+archive before returning the reader. Before the primary
 Session's idle event is committed, Temporal runs a retryable Activity that
 attaches only to an existing sandbox, streams the output tree, rejects
 non-regular or escaping entries, and publishes each accepted file through the

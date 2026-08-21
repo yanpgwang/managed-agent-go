@@ -13,7 +13,7 @@ import (
 
 func TestE2BLiveConformance(t *testing.T) {
 	requireLive(t, "MANGO_LIVE_E2B")
-	runLiveConformance(t, func(t *testing.T) sandbox.Provider {
+	factory := func(t *testing.T) sandbox.Provider {
 		provider, err := sandbox.NewE2BProvider(sandbox.E2BConfig{
 			APIURL:      os.Getenv("E2B_API_URL"),
 			APIKey:      os.Getenv("E2B_API_KEY"),
@@ -25,12 +25,15 @@ func TestE2BLiveConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		return provider
-	})
+	}
+	runLiveConformance(t, factory)
+	runLiveFileResourceConformance(t, factory)
+	runLiveSessionOutputConformance(t, factory)
 }
 
 func TestCubeLiveConformance(t *testing.T) {
 	requireLive(t, "MANGO_LIVE_CUBE")
-	runLiveConformance(t, func(t *testing.T) sandbox.Provider {
+	factory := func(t *testing.T) sandbox.Provider {
 		provider, err := sandbox.NewCubeProvider(sandbox.CubeConfig{
 			APIURL:      os.Getenv("CUBE_API_URL"),
 			APIKey:      os.Getenv("CUBE_API_KEY"),
@@ -45,7 +48,10 @@ func TestCubeLiveConformance(t *testing.T) {
 			t.Fatal(err)
 		}
 		return provider
-	})
+	}
+	runLiveConformance(t, factory)
+	runLiveFileResourceConformance(t, factory)
+	runLiveSessionOutputConformance(t, factory)
 }
 
 func TestOpenSandboxLiveConformance(t *testing.T) {

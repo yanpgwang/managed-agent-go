@@ -1,9 +1,11 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +16,12 @@ import (
 
 	cubesandbox "github.com/tencentcloud/CubeSandbox/sdk/go"
 )
+
+type sandboxRoundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f sandboxRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func TestE2BTransportAdaptsCloudControlPlane(t *testing.T) {
 	var gotAPIKey string
@@ -240,6 +248,147 @@ func TestE2BCreateUsesDocumentedDefaultDenyField(t *testing.T) {
 	}
 	if _, exists := payload["allowInternetAccess"]; exists {
 		t.Fatalf("unexpected camel-case network field in payload: %v", payload)
+	}
+}
+
+func TestCubeSDKRemoteAdaptsBufferedResourceDataPlane(t *testing.T) {
+	files := map[string][]byte{}
+	directories := map[string]bool{}
+	client := &http.Client{Transport: sandboxRoundTripFunc(func(
+		request *http.Request,
+	) (*http.Response, error) {
+		response := func(status int, body string) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: status,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		}
+		if request.URL.Path == "/sandboxes" {
+			return response(
+				http.StatusCreated,
+				`{"sandboxID":"sbx-files","templateID":"base","envdAccessToken":"envd-token","domain":"test.invalid"}`,
+			)
+		}
+		if request.Header.Get("X-Access-Token") != "envd-token" {
+			t.Errorf("X-Access-Token = %q", request.Header.Get("X-Access-Token"))
+		}
+		switch request.URL.Path {
+		case "/files":
+			filePath := request.URL.Query().Get("path")
+			switch request.Method {
+			case http.MethodPost:
+				data, err := io.ReadAll(request.Body)
+				if err != nil {
+					return nil, err
+				}
+				files[filePath] = data
+				return response(http.StatusOK, `[]`)
+			case http.MethodGet:
+				data, ok := files[filePath]
+				if !ok {
+					return response(http.StatusNotFound, `{"message":"not found"}`)
+				}
+				return response(http.StatusOK, string(data))
+			}
+		case "/filesystem.Filesystem/MakeDir":
+			var payload struct {
+				Path string `json:"path"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			directories[payload.Path] = true
+			return response(http.StatusOK, fmt.Sprintf(
+				`{"entry":{"path":%q,"type":"FILE_TYPE_DIRECTORY","size":"0"}}`,
+				payload.Path,
+			))
+		case "/filesystem.Filesystem/Stat":
+			var payload struct {
+				Path string `json:"path"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			if data, ok := files[payload.Path]; ok {
+				return response(http.StatusOK, fmt.Sprintf(
+					`{"entry":{"path":%q,"type":"FILE_TYPE_FILE","size":%q}}`,
+					payload.Path,
+					fmt.Sprint(len(data)),
+				))
+			}
+			if directories[payload.Path] {
+				return response(http.StatusOK, fmt.Sprintf(
+					`{"entry":{"path":%q,"type":"FILE_TYPE_DIRECTORY","size":"0"}}`,
+					payload.Path,
+				))
+			}
+			return response(http.StatusNotFound, `{"message":"not found"}`)
+		case "/filesystem.Filesystem/Remove":
+			var payload struct {
+				Path string `json:"path"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				return nil, err
+			}
+			delete(files, payload.Path)
+			return response(http.StatusOK, `{}`)
+		}
+		return response(http.StatusNotFound, `{"message":"unexpected request"}`)
+	})}
+	sdk := cubesandbox.NewClient(cubesandbox.Config{
+		APIURL:        "https://control.invalid",
+		TemplateID:    defaultE2BTemplate,
+		SandboxDomain: "test.invalid",
+		ProxyScheme:   "https",
+	}, cubesandbox.WithHTTPClient(client))
+	service := &cubeSDKService{
+		name: E2BProviderName, client: sdk, idleTimeout: time.Minute,
+	}
+	serviceRemote, err := service.Create(context.Background(), "session-1", Spec{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := serviceRemote.(*cubeSDKSandbox)
+	ctx := context.Background()
+	if err := remote.ResourceCreateDirectory(
+		ctx, SessionOutputsRoot, remoteFilePermissions{Mode: 0o700},
+	); err != nil {
+		t.Fatal(err)
+	}
+	payload := []byte{'b', 'i', 'n', 'a', 'r', 'y', 0, 0xff}
+	filePath := SessionOutputsRoot + "/result.bin"
+	if err := remote.ResourceUpload(
+		ctx, filePath, bytes.NewReader(payload), remoteFilePermissions{Mode: 0o600},
+	); err != nil {
+		t.Fatal(err)
+	}
+	info, err := remote.ResourceStat(ctx, filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Regular || info.Directory || info.SizeBytes != int64(len(payload)) {
+		t.Fatalf("ResourceStat = %+v", info)
+	}
+	reader, err := remote.ResourceOpen(ctx, filePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, readErr := io.ReadAll(reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil || !bytes.Equal(got, payload) {
+		t.Fatalf("ResourceOpen = %v, read=%v close=%v", got, readErr, closeErr)
+	}
+	if err := remote.ResourceRemoveFile(ctx, filePath); err != nil {
+		t.Fatal(err)
+	}
+	_, err = remote.ResourceStat(ctx, filePath)
+	if !remote.ResourceIsNotFound(err) {
+		t.Fatalf("ResourceStat after remove = %v, want not found", err)
+	}
+	if err := remote.ResourceRemoveFile(ctx, filePath); !remote.ResourceIsNotFound(err) {
+		t.Fatalf("repeated ResourceRemoveFile = %v, want not found", err)
 	}
 }
 

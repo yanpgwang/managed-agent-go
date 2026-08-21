@@ -72,8 +72,8 @@ Memory, or network enforcement.
 |---|---:|---:|---:|---:|---:|---:|
 | Local process | No | No | No | No | No | No |
 | Docker | Yes | Yes, read-only | Yes | Yes, read-only | Yes | No |
-| E2B | Yes | No | No | No | No | No |
-| CubeSandbox | Yes | No | No | No | No | No |
+| E2B | Yes | Yes, buffered writable-copy limitation | Yes, buffered | No | No | No |
+| CubeSandbox | Yes | Yes, buffered writable-copy limitation | Yes, buffered | No | No | No |
 | OpenSandbox | Yes | Yes, writable-copy limitation | Yes | No | No | Yes |
 | Daytona | Yes | Yes, writable-copy limitation | Yes | No | No | No |
 
@@ -91,23 +91,27 @@ enforce that property are recorded as limited rather than being presented as
 complete implementations.
 
 Docker stages validated bytes in a provider-owned host directory and
-bind-mounts that directory read-only at `/mnt/session/uploads`. OpenSandbox and
-Daytona use their pinned official Go SDK filesystem clients to create the
-uploads tree, stream and validate File bytes, record the applied resource
-identity, and delete the copy. They do not call a provider CLI or an in-sandbox
-shell command for materialization. Their current copies are writable by the
-Agent. Sandbox edits remain local and do not mutate the S3-backed source or the
-downloadable Session File; a later resource with a new identity replaces the
-path, and an interrupted import is retried before the next tool.
+bind-mounts that directory read-only at `/mnt/session/uploads`. Every remote
+adapter uses its pinned official Go SDK filesystem client to create the uploads
+tree, validate File bytes, record the applied resource identity, and delete the
+copy. They do not call a provider CLI or an in-sandbox shell command for
+materialization. OpenSandbox and Daytona stream the transfer; the current
+E2B/Cube-compatible Go client accepts only `[]byte`, so those adapters buffer
+each complete File in worker memory and retain provider-default file modes
+because that client does not expose per-operation mode options. Remote copies
+are writable by the Agent. Sandbox edits remain local and do not mutate the
+S3-backed source or the downloadable Session File; a later resource with a new
+identity replaces the path, and an interrupted import is retried before the
+next tool.
 
 The local-process provider would have to write into the worker host's absolute
-`/mnt` path and therefore rejects the feature. E2B and Cube remain fail-closed:
-the pinned Go data-plane client accepts uploads as `[]byte` and does not satisfy
-the streaming path required for Mango's 500 MB File limit.
+`/mnt` path and therefore rejects the feature. E2B and Cube retain the public
+File limits and checksum validation, but their current buffering means the
+worker must have enough memory for the largest accepted individual resource.
 
 ## Session output mounts
 
-Docker, OpenSandbox, and Daytona expose the writable
+Docker, E2B, CubeSandbox, OpenSandbox, and Daytona expose the writable
 `/mnt/session/outputs` boundary. Before a primary Session becomes idle, the
 worker attaches to the existing durable sandbox, takes the provider resource
 lock, streams the directory as an archive, validates every path and entry type,
@@ -115,21 +119,23 @@ and publishes regular files to Mango's S3-compatible Files store. The worker
 never creates a sandbox solely for output discovery.
 
 Docker exports its provider-owned bind mount through the Engine archive API.
-OpenSandbox and Daytona create a uniquely named tar snapshot in an
-adapter-owned control directory, stream it through their official SDK file
-clients, and remove it when the stream closes. Mango's file tools authorize the
-output root but reject the control directory. Remote images selected for these
-adapters must provide a POSIX `tar` executable; a missing or failed archiver is
-reported explicitly instead of treating the output tree as empty.
+Remote adapters create a uniquely named tar snapshot in an adapter-owned
+control directory, read it through their official SDK file clients, and remove
+it when the returned reader closes. OpenSandbox and Daytona stream the archive;
+E2B and Cube buffer the complete archive in worker memory. Mango's file tools
+authorize the output root but reject the control directory. Remote images
+selected for these adapters must provide a POSIX `tar` executable; a missing or
+failed archiver is reported explicitly instead of treating the output tree as
+empty.
 
 The mount and publication capabilities are separate from File Resource input
 mounts. Every provider must pass the shared output conformance suite: built-in
 file tools and shell commands must see the same durable root, export must be
-streaming and repeatable under the resource lock, and an adapter without that
-proof remains fail-closed. E2B and Cube do not yet expose Mango's required
-streaming file data plane and therefore reject output publication. Docker
-sandboxes created before the output mount existed must be recreated rather
-than silently producing an empty export.
+repeatable under the resource lock, and an adapter without that proof remains
+fail-closed. E2B and Cube meet that lifecycle contract with a documented
+buffering limitation rather than the streaming implementation used by the
+other providers. Docker sandboxes created before the output mount existed must
+be recreated rather than silently producing an empty export.
 
 ## Custom Skill mounts
 
