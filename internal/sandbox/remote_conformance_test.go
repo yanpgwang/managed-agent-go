@@ -224,13 +224,17 @@ func TestRemoteSkillBundleConformance(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			store := newFakeRemoteStore(t.TempDir())
 			runFakeRemoteSkillBundleContract(
-				t, func() Provider { return test.open(store) },
+				t, store, func() Provider { return test.open(store) },
 			)
 		})
 	}
 }
 
-func runFakeRemoteSkillBundleContract(t *testing.T, open func() Provider) {
+func runFakeRemoteSkillBundleContract(
+	t *testing.T,
+	store *fakeRemoteStore,
+	open func() Provider,
+) {
 	t.Helper()
 	ctx := context.Background()
 	provider := open()
@@ -344,6 +348,9 @@ func runFakeRemoteSkillBundleContract(t *testing.T, open func() Provider) {
 		t.Fatalf("repair Skill: %v", err)
 	}
 	assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+	assertFakeRemoteSkillMarkerRepairs(
+		t, ctx, store, ref, box, skills, mount, archive,
+	)
 
 	attached, err := open().Attach(ctx, sessionKey, ref, Spec{Timeout: 5 * time.Second})
 	if err != nil {
@@ -356,6 +363,125 @@ func runFakeRemoteSkillBundleContract(t *testing.T, open func() Provider) {
 	assertFakeRemoteSkill(
 		t, ctx, attached, attachedSkills, mount, "Analyze reports",
 	)
+}
+
+func assertFakeRemoteSkillMarkerRepairs(
+	t *testing.T,
+	ctx context.Context,
+	store *fakeRemoteStore,
+	ref Ref,
+	box Sandbox,
+	skills SkillBundleSandbox,
+	mount ReadOnlySkillMount,
+	archive []byte,
+) {
+	t.Helper()
+	resource, err := store.get(ref.ID)
+	if err != nil {
+		t.Fatalf("resolve fake remote Skill resource: %v", err)
+	}
+	markerRelative, err := fakeRelativePath(remoteSkillMarkerPath(mount))
+	if err != nil {
+		t.Fatalf("resolve fake remote Skill marker: %v", err)
+	}
+	markerPath := filepath.Join(resource.root, filepath.FromSlash(markerRelative))
+	stagingPath := markerPath + "-staging"
+	symlinkTarget := markerPath + "-symlink-target"
+
+	corruptions := []struct {
+		name    string
+		corrupt func(string) error
+		verify  func(*testing.T)
+	}{
+		{
+			name: "empty",
+			corrupt: func(marker string) error {
+				return os.WriteFile(marker, nil, 0o600)
+			},
+		},
+		{
+			name: "oversized",
+			corrupt: func(marker string) error {
+				return os.WriteFile(
+					marker, bytes.Repeat([]byte("x"), remoteSkillMarkerLimit+1), 0o600,
+				)
+			},
+		},
+		{
+			name: "invalid-json",
+			corrupt: func(marker string) error {
+				return os.WriteFile(marker, []byte("not-json\n"), 0o600)
+			},
+		},
+		{
+			name: "directory",
+			corrupt: func(marker string) error {
+				if err := os.Mkdir(marker, 0o700); err != nil {
+					return err
+				}
+				return os.WriteFile(filepath.Join(marker, "partial"), []byte("x"), 0o600)
+			},
+		},
+		{
+			name: "symlink",
+			corrupt: func(marker string) error {
+				if err := os.WriteFile(symlinkTarget, []byte("unchanged"), 0o600); err != nil {
+					return err
+				}
+				if err := os.Chmod(symlinkTarget, 0o400); err != nil {
+					return err
+				}
+				if err := os.Symlink(symlinkTarget, marker); err != nil {
+					return err
+				}
+				return os.Symlink(symlinkTarget, stagingPath)
+			},
+			verify: func(t *testing.T) {
+				t.Helper()
+				body, err := os.ReadFile(symlinkTarget)
+				if err != nil || string(body) != "unchanged" {
+					t.Fatalf("Skill marker symlink target = %q, %v", body, err)
+				}
+				info, err := os.Stat(symlinkTarget)
+				if err != nil || info.Mode().Perm() != 0o400 {
+					t.Fatalf("Skill marker symlink target mode = %v, %v", info, err)
+				}
+			},
+		},
+	}
+
+	for _, corruption := range corruptions {
+		t.Run("repairs-marker-"+corruption.name, func(t *testing.T) {
+			for _, item := range []string{markerPath, stagingPath, symlinkTarget} {
+				if err := os.RemoveAll(item); err != nil {
+					t.Fatalf("clear fake remote Skill marker fixture: %v", err)
+				}
+			}
+			if err := corruption.corrupt(markerPath); err != nil {
+				t.Fatalf("corrupt fake remote Skill marker: %v", err)
+			}
+			present, err := skills.HasReadOnlySkill(ctx, mount)
+			if err != nil || present {
+				t.Fatalf("corrupt marker presence = %t, %v", present, err)
+			}
+			if err := skills.ImportReadOnlySkill(
+				ctx, mount, bytes.NewReader(archive),
+			); err != nil {
+				t.Fatalf("repair fake remote Skill marker: %v", err)
+			}
+			assertFakeRemoteSkill(t, ctx, box, skills, mount, "Analyze reports")
+			info, err := os.Lstat(markerPath)
+			if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+				t.Fatalf("repaired Skill marker mode = %v, %v", info, err)
+			}
+			if _, err := os.Lstat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("repaired Skill marker left staging entry: %v", err)
+			}
+			if corruption.verify != nil {
+				corruption.verify(t)
+			}
+		})
+	}
 }
 
 func assertFakeRemoteSkill(

@@ -24,6 +24,8 @@ const (
 	remoteSkillTempPrefix  = ".mango-remote-skill-"
 )
 
+var errInvalidRemoteSkillMarker = errors.New("sandbox: remote Skill marker is invalid")
+
 type remoteSkillExecute func(context.Context, Command) (*Result, error)
 
 // remoteSkillBundles owns the provider-independent Skill materialization
@@ -82,6 +84,9 @@ func (r *remoteSkillBundles) hasReadOnlySkill(
 ) (bool, error) {
 	marker, err := r.readMarker(ctx, mount)
 	if r.resources.files.ResourceIsNotFound(err) {
+		return false, nil
+	}
+	if errors.Is(err, errInvalidRemoteSkillMarker) {
 		return false, nil
 	}
 	if err != nil {
@@ -337,18 +342,19 @@ func (r *remoteSkillBundles) cleanupPublishPaths(
 	var script strings.Builder
 	script.WriteString("set -eu\n")
 	for _, item := range paths {
-		quoted := shellQuote(item)
-		script.WriteString("if [ -e ")
-		script.WriteString(quoted)
-		script.WriteString(" ] || [ -L ")
-		script.WriteString(quoted)
-		script.WriteString(" ]; then chmod -R u+w ")
-		script.WriteString(quoted)
-		script.WriteString(" 2>/dev/null || true; rm -rf ")
-		script.WriteString(quoted)
-		script.WriteString("; fi\n")
+		script.WriteString(remoteSkillRemovePathScript(item))
 	}
 	return r.runCommand(ctx, "clean abandoned Skill staging", script.String())
+}
+
+func remoteSkillRemovePathScript(item string) string {
+	quoted := shellQuote(item)
+	// Never recursively chmod a symlink: some chmod implementations follow a
+	// command-line link and would mutate a sandbox-controlled target outside the
+	// provider-owned Skill path. Unlink the link itself instead.
+	return "if [ -L " + quoted + " ]; then rm -f " + quoted +
+		"; elif [ -e " + quoted + " ]; then chmod -R u+w " + quoted +
+		" 2>/dev/null || true; rm -rf " + quoted + "; fi\n"
 }
 
 func (r *remoteSkillBundles) uploadPreparedSkill(
@@ -517,8 +523,7 @@ func (r *remoteSkillBundles) publish(
 		"if [ -e " + targetQ + " ] || [ -L " + targetQ + " ]; then " +
 		"mv " + targetQ + " " + backupQ + " || exit $?; fi\n" +
 		"if mv " + stagingQ + " " + targetQ + "; then\n" +
-		"  if [ -e " + backupQ + " ] || [ -L " + backupQ + " ]; then " +
-		"chmod -R u+w " + backupQ + " 2>/dev/null || true; rm -rf " + backupQ + "; fi\n" +
+		remoteSkillRemovePathScript(backup) +
 		"else\n" +
 		"  status=$?\n" +
 		"  if { [ -e " + backupQ + " ] || [ -L " + backupQ + " ]; } && " +
@@ -571,15 +576,51 @@ func (r *remoteSkillBundles) writeMarker(
 	if len(raw) > remoteSkillMarkerLimit {
 		return errors.New("sandbox: remote Skill marker exceeds its limit")
 	}
+	markerPath := remoteSkillMarkerPath(mount)
+	stagingPath := remoteSkillMarkerStagingPath(mount)
+	if err := r.cleanupPublishPaths(ctx, stagingPath); err != nil {
+		return err
+	}
 	if err := r.resources.files.ResourceUpload(
 		ctx,
-		remoteSkillMarkerPath(mount),
+		stagingPath,
 		strings.NewReader(string(raw)),
 		remoteFilePermissions{Mode: 0o600},
 	); err != nil {
-		return fmt.Errorf("sandbox: %s write Skill marker: %w", r.provider, err)
+		return fmt.Errorf("sandbox: %s stage Skill marker: %w", r.provider, err)
+	}
+	stored, err := r.resources.files.ResourceStat(ctx, stagingPath)
+	if err != nil {
+		return fmt.Errorf("sandbox: %s inspect staged Skill marker: %w", r.provider, err)
+	}
+	if !stored.Regular || stored.SizeBytes != int64(len(raw)) {
+		return errors.New("sandbox: provider did not persist the complete Skill marker")
+	}
+	if err := r.publishMarker(ctx, markerPath, stagingPath); err != nil {
+		return err
 	}
 	return nil
+}
+
+func (r *remoteSkillBundles) publishMarker(
+	ctx context.Context,
+	markerPath string,
+	stagingPath string,
+) error {
+	markerQ := shellQuote(markerPath)
+	stagingQ := shellQuote(stagingPath)
+	// A regular destination can be replaced atomically by rename. Remove only
+	// non-regular entries first: POSIX mv otherwise treats a directory (or a
+	// symlink to one on some implementations) as a container for the staging
+	// file instead of replacing the marker path itself.
+	script := "set -eu\n" +
+		"chmod 0600 " + stagingQ + "\n" +
+		"if [ -L " + markerQ + " ]; then rm -f " + markerQ +
+		"; elif [ -e " + markerQ + " ] && [ ! -f " + markerQ + " ]; then " +
+		"chmod -R u+w " + markerQ + " 2>/dev/null || true; rm -rf " + markerQ + "; fi\n" +
+		"mv " + stagingQ + " " + markerQ + "\n" +
+		"chmod 0600 " + markerQ + "\n"
+	return r.runCommand(ctx, "publish Skill marker", script)
 }
 
 func (r *remoteSkillBundles) readMarker(
@@ -592,7 +633,7 @@ func (r *remoteSkillBundles) readMarker(
 		return remoteSkillMarker{}, err
 	}
 	if !info.Regular || info.SizeBytes <= 0 || info.SizeBytes > remoteSkillMarkerLimit {
-		return remoteSkillMarker{}, errors.New("sandbox: remote Skill marker is invalid")
+		return remoteSkillMarker{}, errInvalidRemoteSkillMarker
 	}
 	reader, err := r.resources.files.ResourceOpen(ctx, markerPath)
 	if err != nil {
@@ -613,11 +654,15 @@ func (r *remoteSkillBundles) readMarker(
 		)
 	}
 	if len(raw) > remoteSkillMarkerLimit {
-		return remoteSkillMarker{}, errors.New("sandbox: remote Skill marker exceeds its limit")
+		return remoteSkillMarker{}, fmt.Errorf(
+			"%w: exceeds its limit", errInvalidRemoteSkillMarker,
+		)
 	}
 	var marker remoteSkillMarker
 	if err := json.Unmarshal(raw, &marker); err != nil {
-		return remoteSkillMarker{}, nil
+		return remoteSkillMarker{}, fmt.Errorf(
+			"%w: decode JSON: %v", errInvalidRemoteSkillMarker, err,
+		)
 	}
 	return marker, nil
 }
@@ -625,6 +670,10 @@ func (r *remoteSkillBundles) readMarker(
 func remoteSkillMarkerPath(mount ReadOnlySkillMount) string {
 	sum := sha256.Sum256([]byte(resolvedSkillRuntimePath(mount)))
 	return path.Join(remoteSkillMarkerRoot, hex.EncodeToString(sum[:]))
+}
+
+func remoteSkillMarkerStagingPath(mount ReadOnlySkillMount) string {
+	return remoteSkillMarkerPath(mount) + "-staging"
 }
 
 func validSHA256(value string) bool {
