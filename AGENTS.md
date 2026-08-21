@@ -42,6 +42,10 @@ pull-request requirements.
   evolution deliberately: understand what problem a change solves and what was
   learned from it. This is a research obligation, not a compatibility
   obligation.
+- The normal design workflow starts from Mango's current source, migrations,
+  OpenAPI, documentation, and executable tests, then compares the analogous
+  current CMA workflow. Differences are useful design evidence, not an
+  automatic parity backlog and not a reason to preserve stale Mango behavior.
 - Before finalizing substantial Mango work that has an analogous CMA workflow,
   review the current relevant CMA design alongside Mango's implementation and
   other useful references. Do not wait for CMA, and do not create work merely
@@ -54,6 +58,15 @@ pull-request requirements.
   JSON fields, event types, and public SDK types may be design starting points
   when they reduce unnecessary invention and fit Mango's workflows. Mango does
   not need to rename or reshape a sound concept merely to appear different.
+- When Mango and CMA solve the same user problem with the same lifecycle,
+  prefer the same sound high-level design over gratuitous divergence. Exact
+  field-for-field equality is not a goal: omit hosted rollout details and
+  fields Mango does not need, and change a field when Mango's self-hosted
+  semantics require it.
+- Prefer standard HTTP semantics, widely understood data shapes, and existing
+  Mango resource and event primitives. Introduce a Mango-specific header,
+  wrapper, field, state, or abstraction only when a concrete requirement cannot
+  be expressed clearly with an established convention or existing primitive.
 - Once adopted, the resulting surface is owned by Mango. Similarity to CMA does
   not create compatibility, synchronization, migration, or release-timing
   obligations. Mango may change, remove, or extend that design directly on
@@ -66,7 +79,8 @@ pull-request requirements.
 - For every material influence, record what Mango adopted, changed, or rejected
   and why in `docs/provenance.md` or the relevant design document. A CMA change
   can trigger design review, but it becomes implementation work only after a
-  Mango user or operator rationale and acceptance criteria exist.
+  Mango user or operator rationale and acceptance criteria exist in the pull
+  request, a design document, or an Issue.
 - Validate the result through Mango's own HTTP, persistence, workflow, recovery,
   and service tests. Passing a third-party SDK test is optional research
   evidence, never the definition of success.
@@ -74,8 +88,10 @@ pull-request requirements.
 ## Product-driven development
 
 - Mango's documented HTTP API and observable runtime behavior define the
-  product contract. GitHub Issues define active engineering work and may form a
-  Mango-specific roadmap.
+  product contract. GitHub Issues are optional coordination and roadmap tools,
+  not a prerequisite for implementation. For a solo, short-lived change, the
+  pull request may carry the problem statement, rationale, acceptance criteria,
+  and non-goals directly.
 - `docs/product.md` defines product direction. `docs/capabilities.md` records
   Mango's current capabilities and limitations; it is not a delta ledger
   against another service.
@@ -96,9 +112,10 @@ pull-request requirements.
   models, routes, schemas, workflows, or edge cases. Record useful provenance,
   but make the resulting contract Mango's own, adapt it to the self-hosted trust
   boundary, and reject constraints that do not serve Mango users.
-- Do not add research-preview or vendor-specific surfaces unless a Mango issue
-  explicitly selects them for an independent product reason.
-- Stop when the acceptance criteria and required tests pass. Record adjacent
-  work as separate Issues instead of expanding the current change.
+- Do not add research-preview or vendor-specific surfaces unless the change
+  explicitly selects them for an independent Mango product reason.
+- Stop when the acceptance criteria and required tests pass. Keep adjacent work
+  out of the current slice; record it in a follow-up PR, design note, or Issue
+  when coordination or longer-term tracking is useful.
 - A completed user-visible change must update the affected API documentation,
   `internal/httpapi/openapi.yaml`, and the capability summary when applicable.

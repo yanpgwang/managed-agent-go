@@ -8,17 +8,21 @@ design starting points when they fit Mango and avoid unnecessary invention.
 Changes must still preserve a clear line between external design research and
 Mango's original implementation and product decisions.
 
-## Before opening a change
+## Before a substantial change
 
-For substantial API, persistence, or runtime changes, open an issue describing:
+Describe the following in the pull request, a design document, or an Issue:
 
 - the user-visible problem;
 - the Mango user or operator rationale and any relevant design references;
 - the durability, retry, and security implications;
 - a small independently testable delivery slice.
 
-Small bug fixes and documentation improvements can go directly to a pull
-request.
+Issues are optional coordination and roadmap tools, not an implementation gate.
+For solo development and short-lived work, putting this context directly in the
+pull request is preferred over opening an Issue that will immediately close.
+Use an Issue when work benefits from discussion, sequencing, ownership, or
+longer-term tracking. Small bug fixes and documentation improvements can go
+directly to a pull request with proportionate context.
 
 ## Development setup
 
@@ -114,11 +118,19 @@ influences and the adopted, changed, or rejected decisions in
 implementation code or non-public types. An existing third-party client test
 is optional research evidence, not by itself a reason to preserve an API shape.
 
+When the user problem and lifecycle match, prefer an established CMA design or
+another widely used convention over inventing a Mango-only equivalent. Exact
+field parity is not required: keep the fields Mango needs, reject hosted or
+rollout-only details, and adapt semantics to self-hosting. Prefer standard HTTP,
+simple general data shapes, and existing Mango primitives before introducing a
+new header, wrapper, state, field, or abstraction.
+
 ## Sandbox backend changes
 
-Open an issue before adding a substantial sandbox backend. Describe the target
-use case, trust boundary, host dependencies, network defaults, resource
-controls, session persistence, and restart behavior.
+Before adding a substantial sandbox backend, describe the target use case,
+trust boundary, host dependencies, network defaults, resource controls, session
+persistence, and restart behavior in the pull request, a design document, or an
+Issue.
 
 Backend changes should preserve the provider contract and session-scoped
 ownership described in the [sandbox backend guide](docs/sandboxes.md). Keep

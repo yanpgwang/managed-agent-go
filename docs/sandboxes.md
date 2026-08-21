@@ -270,5 +270,6 @@ A backend contribution should:
 - avoid a production or multi-tenant safety claim without evidence and an
   explicit security review.
 
-Open an issue before a substantial backend integration so the intended use case
-and lifecycle implications can be reviewed independently of the adapter code.
+Before a substantial backend integration, record the intended use case and
+lifecycle implications in the pull request, a design document, or an Issue so
+they can be reviewed independently of the adapter code.

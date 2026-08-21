@@ -81,7 +81,11 @@ not automatically permanent. During the transition:
   Mango currently does;
 - [API reference](api/overview.md) and the served OpenAPI document define the
   current HTTP surface;
-- [GitHub Issues](https://github.com/yanpgwang/mango/issues) hold active Mango
-  engineering work;
-- differences from external contracts are not backlog items unless an Issue
-  gives them a Mango-specific rationale.
+- current source, migrations, documentation, and executable tests are the
+  starting point for implementation decisions;
+- [GitHub pull requests](https://github.com/yanpgwang/mango/pulls), design
+  documents, and optional [Issues](https://github.com/yanpgwang/mango/issues)
+  may carry active work and rationale;
+- differences from external contracts are design inputs, not backlog items,
+  unless a Mango change gives them a user or operator rationale and acceptance
+  criteria.

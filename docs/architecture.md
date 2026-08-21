@@ -208,5 +208,6 @@ The strongest current risks are semantic rather than structural:
    child before primary Workflow and sandbox cleanup.
 
 Current API support is tracked in [capabilities and limits](capabilities.md).
-[Product direction](product.md) defines how Mango selects work, and focused
-engineering belongs in [GitHub Issues](https://github.com/yanpgwang/mango/issues).
+[Product direction](product.md) defines how Mango selects work. Focused changes
+may be tracked directly in pull requests; Issues remain available when work
+needs discussion, sequencing, or longer-term coordination.
