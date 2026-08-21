@@ -35,6 +35,33 @@ pull-request requirements.
   establishing a supported release or real customer migration can change this
   rule.
 
+## CMA design research
+
+- The latest stable public Claude Managed Agents documentation, API design, and
+  public SDK changes are a standing research feed for Mango. Follow their design
+  evolution deliberately: understand what problem a change solves and what was
+  learned from it. This is a research obligation, not a compatibility
+  obligation.
+- Before finalizing substantial Mango work that has an analogous CMA workflow,
+  review the current relevant CMA design alongside Mango's implementation and
+  other useful references. Do not wait for CMA, and do not create work merely
+  because CMA shipped something.
+- Separate the design into four parts: the user problem, durable lifecycle and
+  failure invariants, hosted/vendor constraints, and wire-level choices. Carry
+  forward the first two when they help Mango; reconsider the latter two under
+  Mango's self-hosted trust and operating model.
+- Follow ideas, not surfaces. Mango may reuse a CMA concept or shape when it is
+  the clearest design, but names, routes, JSON fields, headers, SDK types,
+  preview versions, rollout timing, and endpoint inventory carry no presumption
+  of adoption.
+- For every material influence, record what Mango adopted, changed, or rejected
+  and why in `docs/provenance.md` or the relevant design document. A CMA change
+  can trigger design review, but it becomes implementation work only after a
+  Mango user or operator rationale and acceptance criteria exist.
+- Validate the result through Mango's own HTTP, persistence, workflow, recovery,
+  and service tests. Passing a third-party SDK test is optional research
+  evidence, never the definition of success.
+
 ## Product-driven development
 
 - Mango's documented HTTP API and observable runtime behavior define the
