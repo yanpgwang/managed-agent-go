@@ -41,7 +41,7 @@ type ProviderRegistration struct {
 
 // ProviderRegistry resolves a deployment-level provider name to its adapter.
 // It is deliberately internal to worker composition: provider mechanics do not
-// belong in the Managed Agents Environment or Session wire models.
+// belong in the Mango Environment or Session wire models.
 //
 // A registry is immutable after construction and safe for concurrent reads.
 type ProviderRegistry struct {

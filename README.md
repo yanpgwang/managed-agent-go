@@ -33,7 +33,9 @@ production-oriented architecture is built in Go on PostgreSQL and Temporal.
 Mango owns its public API and roadmap. Its original resource model was informed
 by public agent-platform contracts, but users are not required to use an
 Anthropic SDK and Mango does not pursue drop-in interoperability with a hosted
-service.
+service. Mango may deliberately reuse or adapt sound public routes, resource
+shapes, events, and SDK-exposed types; once adopted, they are Mango-owned and
+may evolve independently.
 
 ## Why Mango
 

@@ -77,7 +77,7 @@ type Spec struct {
 	MemoryStores []MemoryStoreMount
 }
 
-// PackageSet is the normalized Managed Agents Environment package plan.
+// PackageSet is the normalized Mango Environment package plan.
 type PackageSet struct {
 	Apt   []string
 	Cargo []string
@@ -175,15 +175,15 @@ type LimitedNetworkSandbox interface {
 	ApplyLimitedNetwork(ctx context.Context, allowedHosts []string) error
 }
 
-// SessionUploadsRoot is the absolute runtime directory exposed by Managed
-// Agents for File-backed Session Resources.
+// SessionUploadsRoot is the absolute runtime directory Mango exposes for
+// File-backed Session Resources.
 const SessionUploadsRoot = domain.SessionUploadsRoot
 
 // SessionOutputsRoot is the writable runtime directory whose regular files
 // become downloadable Session-scoped Files at an idle boundary.
 const SessionOutputsRoot = domain.SessionOutputsRoot
 
-// SessionOutputProvider declares support for the Managed Agents deliverable
+// SessionOutputProvider declares support for the Mango deliverable
 // directory. Providers opt in because exporting an arbitrary workspace is not
 // equivalent to confining and streaming /mnt/session/outputs.
 type SessionOutputProvider interface {

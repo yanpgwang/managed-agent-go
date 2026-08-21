@@ -11,10 +11,12 @@ plane, execution lifecycle, public API, and product roadmap needed to run
 long-lived agent work on infrastructure an operator controls.
 
 Mango began with resource and workflow ideas documented by Claude Managed
-Agents. Those ideas remain useful design references, but drop-in use with an
-Anthropic service or SDK is not a product goal. Mango can keep a good idea,
-simplify it, extend it, or replace it when the self-hosted runtime needs a
-different contract.
+Agents. Its routes, resource models, JSON shapes, events, and public SDK types
+remain useful design starting points. Mango may preserve a sound design when it
+fits instead of inventing or renaming an equivalent surface. Drop-in use with
+an Anthropic service or SDK is not a product goal: once adopted, the resulting
+contract belongs to Mango and may be simplified, extended, or replaced when
+the self-hosted runtime needs something different.
 
 ## What Mango optimizes for
 
@@ -32,9 +34,12 @@ different contract.
 
 ## Relationship to external contracts
 
-Public specifications and SDKs may provide terminology, workflow examples, and
-edge cases. They are inputs to design research, not authorities over Mango.
-In particular:
+Public specifications and SDKs may provide terminology, routes, resource
+models, JSON schemas, event types, public client types, workflow examples, and
+edge cases. Mango deliberately reuses or adapts them when that reduces
+unnecessary invention and serves its users. Similarity is acceptable; it does
+not make the source an authority over Mango or create a synchronization
+obligation. In particular:
 
 - users are not required to use an Anthropic SDK;
 - Mango does not promise drop-in use with a hosted agent platform;

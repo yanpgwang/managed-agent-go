@@ -12,7 +12,7 @@ const (
 )
 
 // SessionRun is an internal durable work item. It is never serialized onto the
-// Managed Agents public API.
+// Mango public API.
 type SessionRun struct {
 	ID              string
 	SessionID       string

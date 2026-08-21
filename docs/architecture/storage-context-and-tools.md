@@ -596,7 +596,9 @@ from flattened public events.
 ## Historical and implementation references
 
 These references informed parts of the original design. They are provenance,
-not Mango's target contract or roadmap.
+not Mango's target contract or roadmap. Where Mango retained a route, resource,
+event, or field shape, that surface is now governed by Mango's documented
+semantics and may evolve independently.
 
 - [Managed Agents overview](https://platform.claude.com/docs/en/managed-agents/overview)
 - [Sessions](https://platform.claude.com/docs/en/managed-agents/sessions)

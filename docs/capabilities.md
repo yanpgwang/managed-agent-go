@@ -9,7 +9,9 @@ This page inventories Mango's observable API and runtime behavior so operators
 can decide whether a workflow is ready for their deployment.
 
 Mango owns its contract and roadmap. The current HTTP resource model retains
-ideas from public agent-platform specifications, but an external service or SDK
+ideas and selected surface shapes from public agent-platform specifications.
+Mango may continue to reuse or adapt sound routes, schemas, events, and public
+SDK types, but the adopted result is Mango-owned and an external service or SDK
 does not define future work. See [Product direction](product.md) for the design
 and prioritization rules.
 

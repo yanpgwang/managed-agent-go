@@ -76,7 +76,7 @@ type ContextUsageAnchor struct {
 }
 
 // ProviderToolUseMapping keeps provider-private tool ids separate from the
-// stable public event ids exposed by Managed Agents.
+// stable public event ids exposed by Mango.
 type ProviderToolUseMapping struct {
 	PublicEventID     string `json:"public_event_id"`
 	ProviderToolUseID string `json:"provider_tool_use_id"`

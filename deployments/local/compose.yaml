@@ -6,7 +6,7 @@
 #   - Temporal     durable session orchestration (auto-setup + web UI)
 #   - NATS Core    ephemeral preview / SSE wakeup transport
 #   - MinIO        S3-compatible File bytes for local and service conformance
-#   - API          PostgreSQL-backed Managed Agents-compatible HTTP surface
+#   - API          PostgreSQL-backed Mango HTTP surface
 #   - Worker       Temporal worker plus PostgreSQL outbox relay
 #
 # Versions are pinned deliberately. Bump them intentionally, not implicitly.

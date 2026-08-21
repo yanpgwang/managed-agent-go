@@ -12,7 +12,7 @@ const ContextPolicyVersion = 1
 
 // ContextSnapshot is an internal immutable record of the compacted message
 // projection used to prepare one Thread turn. It is not part of the public
-// Managed Agents resource model; the public evidence of compaction is the
+// Mango resource model; the public evidence of compaction is the
 // agent.thread_context_compacted event on the owning Thread ledger.
 type ContextSnapshot struct {
 	ID                        string            `json:"id"`

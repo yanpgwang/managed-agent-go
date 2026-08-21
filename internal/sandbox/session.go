@@ -15,7 +15,7 @@ import (
 // unavailable: another worker may have committed it after the first lookup.
 var ErrProvisioningUnavailable = errors.New("sandbox: provisioning unavailable")
 
-// Binding is the durable association between a Managed Agents session and the
+// Binding is the durable association between a Mango Session and the
 // provider resource that owns its workspace. SpecHash is diagnostic drift
 // metadata and, for non-empty package plans, evidence that setup completed for
 // the requested plan. Credentials and provider configuration must never be

@@ -411,7 +411,7 @@ const sandboxTurnTimeout = 120 * time.Second
 
 // The public cloud Environment default resolves to unrestricted networking.
 // Provider defaults remain deny-by-default for direct sandbox consumers; the
-// Managed Agents execution path opts into provider egress explicitly.
+// Mango execution path opts into provider egress explicitly.
 const defaultCloudSandboxNetwork = "bridge"
 
 // toolResultWriteAttempts gives a known in-memory tool result a brief chance to

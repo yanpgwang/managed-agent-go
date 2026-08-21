@@ -17,7 +17,8 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeError renders the standard Claude API error envelope:
+// writeError renders Mango's current error envelope, whose shape was retained
+// from the original Claude-shaped surface:
 //
 //	{"type":"error","error":{"type":"invalid_request_error","message":"..."}}
 //
@@ -32,7 +33,7 @@ func writeError(w http.ResponseWriter, err error) {
 		case domain.KindValidation:
 			status, typ = http.StatusBadRequest, "invalid_request_error"
 		case domain.KindConflict:
-			// Managed Agents surfaces optimistic-concurrency and state conflicts
+			// Mango surfaces optimistic-concurrency and state conflicts
 			// as 409; the closest documented error type is invalid_request_error,
 			// but 409 status is what the SDK checks. Keep a distinct type string.
 			status, typ = http.StatusConflict, "conflict_error"
