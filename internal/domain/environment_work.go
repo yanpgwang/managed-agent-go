@@ -12,9 +12,10 @@ const (
 	EnvironmentWorkStopped  EnvironmentWorkState = "stopped"
 )
 
-// EnvironmentWork is the durable control-plane lease consumed by Anthropic's
-// prebuilt EnvironmentWorker for a self-hosted Session. It activates the
-// existing Session event/tool-result protocol; it is not a second runtime.
+// EnvironmentWork is Mango's durable control-plane lease for a self-hosted
+// Session worker. The current Anthropic EnvironmentWorker helper can consume
+// it as optional interoperability evidence. It activates the existing Session
+// event/tool-result protocol; it is not a second runtime.
 type EnvironmentWork struct {
 	ID                string
 	EnvironmentID     string

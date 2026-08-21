@@ -1,7 +1,7 @@
 package domain
 
 // CacheCreationUsage is the prompt-cache creation breakdown exposed by the
-// Managed Agents Session usage object.
+// Mango Session usage object.
 type CacheCreationUsage struct {
 	Ephemeral1hInputTokens int64
 	Ephemeral5mInputTokens int64

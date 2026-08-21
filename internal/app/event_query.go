@@ -10,9 +10,9 @@ type EventPageBoundary struct {
 	Sequence    int64
 }
 
-// EventQuery expresses the public List Events filters. The public API calls
-// these filters created_at for compatibility, but the Managed Agents contract
-// applies them, ordering, and pagination to the event processed_at value.
+// EventQuery expresses the public List Events filters. Mango retains the
+// created_at query name from its original surface but applies those filters,
+// ordering, and pagination to the event processed_at value.
 type EventQuery struct {
 	// ThreadID selects one Thread ledger. Empty means the primary Thread, which
 	// is the public Session event surface.

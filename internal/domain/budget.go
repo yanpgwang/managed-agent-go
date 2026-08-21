@@ -42,7 +42,7 @@ type SessionBudgetUpdate struct {
 }
 
 // MonetaryAmountJSON rounds an exact internal list cost to the nearest whole
-// cent, matching the Managed Agents public projection.
+// cent, matching Mango's public projection.
 func MonetaryAmountJSON(nanoUSD int64) map[string]any {
 	if nanoUSD < 0 {
 		nanoUSD = 0

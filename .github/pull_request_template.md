@@ -6,9 +6,9 @@
 
 <!-- List tests and manual checks. -->
 
-## Compatibility
+## API impact and design provenance
 
-<!-- Link official sources and update docs/compatibility.md when the wire changes. -->
+<!-- Describe public API impact. Link material design sources and record what Mango adopted, changed, or rejected and why. -->
 
 ## Durability and security
 
@@ -18,5 +18,5 @@
 
 - [ ] Tests cover the changed behavior.
 - [ ] Public behavior is documented.
-- [ ] Compatibility claims cite official sources.
+- [ ] Material external design influences and Mango-owned decisions are recorded.
 - [ ] No credentials, generated build output, or local databases are included.

@@ -39,7 +39,7 @@ type EnvironmentWorkRepository interface {
 	WorkStats(context.Context, string) (domain.EnvironmentWorkQueueStats, error)
 }
 
-// EnvironmentWorkService exposes Anthropic's self-hosted Environment worker
+// EnvironmentWorkService exposes Mango's self-hosted Environment worker
 // protocol over the same durable Session ledger used by the managed runtime.
 type EnvironmentWorkService struct {
 	repository   EnvironmentWorkRepository

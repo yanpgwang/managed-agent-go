@@ -14,7 +14,7 @@ type Model struct {
 	Speed        string
 	InferenceGeo string
 	// EffortExplicit and SpeedExplicit distinguish an explicit Agent setting
-	// from the Managed Agents defaults echoed in the resolved resource. The
+	// from the Mango defaults echoed in the resolved resource. The
 	// Messages adapter uses this distinction to avoid sending preview fields to
 	// endpoints when the caller only accepted the platform default.
 	EffortExplicit bool
@@ -26,7 +26,7 @@ const (
 	DefaultModelSpeed  = "standard"
 )
 
-// NormalizeModel fills the defaults the Managed Agents API exposes on a
+// NormalizeModel fills the defaults the Mango API exposes on a
 // resolved Agent while preserving whether the user supplied each value.
 func NormalizeModel(model Model) Model {
 	if model.Effort == "" {
@@ -367,7 +367,7 @@ func (a Agent) Apply(p AgentPatch) (Agent, bool, error) {
 	}
 	if p.Model != nil {
 		model := *p.Model
-		// Managed Agents treats effort as the one sticky model field: updating
+		// Mango treats effort as the one sticky model field: updating
 		// the same model id without effort preserves the stored level. Changing
 		// ids resets an omitted effort to that model's default. Other omitted
 		// model fields, including speed, take their defaults.

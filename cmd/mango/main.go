@@ -329,7 +329,7 @@ func firstNonEmpty(values ...string) string {
 
 // resolveSandboxProvider selects the process-wide sandbox backend from the
 // internal registry and reports whether it is the local non-isolating provider.
-// Provider choice is deployment configuration, not part of the Managed Agents
+// Provider choice is deployment configuration, not part of the Mango
 // public API. Unknown names fail closed instead of silently falling back to
 // host execution.
 func resolveSandboxProvider() (p sandbox.Provider, isLocal bool, err error) {

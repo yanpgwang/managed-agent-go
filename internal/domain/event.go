@@ -3,8 +3,8 @@ package domain
 import "time"
 
 // Public event type constants. Every event is a top-level tagged union keyed on
-// the "type" field following the {domain}.{action} convention. These are the
-// wire values from the official Managed Agents events reference.
+// the "type" field following the {domain}.{action} convention. Mango currently
+// retains wire values informed by the public Managed Agents events reference.
 const (
 	// Client-submittable input events.
 	EvUserMessage          = "user.message"
@@ -57,7 +57,7 @@ const (
 )
 
 // Internal event payload keys support server-side causal linking without
-// changing the public Managed Agents event shape. HTTP projections must never
+// changing the public Mango event shape. HTTP projections must never
 // expose keys with this prefix.
 const (
 	InternalCompanionSystemEventID = "__companion_system_event_id"

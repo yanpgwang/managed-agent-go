@@ -2,9 +2,11 @@
 
 Thanks for helping improve the project. Mango is an independent, self-hosted
 runtime with its own product contract. Some of its original resource and wire
-design was informed by public agent-platform specifications, so changes must
-preserve a clear line between external design research and Mango's original
-implementation and product decisions.
+design was informed by public agent-platform specifications. Their routes,
+resource models, JSON shapes, event types, and public SDK types are legitimate
+design starting points when they fit Mango and avoid unnecessary invention.
+Changes must still preserve a clear line between external design research and
+Mango's original implementation and product decisions.
 
 ## Before opening a change
 
@@ -102,12 +104,15 @@ negotiation, legacy shims, dual behavior, deprecation windows, or data readers
 for earlier development snapshots. Update or remove old tests and fixtures
 instead. Development databases may be recreated when the schema changes.
 
-External documentation and public SDK behavior may inform design research, but
-they do not establish Mango's wire contract. Cite material influences in
-`docs/provenance.md`. Do not copy external implementation code or internal
-types; Mango's implementation and product decisions must remain its own. An
-existing third-party client test is not, by itself, a reason to preserve an API
-shape.
+External documentation and public SDK behavior may be reused or adapted
+deliberately. A change may retain a sound public route, resource shape, JSON
+field, event name, or SDK-exposed type; do not rename it merely to appear
+different. Once adopted, the result is Mango's wire contract and creates no
+compatibility or synchronization obligation to the source. Cite material
+influences and the adopted, changed, or rejected decisions in
+`docs/provenance.md` or the relevant design document. Do not copy external
+implementation code or non-public types. An existing third-party client test
+is optional research evidence, not by itself a reason to preserve an API shape.
 
 ## Sandbox backend changes
 

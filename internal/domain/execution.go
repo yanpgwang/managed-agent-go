@@ -23,7 +23,7 @@ const (
 )
 
 // RunAttempt is internal execution bookkeeping and is never serialized onto
-// the Managed Agents public API.
+// the Mango public API.
 type RunAttempt struct {
 	ID         string
 	RunID      string

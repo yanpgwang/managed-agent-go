@@ -50,10 +50,19 @@ pull-request requirements.
   failure invariants, hosted/vendor constraints, and wire-level choices. Carry
   forward the first two when they help Mango; reconsider the latter two under
   Mango's self-hosted trust and operating model.
-- Follow ideas, not surfaces. Mango may reuse a CMA concept or shape when it is
-  the clearest design, but names, routes, JSON fields, headers, SDK types,
-  preview versions, rollout timing, and endpoint inventory carry no presumption
-  of adoption.
+- Reuse and adapt useful surfaces deliberately. CMA routes, resource models,
+  JSON fields, event types, and public SDK types may be design starting points
+  when they reduce unnecessary invention and fit Mango's workflows. Mango does
+  not need to rename or reshape a sound concept merely to appear different.
+- Once adopted, the resulting surface is owned by Mango. Similarity to CMA does
+  not create compatibility, synchronization, migration, or release-timing
+  obligations. Mango may change, remove, or extend that design directly on
+  `/v1` when its users, operators, self-hosted trust boundary, or runtime need a
+  different contract.
+- Do not inherit vendor-only constraints by default. Hosted infrastructure
+  assumptions, Anthropic headers and authentication, preview identifiers, SDK
+  packaging, rollout timing, and endpoint inventory require an independent
+  Mango rationale before adoption.
 - For every material influence, record what Mango adopted, changed, or rejected
   and why in `docs/provenance.md` or the relevant design document. A CMA change
   can trigger design review, but it becomes implementation work only after a
@@ -83,9 +92,10 @@ pull-request requirements.
 - Mango is pre-release. Public API, storage, and workflow changes may be
   breaking when they materially improve the product. Update code, migrations,
   OpenAPI, documentation, and tests together on the existing `/v1` surface.
-- External contracts may inspire resource models, workflows, or edge cases.
-  Record useful provenance, but adapt the design to Mango's self-hosted trust
-  boundary and reject constraints that do not serve Mango users.
+- External contracts may be reused or adapted as starting points for resource
+  models, routes, schemas, workflows, or edge cases. Record useful provenance,
+  but make the resulting contract Mango's own, adapt it to the self-hosted trust
+  boundary, and reject constraints that do not serve Mango users.
 - Do not add research-preview or vendor-specific surfaces unless a Mango issue
   explicitly selects them for an independent product reason.
 - Stop when the acceptance criteria and required tests pass. Record adjacent

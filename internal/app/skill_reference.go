@@ -37,7 +37,7 @@ type SkillReferenceResolver interface {
 	) ([]domain.SkillReference, error)
 }
 
-// ResolveAgentSkillReferences validates the Managed Agents Skill union and
+// ResolveAgentSkillReferences validates Mango's current Skill union and
 // delegates custom Version lookup when the effective list is non-empty.
 func ResolveAgentSkillReferences(
 	ctx context.Context,

@@ -6,14 +6,18 @@ slug: /provenance
 # Design provenance
 
 Mango records material external influences so its independent design remains
-auditable. Public specifications and SDKs may inspire terminology, resource
-shapes, workflows, and edge cases, but they do not define Mango's target
-contract. Mango's documentation, OpenAPI definition, implementation, and tests
-are authoritative for current behavior.
+auditable. Public specifications and SDKs may be deliberately reused or adapted
+for terminology, routes, resource shapes, JSON fields, event types, public
+client types, workflows, and edge cases. Mango does not rename a sound concept
+merely to appear different. Once adopted, the resulting surface is Mango-owned;
+the source does not define its target contract or create compatibility,
+synchronization, or release-timing obligations. Mango's documentation, OpenAPI
+definition, implementation, and tests are authoritative for current behavior.
 
 Mango's implementation, storage, scheduling, and runtime design are independent
-and self-hosted. External material must never be treated as implementation code
-or as an automatic roadmap.
+and self-hosted. Public surface definitions may be design inputs, but external
+implementation code and non-public types must not be copied, and an external
+release is never an automatic roadmap.
 
 ## File-backed Session messages
 

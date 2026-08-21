@@ -3,7 +3,7 @@ package domain
 import "time"
 
 // MemoryStore is the durable, Workspace-scoped container exposed by the
-// Managed Agents Memory API. Ownership stays in the relational root instead of
+// Mango Memory API. Ownership stays in the relational root instead of
 // leaking into the CMA wire representation.
 type MemoryStore struct {
 	ID          string

@@ -30,7 +30,7 @@ Runtime semantics:
 </mango-coordinator>`
 
 // ProjectCoordinatorSystemContext appends the private harness protocol that
-// makes the public Managed Agents cross-Thread events meaningful to the model.
+// makes Mango's public cross-Thread events meaningful to the model.
 // It is runtime-owned rather than persisted in the user-configurable Agent
 // system prompt.
 func ProjectCoordinatorSystemContext(base string) string {
@@ -41,7 +41,7 @@ func ProjectCoordinatorSystemContext(base string) string {
 }
 
 // CoordinatorToolSchemas are the private model-facing tools automatically
-// attached to a Managed Agents coordinator. They are runtime capabilities, not
+// attached to a Mango coordinator. They are runtime capabilities, not
 // entries in the persisted Agent toolset.
 func CoordinatorToolSchemas() []model.ToolSchema {
 	return []model.ToolSchema{

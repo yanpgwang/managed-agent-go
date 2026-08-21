@@ -609,7 +609,7 @@ func EnabledToolSchemas(ts domain.ToolSet) []model.ToolSchema {
 }
 
 // EnabledSelfHostedToolSchemas declares every built-in as a client tool. In a
-// self_hosted Environment the Managed Agents client, not the Messages provider,
+// self_hosted Environment the worker client, not the Messages provider,
 // executes sandbox-routed tools and returns user.tool_result. Web Search/Fetch
 // therefore must not be declared as provider-native server tools on this path.
 func EnabledSelfHostedToolSchemas(ts domain.ToolSet) []model.ToolSchema {

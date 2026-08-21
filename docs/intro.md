@@ -50,9 +50,10 @@ The default deployment separates API and worker roles around three backends:
 
 The local Compose stack runs this complete architecture with a deterministic
 offline model and needs no credentials. The runtime and its native API are the
-product. External contracts may inform design research, but Mango's own
-documentation, OpenAPI definition, implementation, and tests define current
-behavior.
+product. External contracts may supply useful routes, resource models, schemas,
+events, and public SDK types that Mango intentionally reuses or adapts. The
+adopted result is Mango-owned: Mango's own documentation, OpenAPI definition,
+implementation, and tests define current behavior and may evolve independently.
 
 ## Next steps
 

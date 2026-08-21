@@ -13,7 +13,7 @@ import (
 
 // RuntimeSkillToolName is the model-visible dispatcher used to activate a
 // discovered Skill. It is an agent-runtime primitive, not a configurable
-// Managed Agents built-in and never appears in an Agent's public tools array.
+// Mango runtime built-in and never appears in an Agent's public tools array.
 const RuntimeSkillToolName = "Skill"
 
 const runtimeSkillBasePrefix = "Base directory for this skill: "

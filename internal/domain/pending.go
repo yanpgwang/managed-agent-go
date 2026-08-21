@@ -25,7 +25,7 @@ const (
 
 // PendingAction is a first-class durable record that a run parked awaiting a
 // client response. It is internal-only and never serialized onto the public
-// Managed Agents wire. ResolvedAt is nil while the action still blocks ordinary
+// Mango wire. ResolvedAt is nil while the action still blocks ordinary
 // queued work on its owning Thread.
 type PendingAction struct {
 	ID                  string
