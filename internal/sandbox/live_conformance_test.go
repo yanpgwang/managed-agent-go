@@ -66,6 +66,7 @@ func TestOpenSandboxLiveConformance(t *testing.T) {
 	}
 	runLiveConformance(t, factory)
 	runLiveFileResourceConformance(t, factory)
+	runLiveSessionOutputConformance(t, factory)
 }
 
 func TestDaytonaLiveConformance(t *testing.T) {
@@ -86,11 +87,21 @@ func TestDaytonaLiveConformance(t *testing.T) {
 	}
 	runLiveConformance(t, factory)
 	runLiveFileResourceConformance(t, factory)
+	runLiveSessionOutputConformance(t, factory)
 }
 
 func runLiveFileResourceConformance(t *testing.T, factory sandboxtest.Factory) {
 	t.Helper()
 	sandboxtest.RunFileResources(t, sandboxtest.Config{
+		NewProvider: factory,
+		Spec:        sandbox.Spec{Timeout: 2 * time.Minute, Network: "bridge"},
+		ShellPath:   "/bin/sh",
+	})
+}
+
+func runLiveSessionOutputConformance(t *testing.T, factory sandboxtest.Factory) {
+	t.Helper()
+	sandboxtest.RunSessionOutputs(t, sandboxtest.Config{
 		NewProvider: factory,
 		Spec:        sandbox.Spec{Timeout: 2 * time.Minute, Network: "bridge"},
 		ShellPath:   "/bin/sh",

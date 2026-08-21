@@ -96,7 +96,7 @@ make local-down
 | Core resources | Agent, Environment, and Session lifecycle, versioning, filtering, and pagination |
 | Events and runtime | Messages, interrupts, custom-tool results, confirmations, outcomes, retries, SSE, and durable park/resume |
 | Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools with optional Vault-backed bearer authentication |
-| Files | Object-backed File lifecycle, reusable outcome rubrics, File-backed Session Resources, and idle-boundary publication of Docker `/mnt/session/outputs` deliverables |
+| Files | Object-backed File lifecycle, reusable outcome rubrics, File-backed Session Resources, and idle-boundary publication of Docker/OpenSandbox/Daytona `/mnt/session/outputs` deliverables |
 | Skills | Custom Skill lifecycle, immutable Version pins, and on-demand instruction loading in Docker Sessions |
 | Memory | Store, Memory, and immutable Version lifecycle; durable read/write or read-only Docker mounts at `/mnt/memory` |
 | Vaults | Encrypted Vault and Credential lifecycle plus ordered Session attachment, live OAuth validation, and automatic token refresh; environment-variable egress remains in progress |

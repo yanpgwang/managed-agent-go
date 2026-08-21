@@ -81,8 +81,10 @@ object-store operations are implemented.
 
 File-backed Session Resources require `MANGO_SANDBOX=docker`, `opensandbox`, or
 `daytona`; the remote providers currently expose writable sandbox-local copies.
-Automatic Session output publication requires `MANGO_SANDBOX=docker`. The
-Docker worker must run where the selected Docker
+Automatic Session output publication requires `MANGO_SANDBOX=docker`,
+`opensandbox`, or `daytona`. OpenSandbox and Daytona images must provide
+`/bin/sh` and `tar`; output archives stream through the provider SDK and are
+removed after each snapshot. A Docker worker must run where the selected Docker
 Engine API is reachable; the provider uses the Moby Go client directly and does
 not require a `docker` CLI binary. Configure a non-default daemon with
 `DOCKER_HOST` and the standard Docker TLS environment variables. The daemon

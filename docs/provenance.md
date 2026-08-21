@@ -71,3 +71,17 @@ design choices documented in [Sandbox backends](sandboxes.md). OpenSandbox and
 Daytona intentionally stop at writable sandbox-local copies in the current
 implementation; this limitation is documented as Mango behavior rather than
 inferred from provider APIs.
+
+## Remote Session output export
+
+- The pinned OpenSandbox and Daytona Go clients provide the filesystem
+  directory, metadata, streaming download, and delete operations used by their
+  adapters.
+- Mango reuses those provider operations only as an implementation data plane;
+  it does not expose provider file types or routes in the Mango API.
+
+Mango's `/mnt/session/outputs` boundary, unique adapter-owned tar snapshot,
+two-pass validation, close-time cleanup, S3 publication, and idle-event ordering
+remain Mango-owned behavior. E2B and Cube are intentionally rejected until an
+adapter can satisfy the same streaming and repeatability contract; similarity
+between provider SDKs is not treated as evidence of support.

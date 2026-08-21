@@ -256,10 +256,11 @@ resumes a turn that was paused at that check.
 `deployment_id` is null for direct Session creation and contains the parent
 Deployment ID for Deployment-created Sessions.
 
-For Mango-managed Docker Sessions with Files storage configured, regular files
-written beneath `/mnt/session/outputs` are published before the Session becomes
-idle. List them with `GET /v1/files?scope_id={session_id}` and download them
-through the Files content endpoint. See [Files](files.md#session-outputs) for
-limits and provider constraints.
+For Mango-managed Docker, OpenSandbox, and Daytona Sessions with Files storage
+configured, regular files written beneath `/mnt/session/outputs` are published
+before the Session becomes idle. List them with
+`GET /v1/files?scope_id={session_id}` and download them through the Files
+content endpoint. See [Files](files.md#session-outputs) for limits and provider
+constraints.
 
 See [capabilities and limits](../capabilities.md).
