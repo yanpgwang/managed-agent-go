@@ -92,6 +92,30 @@ cleanup contract but buffer each archive in worker memory as an explicit
 Preview limitation; their SDK similarity alone is not treated as evidence of
 support, so they run the same offline and opt-in live conformance suites.
 
+## Git repository Session Resources
+
+- The public [Claude Managed Agents GitHub repository guide](https://platform.claude.com/docs/en/managed-agents/github)
+  demonstrates the useful user-facing concepts of a repository URL, optional
+  branch-or-commit checkout, a default workspace mount, and repository content
+  available to a coding Agent.
+- Mango adopted those generic concepts but owns a `git_repository` resource
+  rather than a GitHub-specific resource. Mango added `resolved_commit` so an
+  operator can audit the exact source frozen at admission.
+- Mango changed the lifecycle for its self-hosted boundary: the control plane
+  uses public-only egress to create a bounded immutable snapshot, stores it in
+  Mango's S3-compatible object lifecycle, and restores it offline through one
+  adapter-neutral pending/ready marker protocol. The sandbox worktree is an
+  independent writable copy.
+- Mango rejected raw authorization tokens, vendor authentication/header
+  semantics, hosted clone caches, provider-side repository APIs, and automatic
+  `.claude/skills` discovery. Private credentials require a future Mango secret
+  reference. Submodules, LFS objects, runtime attach/detach, Deployment
+  templates, push/PR workflows, and repository Skill discovery remain separate
+  product decisions with their own acceptance criteria.
+- `github.com/go-git/go-git/v5` is a replaceable control-plane implementation
+  dependency. It does not define Mango's HTTP contract, and no hosted agent
+  credentials or services are required by development, CI, or production.
+
 ## Custom Skills
 
 - The public [Claude Managed Agents Skills guide](https://platform.claude.com/docs/en/managed-agents/skills)

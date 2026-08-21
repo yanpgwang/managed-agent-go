@@ -21,8 +21,9 @@ type FileScope struct {
 }
 
 // File is the authoritative metadata projection for one object-store blob.
-// BlobKey and ChecksumSHA256 are internal integrity fields and never cross the
-// public wire.
+// Internal, BlobKey, and ChecksumSHA256 are persistence/runtime fields and
+// never cross the public wire. Internal Files back other durable resources and
+// must not be exposed through the Files API.
 type File struct {
 	ID             string
 	CreatedAt      time.Time
@@ -31,6 +32,7 @@ type File struct {
 	MimeType       string
 	SizeBytes      int64
 	Downloadable   bool
+	Internal       bool
 	Scope          *FileScope
 	BlobKey        string
 	ChecksumSHA256 string

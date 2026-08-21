@@ -394,9 +394,14 @@ func parseDeploymentResources(
 		return nil, nil
 	}
 	raw := field.Value
-	files, memories, err := parseSessionResourceInputs(&raw)
+	files, memories, repositories, err := parseSessionResourceInputs(&raw)
 	if err != nil {
 		return nil, err
+	}
+	if len(repositories) > 0 {
+		return nil, domain.Unsupported(
+			"Git repository resources are not supported by Deployments",
+		)
 	}
 	out := make([]domain.DeploymentResource, 0, len(raw))
 	for _, file := range files {

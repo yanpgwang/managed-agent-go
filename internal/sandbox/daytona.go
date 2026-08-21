@@ -114,6 +114,8 @@ func (*daytonaProvider) SupportsSessionOutputs() bool { return true }
 
 func (*daytonaProvider) SupportsSkillBundles() bool { return true }
 
+func (*daytonaProvider) SupportsGitRepositories() bool { return true }
+
 func (p *daytonaProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -195,12 +197,13 @@ func (p *daytonaProvider) attachResource(
 }
 
 type daytonaBox struct {
-	remote    daytonaRemote
-	root      string
-	timeout   time.Duration
-	resources *remoteFileResources
-	skills    *remoteSkillBundles
-	sync      remoteResourceSynchronization
+	remote       daytonaRemote
+	root         string
+	timeout      time.Duration
+	resources    *remoteFileResources
+	skills       *remoteSkillBundles
+	repositories *commandGitRepositories
+	sync         remoteResourceSynchronization
 }
 
 func newDaytonaBox(
@@ -219,6 +222,12 @@ func newDaytonaBox(
 			return box.exec(
 				ctx, command, remoteOperationCommandTimeout(ctx, box.timeout),
 			)
+		},
+	)
+	box.repositories = newRemoteGitRepositories(
+		DaytonaProviderName, box.resources,
+		func(ctx context.Context, command Command) (*Result, error) {
+			return box.exec(ctx, command, remoteOperationCommandTimeout(ctx, box.timeout))
 		},
 	)
 	return box
@@ -271,6 +280,7 @@ func (s *daytonaBox) ReadFile(
 ) ([]byte, error) {
 	full, err := remoteToolPath(
 		s.root, value, SessionUploadsRoot, SessionOutputsRoot, SessionSkillsRoot,
+		SessionRepositoryRoot,
 	)
 	if err != nil {
 		return nil, err
@@ -284,7 +294,7 @@ func (s *daytonaBox) WriteFile(
 	data []byte,
 ) error {
 	full, err := remoteWritableToolPath(
-		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot, SessionRepositoryRoot,
 	)
 	if err != nil {
 		return err
@@ -331,6 +341,18 @@ func (s *daytonaBox) ImportReadOnlySkill(
 	content io.Reader,
 ) error {
 	return s.skills.ImportReadOnlySkill(ctx, mount, content)
+}
+
+func (s *daytonaBox) HasGitRepository(ctx context.Context, mount GitRepositoryMount) (bool, error) {
+	return s.repositories.HasGitRepository(ctx, mount)
+}
+
+func (s *daytonaBox) ImportGitRepository(ctx context.Context, mount GitRepositoryMount, content io.Reader) error {
+	return s.repositories.ImportGitRepository(ctx, mount, content)
+}
+
+func (s *daytonaBox) RemoveGitRepository(ctx context.Context, runtimePath, identity string) error {
+	return s.repositories.RemoveGitRepository(ctx, runtimePath, identity)
 }
 
 func (s *daytonaBox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {

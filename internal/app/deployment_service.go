@@ -634,7 +634,8 @@ func (s *DeploymentService) validate(ctx context.Context, item domain.Deployment
 			if s.files == nil {
 				return domain.Unsupported("File resources are unavailable for the configured deployment")
 			}
-			if _, err := s.files.Get(ctx, resource.FileID); err != nil {
+			file, err := s.files.Get(ctx, resource.FileID)
+			if err != nil || file.Internal {
 				return domain.Validation("file resource not found")
 			}
 		case domain.SessionResourceTypeMemoryStore:
@@ -653,7 +654,7 @@ func (s *DeploymentService) validate(ctx context.Context, item domain.Deployment
 				return domain.Validation("memory store is missing or archived")
 			}
 		default:
-			return domain.Unsupported("GitHub repository resources are not yet available for Deployments")
+			return domain.Unsupported("Git repository resources are not available for Deployments")
 		}
 	}
 	return nil

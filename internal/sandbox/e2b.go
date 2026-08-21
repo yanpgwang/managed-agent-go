@@ -201,6 +201,8 @@ func (*e2bLikeProvider) SupportsSessionOutputs() bool { return true }
 
 func (*e2bLikeProvider) SupportsSkillBundles() bool { return true }
 
+func (*e2bLikeProvider) SupportsGitRepositories() bool { return true }
+
 func (p *e2bLikeProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -333,6 +335,7 @@ type e2bLikeSandbox struct {
 	timeout      time.Duration
 	resources    *remoteFileResources
 	skills       *remoteSkillBundles
+	repositories *commandGitRepositories
 	sync         remoteResourceSynchronization
 }
 
@@ -356,6 +359,12 @@ func newE2BLikeSandbox(
 			return box.exec(
 				ctx, command, remoteOperationCommandTimeout(ctx, box.timeout),
 			)
+		},
+	)
+	box.repositories = newRemoteGitRepositories(
+		providerName, box.resources,
+		func(ctx context.Context, command Command) (*Result, error) {
+			return box.exec(ctx, command, remoteOperationCommandTimeout(ctx, box.timeout))
 		},
 	)
 	return box
@@ -422,6 +431,7 @@ func (s *e2bLikeSandbox) ReadFile(
 ) ([]byte, error) {
 	full, err := remoteToolPath(
 		s.root, value, SessionUploadsRoot, SessionOutputsRoot, SessionSkillsRoot,
+		SessionRepositoryRoot,
 	)
 	if err != nil {
 		return nil, err
@@ -435,7 +445,7 @@ func (s *e2bLikeSandbox) WriteFile(
 	data []byte,
 ) error {
 	full, err := remoteWritableToolPath(
-		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot, SessionRepositoryRoot,
 	)
 	if err != nil {
 		return err
@@ -482,6 +492,18 @@ func (s *e2bLikeSandbox) ImportReadOnlySkill(
 	content io.Reader,
 ) error {
 	return s.skills.ImportReadOnlySkill(ctx, mount, content)
+}
+
+func (s *e2bLikeSandbox) HasGitRepository(ctx context.Context, mount GitRepositoryMount) (bool, error) {
+	return s.repositories.HasGitRepository(ctx, mount)
+}
+
+func (s *e2bLikeSandbox) ImportGitRepository(ctx context.Context, mount GitRepositoryMount, content io.Reader) error {
+	return s.repositories.ImportGitRepository(ctx, mount, content)
+}
+
+func (s *e2bLikeSandbox) RemoveGitRepository(ctx context.Context, runtimePath, identity string) error {
+	return s.repositories.RemoveGitRepository(ctx, runtimePath, identity)
 }
 
 func (s *e2bLikeSandbox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {

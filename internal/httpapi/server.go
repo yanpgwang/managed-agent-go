@@ -144,7 +144,6 @@ type SessionResourceService interface {
 	Add(context.Context, string, app.FileSessionResourceInput) (domain.SessionResource, error)
 	Get(context.Context, string, string) (domain.SessionResource, error)
 	List(context.Context, string, app.SessionResourceListQuery) (app.SessionResourceListPage, error)
-	Update(context.Context, string, string, string) (domain.SessionResource, error)
 	Delete(context.Context, string, string) (domain.SessionResource, error)
 }
 

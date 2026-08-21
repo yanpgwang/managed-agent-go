@@ -96,6 +96,25 @@ func TestSessionResourcePreparationRejectsProviderWithoutAdmissionCapability(t *
 	assertDomainErrorKind(t, err, domain.KindUnsupported)
 }
 
+func TestRepositoryPreparationIncludesAlreadyStagedResourceBytes(t *testing.T) {
+	snapshotter := &staticGitRepositorySnapshotter{
+		commit: "0123456789abcdef0123456789abcdef01234567",
+	}
+	service := &SessionResourceService{repositories: snapshotter}
+	_, err := service.PrepareRepositoriesForSession(
+		context.Background(),
+		domain.Session{ID: "sesn_bytes", EnvironmentType: "cloud"},
+		[]app.GitRepositorySessionResourceInput{{
+			URL: "https://github.com/acme/widgets.git",
+		}},
+		app.MaxSessionResourceBytes,
+	)
+	assertDomainErrorKind(t, err, domain.KindTooLarge)
+	if len(snapshotter.requests) != 0 {
+		t.Fatalf("over-budget repository triggered clone: %+v", snapshotter.requests)
+	}
+}
+
 func assertDomainErrorKind(t *testing.T, err error, want domain.ErrKind) {
 	t.Helper()
 	var domainErr *domain.DomainError

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -227,6 +228,110 @@ func TestRemoteSkillBundleConformance(t *testing.T) {
 				t, store, func() Provider { return test.open(store) },
 			)
 		})
+	}
+}
+
+func TestRemoteGitRepositoryConformance(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*fakeRemoteStore) Provider
+	}{
+		{
+			name: E2BProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					E2BProviderName, &fakeE2BService{store: store}, remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: CubeProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newE2BLikeProvider(
+					CubeProviderName, &fakeE2BService{store: store}, remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: OpenSandboxProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newOpenSandboxProvider(
+					&fakeOpenSandboxService{store: store}, remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: DaytonaProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newDaytonaProvider(
+					&fakeDaytonaService{store: store}, defaultDaytonaRoot,
+				)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeRemoteStore(t.TempDir())
+			runFakeRemoteGitRepositoryContract(
+				t, func() Provider { return test.open(store) },
+			)
+		})
+	}
+}
+
+func runFakeRemoteGitRepositoryContract(t *testing.T, open func() Provider) {
+	t.Helper()
+	ctx := context.Background()
+	provider := open()
+	capability, ok := provider.(GitRepositoryProvider)
+	if !ok || !capability.SupportsGitRepositories() {
+		t.Fatalf("provider %q does not advertise Git repositories", provider.Name())
+	}
+	session := "repository-" + provider.Name()
+	ref, box, err := provider.Create(ctx, session, Spec{Timeout: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	repositories, ok := box.(GitRepositorySandbox)
+	if !ok {
+		t.Fatalf("provider %q sandbox does not expose Git repositories", provider.Name())
+	}
+	archive := repositoryArchiveForTest(t, map[string]string{
+		".git/HEAD": "ref: refs/heads/main\n",
+		"README.md": "canonical\n",
+	})
+	info := sha256.Sum256(archive)
+	mount := GitRepositoryMount{
+		Identity: "sesrsc_repository", RuntimePath: "/workspace/repository",
+		ResolvedCommit: "0123456789abcdef0123456789abcdef01234567",
+		SizeBytes:      int64(len(archive)), ChecksumSHA256: fmt.Sprintf("%x", info),
+	}
+	if err := repositories.ImportGitRepository(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatal(err)
+	}
+	if err := box.WriteFile(ctx, mount.RuntimePath+"/README.md", []byte("agent edit\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := repositories.ImportGitRepository(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatal(err)
+	}
+	content, err := box.ReadFile(ctx, mount.RuntimePath+"/README.md")
+	if err != nil || string(content) != "agent edit\n" {
+		t.Fatalf("repository retry = %q, %v", content, err)
+	}
+	restarted := open()
+	attached, err := restarted.Attach(ctx, session, ref, Spec{Timeout: 30 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attachedRepositories, ok := attached.(GitRepositorySandbox)
+	if !ok {
+		t.Fatalf("attached provider %q lost Git repository capability", provider.Name())
+	}
+	present, err := attachedRepositories.HasGitRepository(ctx, mount)
+	if err != nil || !present {
+		t.Fatalf("attached HasGitRepository = %v, %v", present, err)
 	}
 }
 
@@ -1326,8 +1431,10 @@ func (h *fakeRemoteHandle) exec(
 	command = strings.ReplaceAll(command, remoteSessionOutputControlRoot, outputControl)
 	skillControl, _ := h.fullPath(remoteSkillControlRoot)
 	command = strings.ReplaceAll(command, remoteSkillControlRoot, skillControl)
-	skills, _ := h.fullPath(SessionSkillsRoot)
-	command = strings.ReplaceAll(command, SessionSkillsRoot, skills)
+	repositoryControl, _ := h.fullPath(gitRepositoryControlRoot)
+	command = strings.ReplaceAll(command, gitRepositoryControlRoot, repositoryControl)
+	workspace, _ := h.fullPath(SessionRepositoryRoot)
+	command = strings.ReplaceAll(command, SessionRepositoryRoot, workspace)
 	process := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	process.Dir = h.resource.root
 	process.Env = []string{"PATH=/usr/bin:/bin", "COPYFILE_DISABLE=1"}

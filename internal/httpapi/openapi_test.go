@@ -248,8 +248,8 @@ func TestOpenAPIFullManagedAgentsOperationInventory(t *testing.T) {
 			count++
 		}
 	}
-	if count != 90 {
-		t.Fatalf("Mango operation count = %d, want 90", count)
+	if count != 89 {
+		t.Fatalf("Mango operation count = %d, want 89", count)
 	}
 }
 
@@ -585,7 +585,7 @@ func TestOpenAPISessionResourcesContract(t *testing.T) {
 	paths := openAPIMap(t, doc["paths"], "paths")
 	operations := map[string][]string{
 		"/v1/sessions/{session_id}/resources":               {"get", "post"},
-		"/v1/sessions/{session_id}/resources/{resource_id}": {"delete", "get", "post"},
+		"/v1/sessions/{session_id}/resources/{resource_id}": {"delete", "get"},
 	}
 	count := 0
 	for path, methods := range operations {
@@ -598,8 +598,8 @@ func TestOpenAPISessionResourcesContract(t *testing.T) {
 			count++
 		}
 	}
-	if count != 5 {
-		t.Fatalf("Session Resources operation count = %d, want 5", count)
+	if count != 4 {
+		t.Fatalf("Session Resources operation count = %d, want 4", count)
 	}
 	schemas := openAPIMap(
 		t,
@@ -625,10 +625,12 @@ func TestOpenAPISessionResourcesContract(t *testing.T) {
 		"SessionResourceInput": {
 			"#/components/schemas/FileSessionResourceInput",
 			"#/components/schemas/MemoryStoreSessionResourceInput",
+			"#/components/schemas/GitRepositorySessionResourceInput",
 		},
 		"SessionResource": {
 			"#/components/schemas/FileSessionResource",
 			"#/components/schemas/MemoryStoreSessionResource",
+			"#/components/schemas/GitRepositorySessionResource",
 		},
 	} {
 		union := openAPIMap(t, schemas[name], name)

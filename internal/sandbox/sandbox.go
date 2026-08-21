@@ -189,6 +189,8 @@ const SessionOutputsRoot = domain.SessionOutputsRoot
 // from Sandbox.Root.
 const SessionSkillsRoot = domain.SessionSkillsRoot
 
+const SessionRepositoryRoot = domain.SessionRepositoryRoot
+
 // SessionOutputProvider declares support for the Mango deliverable
 // directory. Providers opt in because exporting an arbitrary workspace is not
 // equivalent to confining and streaming /mnt/session/outputs.
@@ -232,6 +234,29 @@ type FileResourceSandbox interface {
 	HasFileResource(context.Context, FileResourceMount) (bool, error)
 	ImportFileResource(context.Context, FileResourceMount, io.Reader) error
 	RemoveFileResource(context.Context, string, string) error
+}
+
+// GitRepositoryMount describes one immutable control-plane snapshot restored
+// as a writable Git worktree. RuntimePath is a child of /workspace; the
+// snapshot includes .git metadata at ResolvedCommit.
+type GitRepositoryMount struct {
+	Identity       string
+	RuntimePath    string
+	ResolvedCommit string
+	SizeBytes      int64
+	ChecksumSHA256 string
+}
+
+// GitRepositoryProvider declares support for restoring Mango-owned Git
+// snapshots without requiring network access or Git in the sandbox image.
+type GitRepositoryProvider interface {
+	SupportsGitRepositories() bool
+}
+
+type GitRepositorySandbox interface {
+	HasGitRepository(context.Context, GitRepositoryMount) (bool, error)
+	ImportGitRepository(context.Context, GitRepositoryMount, io.Reader) error
+	RemoveGitRepository(context.Context, string, string) error
 }
 
 // MemoryStoreProvider declares support for durable writable Memory Store

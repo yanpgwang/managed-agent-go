@@ -24,6 +24,7 @@ type SessionResourceService struct {
 	ids              domain.IDGenerator
 	clock            domain.Clock
 	outputs          *app.SessionOutputPublisher
+	repositories     app.GitRepositorySnapshotter
 	admissionEnabled bool
 }
 
@@ -45,6 +46,15 @@ func NewSessionResourceService(
 		)
 	}
 	return service
+}
+
+// EnableGitRepositoryResources installs the control-plane snapshot source.
+// Composition calls this only when the selected cloud sandbox adapter can
+// restore repository snapshots.
+func (s *SessionResourceService) EnableGitRepositoryResources(
+	snapshotter app.GitRepositorySnapshotter,
+) {
+	s.repositories = snapshotter
 }
 
 func (s *SessionResourceService) PrepareForSession(
@@ -137,6 +147,119 @@ func (s *SessionResourceService) PrepareForSession(
 	return prepared, nil
 }
 
+func (s *SessionResourceService) PrepareRepositoriesForSession(
+	ctx context.Context,
+	session domain.Session,
+	inputs []app.GitRepositorySessionResourceInput,
+	stagedBytes int64,
+) ([]app.PreparedSessionResource, error) {
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	if s.repositories == nil {
+		return nil, domain.Unsupported(
+			"Git repository resources are unavailable for the configured deployment",
+		)
+	}
+	if len(inputs) > MaxSessionResources || len(session.Resources)+len(inputs) > MaxSessionResources {
+		return nil, domain.Validation("resources must contain at most 500 entries")
+	}
+	if session.ArchivedAt != nil {
+		return nil, domain.Conflict("cannot add a resource to an archived session")
+	}
+	if session.Status == domain.StatusTerminated {
+		return nil, domain.Conflict("cannot add a resource to a terminated session")
+	}
+	if session.EnvironmentType != "cloud" {
+		return nil, domain.Unsupported(
+			"Git repository resources require a cloud Environment with a capable sandbox provider",
+		)
+	}
+
+	mountPaths := make([]string, len(inputs))
+	checkoutTypes := make([]string, len(inputs))
+	checkoutValues := make([]string, len(inputs))
+	for index, input := range inputs {
+		if err := domain.ValidateGitRepositoryURL(input.URL); err != nil {
+			return nil, err
+		}
+		var requestedType, requestedValue string
+		if input.Checkout != nil {
+			requestedType, requestedValue = input.Checkout.Type, input.Checkout.Value
+		}
+		checkoutType, checkoutValue, err := domain.NormalizeGitRepositoryCheckout(
+			requestedType, requestedValue,
+		)
+		if err != nil {
+			return nil, err
+		}
+		mountPath, err := domain.NormalizeGitRepositoryMountPath(input.URL, input.MountPath)
+		if err != nil {
+			return nil, err
+		}
+		for _, existing := range mountPaths[:index] {
+			if domain.SessionFileMountPathsConflict(existing, mountPath) {
+				return nil, domain.Conflict(
+					"session resource mount_path values cannot overlap",
+				)
+			}
+		}
+		for _, existing := range session.Resources {
+			if existing.State == domain.SessionResourceActive &&
+				domain.SessionFileMountPathsConflict(existing.MountPath, mountPath) {
+				return nil, domain.Conflict(
+					"session resource mount_path values cannot overlap",
+				)
+			}
+		}
+		mountPaths[index] = mountPath
+		checkoutTypes[index] = checkoutType
+		checkoutValues[index] = checkoutValue
+	}
+
+	if stagedBytes < 0 || stagedBytes > app.MaxSessionResourceBytes {
+		return nil, errors.New("git repository: invalid staged Session Resource size")
+	}
+	totalBytes := stagedBytes
+	if len(session.Resources) > 0 {
+		activeBytes, err := s.store.ActiveSessionResourceBytes(ctx, session.ID)
+		if err != nil {
+			return nil, err
+		}
+		if activeBytes > app.MaxSessionResourceBytes-totalBytes {
+			return nil, domain.TooLarge(
+				"Session Resources exceed the 500 MB aggregate limit",
+			)
+		}
+		totalBytes += activeBytes
+	}
+	prepared := make([]app.PreparedSessionResource, 0, len(inputs))
+	for index, input := range inputs {
+		if totalBytes >= app.MaxSessionResourceBytes {
+			s.DiscardPrepared(ctx, prepared)
+			return nil, domain.TooLarge(
+				"Session Resources exceed the 500 MB aggregate limit",
+			)
+		}
+		item, err := s.prepareRepositorySnapshot(
+			ctx,
+			session.ID,
+			input.URL,
+			checkoutTypes[index],
+			checkoutValues[index],
+			mountPaths[index],
+			app.MaxSessionResourceBytes-totalBytes,
+		)
+		if err != nil {
+			s.DiscardPrepared(ctx, prepared)
+			return nil, err
+		}
+		totalBytes += item.Blob.SizeBytes
+		prepared = append(prepared, item)
+	}
+	return prepared, nil
+}
+
 func (s *SessionResourceService) Add(
 	ctx context.Context,
 	sessionID string,
@@ -196,23 +319,6 @@ func (s *SessionResourceService) List(
 	return s.store.ListSessionResources(ctx, sessionID, query)
 }
 
-func (s *SessionResourceService) Update(
-	ctx context.Context,
-	sessionID string,
-	resourceID string,
-	_ string,
-) (domain.SessionResource, error) {
-	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
-		return domain.SessionResource{}, err
-	}
-	if _, err := s.store.GetSessionResource(ctx, sessionID, resourceID); err != nil {
-		return domain.SessionResource{}, err
-	}
-	return domain.SessionResource{}, domain.Unsupported(
-		"File resources do not support authorization_token rotation; update applies only to GitHub repository resources",
-	)
-}
-
 func (s *SessionResourceService) Delete(
 	ctx context.Context,
 	sessionID string,
@@ -220,6 +326,15 @@ func (s *SessionResourceService) Delete(
 ) (domain.SessionResource, error) {
 	if err := s.store.AssertSessionWorkspace(ctx, sessionID); err != nil {
 		return domain.SessionResource{}, err
+	}
+	current, err := s.store.GetSessionResource(ctx, sessionID, resourceID)
+	if err != nil {
+		return domain.SessionResource{}, err
+	}
+	if current.Type() == domain.SessionResourceTypeGitRepository {
+		return domain.SessionResource{}, domain.Unsupported(
+			"Git repository resources cannot be detached after Session creation",
+		)
 	}
 	resource, err := s.store.BeginSessionResourceDeletion(ctx, sessionID, resourceID)
 	if err != nil {
@@ -264,13 +379,100 @@ func (s *SessionResourceService) DiscardPrepared(
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
 	for _, item := range prepared {
-		if item.Resource.Type() != domain.SessionResourceTypeFile {
+		if item.Resource.Type() == domain.SessionResourceTypeMemoryStore || item.File.ID == "" {
 			continue
 		}
 		if err := s.blobs.Delete(cleanupCtx, item.File.BlobKey); err == nil {
 			_ = s.files.RemoveIncomplete(cleanupCtx, item.File.ID)
 		}
 	}
+}
+
+func (s *SessionResourceService) prepareRepositorySnapshot(
+	ctx context.Context,
+	sessionID string,
+	repositoryURL string,
+	checkoutType string,
+	checkoutValue string,
+	mountPath string,
+	maxBytes int64,
+) (app.PreparedSessionResource, error) {
+	snapshot, err := s.repositories.OpenSnapshot(ctx, app.GitRepositorySnapshotRequest{
+		URL: repositoryURL, CheckoutType: checkoutType, CheckoutValue: checkoutValue,
+	})
+	if err != nil {
+		return app.PreparedSessionResource{}, err
+	}
+	if snapshot.Archive == nil {
+		return app.PreparedSessionResource{}, errors.New(
+			"git repository: snapshotter returned no archive",
+		)
+	}
+	archiveClosed := false
+	defer func() {
+		if !archiveClosed {
+			_ = snapshot.Archive.Close()
+		}
+	}()
+	resolvedType, resolvedCommit, err := domain.NormalizeGitRepositoryCheckout(
+		domain.GitRepositoryCheckoutCommit, snapshot.ResolvedCommit,
+	)
+	if err != nil || resolvedType != domain.GitRepositoryCheckoutCommit {
+		return app.PreparedSessionResource{}, errors.New(
+			"git repository: snapshotter returned an invalid resolved commit",
+		)
+	}
+
+	now := s.clock.Now().UTC()
+	resourceID := s.ids.NewID(domain.PrefixSessionResource)
+	fileID := s.ids.NewID(domain.PrefixFile)
+	archive := domain.File{
+		ID: fileID, CreatedAt: now, UpdatedAt: now,
+		Filename: "repository-" + resourceID + ".tar",
+		MimeType: "application/x-tar", Downloadable: false,
+		Internal: true,
+		Scope:    &domain.FileScope{ID: sessionID, Type: "session"},
+		BlobKey:  workspace.BlobKey(ctx, "files/"+fileID),
+		State:    domain.FileStateUploading,
+	}
+	if err := s.files.BeginUpload(ctx, archive); err != nil {
+		return app.PreparedSessionResource{}, err
+	}
+	pending := app.PreparedSessionResource{File: archive}
+	info, putErr := s.blobs.Put(
+		ctx, archive.BlobKey, archive.MimeType, snapshot.Archive, maxBytes,
+	)
+	closeErr := snapshot.Archive.Close()
+	archiveClosed = true
+	if putErr != nil {
+		s.DiscardPrepared(ctx, []app.PreparedSessionResource{pending})
+		if errors.Is(putErr, app.ErrBlobTooLarge) {
+			return app.PreparedSessionResource{}, domain.TooLarge(
+				"Session Resources exceed the 500 MB aggregate limit",
+			)
+		}
+		return app.PreparedSessionResource{}, putErr
+	}
+	if closeErr != nil {
+		s.DiscardPrepared(ctx, []app.PreparedSessionResource{pending})
+		return app.PreparedSessionResource{}, fmt.Errorf(
+			"git repository: close snapshot archive: %w", closeErr,
+		)
+	}
+	return app.PreparedSessionResource{
+		Resource: domain.SessionResource{
+			ID: resourceID, SessionID: sessionID,
+			ResourceType: domain.SessionResourceTypeGitRepository,
+			FileID:       archive.ID, RepositoryURL: repositoryURL,
+			RepositoryCheckoutType:   checkoutType,
+			RepositoryCheckoutValue:  checkoutValue,
+			RepositoryResolvedCommit: resolvedCommit,
+			MountPath:                mountPath, CreatedAt: now, UpdatedAt: now,
+			State: domain.SessionResourceActive,
+		},
+		File: archive,
+		Blob: info,
+	}, nil
 }
 
 func (s *SessionResourceService) prepareFileCopy(
@@ -347,6 +549,11 @@ func (s *SessionResourceService) sourceFile(
 			)
 		}
 		return domain.File{}, err
+	}
+	if source.Internal {
+		return domain.File{}, domain.Validation(
+			"file_id does not identify a ready File",
+		)
 	}
 	if source.Scope != nil && source.Scope.ID != sessionID {
 		return domain.File{}, domain.Validation(

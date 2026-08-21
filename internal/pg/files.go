@@ -23,9 +23,9 @@ type FileRepository struct {
 const insertFileStatement = `
 INSERT INTO files (
     id, created_at, updated_at, filename, mime_type, size_bytes,
-    downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state,
+    downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state,
     workspace_id
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`
 
 func NewFileRepository(store *Store) *FileRepository {
 	return &FileRepository{store: store}
@@ -49,7 +49,7 @@ func (r *FileRepository) BeginUpload(ctx context.Context, file domain.File) erro
 	}
 	_, err = r.store.pool.Exec(ctx, insertFileStatement,
 		file.ID, file.CreatedAt, file.UpdatedAt, file.Filename, file.MimeType,
-		file.SizeBytes, file.Downloadable, scopeID, scopeType, file.BlobKey,
+		file.SizeBytes, file.Downloadable, file.Internal, scopeID, scopeType, file.BlobKey,
 		file.ChecksumSHA256, nullableString(file.OutputPath), string(file.State),
 		workspaceID,
 	)
@@ -67,7 +67,7 @@ func (r *FileRepository) beginSessionOutputUpload(
 	scopeType *string,
 ) error {
 	if file.Scope == nil || file.Scope.Type != "session" ||
-		file.Scope.ID == "" || !file.Downloadable {
+		file.Scope.ID == "" || !file.Downloadable || file.Internal {
 		return domain.Validation("invalid Session output File")
 	}
 	tx, err := r.store.pool.Begin(ctx)
@@ -92,7 +92,7 @@ FOR UPDATE`, file.Scope.ID, workspaceID).Scan(&deletingAt)
 	}
 	_, err = tx.Exec(ctx, insertFileStatement,
 		file.ID, file.CreatedAt, file.UpdatedAt, file.Filename, file.MimeType,
-		file.SizeBytes, file.Downloadable, scopeID, scopeType, file.BlobKey,
+		file.SizeBytes, file.Downloadable, file.Internal, scopeID, scopeType, file.BlobKey,
 		file.ChecksumSHA256, nullableString(file.OutputPath), string(file.State),
 		workspaceID,
 	)
@@ -122,7 +122,7 @@ SET size_bytes = $2,
     updated_at = now()
 WHERE id = $1 AND ($4 = '' OR workspace_id = $4) AND state = 'uploading'
 RETURNING id, created_at, updated_at, filename, mime_type, size_bytes,
-          downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state`,
+          downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state`,
 		id, info.SizeBytes, info.ChecksumSHA256, workspaceID,
 	)
 	file, err := scanFile(row)
@@ -139,7 +139,7 @@ func (r *FileRepository) Get(ctx context.Context, id string) (domain.File, error
 	}
 	row := r.store.pool.QueryRow(ctx, `
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
-       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+       downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
 FROM files
 WHERE id = $1 AND ($2 = '' OR workspace_id = $2) AND state = 'ready'`, id, workspaceID)
 	file, err := scanFile(row)
@@ -158,7 +158,7 @@ func (r *FileRepository) List(
 		return app.FileListPage{}, err
 	}
 	args := make([]any, 0, 5)
-	where := []string{"state = 'ready'"}
+	where := []string{"state = 'ready'", "NOT internal_use"}
 	if scoped {
 		args = append(args, workspaceID)
 		where = append(where, fmt.Sprintf("workspace_id = $%d", len(args)))
@@ -186,6 +186,9 @@ func (r *FileRepository) List(
 			}
 			return app.FileListPage{}, err
 		}
+		if boundary.Internal {
+			return app.FileListPage{}, domain.Validation("file cursor not found")
+		}
 		args = append(args, boundary.CreatedAt, boundary.ID)
 		where = append(where, fmt.Sprintf(
 			"(created_at, id) %s ($%d, $%d)", operator, len(args)-1, len(args),
@@ -194,7 +197,7 @@ func (r *FileRepository) List(
 	args = append(args, query.Limit+1)
 	statement := fmt.Sprintf(`
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
-       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+       downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
 FROM files
 WHERE %s
 ORDER BY %s
@@ -234,11 +237,12 @@ func (r *FileRepository) BeginDelete(ctx context.Context, id string) (domain.Fil
 UPDATE files AS target
 SET state = 'deleting', updated_at = now()
 WHERE target.id = $1 AND ($2 = '' OR target.workspace_id = $2) AND target.state = 'ready'
+	AND NOT target.internal_use
   AND NOT EXISTS (
       SELECT 1 FROM session_resources WHERE file_id = target.id
   )
 RETURNING id, created_at, updated_at, filename, mime_type, size_bytes,
-          downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state`, id, workspaceID)
+          downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state`, id, workspaceID)
 	file, err := scanFile(row)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var protected bool
@@ -247,8 +251,10 @@ SELECT EXISTS (
     SELECT 1
     FROM session_resources AS resource
     JOIN sessions AS session ON session.id = resource.session_id
+    JOIN files AS file ON file.id = resource.file_id
     WHERE resource.file_id = $1
       AND ($2 = '' OR session.workspace_id = $2)
+      AND NOT file.internal_use
 )`, id, workspaceID).Scan(&protected); queryErr != nil {
 			return domain.File{}, queryErr
 		}
@@ -276,7 +282,7 @@ WHERE id = $1 AND ($2 = '' OR workspace_id = $2) AND state <> 'ready'`, id, work
 func (r *FileRepository) ListIncomplete(ctx context.Context) ([]domain.File, error) {
 	rows, err := r.store.pool.Query(ctx, `
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
-       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+       downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
 FROM files
 WHERE state <> 'ready'
 ORDER BY updated_at, id`)
@@ -312,7 +318,7 @@ func (r *FileRepository) CompleteSessionOutput(
 
 	pending, err := scanPendingSessionOutput(tx.QueryRow(ctx, `
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
-       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+       downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
 FROM files
 WHERE id = $1 AND ($2 = '' OR workspace_id = $2) AND state = 'uploading'`,
 		id, workspaceID,
@@ -343,7 +349,7 @@ FOR UPDATE`, pending.Scope.ID, workspaceID).Scan(&deletingAt)
 	// concurrent idle publication and DELETE.
 	pending, err = scanPendingSessionOutput(tx.QueryRow(ctx, `
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
-       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+       downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
 FROM files
 WHERE id = $1 AND ($2 = '' OR workspace_id = $2) AND state = 'uploading'
 FOR UPDATE`, id, workspaceID))
@@ -353,7 +359,7 @@ FOR UPDATE`, id, workspaceID))
 
 	rows, err := tx.Query(ctx, `
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
-       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+       downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
 FROM files
 WHERE ($1 = '' OR workspace_id = $1)
   AND scope_type = 'session' AND scope_id = $2 AND output_path = $3
@@ -428,7 +434,7 @@ SET size_bytes = $2,
     updated_at = now()
 WHERE id = $1 AND state = 'uploading'
 RETURNING id, created_at, updated_at, filename, mime_type, size_bytes,
-          downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state`,
+          downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state`,
 		id, info.SizeBytes, info.ChecksumSHA256,
 	))
 	if err != nil {
@@ -488,7 +494,7 @@ WHERE ($1 = '' OR workspace_id = $1)
 	}
 	rows, err := tx.Query(ctx, `
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
-       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+       downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
 FROM files
 WHERE ($1 = '' OR workspace_id = $1)
   AND scope_type = 'session' AND scope_id = $2
@@ -556,7 +562,7 @@ WHERE ($1 = '' OR workspace_id = $1)
 	}
 	rows, err := tx.Query(ctx, `
 SELECT id, created_at, updated_at, filename, mime_type, size_bytes,
-       downloadable, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
+       downloadable, internal_use, scope_id, scope_type, blob_key, checksum_sha256, output_path, state
 FROM files
 WHERE ($1 = '' OR workspace_id = $1)
   AND scope_type = 'session' AND scope_id = $2
@@ -615,7 +621,7 @@ func scanFile(row fileScanner) (domain.File, error) {
 	err := row.Scan(
 		&file.ID, &file.CreatedAt, &file.UpdatedAt, &file.Filename,
 		&file.MimeType, &file.SizeBytes, &file.Downloadable,
-		&scopeID, &scopeType, &file.BlobKey, &file.ChecksumSHA256, &outputPath,
+		&file.Internal, &scopeID, &scopeType, &file.BlobKey, &file.ChecksumSHA256, &outputPath,
 		&file.State,
 	)
 	if err != nil {

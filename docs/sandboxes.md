@@ -68,14 +68,14 @@ Capabilities are admitted independently. A backend that passes the core
 lifecycle contract does not automatically claim Files, outputs, Skills,
 Memory, or network enforcement.
 
-| Backend | Packages | File Resources | Session Outputs | Skills | Memory | Limited egress |
-|---|---:|---:|---:|---:|---:|---:|
-| Local process | No | No | No | No | No | No |
-| Docker | Yes | Yes, read-only | Yes | Yes, read-only | Yes | No |
-| E2B | Yes | Yes, buffered writable-copy limitation | Yes, buffered | Yes, buffered hardened-copy limitation | No | No |
-| CubeSandbox | Yes | Yes, buffered writable-copy limitation | Yes, buffered | Yes, buffered hardened-copy limitation | No | No |
-| OpenSandbox | Yes | Yes, writable-copy limitation | Yes | Yes, hardened-copy limitation | No | Yes |
-| Daytona | Yes | Yes, writable-copy limitation | Yes | Yes, hardened-copy limitation | No | No |
+| Backend | Packages | File Resources | Git repositories | Session Outputs | Skills | Memory | Limited egress |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Local process | No | No | No | No | No | No | No |
+| Docker | Yes | Yes, read-only | Yes, writable | Yes | Yes, read-only | Yes | No |
+| E2B | Yes | Yes, buffered writable-copy limitation | Yes, buffered writable | Yes, buffered | Yes, buffered hardened-copy limitation | No | No |
+| CubeSandbox | Yes | Yes, buffered writable-copy limitation | Yes, buffered writable | Yes, buffered | Yes, buffered hardened-copy limitation | No | No |
+| OpenSandbox | Yes | Yes, writable-copy limitation | Yes, writable | Yes | Yes, hardened-copy limitation | No | Yes |
+| Daytona | Yes | Yes, writable-copy limitation | Yes, writable | Yes | Yes, hardened-copy limitation | No | No |
 
 `No` means the adapter rejects admission for that capability; it does not mean
 the external provider could never implement it. Preview backends retain their
@@ -108,6 +108,30 @@ The local-process provider would have to write into the worker host's absolute
 `/mnt` path and therefore rejects the feature. E2B and Cube retain the public
 File limits and checksum validation, but their current buffering means the
 worker must have enough memory for the largest accepted individual resource.
+
+## Git repository mounts
+
+Git repositories use one provider-neutral lifecycle. The control plane resolves
+the remote and persists an exact, bounded tar snapshot before Session admission.
+The worker validates snapshot size, SHA-256 digest, entry count, path
+containment, entry types, `.git/HEAD`, and symlink containment before sending
+anything to a sandbox. It then uploads one archive, extracts to a sibling
+staging directory, and atomically publishes the writable worktree at the
+documented `/workspace` path.
+
+A provider-owned marker records resource identity, resolved commit, checksum,
+and pending/ready state. A lost acknowledgement after publication is adopted
+only when the pending marker matches; a path owned by another resource is never
+overwritten. Retrying materialization preserves Agent edits instead of
+re-extracting the canonical snapshot. Removal checks identity before deleting a
+path, so an old tombstone cannot remove a replacement.
+
+The sandbox does not need outbound network access or a Git executable for
+materialization. It does need a POSIX shell and `tar`, the same image contract
+already required for remote Session output export. Docker streams the archive
+through the Engine API. OpenSandbox and Daytona stream through their official
+filesystem clients; the E2B/Cube-compatible data plane currently buffers the
+uploaded archive as an explicit Preview limitation.
 
 ## Session output mounts
 

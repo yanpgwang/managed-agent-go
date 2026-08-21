@@ -159,6 +159,15 @@ func TestSandboxProviderRegistry_AdvertisesRuntimeCapabilities(t *testing.T) {
 				wantSkillBundles,
 			)
 		}
+		wantGitRepositories := name != sandbox.LocalProviderName
+		if capabilities.GitRepositories != wantGitRepositories {
+			t.Errorf(
+				"%s GitRepositories = %v, want %v",
+				name,
+				capabilities.GitRepositories,
+				wantGitRepositories,
+			)
+		}
 	}
 }
 

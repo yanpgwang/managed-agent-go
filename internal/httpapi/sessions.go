@@ -38,7 +38,6 @@ func (s *Server) registerSessionRoutes() {
 	s.mux.HandleFunc("POST /v1/sessions/{id}/resources", s.addSessionResource)
 	s.mux.HandleFunc("GET /v1/sessions/{id}/resources", s.listSessionResources)
 	s.mux.HandleFunc("GET /v1/sessions/{id}/resources/{resource_id}", s.getSessionResource)
-	s.mux.HandleFunc("POST /v1/sessions/{id}/resources/{resource_id}", s.updateSessionResource)
 	s.mux.HandleFunc("DELETE /v1/sessions/{id}/resources/{resource_id}", s.deleteSessionResource)
 }
 
@@ -224,7 +223,7 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	resourceInputs, memoryResourceInputs, err := parseSessionResourceInputs(resources)
+	resourceInputs, memoryResourceInputs, repositoryResourceInputs, err := parseSessionResourceInputs(resources)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -275,9 +274,10 @@ func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
 		AgentID: ref.ID, AgentVersion: ref.Version, Overrides: ref.Overrides,
 		EnvironmentID: in.EnvironmentID, Title: sessionTitle, Metadata: sessionMetadata,
 		InitialEvents: drafts, Resources: resourceInputs,
-		MemoryResources: memoryResourceInputs,
-		VaultIDs:        sessionVaultIDs,
-		Budget:          budget,
+		MemoryResources:     memoryResourceInputs,
+		RepositoryResources: repositoryResourceInputs,
+		VaultIDs:            sessionVaultIDs,
+		Budget:              budget,
 	})
 	if err != nil {
 		writeError(w, err)

@@ -498,26 +498,6 @@ paths:
           $ref: '#/components/responses/NotFound'
         '422':
           $ref: '#/components/responses/UnsupportedRequest'
-    post:
-      operationId: updateSessionResource
-      tags: [Session Resources]
-      summary: Update a Session Resource
-      description: File resources reject this GitHub-only token rotation operation.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SessionResourceUpdateRequest'
-      responses:
-        '200':
-          $ref: '#/components/responses/SessionResourceResponse'
-        '400':
-          $ref: '#/components/responses/InvalidRequest'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '422':
-          $ref: '#/components/responses/UnsupportedRequest'
     delete:
       operationId: deleteSessionResource
       tags: [Session Resources]
@@ -2582,7 +2562,7 @@ components:
         - $ref: '#/components/schemas/MemoryStoreSessionResourceInput'
       discriminator:
         propertyName: type
-      description: GitHub repository resources remain capability-gated in this implementation.
+      description: Deployment templates currently accept File and Memory Store resources only.
     DeploymentMetadata:
       type: object
       maxProperties: 16
@@ -4653,8 +4633,59 @@ components:
       oneOf:
         - $ref: '#/components/schemas/FileSessionResourceInput'
         - $ref: '#/components/schemas/MemoryStoreSessionResourceInput'
+        - $ref: '#/components/schemas/GitRepositorySessionResourceInput'
       discriminator:
         propertyName: type
+    GitRepositoryBranchCheckout:
+      type: object
+      additionalProperties: false
+      required: [type, name]
+      properties:
+        type:
+          type: string
+          const: branch
+        name:
+          type: string
+          minLength: 1
+          maxLength: 1024
+    GitRepositoryCommitCheckout:
+      type: object
+      additionalProperties: false
+      required: [type, sha]
+      properties:
+        type:
+          type: string
+          const: commit
+        sha:
+          type: string
+          pattern: '^[0-9a-fA-F]{40}$'
+    GitRepositoryCheckout:
+      oneOf:
+        - $ref: '#/components/schemas/GitRepositoryBranchCheckout'
+        - $ref: '#/components/schemas/GitRepositoryCommitCheckout'
+      discriminator:
+        propertyName: type
+    GitRepositorySessionResourceInput:
+      type: object
+      additionalProperties: false
+      required: [type, url]
+      properties:
+        type:
+          type: string
+          const: git_repository
+        url:
+          type: string
+          format: uri
+          pattern: '^https://'
+          maxLength: 2048
+          description: Anonymous public HTTPS Git remote. Credentials, query strings, and fragments are rejected.
+        checkout:
+          $ref: '#/components/schemas/GitRepositoryCheckout'
+        mount_path:
+          type: string
+          minLength: 1
+          maxLength: 1024
+          description: Absolute child of /workspace that does not overlap /workspace/skills.
     FileSessionResource:
       type: object
       additionalProperties: false
@@ -4705,17 +4736,41 @@ components:
       oneOf:
         - $ref: '#/components/schemas/FileSessionResource'
         - $ref: '#/components/schemas/MemoryStoreSessionResource'
+        - $ref: '#/components/schemas/GitRepositorySessionResource'
       discriminator:
         propertyName: type
-    SessionResourceUpdateRequest:
+    GitRepositorySessionResource:
       type: object
       additionalProperties: false
-      required: [authorization_token]
+      required: [id, created_at, type, url, checkout, resolved_commit, mount_path, updated_at]
       properties:
-        authorization_token:
+        id:
           type: string
-          minLength: 1
-          description: GitHub-only field; File resources return 422.
+          pattern: '^sesrsc_'
+        created_at:
+          type: string
+          format: date-time
+        type:
+          type: string
+          const: git_repository
+        url:
+          type: string
+          format: uri
+        checkout:
+          oneOf:
+            - $ref: '#/components/schemas/GitRepositoryCheckout'
+            - type: 'null'
+          description: Requested checkout, or null when the remote default branch was used.
+        resolved_commit:
+          type: string
+          pattern: '^[0-9a-f]{40}$'
+          description: Exact commit frozen into the Session snapshot.
+        mount_path:
+          type: string
+          pattern: '^/workspace/'
+        updated_at:
+          type: string
+          format: date-time
     SessionResourceDeleted:
       type: object
       additionalProperties: false
