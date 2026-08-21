@@ -19,6 +19,20 @@ and self-hosted. Public surface definitions may be design inputs, but external
 implementation code and non-public types must not be copied, and an external
 release is never an automatic roadmap.
 
+## HTTP transport
+
+- Claude Managed Agents documentation and public SDK behavior informed early
+  use of `x-api-key`, provider version and beta headers, and a provider-named
+  worker correlation header.
+- Mango uses standard `Authorization: Bearer` authentication and media types,
+  retains the generic `request-id` response header, and exposes optional worker
+  correlation as the `worker_id` query parameter. It does not expose provider
+  rollout headers on its inbound API.
+- The Anthropic Messages adapter continues to send the provider headers its
+  outbound endpoint requires. Tests that exercise Mango through an Anthropic
+  SDK are optional research evidence; raw HTTP and OpenAPI tests define Mango's
+  transport contract.
+
 ## File-backed Session messages
 
 - The [Managed Agents event API](https://platform.claude.com/docs/en/api/beta/sessions/events)

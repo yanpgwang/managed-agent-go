@@ -54,33 +54,21 @@ Resource-specific request shapes are covered in:
 ## Headers
 
 Every protected route requires an API key. The default development stack uses
-`sk-mango-local-development`. Run with `-strict` to additionally require the
-vendor-named headers currently used by strict mode:
+`sk-mango-local-development`. Send it as a standard bearer credential:
 
 ```http
-x-api-key: sk-mango-local-development
-anthropic-version: 2023-06-01
-anthropic-beta: managed-agents-2026-04-01
+authorization: Bearer sk-mango-local-development
 content-type: application/json
 ```
 
-Files routes instead require `anthropic-beta: files-api-2025-04-14` in strict
-mode. Upload uses `multipart/form-data`; the other Files requests do not require
-a JSON content type.
+Every non-empty JSON request body requires `content-type: application/json`.
+File and Skill uploads instead require `multipart/form-data`; File uploads are
+limited to 500 MB and Skill bundles must be smaller than 30 MB. Mango does not
+use provider version or beta headers on its inbound API.
 
-Skills routes require `anthropic-beta: skills-2025-10-02`. Creating a Skill or
-Skill Version uses `multipart/form-data` and is limited to a bundle smaller
-than 30 MB.
-
-Memory routes require `anthropic-beta: agent-memory-2026-07-22`. Do not combine
-that header with `managed-agents-2026-04-01` on Memory routes. Session creation
-currently uses `managed-agents-2026-04-01` when attaching a Memory Store. These
-header names are current implementation details, not compatibility promises.
-
-`authorization: Bearer <key>` may replace `x-api-key`, but sending both is an
-authentication error. Each key resolves to exactly one Workspace, and every
-key for that Workspace can access the same resources. Workspace IDs are not
-added to public request or response bodies.
+Each bearer key resolves to exactly one Workspace, and every key for that
+Workspace can access the same resources. Workspace IDs are not added to public
+request or response bodies.
 
 Mango intentionally has no end-user or role model. A surrounding SaaS may map
 many users to a Workspace and apply its own RBAC before calling Mango. Use the
@@ -94,8 +82,8 @@ mango api-key revoke -id key_...
 ```
 
 Every response includes a `request-id` header. JSON request bodies are limited
-to 32 MiB and unknown top-level fields are rejected. A file upload is limited
-to 500 MB and requires configured S3-compatible storage.
+to 32 MiB and unknown top-level fields are rejected. File uploads require
+configured S3-compatible storage.
 
 ## Errors
 

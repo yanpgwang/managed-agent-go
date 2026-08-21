@@ -14,9 +14,7 @@ servers:
   - url: /
     description: Current mango server
 security:
-  - ApiKeyAuth: []
   - BearerAuth: []
-  - {}
 tags:
   - name: Agents
     description: Versioned Agent definitions.
@@ -911,8 +909,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
 
   /v1/memory_stores:
-    parameters:
-      - $ref: '#/components/parameters/MemoryBeta'
     post:
       operationId: createMemoryStore
       tags: [Memory]
@@ -949,7 +945,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/memory_stores/{store_id}:
     parameters:
-      - $ref: '#/components/parameters/MemoryBeta'
       - $ref: '#/components/parameters/MemoryStoreID'
     get:
       operationId: getMemoryStore
@@ -996,7 +991,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/memory_stores/{store_id}/archive:
     parameters:
-      - $ref: '#/components/parameters/MemoryBeta'
       - $ref: '#/components/parameters/MemoryStoreID'
     post:
       operationId: archiveMemoryStore
@@ -1011,7 +1005,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/memory_stores/{store_id}/memories:
     parameters:
-      - $ref: '#/components/parameters/MemoryBeta'
       - $ref: '#/components/parameters/MemoryStoreID'
     post:
       operationId: createMemory
@@ -1059,7 +1052,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/memory_stores/{store_id}/memories/{memory_id}:
     parameters:
-      - $ref: '#/components/parameters/MemoryBeta'
       - $ref: '#/components/parameters/MemoryStoreID'
       - $ref: '#/components/parameters/MemoryID'
     get:
@@ -1121,7 +1113,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/memory_stores/{store_id}/memory_versions:
     parameters:
-      - $ref: '#/components/parameters/MemoryBeta'
       - $ref: '#/components/parameters/MemoryStoreID'
     get:
       operationId: listMemoryVersions
@@ -1148,7 +1139,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/memory_stores/{store_id}/memory_versions/{version_id}:
     parameters:
-      - $ref: '#/components/parameters/MemoryBeta'
       - $ref: '#/components/parameters/MemoryStoreID'
       - $ref: '#/components/parameters/MemoryVersionID'
     get:
@@ -1168,7 +1158,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/memory_stores/{store_id}/memory_versions/{version_id}/redact:
     parameters:
-      - $ref: '#/components/parameters/MemoryBeta'
       - $ref: '#/components/parameters/MemoryStoreID'
       - $ref: '#/components/parameters/MemoryVersionID'
     post:
@@ -1186,8 +1175,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
 
   /v1/vaults:
-    parameters:
-      - $ref: '#/components/parameters/ManagedAgentsBeta'
     post:
       operationId: createVault
       tags: [Vaults]
@@ -1222,7 +1209,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/vaults/{vault_id}:
     parameters:
-      - $ref: '#/components/parameters/ManagedAgentsBeta'
       - $ref: '#/components/parameters/VaultID'
     get:
       operationId: getVault
@@ -1267,7 +1253,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/vaults/{vault_id}/archive:
     parameters:
-      - $ref: '#/components/parameters/ManagedAgentsBeta'
       - $ref: '#/components/parameters/VaultID'
     post:
       operationId: archiveVault
@@ -1282,7 +1267,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/vaults/{vault_id}/credentials:
     parameters:
-      - $ref: '#/components/parameters/ManagedAgentsBeta'
       - $ref: '#/components/parameters/VaultID'
     post:
       operationId: createVaultCredential
@@ -1325,7 +1309,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/vaults/{vault_id}/credentials/{credential_id}:
     parameters:
-      - $ref: '#/components/parameters/ManagedAgentsBeta'
       - $ref: '#/components/parameters/VaultID'
       - $ref: '#/components/parameters/VaultCredentialID'
     get:
@@ -1371,7 +1354,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/vaults/{vault_id}/credentials/{credential_id}/archive:
     parameters:
-      - $ref: '#/components/parameters/ManagedAgentsBeta'
       - $ref: '#/components/parameters/VaultID'
       - $ref: '#/components/parameters/VaultCredentialID'
     post:
@@ -1387,7 +1369,6 @@ paths:
           $ref: '#/components/responses/UnsupportedRequest'
   /v1/vaults/{vault_id}/credentials/{credential_id}/mcp_oauth_validate:
     parameters:
-      - $ref: '#/components/parameters/ManagedAgentsBeta'
       - $ref: '#/components/parameters/VaultID'
       - $ref: '#/components/parameters/VaultCredentialID'
     post:
@@ -1534,39 +1515,37 @@ paths:
     get:
       operationId: health
       summary: Liveness probe
+      security: []
       responses:
         '200':
           description: Healthy
-        '401':
-          $ref: '#/components/responses/AuthenticationError'
   /readyz:
     get:
       operationId: readiness
       summary: Readiness probe
+      security: []
       responses:
         '200':
           description: Ready
-        '401':
-          $ref: '#/components/responses/AuthenticationError'
+  /openapi.yaml:
+    get:
+      operationId: openAPI
+      summary: Get the Mango OpenAPI document
+      security: []
+      responses:
+        '200':
+          description: OpenAPI document
+          content:
+            application/yaml:
+              schema: {type: string}
 
 components:
   securitySchemes:
-    ApiKeyAuth:
-      type: apiKey
-      in: header
-      name: x-api-key
     BearerAuth:
       type: http
       scheme: bearer
 
   parameters:
-    ManagedAgentsBeta:
-      name: anthropic-beta
-      in: header
-      required: true
-      schema:
-        type: string
-        const: managed-agents-2026-04-01
     VaultID:
       name: vault_id
       in: path
@@ -1680,9 +1659,10 @@ components:
         type: integer
         minimum: 0
     EnvironmentWorkerID:
-      name: Anthropic-Worker-ID
-      in: header
+      name: worker_id
+      in: query
       required: false
+      description: Operational correlation identifier; it does not authenticate the worker.
       schema: {type: string, minLength: 1}
     EnvironmentWorkExpectedHeartbeat:
       name: expected_last_heartbeat
@@ -1728,14 +1708,6 @@ components:
       schema:
         type: string
         pattern: '^[0-9]+$'
-    MemoryBeta:
-      name: anthropic-beta
-      in: header
-      required: true
-      description: Memory routes require this beta and reject the Managed Agents beta on the same request.
-      schema:
-        type: string
-        const: agent-memory-2026-07-22
     MemoryStoreID:
       name: store_id
       in: path
@@ -2551,7 +2523,7 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     AuthenticationError:
-      description: Missing API credentials when strict header validation is enabled
+      description: Missing or invalid bearer credential
       headers:
         request-id:
           $ref: '#/components/headers/RequestID'

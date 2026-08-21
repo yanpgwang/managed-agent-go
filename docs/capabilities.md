@@ -62,9 +62,9 @@ Mango currently has these product and operational boundaries:
 - Drop-in interoperability with a hosted agent service or third-party agent SDK
   is not a product goal;
 - the API is not stable before the first release;
-- the OSS server provides Workspace-scoped API keys and tenant data isolation,
-  but not end-user identity, roles, per-resource authorization, or enterprise
-  key lifecycle;
+- the OSS server accepts Workspace-scoped API keys through standard bearer
+  authentication and provides tenant data isolation, but not end-user identity,
+  roles, per-resource authorization, or enterprise key lifecycle;
 - quota, billing, audit, backup, and observability are incomplete;
 - Kubernetes and production Compose distributions are not supported;
 - local and Docker sandboxes are not safe hostile multi-tenant boundaries.

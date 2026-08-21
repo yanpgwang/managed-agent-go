@@ -141,10 +141,10 @@ func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
 	ids := domain.NewSeqIDGen()
 	service := app.NewFileService(repo, blobs, ids, fixedClock{})
 	server := httptest.NewServer(httpapi.NewServer(httpapi.Deps{Files: service}, httpapi.Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler())
 	defer server.Close()
-	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("sk-test"))
+	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAuthToken("sk-test"))
 	ctx := context.Background()
 
 	uploaded, err := client.Beta.Files.Upload(ctx, anthropic.BetaFileUploadParams{
@@ -208,9 +208,7 @@ func TestFileHTTP_PostgresS3SDKLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rawRequest.Header.Set("x-api-key", "sk-test")
-	rawRequest.Header.Set("anthropic-version", "2023-06-01")
-	rawRequest.Header.Set("anthropic-beta", "files-api-2025-04-14")
+	rawRequest.Header.Set("authorization", "Bearer sk-test")
 	rawResponse, err := server.Client().Do(rawRequest)
 	if err != nil {
 		t.Fatalf("raw list Session outputs: %v", err)

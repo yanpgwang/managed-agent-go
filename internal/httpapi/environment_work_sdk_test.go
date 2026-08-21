@@ -10,22 +10,21 @@ import (
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/anthropics/anthropic-sdk-go/lib/environments"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/anthropics/anthropic-sdk-go/packages/param"
 	"github.com/yanpgwang/mango/internal/app"
 	"github.com/yanpgwang/mango/internal/domain"
 )
 
-func TestOfficialGoSDKEnvironmentWorkSurface(t *testing.T) {
+func TestAnthropicSDKResearch_EnvironmentWorkSurface(t *testing.T) {
 	t.Parallel()
 	service := newSDKEnvironmentWorkService()
 	server := httptest.NewServer(NewServer(Deps{EnvironmentWork: service}, Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler())
 	t.Cleanup(server.Close)
 	client := anthropic.NewClient(
-		option.WithBaseURL(server.URL+"/"), option.WithAPIKey("test-key"),
+		option.WithBaseURL(server.URL+"/"), option.WithAuthToken("test-key"),
 	)
 	ctx := context.Background()
 
@@ -55,9 +54,7 @@ func TestOfficialGoSDKEnvironmentWorkSurface(t *testing.T) {
 		server.URL+"/v1/environments/"+service.work.EnvironmentID+"/work/"+service.work.ID,
 		bytes.NewBufferString(`{"metadata":{"worker_pool":null}}`))
 	nullPatch.Header.Set("content-type", "application/json")
-	nullPatch.Header.Set("anthropic-beta", betaValue)
-	nullPatch.Header.Set("anthropic-version", anthropicVersion)
-	nullPatch.Header.Set("x-api-key", "test-key")
+	nullPatch.Header.Set("authorization", "Bearer test-key")
 	nullResponse, err := http.DefaultClient.Do(nullPatch)
 	if err != nil {
 		t.Fatalf("raw null metadata patch: %v", err)
@@ -79,7 +76,7 @@ func TestOfficialGoSDKEnvironmentWorkSurface(t *testing.T) {
 	}
 
 	polled, err := client.Beta.Environments.Work.Poll(ctx, service.work.EnvironmentID, anthropic.BetaEnvironmentWorkPollParams{
-		BlockMs: param.NewOpt(int64(1)), AnthropicWorkerID: param.NewOpt("sdk-worker"),
+		BlockMs: param.NewOpt(int64(1)),
 	})
 	if err != nil || polled.ID != service.work.ID {
 		t.Fatalf("Poll Work = %+v, err=%v", polled, err)
@@ -117,37 +114,48 @@ func TestOfficialGoSDKEnvironmentWorkSurface(t *testing.T) {
 	}
 }
 
-func TestOfficialEnvironmentWorkPollerCompatibility(t *testing.T) {
-	t.Parallel()
+func TestEnvironmentWorkPollUsesWorkerIDQuery(t *testing.T) {
 	service := newSDKEnvironmentWorkService()
 	server := httptest.NewServer(NewServer(Deps{EnvironmentWork: service}, Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler())
 	t.Cleanup(server.Close)
-	client := anthropic.NewClient(
-		option.WithBaseURL(server.URL+"/"), option.WithAPIKey("parent-key"),
-	)
-	poller := environments.NewWorkPoller(context.Background(), client, environments.WorkPollerOptions{
-		EnvironmentID: service.work.EnvironmentID, EnvironmentKey: "environment-key",
-		WorkerID: "official-poller", Drain: true,
-		BlockMs: param.Null[int64](),
-	})
-	if !poller.Next() || poller.Current() == nil || poller.Current().ID != service.work.ID {
-		t.Fatalf("official WorkPoller did not yield Work: current=%+v err=%v", poller.Current(), poller.Err())
+
+	target := server.URL + "/v1/environments/" + service.work.EnvironmentID +
+		"/work/poll?worker_id=worker-local"
+	request, err := http.NewRequestWithContext(context.Background(), http.MethodGet, target, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if poller.Next() {
-		t.Fatal("official WorkPoller yielded after queue drained")
+	request.Header.Set("authorization", "Bearer test-key")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := poller.Err(); err != nil {
-		t.Fatalf("official WorkPoller error: %v", err)
-	}
-	if err := poller.Close(); err != nil {
-		t.Fatalf("close official WorkPoller: %v", err)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("poll status = %d, want 200", response.StatusCode)
 	}
 	service.mu.Lock()
-	defer service.mu.Unlock()
-	if service.acks != 1 || service.stops != 1 {
-		t.Fatalf("official helper calls: acks=%d stops=%d", service.acks, service.stops)
+	workerID := service.workerID
+	service.mu.Unlock()
+	if workerID != "worker-local" {
+		t.Fatalf("worker ID = %q, want worker-local", workerID)
+	}
+
+	invalid, err := http.NewRequestWithContext(context.Background(), http.MethodGet,
+		server.URL+"/v1/environments/"+service.work.EnvironmentID+"/work/poll?worker_id=", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalid.Header.Set("authorization", "Bearer test-key")
+	invalidResponse, err := server.Client().Do(invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = invalidResponse.Body.Close()
+	if invalidResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("empty worker_id status = %d, want 400", invalidResponse.StatusCode)
 	}
 }
 
@@ -155,6 +163,7 @@ type sdkEnvironmentWorkService struct {
 	mu        sync.Mutex
 	work      domain.EnvironmentWork
 	polls     int
+	workerID  string
 	acks      int
 	stops     int
 	heartbeat time.Time
@@ -227,10 +236,11 @@ func (s *sdkEnvironmentWorkService) Heartbeat(
 }
 
 func (s *sdkEnvironmentWorkService) Poll(
-	_ context.Context, _, _ string, _ time.Duration, _ *time.Duration,
+	_ context.Context, _ string, workerID string, _ time.Duration, _ *time.Duration,
 ) (*domain.EnvironmentWork, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.workerID = workerID
 	s.polls++
 	if s.polls > 1 {
 		return nil, nil

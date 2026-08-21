@@ -22,10 +22,10 @@ func TestMemoryService_PostgresOfficialSDKLifecycle(t *testing.T) {
 	ids := domain.NewSeqIDGen()
 	service := app.NewMemoryService(NewMemoryRepository(store), ids, fixedClock{})
 	server := httptest.NewServer(httpapi.NewServer(httpapi.Deps{Memory: service}, httpapi.Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler())
 	t.Cleanup(server.Close)
-	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("sk-memory-test"))
+	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAuthToken("sk-memory-test"))
 	ctx := context.Background()
 
 	createdStore, err := client.Beta.MemoryStores.New(ctx, anthropic.BetaMemoryStoreNewParams{

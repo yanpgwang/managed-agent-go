@@ -42,7 +42,7 @@ func TestOfficialGoSDKDeploymentSurface(t *testing.T) {
 	server := httptest.NewServer(NewServer(Deps{Deployments: service}, Config{}).Handler())
 	t.Cleanup(server.Close)
 	client := anthropic.NewClient(
-		option.WithBaseURL(server.URL+"/"), option.WithAPIKey("test-key"),
+		option.WithBaseURL(server.URL+"/"), option.WithAuthToken("test-key"),
 	)
 
 	created, err := client.Beta.Deployments.New(context.Background(), anthropic.BetaDeploymentNewParams{

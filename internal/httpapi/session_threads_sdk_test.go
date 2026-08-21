@@ -60,10 +60,10 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 		Threads: service,
 		Events:  &sdkThreadEvents{event: event, next: nextEvent, child: childEvent},
 		Stream:  &sdkThreadStream{event: event},
-	}, Config{RequireBeta: true, RequireAuth: true, RequireVersion: true}).Handler())
+	}, Config{RequireAuth: true}).Handler())
 	t.Cleanup(server.Close)
 	client := anthropic.NewClient(
-		option.WithBaseURL(server.URL+"/"), option.WithAPIKey("test-key"),
+		option.WithBaseURL(server.URL+"/"), option.WithAuthToken("test-key"),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -124,9 +124,7 @@ func TestOfficialGoSDKSessionThreadSurface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build cross-resource cursor request: %v", err)
 	}
-	request.Header.Set("anthropic-beta", betaValue)
-	request.Header.Set("anthropic-version", anthropicVersion)
-	request.Header.Set("x-api-key", "test-key")
+	request.Header.Set("authorization", "Bearer test-key")
 	response, err := server.Client().Do(request)
 	if err != nil {
 		t.Fatalf("cross-resource cursor request: %v", err)
@@ -185,10 +183,10 @@ func TestOfficialGoSDKAdvisorSessionThreadAgentUnion(t *testing.T) {
 		Events: &sdkThreadEvents{
 			event: adviceEvent, next: adviceEvent, child: adviceEvent,
 		},
-	}, Config{RequireBeta: true, RequireAuth: true, RequireVersion: true}).Handler())
+	}, Config{RequireAuth: true}).Handler())
 	t.Cleanup(server.Close)
 	client := anthropic.NewClient(
-		option.WithBaseURL(server.URL+"/"), option.WithAPIKey("test-key"),
+		option.WithBaseURL(server.URL+"/"), option.WithAuthToken("test-key"),
 	)
 	got, err := client.Beta.Sessions.Threads.Get(
 		context.Background(), thread.ID,

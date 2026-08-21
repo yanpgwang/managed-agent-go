@@ -6,8 +6,8 @@ slug: /api/memory
 # Memory
 
 Memory Stores are PostgreSQL-backed, cross-Session collections of ordinary
-UTF-8 files with immutable Version history. Memory routes use
-`anthropic-beta: agent-memory-2026-07-22`.
+UTF-8 files with immutable Version history. Memory routes use Mango's standard
+bearer authentication and JSON content type rules.
 
 The fourteen operations cover Store create/get/update/list/archive/delete,
 Memory create/get/update/list/delete, and Version get/list/redact. The running

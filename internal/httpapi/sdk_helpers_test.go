@@ -21,9 +21,7 @@ func mustEnv(t *testing.T, serverURL string) string {
 		serverURL+"/v1/environments",
 		bytes.NewBufferString(`{"name":"e","config":{"type":"cloud"}}`))
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("anthropic-beta", "managed-agents-2026-04-01")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("x-api-key", "sk-test")
+	req.Header.Set("authorization", "Bearer sk-test")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("create environment: %v", err)

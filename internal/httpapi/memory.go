@@ -711,11 +711,8 @@ func memoryActorToJSON(actor domain.MemoryActor) map[string]any {
 }
 
 func requestMemoryActor(r *http.Request) domain.MemoryActor {
-	credential := r.Header.Get("x-api-key")
-	if credential == "" {
-		credential = strings.TrimSpace(strings.TrimPrefix(r.Header.Get("authorization"), "Bearer "))
-	}
-	if credential == "" {
+	credential, present, valid := requestBearerToken(r)
+	if !present || !valid {
 		return domain.MemoryActor{Type: "api_actor", ID: "api_key_local"}
 	}
 	sum := sha256.Sum256([]byte(credential))

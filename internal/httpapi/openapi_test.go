@@ -21,6 +21,50 @@ func TestOpenAPIServed(t *testing.T) {
 	}
 }
 
+func TestOpenAPITransportContract(t *testing.T) {
+	doc := parseOpenAPIDocument(t)
+	security, ok := doc["security"].([]any)
+	if !ok || len(security) != 1 {
+		t.Fatalf("global security = %#v, want one bearer requirement", doc["security"])
+	}
+	requirement := openAPIMap(t, security[0], "global security requirement")
+	if len(requirement) != 1 || requirement["BearerAuth"] == nil {
+		t.Fatalf("global security requirement = %#v, want BearerAuth", requirement)
+	}
+	components := openAPIMap(t, doc["components"], "components")
+	schemes := openAPIMap(t, components["securitySchemes"], "security schemes")
+	if len(schemes) != 1 {
+		t.Fatalf("security schemes = %#v, want only BearerAuth", schemes)
+	}
+	bearer := openAPIMap(t, schemes["BearerAuth"], "BearerAuth")
+	if bearer["type"] != "http" || bearer["scheme"] != "bearer" {
+		t.Fatalf("BearerAuth = %#v", bearer)
+	}
+
+	paths := openAPIMap(t, doc["paths"], "paths")
+	for _, path := range []string{"/healthz", "/readyz", "/openapi.yaml"} {
+		get := openAPIMap(t, openAPIMap(t, paths[path], path)["get"], "get "+path)
+		public, ok := get["security"].([]any)
+		if !ok || len(public) != 0 {
+			t.Fatalf("%s security = %#v, want []", path, get["security"])
+		}
+	}
+
+	pollPath := openAPIMap(t, paths["/v1/environments/{environment_id}/work/poll"], "poll path")
+	poll := openAPIMap(t, pollPath["get"], "poll operation")
+	parameters := poll["parameters"].([]any)
+	var worker map[string]any
+	for _, parameter := range parameters {
+		resolved := resolveOpenAPIRef(t, doc, parameter)
+		if resolved["name"] == "worker_id" {
+			worker = resolved
+		}
+	}
+	if worker == nil || worker["in"] != "query" {
+		t.Fatalf("worker_id parameter = %#v, want query parameter", worker)
+	}
+}
+
 func TestOpenAPIResourceLifecycleContract(t *testing.T) {
 	doc := parseOpenAPIDocument(t)
 	paths := openAPIMap(t, doc["paths"], "paths")
@@ -205,7 +249,7 @@ func TestOpenAPIFullManagedAgentsOperationInventory(t *testing.T) {
 		}
 	}
 	if count != 90 {
-		t.Fatalf("Managed Agents operation count = %d, want 90", count)
+		t.Fatalf("Mango operation count = %d, want 90", count)
 	}
 }
 
@@ -495,11 +539,6 @@ func TestOpenAPIVaultContract(t *testing.T) {
 	count := 0
 	for path, methods := range operations {
 		pathItem := openAPIMap(t, paths[path], "path "+path)
-		pathParameters := pathItem["parameters"].([]any)
-		first := resolveOpenAPIRef(t, doc, pathParameters[0])
-		if first["name"] != "anthropic-beta" {
-			t.Fatalf("%s first parameter = %v", path, first["name"])
-		}
 		for _, method := range methods {
 			operation := openAPIMap(t, pathItem[method], method+" "+path)
 			id, _ := operation["operationId"].(string)
@@ -627,14 +666,6 @@ func TestOpenAPIMemoryContract(t *testing.T) {
 	seenIDs := map[string]bool{}
 	for path, methods := range operations {
 		pathItem := openAPIMap(t, paths[path], "path "+path)
-		pathParameters, ok := pathItem["parameters"].([]any)
-		if !ok || len(pathParameters) == 0 {
-			t.Fatalf("%s has no path-level beta parameter", path)
-		}
-		firstParameter := resolveOpenAPIRef(t, doc, pathParameters[0])
-		if firstParameter["name"] != "anthropic-beta" {
-			t.Fatalf("%s first parameter = %v, want anthropic-beta", path, firstParameter["name"])
-		}
 		for _, method := range methods {
 			operation := openAPIMap(t, pathItem[method], method+" "+path)
 			id, _ := operation["operationId"].(string)

@@ -270,5 +270,5 @@ func (s *Server) routes() {
 
 func (s *Server) Handler() http.Handler {
 	return requestIDMiddleware(bodyLimitMiddleware(authMiddleware(s.cfg,
-		versionMiddleware(s.cfg, contentTypeMiddleware(s.cfg, betaMiddleware(s.cfg, s.mux))))))
+		contentTypeMiddleware(s.mux))))
 }

@@ -19,18 +19,9 @@ type WorkspaceAuthenticator interface {
 }
 
 type Config struct {
-	RequireBeta        bool
-	RequireAuth        bool
-	RequireVersion     bool
-	RequireContentType bool
-	Authenticator      WorkspaceAuthenticator
+	RequireAuth   bool
+	Authenticator WorkspaceAuthenticator
 }
-
-const betaValue = "managed-agents-2026-04-01"
-const filesBetaValue = "files-api-2025-04-14"
-const skillsBetaValue = "skills-2025-10-02"
-const memoryBetaValue = "agent-memory-2026-07-22"
-const anthropicVersion = "2023-06-01"
 
 // maxBodyBytes is the documented request-size limit for Sessions, Agents, and
 // Environments: 32 MiB. Exceeding it yields a 413 request_too_large.
@@ -38,42 +29,13 @@ const maxBodyBytes = 32 << 20
 const maxFileRequestBytes = app.MaxFileBytes + (1 << 20)
 const maxSkillRequestBytes = app.MaxSkillUploadBytes + (1 << 20)
 
-func betaMiddleware(cfg Config, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isPublicRequest(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		betaHeaders := strings.Join(r.Header.Values("anthropic-beta"), ",")
-		requiredBeta := betaValue
-		if isFilePath(r.URL.Path) {
-			requiredBeta = filesBetaValue
-		} else if isSkillPath(r.URL.Path) {
-			requiredBeta = skillsBetaValue
-		} else if isMemoryPath(r.URL.Path) {
-			requiredBeta = memoryBetaValue
-			if headerHasToken(betaHeaders, betaValue) {
-				writeErrorEnvelope(w, http.StatusBadRequest, "invalid_request_error",
-					"agent-memory and managed-agents beta headers cannot be combined")
-				return
-			}
-		}
-		if cfg.RequireBeta && !headerHasToken(betaHeaders, requiredBeta) {
-			writeErrorEnvelope(w, http.StatusBadRequest, "invalid_request_error",
-				"missing or invalid anthropic-beta header")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
 func authMiddleware(cfg Config, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isPublicRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		key, present, validShape := requestAPIKey(r)
+		key, present, validShape := requestBearerToken(r)
 		if !validShape {
 			writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
 				"invalid authorization header")
@@ -82,7 +44,7 @@ func authMiddleware(cfg Config, next http.Handler) http.Handler {
 		if cfg.Authenticator != nil {
 			if !present {
 				writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
-					"missing x-api-key")
+					"missing authorization header")
 				return
 			}
 			workspaceID, err := cfg.Authenticator.AuthenticateAPIKey(r.Context(), key)
@@ -98,7 +60,7 @@ func authMiddleware(cfg Config, next http.Handler) http.Handler {
 			r = r.WithContext(workspace.WithScope(r.Context(), workspaceID))
 		} else if cfg.RequireAuth && !present {
 			writeErrorEnvelope(w, http.StatusUnauthorized, "authentication_error",
-				"missing x-api-key")
+				"missing authorization header")
 			return
 		} else if _, ok := workspace.FromContext(r.Context()); !ok {
 			// Embedders and wire-only tests that intentionally omit an
@@ -114,15 +76,8 @@ func isPublicRequest(r *http.Request) bool {
 		r.URL.Path == "/readyz" || r.URL.Path == "/openapi.yaml")
 }
 
-func requestAPIKey(r *http.Request) (key string, present bool, valid bool) {
-	xAPIKey := strings.TrimSpace(r.Header.Get("x-api-key"))
+func requestBearerToken(r *http.Request) (key string, present bool, valid bool) {
 	authorization := strings.TrimSpace(r.Header.Get("authorization"))
-	if xAPIKey != "" {
-		if authorization != "" {
-			return "", true, false
-		}
-		return xAPIKey, true, true
-	}
 	if authorization == "" {
 		return "", false, true
 	}
@@ -133,28 +88,13 @@ func requestAPIKey(r *http.Request) (key string, present bool, valid bool) {
 	return strings.TrimSpace(value), true, true
 }
 
-func versionMiddleware(cfg Config, next http.Handler) http.Handler {
+func contentTypeMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if isPublicRequest(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if cfg.RequireVersion && r.Header.Get("anthropic-version") != anthropicVersion {
-			writeErrorEnvelope(w, http.StatusBadRequest, "invalid_request_error",
-				"missing or invalid anthropic-version header")
-			return
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func contentTypeMiddleware(cfg Config, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isPublicRequest(r) {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if !cfg.RequireContentType || r.Body == nil || r.ContentLength == 0 {
+		if r.Body == nil || r.ContentLength == 0 {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -222,10 +162,6 @@ func isSkillUpload(r *http.Request) bool {
 		(r.URL.Path == "/v1/skills" || strings.HasSuffix(r.URL.Path, "/versions"))
 }
 
-func isMemoryPath(path string) bool {
-	return path == "/v1/memory_stores" || strings.HasPrefix(path, "/v1/memory_stores/")
-}
-
 func isMultipartUpload(r *http.Request) bool {
 	return isFileUpload(r) || isSkillUpload(r)
 }
@@ -251,13 +187,4 @@ func decodeJSONBody(r *http.Request, dst any) error {
 		return domain.Validation("request body must contain exactly one JSON value")
 	}
 	return nil
-}
-
-func headerHasToken(value, want string) bool {
-	for _, token := range strings.Split(value, ",") {
-		if strings.TrimSpace(token) == want {
-			return true
-		}
-	}
-	return false
 }

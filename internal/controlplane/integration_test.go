@@ -355,7 +355,7 @@ func TestOfficialGoSDKArchivesPostgresChildThread(t *testing.T) {
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 	client := anthropic.NewClient(
-		option.WithBaseURL(server.URL+"/"), option.WithAPIKey("test-key"),
+		option.WithBaseURL(server.URL+"/"), option.WithAuthToken("test-key"),
 	)
 	archived, err := client.Beta.Sessions.Threads.Archive(
 		ctx,
