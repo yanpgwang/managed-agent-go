@@ -132,7 +132,9 @@ func TestSandboxProviderRegistry_AdvertisesRuntimeCapabilities(t *testing.T) {
 				wantLimitedNetwork,
 			)
 		}
-		wantSessionOutputs := name == sandbox.DockerProviderName
+		wantSessionOutputs := name == sandbox.DockerProviderName ||
+			name == sandbox.OpenSandboxProviderName ||
+			name == sandbox.DaytonaProviderName
 		if capabilities.SessionOutputs != wantSessionOutputs {
 			t.Errorf(
 				"%s SessionOutputs = %v, want %v",

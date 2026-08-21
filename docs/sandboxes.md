@@ -62,6 +62,25 @@ client with API-version negotiation; it has no runtime dependency on the
 The local provider is not a security boundary. No backend currently carries a
 production security claim.
 
+### Capability matrix
+
+Capabilities are admitted independently. A backend that passes the core
+lifecycle contract does not automatically claim Files, outputs, Skills,
+Memory, or network enforcement.
+
+| Backend | Packages | File Resources | Session Outputs | Skills | Memory | Limited egress |
+|---|---:|---:|---:|---:|---:|---:|
+| Local process | No | No | No | No | No | No |
+| Docker | Yes | Yes, read-only | Yes | Yes, read-only | Yes | No |
+| E2B | Yes | No | No | No | No | No |
+| CubeSandbox | Yes | No | No | No | No | No |
+| OpenSandbox | Yes | Yes, writable-copy limitation | Yes | No | No | Yes |
+| Daytona | Yes | Yes, writable-copy limitation | Yes | No | No | No |
+
+`No` means the adapter rejects admission for that capability; it does not mean
+the external provider could never implement it. Preview backends retain their
+Preview status even where an individual capability is implemented.
+
 ## File Resource mounts
 
 File-backed Session Resources require more than ordinary workspace writes: the
@@ -88,19 +107,29 @@ the streaming path required for Mango's 500 MB File limit.
 
 ## Session output mounts
 
-Docker also exposes a provider-owned writable bind mount at
-`/mnt/session/outputs`. Before a primary Session becomes idle, the worker
-attaches to the existing durable container, takes the provider resource lock,
-streams the directory as an archive, validates every path and entry type, and
-publishes regular files to Mango's S3-compatible Files store. The worker never
-creates a sandbox solely for output discovery. The mount and publication
-capabilities are separate from File Resource input mounts: local and current
-remote adapters advertise neither output export nor an equivalent writable
-absolute-path boundary. A provider must also pass the shared output conformance
-suite: built-in file tools and shell commands must see the same durable root,
-export must be streaming and repeatable under the resource lock, and an adapter
-without that proof remains fail-closed. Docker sandboxes created before this
-mount existed must be recreated rather than silently producing an empty export.
+Docker, OpenSandbox, and Daytona expose the writable
+`/mnt/session/outputs` boundary. Before a primary Session becomes idle, the
+worker attaches to the existing durable sandbox, takes the provider resource
+lock, streams the directory as an archive, validates every path and entry type,
+and publishes regular files to Mango's S3-compatible Files store. The worker
+never creates a sandbox solely for output discovery.
+
+Docker exports its provider-owned bind mount through the Engine archive API.
+OpenSandbox and Daytona create a uniquely named tar snapshot in an
+adapter-owned control directory, stream it through their official SDK file
+clients, and remove it when the stream closes. Mango's file tools authorize the
+output root but reject the control directory. Remote images selected for these
+adapters must provide a POSIX `tar` executable; a missing or failed archiver is
+reported explicitly instead of treating the output tree as empty.
+
+The mount and publication capabilities are separate from File Resource input
+mounts. Every provider must pass the shared output conformance suite: built-in
+file tools and shell commands must see the same durable root, export must be
+streaming and repeatable under the resource lock, and an adapter without that
+proof remains fail-closed. E2B and Cube do not yet expose Mango's required
+streaming file data plane and therefore reject output publication. Docker
+sandboxes created before the output mount existed must be recreated rather
+than silently producing an empty export.
 
 ## Custom Skill mounts
 

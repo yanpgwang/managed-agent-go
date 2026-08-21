@@ -79,11 +79,12 @@ tool results remain unsupported.
 
 ## Session outputs
 
-The output directory is writable inside a Docker sandbox. At every primary
-Session idle boundary, the worker recursively streams its regular files into
-the configured object store before committing `session.status_idle`. A client
-that observes the idle event can therefore immediately list and download the
-deliverables with `GET /v1/files?scope_id={session_id}`.
+The output directory is writable inside Docker, OpenSandbox, and Daytona
+sandboxes. At every primary Session idle boundary, the worker recursively
+streams its regular files into the configured object store before committing
+`session.status_idle`. A client that observes the idle event can therefore
+immediately list and download the deliverables with
+`GET /v1/files?scope_id={session_id}`.
 
 Each output is subject to the 500 MB per-file limit. One Session may publish at
 most 500 files from the output tree. Directories are traversed but are not
@@ -101,13 +102,15 @@ usable, allowing a later turn to remove or replace the invalid entry. An
 explicit interrupt skips output publication so cancellation is not delayed by
 a large snapshot.
 
-Publishing requires both configured Files storage and a Docker sandbox. It is
-not enabled for the CMA `self_hosted` Environment mode, where the client owns
-tool execution, nor for the local-process sandbox or current remote adapters.
-A text-only Session that never provisioned a sandbox does not create one merely
-to check for outputs. A durable Docker sandbox created before the output mount
-was introduced fails closed and must be recreated; it is never treated as an
-empty output tree.
+Publishing requires configured Files storage and a Docker, OpenSandbox, or
+Daytona sandbox. OpenSandbox and Daytona stream a temporary archive through
+their provider SDK; the selected remote image must contain `tar`. Publishing
+is not enabled for the CMA `self_hosted` Environment mode, where the client
+owns tool execution, nor for local-process, E2B, or Cube sandboxes. A text-only
+Session that never provisioned a sandbox does not create one merely to check
+for outputs. A durable Docker sandbox created before the output mount was
+introduced fails closed and must be recreated; it is never treated as an empty
+output tree.
 
 ## Lifecycle and limits
 

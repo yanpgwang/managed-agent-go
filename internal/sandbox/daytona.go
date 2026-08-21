@@ -110,6 +110,8 @@ func (*daytonaProvider) SupportsPackageSetup() bool { return true }
 
 func (*daytonaProvider) SupportsFileResources() bool { return true }
 
+func (*daytonaProvider) SupportsSessionOutputs() bool { return true }
+
 func (p *daytonaProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -195,6 +197,7 @@ type daytonaBox struct {
 	root      string
 	timeout   time.Duration
 	resources *remoteFileResources
+	sync      remoteResourceSynchronization
 }
 
 func newDaytonaBox(
@@ -211,7 +214,10 @@ func newDaytonaBox(
 func (s *daytonaBox) Root() string { return s.root }
 
 func (s *daytonaBox) ensureRoot(ctx context.Context) error {
-	return s.resources.ensureDirectory(ctx, s.root, 0o755)
+	if err := s.resources.ensureDirectory(ctx, s.root, 0o755); err != nil {
+		return err
+	}
+	return s.resources.ensureSessionOutputLayout(ctx)
 }
 
 func (s *daytonaBox) Exec(
@@ -242,7 +248,9 @@ func (s *daytonaBox) ReadFile(
 	ctx context.Context,
 	value string,
 ) ([]byte, error) {
-	full, err := remoteToolPath(s.root, value, SessionUploadsRoot)
+	full, err := remoteToolPath(
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -254,7 +262,9 @@ func (s *daytonaBox) WriteFile(
 	value string,
 	data []byte,
 ) error {
-	full, err := remoteToolPath(s.root, value, SessionUploadsRoot)
+	full, err := remoteToolPath(
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+	)
 	if err != nil {
 		return err
 	}
@@ -285,6 +295,28 @@ func (s *daytonaBox) RemoveFileResource(
 	identity string,
 ) error {
 	return s.resources.RemoveFileResource(ctx, runtimePath, identity)
+}
+
+func (s *daytonaBox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {
+	return openRemoteSessionOutputs(
+		ctx, DaytonaProviderName, s.resources, s.Exec,
+	)
+}
+
+func (s *daytonaBox) LockResourceOperation(ctx context.Context) (func(), error) {
+	return s.sync.LockResourceOperation(ctx)
+}
+
+func (s *daytonaBox) TryLockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), bool, error) {
+	return s.sync.TryLockResourceSync(ctx)
+}
+
+func (s *daytonaBox) LockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), error) {
+	return s.sync.LockResourceSync(ctx)
 }
 
 func (s *daytonaBox) Destroy(ctx context.Context) error {

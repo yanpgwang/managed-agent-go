@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"archive/tar"
 	"bytes"
 	"context"
 	"errors"
@@ -103,6 +104,155 @@ func TestRemoteFileResourceConformance(t *testing.T) {
 			)
 		})
 	}
+}
+
+func TestRemoteSessionOutputConformance(t *testing.T) {
+	tests := []struct {
+		name string
+		open func(*fakeRemoteStore) Provider
+	}{
+		{
+			name: OpenSandboxProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newOpenSandboxProvider(
+					&fakeOpenSandboxService{store: store}, remoteDefaultRoot,
+				)
+			},
+		},
+		{
+			name: DaytonaProviderName,
+			open: func(store *fakeRemoteStore) Provider {
+				return newDaytonaProvider(
+					&fakeDaytonaService{store: store}, defaultDaytonaRoot,
+				)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeRemoteStore(t.TempDir())
+			runFakeRemoteSessionOutputContract(
+				t, store, func() Provider { return test.open(store) },
+			)
+		})
+	}
+}
+
+func runFakeRemoteSessionOutputContract(
+	t *testing.T,
+	store *fakeRemoteStore,
+	open func() Provider,
+) {
+	t.Helper()
+	ctx := context.Background()
+	provider := open()
+	capability, ok := provider.(SessionOutputProvider)
+	if !ok || !capability.SupportsSessionOutputs() {
+		t.Fatalf("provider %q does not advertise Session outputs", provider.Name())
+	}
+	sessionKey := "sesn-outputs-" + strings.NewReplacer("/", "-", " ", "-").
+		Replace(strings.ToLower(t.Name()))
+	ref, box, err := provider.Create(ctx, sessionKey, Spec{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	exporter, ok := box.(SessionOutputSandbox)
+	if !ok {
+		t.Fatalf("sandbox %T does not expose Session outputs", box)
+	}
+	locker, ok := box.(ResourceSynchronizationSandbox)
+	if !ok {
+		t.Fatalf("sandbox %T does not expose resource synchronization", box)
+	}
+	if err := box.WriteFile(
+		ctx, SessionOutputsRoot+"/nested/tool.txt", []byte("tool"),
+	); err != nil {
+		t.Fatalf("write output through tool boundary: %v", err)
+	}
+	result, err := box.Exec(ctx, Command{
+		Path: "/bin/sh",
+		Args: []string{"-c", "printf shell > /mnt/session/outputs/shell.txt"},
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("write output through shell boundary: result=%+v err=%v", result, err)
+	}
+	if err := box.WriteFile(
+		ctx, remoteSessionOutputControlRoot+"/forbidden", []byte("x"),
+	); err == nil {
+		t.Fatal("WriteFile accepted adapter-owned Session output staging path")
+	}
+	unlock, err := locker.LockResourceOperation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := readFakeRemoteSessionOutputArchive(t, ctx, exporter)
+	second := readFakeRemoteSessionOutputArchive(t, ctx, exporter)
+	unlock()
+	want := map[string]string{"nested/tool.txt": "tool", "shell.txt": "shell"}
+	if !equalStringMaps(first, want) || !equalStringMaps(second, want) {
+		t.Fatalf("repeatable output snapshots = first:%v second:%v want:%v", first, second, want)
+	}
+	controlPath, err := (&fakeRemoteHandle{resource: store.resources[ref.ID]}).fullPath(
+		remoteSessionOutputControlRoot,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(controlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("Session output staging retained %d archive(s)", len(entries))
+	}
+}
+
+func readFakeRemoteSessionOutputArchive(
+	t *testing.T,
+	ctx context.Context,
+	exporter SessionOutputSandbox,
+) map[string]string {
+	t.Helper()
+	stream, err := exporter.OpenSessionOutputs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files := make(map[string]string)
+	reader := tar.NewReader(stream)
+	for {
+		header, nextErr := reader.Next()
+		if errors.Is(nextErr, io.EOF) {
+			break
+		}
+		if nextErr != nil {
+			t.Fatal(nextErr)
+		}
+		if header.Typeflag == tar.TypeDir {
+			continue
+		}
+		content, readErr := io.ReadAll(reader)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		files[strings.TrimPrefix(header.Name, "./")] = string(content)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func equalStringMaps(left, right map[string]string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for key, value := range left {
+		if right[key] != value {
+			return false
+		}
+	}
+	return true
 }
 
 func runFakeRemoteFileResourceContract(
@@ -490,9 +640,13 @@ func (h *fakeRemoteHandle) exec(
 	}
 	uploads, _ := h.fullPath(SessionUploadsRoot)
 	command = strings.ReplaceAll(command, SessionUploadsRoot, uploads)
+	outputs, _ := h.fullPath(SessionOutputsRoot)
+	command = strings.ReplaceAll(command, SessionOutputsRoot, outputs)
+	outputControl, _ := h.fullPath(remoteSessionOutputControlRoot)
+	command = strings.ReplaceAll(command, remoteSessionOutputControlRoot, outputControl)
 	process := exec.CommandContext(ctx, "/bin/sh", "-c", command)
 	process.Dir = h.resource.root
-	process.Env = []string{"PATH=/usr/bin:/bin"}
+	process.Env = []string{"PATH=/usr/bin:/bin", "COPYFILE_DISABLE=1"}
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 	process.Stdout = &stdout

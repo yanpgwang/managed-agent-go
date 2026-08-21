@@ -102,6 +102,8 @@ func (*openSandboxProvider) SupportsLimitedNetwork() bool { return true }
 
 func (*openSandboxProvider) SupportsFileResources() bool { return true }
 
+func (*openSandboxProvider) SupportsSessionOutputs() bool { return true }
+
 func (p *openSandboxProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -194,6 +196,7 @@ type openSandboxBox struct {
 	root      string
 	timeout   time.Duration
 	resources *remoteFileResources
+	sync      remoteResourceSynchronization
 }
 
 func newOpenSandboxBox(
@@ -217,7 +220,10 @@ func (s *openSandboxBox) ApplyLimitedNetwork(
 }
 
 func (s *openSandboxBox) ensureRoot(ctx context.Context) error {
-	return s.resources.ensureDirectory(ctx, s.root, 0o777)
+	if err := s.resources.ensureDirectory(ctx, s.root, 0o777); err != nil {
+		return err
+	}
+	return s.resources.ensureSessionOutputLayout(ctx)
 }
 
 func (s *openSandboxBox) Exec(
@@ -248,7 +254,9 @@ func (s *openSandboxBox) ReadFile(
 	ctx context.Context,
 	value string,
 ) ([]byte, error) {
-	full, err := remoteToolPath(s.root, value, SessionUploadsRoot)
+	full, err := remoteToolPath(
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -260,7 +268,9 @@ func (s *openSandboxBox) WriteFile(
 	value string,
 	data []byte,
 ) error {
-	full, err := remoteToolPath(s.root, value, SessionUploadsRoot)
+	full, err := remoteToolPath(
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+	)
 	if err != nil {
 		return err
 	}
@@ -291,6 +301,28 @@ func (s *openSandboxBox) RemoveFileResource(
 	identity string,
 ) error {
 	return s.resources.RemoveFileResource(ctx, runtimePath, identity)
+}
+
+func (s *openSandboxBox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {
+	return openRemoteSessionOutputs(
+		ctx, OpenSandboxProviderName, s.resources, s.Exec,
+	)
+}
+
+func (s *openSandboxBox) LockResourceOperation(ctx context.Context) (func(), error) {
+	return s.sync.LockResourceOperation(ctx)
+}
+
+func (s *openSandboxBox) TryLockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), bool, error) {
+	return s.sync.TryLockResourceSync(ctx)
+}
+
+func (s *openSandboxBox) LockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), error) {
+	return s.sync.LockResourceSync(ctx)
 }
 
 func (s *openSandboxBox) Destroy(ctx context.Context) error {
