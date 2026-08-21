@@ -112,7 +112,7 @@ Supported query parameters:
 ```
 
 Ordering, timestamp bounds, and cursors use `processed_at`, matching the public
-contract despite the compatibility query name `created_at`. Ascending order
+contract despite the current query name `created_at`. Ascending order
 places processed events first and unprocessed (`null`) events last; descending
 order reverses that placement. The internal receipt sequence is used only as a
 stable tie-breaker for equal or null timestamps and is never exposed.

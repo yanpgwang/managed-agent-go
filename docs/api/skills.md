@@ -47,5 +47,5 @@ through ordinary sandbox tools.
 Primary and `self` Agent bundles use `/workspace/skills/<name>/`; external
 roster Agents use isolated namespaces below `/workspace/skills/.agents/`.
 
-Anthropic-managed Skills, GitHub repository auto-loading, self-hosted runtime
+External managed catalogs, repository auto-loading, self-hosted runtime
 activation, and current remote-sandbox activation are not implemented.

@@ -7,15 +7,15 @@
 </p>
 
 <p align="center">
-  <strong>The independent, open-source runtime for Claude Managed Agents.</strong>
+  <strong>The self-hosted, durable runtime for long-running AI agents.</strong>
 </p>
 
 <p align="center">
   <a href="https://yanpgwang.github.io/mango/">Documentation</a> ·
   <a href="https://yanpgwang.github.io/mango/getting-started">Getting started</a> ·
-  <a href="https://yanpgwang.github.io/mango/compatibility">Compatibility</a> ·
-  <a href="https://yanpgwang.github.io/mango/architecture">Architecture</a> ·
-  <a href="https://platform.claude.com/docs/en/managed-agents/overview">Claude Managed Agents</a>
+  <a href="https://yanpgwang.github.io/mango/product">Product direction</a> ·
+  <a href="https://yanpgwang.github.io/mango/capabilities">Capabilities</a> ·
+  <a href="https://yanpgwang.github.io/mango/architecture">Architecture</a>
 </p>
 
 <p align="center">
@@ -24,18 +24,21 @@
   <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/github/license/yanpgwang/mango"></a>
 </p>
 
-Mango implements the documented Managed Agents API as a self-hosted runtime:
-durable sessions, event streaming, tool orchestration, File and custom Skill
-resources, persistent Memory Stores, an encrypted Vault control plane, durable
-scheduled Deployments, self-hosted Environment worker leases, and pluggable
-sandbox execution. Its
+Mango is a self-hosted control plane and execution runtime for durable AI agent
+work: persistent Sessions, event streaming, tool orchestration, File and custom
+Skill resources, Memory Stores, encrypted credentials, scheduled Deployments,
+self-hosted worker leases, and pluggable sandbox execution. Its
 production-oriented architecture is built in Go on PostgreSQL and Temporal.
+
+Mango owns its public API and roadmap. Its original resource model was informed
+by public agent-platform contracts, but users are not required to use an
+Anthropic SDK and Mango does not pursue drop-in interoperability with a hosted
+service.
 
 ## Why Mango
 
-- **Own the runtime.** Use the supported Anthropic wire contract through raw
-  HTTP or the official Go SDK while keeping state and execution on your
-  infrastructure.
+- **Own the runtime.** Keep state, orchestration, credentials, and execution on
+  infrastructure you control, using Mango's documented HTTP API.
 - **Keep accepted work durable.** Sessions, events, interrupts, tool calls, and
   client-action waits survive API and worker restarts.
 - **Bring your own execution environment.** Choose local, Docker, E2B,
@@ -73,18 +76,17 @@ message.
 make local-down
 ```
 
-## API compatibility
+## Capabilities and stability
 
 > [!IMPORTANT]
-> Mango is in alpha. It exposes the 90 operations in its pinned Managed Agents
-> contract, with capability-specific limitations, and is not an Anthropic
-> product or a drop-in replacement for every hosted behavior. The official Go
-> SDK is pinned at v1.63.1; its five separate Dreams research-preview operations
-> are not part of Mango's current HTTP surface.
-> Its architecture is designed for production operation, but the project does
-> not yet claim production readiness.
-> Review the [compatibility matrix](https://yanpgwang.github.io/mango/compatibility)
-> before relying on a capability. The default local sandbox is for development
+> Mango is in alpha, has no customers, and has no supported stable API.
+> `/v1` is its single development API namespace, not a claim that Mango 1.0
+> exists. Routes, fields, schemas, and behavior may all change
+> directly on `/v1`; earlier development snapshots are not preserved through
+> `/v2` or compatibility layers. The project does not yet claim production
+> readiness. Review
+> [capabilities and limits](https://yanpgwang.github.io/mango/capabilities)
+> before relying on a workflow. The default local sandbox is for development
 > and is not a security boundary.
 
 | Area | Current support |
@@ -92,34 +94,33 @@ make local-down
 | Core resources | Agent, Environment, and Session lifecycle, versioning, filtering, and pagination |
 | Events and runtime | Messages, interrupts, custom-tool results, confirmations, outcomes, retries, SSE, and durable park/resume |
 | Tools | Sandbox built-ins, provider-native Web Search/Fetch, and remote MCP tools with optional Vault-backed bearer authentication |
-| Files | Five-operation Files API with configured object storage; reusable outcome rubrics, File-backed Session Resources, and idle-boundary publication of Docker `/mnt/session/outputs` deliverables |
-| Skills | Nine custom resource operations, immutable Version pins, and Claude Code-style on-demand instruction loading in Docker Sessions |
-| Memory | Fourteen Store, Memory, and immutable Version operations; durable read/write or read-only Docker mounts at `/mnt/memory` |
-| Vaults | Thirteen encrypted Vault and Credential operations plus ordered Session attachment, live OAuth validation, and automatic token refresh; environment-variable egress remains in progress |
-| Deployments | Ten Deployment and Deployment Run operations, pinned Agent versions, manual runs, and PostgreSQL-leased cron scheduling |
-| Environment Work | Eight worker-protocol operations, transactional self-hosted Session activation, lease heartbeats, reclaim, and official Go `WorkPoller` interoperability |
+| Files | Object-backed File lifecycle, reusable outcome rubrics, File-backed Session Resources, and idle-boundary publication of Docker `/mnt/session/outputs` deliverables |
+| Skills | Custom Skill lifecycle, immutable Version pins, and on-demand instruction loading in Docker Sessions |
+| Memory | Store, Memory, and immutable Version lifecycle; durable read/write or read-only Docker mounts at `/mnt/memory` |
+| Vaults | Encrypted Vault and Credential lifecycle plus ordered Session attachment, live OAuth validation, and automatic token refresh; environment-variable egress remains in progress |
+| Deployments | Deployment and Run lifecycle, pinned Agent versions, manual runs, and PostgreSQL-leased cron scheduling |
+| Environment Work | Worker leases, transactional self-hosted Session activation, heartbeats, and reclaim |
 | Session Threads | Persistent coordinator delegation plus Mango-managed Advisor consultations over ordinary client tool calls, with independent context, usage, lifecycle events, reports, isolated event/preview streams, routed client-action waits, and durable interrupts |
 | Sandboxes | Local and Docker available; E2B, CubeSandbox, OpenSandbox, and Daytona in Preview |
 
-The [compatibility summary](https://yanpgwang.github.io/mango/compatibility)
+The [capability summary](https://yanpgwang.github.io/mango/capabilities)
 states the user-visible boundary. Persistent child-Agent orchestration,
 provider-neutral Advisor consultations, and shared Session budgets are
-implemented; Dreams, environment-variable secret egress, and
-production-platform hardening remain explicit compatibility gaps or focused
+implemented; active product work belongs in focused
 [GitHub Issues](https://github.com/yanpgwang/mango/issues).
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  Client --> API["Managed Agents API"]
+  Client --> API["Mango API"]
   API --> PG[("PostgreSQL")]
   API --> Objects[("S3-compatible storage")]
   API <-- "work lease + Session events" --> SelfHostedWorker["EnvironmentWorker"]
   SelfHostedWorker --> CustomerSandbox["Customer-hosted sandbox"]
   PG -- "durable outbox" --> Worker
   Worker <--> Temporal
-  Worker --> Model["Messages API"]
+  Worker --> Model["Model provider"]
   Worker --> Sandbox
   Worker -. "live previews" .-> NATS
   NATS -.-> API
@@ -146,7 +147,7 @@ and sandbox lifecycle.
 | Choose an execution backend | [Sandbox backends](https://yanpgwang.github.io/mango/sandboxes) |
 | Run a coordinator and child Agents | [Multi-agent guide](https://yanpgwang.github.io/mango/guides/multi-agent) |
 | Check an API operation | [API reference](https://yanpgwang.github.io/mango/api) |
-| Understand supported behavior | [API compatibility](https://yanpgwang.github.io/mango/compatibility) |
+| Understand supported behavior | [Capabilities and limits](https://yanpgwang.github.io/mango/capabilities) |
 | Plan a deployment | [Deployment model](https://yanpgwang.github.io/mango/deployment) |
 
 The complete documentation is also published at

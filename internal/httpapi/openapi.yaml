@@ -3,10 +3,10 @@ info:
   title: mango
   version: 0.1.0
   description: >-
-    Clean-room implementation of the supported Claude Managed Agents API core,
-    Deployments, self-hosted Environment Work, conditional Files and Memory
-    APIs, Vaults, and File- and Memory-backed Session Resources. This project is
-    Apache-2.0 licensed and is not an Anthropic product.
+    Mango's current HTTP API for durable Sessions, Deployments, self-hosted
+    Environment Work, conditional Files and Memory APIs, Vaults, and File- and
+    Memory-backed Session Resources. Mango is an independent, self-hosted
+    runtime licensed under Apache-2.0.
   license:
     name: Apache-2.0
     identifier: Apache-2.0
@@ -3628,9 +3628,9 @@ components:
           description: Concrete Version identifier or latest; omission also resolves latest.
     SkillReferenceInput:
       description: >-
-        Tagged Skill reference. Custom references are resolved; the Anthropic
-        variant is represented for SDK compatibility but is currently rejected
-        with an explicit unsupported response.
+        Tagged Skill reference. Custom references are resolved; the currently
+        represented Anthropic variant is rejected with an explicit unsupported
+        response and carries no stability guarantee.
       oneOf:
         - $ref: '#/components/schemas/CustomSkillReferenceInput'
         - $ref: '#/components/schemas/AnthropicSkillReferenceInput'
@@ -3650,15 +3650,15 @@ components:
           minLength: 1
     LegacySkillReference:
       description: >-
-        Read-only value preserved from the opaque Skills array accepted before
-        tagged references were enforced. It cannot be supplied by current
-        create/update requests or used to start a new Session.
+        Temporary read-only cleanup path for an opaque Skills value written by
+        an earlier development checkout. It carries no compatibility guarantee
+        and cannot be supplied by current create/update requests or used to
+        start a new Session.
       not:
         $ref: '#/components/schemas/ResolvedSkillReference'
     SkillReferenceResponse:
       description: >-
-        A resolved custom reference, or a read-only legacy value from a
-        pre-upgrade Agent or Session projection.
+        A resolved custom reference or a temporary read-only cleanup value.
       oneOf:
         - $ref: '#/components/schemas/ResolvedSkillReference'
         - $ref: '#/components/schemas/LegacySkillReference'
@@ -3688,8 +3688,8 @@ components:
       type: object
       description: >-
         Mango-managed advisor roster entry. At most one may appear in a roster;
-        it is echoed last and occupies the CMA-compatible reserved name
-        anthropic.advisor. Execution uses an ordinary private client tool and a
+        it is echoed last and currently uses the reserved name anthropic.advisor.
+        Execution uses an ordinary private client tool and a
         separate tool-free inference with the configured model.
       additionalProperties: false
       required: [type, model]
@@ -3756,9 +3756,9 @@ components:
     LegacyMultiagent:
       type: object
       description: >-
-        Read-only opaque topology preserved from an Agent written before roster
-        resolution was enforced. It must be replaced before update or Session
-        creation.
+        Temporary read-only cleanup path for an opaque topology written by an
+        earlier development checkout. It carries no compatibility guarantee and
+        must be replaced before update or Session creation.
       additionalProperties: true
     Multiagent:
       description: >-
@@ -3785,8 +3785,8 @@ components:
     SessionMultiagent:
       description: >-
         Full immutable Agent definitions resolved when the Session is created.
-        The reference and legacy alternatives are retained only for Sessions
-        persisted before full roster snapshots were introduced.
+        The other alternatives are temporary cleanup paths for development data
+        and carry no compatibility guarantee.
       anyOf:
         - $ref: '#/components/schemas/SessionResolvedMultiagent'
         - $ref: '#/components/schemas/ResolvedMultiagent'
@@ -5986,7 +5986,7 @@ components:
         propertyName: type
     EnvironmentVariableCredentialCreate:
       type: object
-      description: Represented for API compatibility but rejected with 422 until SecretEgress is implemented.
+      description: Present in the current schema but rejected with 422 until SecretEgress is implemented.
       additionalProperties: false
       required: [type, secret_name, secret_value, networking]
       properties:
@@ -6070,7 +6070,7 @@ components:
             - type: 'null'
     EnvironmentVariableCredentialUpdate:
       type: object
-      description: Represented for API compatibility but rejected with 422 until SecretEgress is implemented.
+      description: Present in the current schema but rejected with 422 until SecretEgress is implemented.
       additionalProperties: false
       required: [type]
       properties:

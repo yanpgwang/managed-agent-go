@@ -56,7 +56,7 @@ Files add an S3-compatible dependency beside PostgreSQL, Temporal, and NATS.
 Set `MANGO_FILE_S3_BUCKET` to enable the five Files routes; leaving it
 empty keeps the rest of the API available and makes Files requests return
 `422`. Failure to initialize or reconcile the configured object store also
-disables only Files so the Managed Agents core remains available. The API
+disables only Files so the Mango core remains available. The API
 process uses these settings for uploads and File-message admission. A worker
 that starts Deployment Runs containing File messages or File outcome rubrics,
 materializes Session File Resources, or publishes `/mnt/session/outputs` must

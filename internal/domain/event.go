@@ -86,7 +86,7 @@ type EventDraft struct {
 }
 
 // Event is the internal representation of a persisted session event. Sequence
-// is an internal ordering key and must never appear on the compatibility wire.
+// is an internal ordering key and must never appear on the public wire.
 type Event struct {
 	ID        string
 	SessionID string

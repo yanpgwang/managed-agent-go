@@ -25,8 +25,7 @@ file access, a workspace root, and teardown. The execution worker selects one
 compiled adapter through an internal registry. `MANGO_SANDBOX` accepts
 `local` (the default), `docker`, `e2b`, `cube`, `opensandbox`, or `daytona`; an
 unknown name fails startup instead of falling back to host execution. Provider
-selection does not add fields to the Managed Agents Environment or Session
-APIs.
+selection does not add fields to the public Environment or Session resources.
 
 The `serve` and `orchestrate` processes for one deployment must use the same
 `MANGO_SANDBOX` value. API admission reads that provider's declared
@@ -56,7 +55,6 @@ These labels describe project support, not a security certification.
 | [Modal](https://modal.com/docs/guide/sandboxes) | Planned | Managed sandbox service | Planned | Provider-owned durable sandbox ID | Managed production |
 | [Runloop](https://docs.runloop.ai/docs/devboxes/overview) | Planned | Managed devbox service | Planned | Suspend, resume, and snapshot lifecycle | Managed production |
 | [Kubernetes SIG Agent Sandbox](https://github.com/kubernetes-sigs/agent-sandbox) | Planned | Kubernetes CRD, controller, and routing layer | Planned | Stateful sandbox resource | Kubernetes deployments |
-| Anthropic Sandbox Runtime, Vercel Sandbox, and Cloudflare Sandbox | Evaluating | Backend-specific | Evaluating | Backend-specific | Later adapters |
 
 The Docker provider uses the Docker Engine API through the supported Moby Go
 client with API-version negotiation; it has no runtime dependency on the
@@ -69,9 +67,9 @@ production security claim.
 File-backed Session Resources require more than ordinary workspace writes: the
 provider must stream an independently stored object to its documented absolute
 path and remove it idempotently after a crash. Provider capability admission is
-explicit. CMA documents the mounted copy as read-only; Mango records providers
-that do not yet enforce that property as limited rather than rejecting their
-core materialization support.
+explicit. Mango treats the mounted copy as read-only; providers that do not yet
+enforce that property are recorded as limited rather than being presented as
+complete implementations.
 
 Docker stages validated bytes in a provider-owned host directory and
 bind-mounts that directory read-only at `/mnt/session/uploads`. OpenSandbox and
@@ -85,8 +83,8 @@ path, and an interrupted import is retried before the next tool.
 
 The local-process provider would have to write into the worker host's absolute
 `/mnt` path and therefore rejects the feature. E2B and Cube remain fail-closed:
-the pinned compatible Go data-plane client accepts uploads as `[]byte` and does
-not satisfy the streaming path required for Mango's 500 MB File limit.
+the pinned Go data-plane client accepts uploads as `[]byte` and does not satisfy
+the streaming path required for Mango's 500 MB File limit.
 
 ## Session output mounts
 
@@ -144,7 +142,7 @@ instead of silently overwriting it. Session deletion performs a final
 writeback before destroying the sandbox so a crash between tool execution and
 ordinary writeback does not discard Memory changes.
 
-## Compatibility contract
+## Backend contract
 
 A backend implements the core lifecycle contract when it can:
 
@@ -220,7 +218,7 @@ interface.
 ## Remote provider configuration
 
 Credentials stay in worker configuration. They are never written to PostgreSQL
-or returned by the Managed Agents API.
+or returned by the Mango API.
 
 | Provider | Required | Common optional values |
 |---|---|---|
@@ -247,13 +245,13 @@ scripts/with-dev-env env MANGO_LIVE_OPENSANDBOX=1 \
 The equivalent gates are `MANGO_LIVE_CUBE` and `MANGO_LIVE_DAYTONA`.
 Ordinary tests never contact a service or create billable resources.
 
-The upstream behavior informing the session/environment distinction is
-documented in Claude's
+Claude's public environment guides historically informed the
+Session/Environment distinction:
 [cloud environment setup](https://platform.claude.com/docs/en/managed-agents/environments)
 and
-[self-hosted sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes)
-guides. `mango` remains an independent implementation and does not
-claim Anthropic's hosted isolation properties.
+[self-hosted sandbox](https://platform.claude.com/docs/en/managed-agents/self-hosted-sandboxes).
+These references do not define Mango's backend roadmap or imply hosted
+isolation equivalence.
 
 ## Adding a backend
 

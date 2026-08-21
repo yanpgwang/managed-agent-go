@@ -7,8 +7,8 @@ slug: /api/deployments
 
 A Deployment is a durable template for creating autonomous Sessions. It pins a
 specific Agent Version and stores the Environment, initial events, resources,
-ordered Vault references, metadata, and an optional cron schedule used for each
-Run. The pinned SDK response also carries a nullable Session budget template.
+ordered Vault references, metadata, an optional Session budget template, and an
+optional cron schedule used for each Run.
 
 ## Create and inspect
 
@@ -118,7 +118,7 @@ capabilities. File-backed outcome rubrics require configured Files storage but
 do not require a sandbox mount capability. Vault references require the
 configured Vault keyring. GitHub
 repository resources are rejected explicitly because Mango does not yet have a
-sealed clone-token path. Exact hosted scheduler jitter and automatic Deployment
-archival when an Agent is archived are not claimed.
+sealed clone-token path. Scheduler jitter and automatic Deployment archival
+when an Agent is archived are not implemented.
 
-See [API compatibility](../compatibility.md) for the current support boundary.
+See [capabilities and limits](../capabilities.md) for the current support boundary.

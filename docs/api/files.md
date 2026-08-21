@@ -27,7 +27,7 @@ Upload one multipart part named `file`. The maximum file size is 500 MB.
 Uploads stream through bounded temporary storage rather than being buffered in
 Go memory.
 
-Lists use the upstream `after_id` or `before_id` direction, an optional
+Lists currently use the `after_id` or `before_id` direction, an optional
 `scope_id`, and a `data`/`has_more` envelope. The two direction parameters
 cannot be combined.
 
@@ -61,7 +61,7 @@ A ready top-level client upload can be referenced by a `user.message` document:
 }
 ```
 
-This text-only compatibility slice accepts declared text formats, JSON/XML
+This text-only implementation accepts declared text formats, JSON/XML
 variants, common textual application formats, and generic
 `application/octet-stream` uploads whose bytes are valid UTF-8 and contain no
 NUL. It does not parse PDF, OCR images, or send provider-native document

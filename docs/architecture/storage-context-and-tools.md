@@ -6,10 +6,11 @@ title: Storage, context, and connected tools
 
 Status: initial implementation plus follow-up boundaries, 2026-07-31.
 
-This decision treats the public Claude Managed Agents API as the compatibility
-contract and derives the internal storage and execution boundaries from that
-contract. It covers session context, large tool results, Web Search, Web Fetch,
-MCP, sandboxes, and Temporal.
+This decision originally used the public Claude Managed Agents API as one design
+reference. Mango now owns its public contract; the storage and execution
+boundaries below remain because they serve durable, observable, self-hosted
+agent work. The decision covers Session context, large tool results, Web
+Search, Web Fetch, MCP, sandboxes, and Temporal.
 
 The central decision is:
 
@@ -23,9 +24,9 @@ separate search API key or vendor-specific search configuration. The internal
 executor boundary remains in place so a platform-managed search/fetch backend
 can be added later without changing the public API or stored session semantics.
 
-## Contract-derived requirements
+## Runtime requirements
 
-The target follows these observable Managed Agents behaviors:
+Mango keeps these runtime requirements:
 
 - A Session is stateful. Its event history and model context survive individual
   runs, while each Session has an isolated sandbox.
@@ -83,7 +84,7 @@ The event ledger is the external API truth:
 - no provider-private blocks, credentials, or unbounded raw output.
 
 It is **not** the authority for the next model request. Public events are a
-projection designed for compatibility and observation. Reconstructing provider
+projection designed for clients and observation. Reconstructing provider
 context from them loses provider-native blocks, citations, encrypted
 continuation data, non-text content, and context-compaction decisions.
 
@@ -111,7 +112,7 @@ A separate mapping relates provider IDs to public IDs:
 provider tool-use id <-> internal tool step id <-> public event id
 ```
 
-The mapping allows public compatibility without mutating the provider
+The mapping preserves stable public correlations without mutating the provider
 transcript.
 
 ### Context admission and accounting
@@ -156,7 +157,7 @@ are not yet stored as equivalent checkpoints. A complete audit recipe for every
 provider request and attempt, including the resolved endpoint profile, system
 instructions, tool schemas, adapter version, model parameters, usage anchor,
 admission limits, compaction reason, and overflow outcome, remains follow-up
-work; it is not a public Managed Agents resource.
+work; it is not a public Mango resource.
 
 ### Operation Journal
 
@@ -253,7 +254,7 @@ For a large tool result:
 2. when serialized output exceeds the documented 100,000-character threshold
    (about 25,000 tokens), create a bounded model projection containing a
    truncated preview, size, media type, and sandbox path;
-3. create the contract-compatible public event projection;
+3. create the documented public event projection;
 4. record the sandbox path on the same durable tool step where applicable.
 
 If the sandbox disappears unexpectedly, the Session workspace has been lost and
@@ -357,10 +358,8 @@ Therefore:
   can durably park before execution. A `client_self_hosted` environment already
   makes execution client-owned and parks for `user.tool_result`.
 
-This rejection is a temporary platform capability gap, not a restriction of the
-Managed Agents contract: Anthropic's managed executor can honor `always_ask`
-for built-in web tools. The API returns a clear unsupported-capability error
-until this platform has an interceptable executor. Silently treating
+This rejection is a current Mango executor limitation. The API returns a clear
+unsupported-capability error until Mango has an interceptable executor. Silently treating
 `always_ask` as `always_allow` is not allowed.
 
 ## Web Fetch
@@ -456,7 +455,7 @@ context; transport `_meta`, credentials, and control metadata do not. Oversized
 results use the same sandbox-file plus bounded-preview path as built-ins.
 
 The first MCP slice supports tools only. Resources and prompts should be added
-only when the public compatibility contract and context policy define their
+only when Mango's product requirements and context policy define their
 lifecycle.
 
 ## Provider-round transaction model
@@ -594,7 +593,10 @@ The first two steps were treated as prerequisites rather than cleanup after
 native web, so new Sessions do not depend on reconstructing provider context
 from flattened public events.
 
-## Primary references
+## Historical and implementation references
+
+These references informed parts of the original design. They are provenance,
+not Mango's target contract or roadmap.
 
 - [Managed Agents overview](https://platform.claude.com/docs/en/managed-agents/overview)
 - [Sessions](https://platform.claude.com/docs/en/managed-agents/sessions)

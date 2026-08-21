@@ -21,7 +21,7 @@ DELETE /v1/sessions/{session_id}/resources/{resource_id}
 A File attachment creates an independent downloadable copy scoped to the
 Session. An explicit path is normalized beneath `/mnt/session/uploads`.
 Docker exposes that path read-only. OpenSandbox and Daytona materialize a
-writable sandbox-local copy as a compatibility limitation; changing it does
+writable sandbox-local copy as a current backend limitation; changing it does
 not change the S3-backed source or downloadable Session File. Write a modified
 deliverable beneath `/mnt/session/outputs` when output publication is available.
 Deleting the source upload does not break the copy. Detach the Session Resource
