@@ -218,10 +218,10 @@ type FileResourceProvider interface {
 }
 
 // FileResourceSandbox reconciles File-backed Session Resources for a live
-// sandbox. ImportFileResource must stream and validate the source bytes;
-// RemoveFileResource must be idempotent and must not remove a newer identity
-// that reused the same runtime path. Individual providers may enforce a
-// stronger read-only presentation.
+// sandbox. ImportFileResource must consume and validate the source bytes;
+// provider-specific buffering limitations must be documented. Removal must be
+// idempotent and must not remove a newer identity that reused the same runtime
+// path. Individual providers may enforce a stronger read-only presentation.
 type FileResourceSandbox interface {
 	HasFileResource(context.Context, FileResourceMount) (bool, error)
 	ImportFileResource(context.Context, FileResourceMount, io.Reader) error

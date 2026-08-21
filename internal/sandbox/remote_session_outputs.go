@@ -52,9 +52,10 @@ func (r *remoteFileResources) ensureSessionOutputLayout(ctx context.Context) err
 }
 
 // openRemoteSessionOutputs asks the isolated sandbox to archive exactly the
-// Session output directory, then streams that regular file through the
-// provider SDK. The application layer remains responsible for rejecting links,
-// devices, traversal, oversize files, and archive changes between passes.
+// Session output directory, then opens that regular file through the provider
+// SDK. Some provider clients stream the returned reader and others buffer it;
+// the application layer remains responsible for rejecting links, devices,
+// traversal, oversize files, and archive changes between passes.
 func openRemoteSessionOutputs(
 	ctx context.Context,
 	provider string,

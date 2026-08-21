@@ -61,6 +61,7 @@ type e2bServiceSandbox interface {
 	ReadFile(context.Context, string) ([]byte, error)
 	WriteFile(context.Context, string, []byte) error
 	Destroy(context.Context) error
+	remoteFileResourceDataPlane
 }
 
 type e2bService interface {
@@ -194,6 +195,10 @@ func (p *e2bLikeProvider) Name() string { return p.name }
 
 func (*e2bLikeProvider) SupportsPackageSetup() bool { return true }
 
+func (*e2bLikeProvider) SupportsFileResources() bool { return true }
+
+func (*e2bLikeProvider) SupportsSessionOutputs() bool { return true }
+
 func (p *e2bLikeProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -222,12 +227,7 @@ func (p *e2bLikeProvider) Create(
 		}
 		return Ref{}, nil, fmt.Errorf("sandbox: %s create: %w", p.name, err)
 	}
-	box := &e2bLikeSandbox{
-		providerName: p.name,
-		remote:       remote,
-		root:         p.root,
-		timeout:      spec.Timeout,
-	}
+	box := newE2BLikeSandbox(p.name, remote, p.root, spec.Timeout)
 	if err := box.ensureRoot(ctx); err != nil {
 		_ = remote.Destroy(context.Background())
 		return Ref{}, nil, err
@@ -279,12 +279,7 @@ func (p *e2bLikeProvider) Attach(
 		}
 		return nil, fmt.Errorf("sandbox: %s connect: %w", p.name, err)
 	}
-	box := &e2bLikeSandbox{
-		providerName: p.name,
-		remote:       remote,
-		root:         p.root,
-		timeout:      spec.Timeout,
-	}
+	box := newE2BLikeSandbox(p.name, remote, p.root, spec.Timeout)
 	if err := box.ensureRoot(ctx); err != nil {
 		return nil, err
 	}
@@ -334,6 +329,23 @@ type e2bLikeSandbox struct {
 	remote       e2bServiceSandbox
 	root         string
 	timeout      time.Duration
+	resources    *remoteFileResources
+	sync         remoteResourceSynchronization
+}
+
+func newE2BLikeSandbox(
+	providerName string,
+	remote e2bServiceSandbox,
+	root string,
+	timeout time.Duration,
+) *e2bLikeSandbox {
+	return &e2bLikeSandbox{
+		providerName: providerName,
+		remote:       remote,
+		root:         root,
+		timeout:      timeout,
+		resources:    newRemoteFileResources(providerName, remote),
+	}
 }
 
 func (s *e2bLikeSandbox) Root() string { return s.root }
@@ -356,38 +368,48 @@ func (s *e2bLikeSandbox) ensureRoot(ctx context.Context) error {
 			strings.TrimSpace(stderr),
 		)
 	}
-	return nil
+	return s.resources.ensureSessionOutputLayout(ctx)
 }
 
 func (s *e2bLikeSandbox) Exec(
 	ctx context.Context,
 	cmd Command,
 ) (*Result, error) {
+	return s.exec(ctx, cmd, s.timeout)
+}
+
+func (s *e2bLikeSandbox) exec(
+	ctx context.Context,
+	cmd Command,
+	timeout time.Duration,
+) (*Result, error) {
 	if cmd.Path == "" {
 		return nil, errors.New("sandbox: command path is required")
 	}
-	runCtx, cancel := commandTimeout(ctx, s.timeout)
+	runCtx, cancel := commandTimeout(ctx, timeout)
 	defer cancel()
 	stdout, stderr, code, err := s.remote.Exec(
 		runCtx,
 		remoteCommandLine(cmd),
 		s.root,
-		s.timeout,
+		timeout,
 	)
 	if err != nil {
 		if runCtx.Err() != nil {
-			return remoteResult(runCtx, s.timeout, stdout, stderr, code)
+			return remoteResult(runCtx, timeout, stdout, stderr, code)
 		}
 		return nil, fmt.Errorf("sandbox: %s exec: %w", s.providerName, err)
 	}
-	return remoteResult(runCtx, s.timeout, stdout, stderr, code)
+	return remoteResult(runCtx, timeout, stdout, stderr, code)
 }
 
 func (s *e2bLikeSandbox) ReadFile(
 	ctx context.Context,
 	value string,
 ) ([]byte, error) {
-	full, err := containedRemotePath(s.root, value)
+	full, err := remoteToolPath(
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -399,28 +421,70 @@ func (s *e2bLikeSandbox) WriteFile(
 	value string,
 	data []byte,
 ) error {
-	full, err := containedRemotePath(s.root, value)
+	full, err := remoteToolPath(
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+	)
 	if err != nil {
 		return err
 	}
-	_, stderr, code, err := s.remote.Exec(
-		ctx,
-		"mkdir -p "+shellQuote(path.Dir(full)),
-		s.root,
-		s.timeout,
-	)
-	if err != nil {
+	if err := s.resources.ensureDirectory(ctx, path.Dir(full), 0o777); err != nil {
 		return fmt.Errorf("sandbox: %s create parent: %w", s.providerName, err)
 	}
-	if code != 0 {
-		return fmt.Errorf(
-			"sandbox: %s create parent failed (exit %d): %s",
-			s.providerName,
-			code,
-			strings.TrimSpace(stderr),
-		)
-	}
 	return s.remote.WriteFile(ctx, full, data)
+}
+
+func (s *e2bLikeSandbox) HasFileResource(
+	ctx context.Context,
+	mount FileResourceMount,
+) (bool, error) {
+	return s.resources.HasFileResource(ctx, mount)
+}
+
+func (s *e2bLikeSandbox) ImportFileResource(
+	ctx context.Context,
+	mount FileResourceMount,
+	content io.Reader,
+) error {
+	return s.resources.ImportFileResource(ctx, mount, content)
+}
+
+func (s *e2bLikeSandbox) RemoveFileResource(
+	ctx context.Context,
+	runtimePath string,
+	identity string,
+) error {
+	return s.resources.RemoveFileResource(ctx, runtimePath, identity)
+}
+
+func (s *e2bLikeSandbox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {
+	return openRemoteSessionOutputs(
+		ctx,
+		s.providerName,
+		s.resources,
+		func(executeCtx context.Context, command Command) (*Result, error) {
+			return s.exec(
+				executeCtx,
+				command,
+				remoteSessionOutputCommandTimeout(executeCtx, s.timeout),
+			)
+		},
+	)
+}
+
+func (s *e2bLikeSandbox) LockResourceOperation(ctx context.Context) (func(), error) {
+	return s.sync.LockResourceOperation(ctx)
+}
+
+func (s *e2bLikeSandbox) TryLockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), bool, error) {
+	return s.sync.TryLockResourceSync(ctx)
+}
+
+func (s *e2bLikeSandbox) LockResourceSync(
+	ctx context.Context,
+) (context.Context, func(), error) {
+	return s.sync.LockResourceSync(ctx)
 }
 
 func (s *e2bLikeSandbox) Destroy(ctx context.Context) error {
@@ -546,6 +610,83 @@ func (s *cubeSDKSandbox) WriteFile(
 	data []byte,
 ) error {
 	return s.sandbox.Files().Write(ctx, value, data)
+}
+
+// The current CubeSandbox Go SDK exposes whole-value Read and Write methods.
+// Mango adapts them to its Reader boundary here, accepting one in-memory copy
+// for E2B and Cube until that SDK exposes streaming file operations. It also
+// lacks per-operation mode options, so these adapters retain provider-default
+// permissions inside their Session-isolated sandboxes.
+func (s *cubeSDKSandbox) ResourceCreateDirectory(
+	ctx context.Context,
+	directory string,
+	_ remoteFilePermissions,
+) error {
+	_, err := s.sandbox.Files().MakeDir(ctx, directory)
+	return err
+}
+
+func (s *cubeSDKSandbox) ResourceUpload(
+	ctx context.Context,
+	filePath string,
+	content io.Reader,
+	_ remoteFilePermissions,
+) error {
+	data, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	return s.sandbox.Files().Write(ctx, filePath, data)
+}
+
+func (s *cubeSDKSandbox) ResourceOpen(
+	ctx context.Context,
+	filePath string,
+) (io.ReadCloser, error) {
+	content, err := s.sandbox.Files().Read(ctx, filePath)
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(strings.NewReader(content)), nil
+}
+
+func (s *cubeSDKSandbox) ResourceStat(
+	ctx context.Context,
+	filePath string,
+) (remoteFileInfo, error) {
+	item, err := s.sandbox.Files().Stat(ctx, filePath)
+	if err != nil {
+		return remoteFileInfo{}, err
+	}
+	return remoteFileInfo{
+		SizeBytes: item.Size,
+		Regular:   item.Type == "FILE_TYPE_FILE",
+		Directory: item.IsDir(),
+	}, nil
+}
+
+func (s *cubeSDKSandbox) ResourceRemoveFile(
+	ctx context.Context,
+	filePath string,
+) error {
+	if _, err := s.sandbox.Files().Stat(ctx, filePath); err != nil {
+		return err
+	}
+	if err := s.sandbox.Files().Remove(ctx, filePath); err != nil {
+		// The pinned SDK does not preserve a typed 404 from Remove. Re-read
+		// after a failed delete so a concurrent or retried absence is still
+		// idempotent at Mango's resource boundary.
+		if _, statErr := s.sandbox.Files().Stat(ctx, filePath); s.ResourceIsNotFound(statErr) {
+			return statErr
+		}
+		return err
+	}
+	return nil
+}
+
+func (*cubeSDKSandbox) ResourceIsNotFound(err error) bool {
+	var notFound *cubesandbox.NotFoundError
+	return errors.As(err, &notFound) || isCubeNotFound(err)
 }
 
 func (s *cubeSDKSandbox) Destroy(ctx context.Context) error {

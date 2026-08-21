@@ -123,7 +123,7 @@ func (r *remoteFileResources) ImportFileResource(
 	if err := r.files.ResourceUpload(ctx, target, counter, remoteFilePermissions{
 		Mode: 0o666,
 	}); err != nil {
-		return fmt.Errorf("sandbox: %s stream File Resource: %w", r.provider, err)
+		return fmt.Errorf("sandbox: %s transfer File Resource: %w", r.provider, err)
 	}
 	if counter.count != mount.SizeBytes {
 		return fmt.Errorf(

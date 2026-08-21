@@ -119,12 +119,13 @@ corresponding Docker sandbox capability is configured:
 ```
 
 Each attachment creates an independent, downloadable Session-scoped File copy
-beneath `/mnt/session/uploads`. Docker presents it read-only; OpenSandbox and
-Daytona currently expose a writable sandbox-local copy. A Memory Store input
+beneath `/mnt/session/uploads`. Docker presents it read-only; E2B, CubeSandbox,
+OpenSandbox, and Daytona currently expose a writable sandbox-local copy. A Memory Store input
 uses `type: "memory_store"`, `memory_store_id`, optional `instructions`, and
 `read_write` or `read_only` access; it is mounted beneath `/mnt/memory` and can
-only be attached at creation. GitHub repository, self-hosted Environment,
-local-process, E2B, and Cube resources return `422`.
+only be attached at creation. GitHub repository, self-hosted Environment, and
+local-process resources return `422`. E2B and Cube accept File resources but
+currently buffer each copy in worker memory during materialization.
 `vault_ids` is an ordered list of active Vault references. The order is frozen
 with the Session: for an MCP endpoint, the first Vault containing a matching
 credential wins. Admission requires the Vault keyring to be configured and
@@ -256,8 +257,8 @@ resumes a turn that was paused at that check.
 `deployment_id` is null for direct Session creation and contains the parent
 Deployment ID for Deployment-created Sessions.
 
-For Mango-managed Docker, OpenSandbox, and Daytona Sessions with Files storage
-configured, regular files written beneath `/mnt/session/outputs` are published
+For Mango-managed Docker, E2B, CubeSandbox, OpenSandbox, and Daytona Sessions
+with Files storage configured, regular files written beneath `/mnt/session/outputs` are published
 before the Session becomes idle. List them with
 `GET /v1/files?scope_id={session_id}` and download them through the Files
 content endpoint. See [Files](files.md#session-outputs) for limits and provider

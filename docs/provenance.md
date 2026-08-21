@@ -59,29 +59,35 @@ choices documented in [Files](api/files.md) and
   supplied Session Resource request and response examples during early
   development. Existing tests using those types may change or be removed with
   Mango's `/v1` design.
-- OpenSandbox and Daytona behavior is implemented against their pinned official
-  Go clients. The [OpenSandbox Go SDK](https://github.com/alibaba/OpenSandbox/blob/main/sdks/sandbox/go/README.md)
+- Remote File Resource behavior is implemented against pinned provider Go
+  clients. The [OpenSandbox Go SDK](https://github.com/alibaba/OpenSandbox/blob/main/sdks/sandbox/go/README.md)
   and [Daytona filesystem guide](https://www.daytona.io/docs/file-system-operations/)
   define streaming upload/download, metadata and permission operations,
-  directory management, and move/delete; these provider APIs are implementation
-  dependencies rather than definitions of Mango's target contract.
+  directory management, and move/delete. The
+  [CubeSandbox Go SDK](https://github.com/tencentcloud/CubeSandbox/tree/master/sdk/go)
+  supplies the E2B/Cube-compatible whole-value file operations. These provider
+  APIs are implementation dependencies rather than definitions of Mango's
+  target contract.
 
 Mango's provider-owned marker format and retry algorithm are independent local
-design choices documented in [Sandbox backends](sandboxes.md). OpenSandbox and
-Daytona intentionally stop at writable sandbox-local copies in the current
-implementation; this limitation is documented as Mango behavior rather than
-inferred from provider APIs.
+design choices documented in [Sandbox backends](sandboxes.md). Remote adapters
+intentionally stop at writable sandbox-local copies in the current
+implementation. E2B and Cube additionally accept whole-file worker buffering
+until their pinned Go data plane exposes streaming operations. These limitations
+are documented as Mango behavior rather than inferred from provider APIs.
 
 ## Remote Session output export
 
-- The pinned OpenSandbox and Daytona Go clients provide the filesystem
-  directory, metadata, streaming download, and delete operations used by their
-  adapters.
+- The pinned remote Go clients provide the filesystem directory, metadata,
+  download, and delete operations used by their adapters. OpenSandbox and
+  Daytona expose streaming readers; the E2B/Cube-compatible client currently
+  returns whole values.
 - Mango reuses those provider operations only as an implementation data plane;
   it does not expose provider file types or routes in the Mango API.
 
 Mango's `/mnt/session/outputs` boundary, unique adapter-owned tar snapshot,
 two-pass validation, close-time cleanup, S3 publication, and idle-event ordering
-remain Mango-owned behavior. E2B and Cube are intentionally rejected until an
-adapter can satisfy the same streaming and repeatability contract; similarity
-between provider SDKs is not treated as evidence of support.
+remain Mango-owned behavior. E2B and Cube adopt the same repeatability and
+cleanup contract but buffer each archive in worker memory as an explicit
+Preview limitation; their SDK similarity alone is not treated as evidence of
+support, so they run the same offline and opt-in live conformance suites.

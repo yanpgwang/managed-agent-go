@@ -20,10 +20,11 @@ DELETE /v1/sessions/{session_id}/resources/{resource_id}
 
 A File attachment creates an independent downloadable copy scoped to the
 Session. An explicit path is normalized beneath `/mnt/session/uploads`.
-Docker exposes that path read-only. OpenSandbox and Daytona materialize a
-writable sandbox-local copy as a current backend limitation; changing it does
-not change the S3-backed source or downloadable Session File. Write a modified
-deliverable beneath `/mnt/session/outputs` when output publication is available.
+Docker exposes that path read-only. E2B, CubeSandbox, OpenSandbox, and Daytona
+materialize a writable sandbox-local copy as a current backend limitation;
+changing it does not change the S3-backed source or downloadable Session File.
+Write a modified deliverable beneath `/mnt/session/outputs` when output
+publication is available.
 Deleting the source upload does not break the copy. Detach the Session Resource
 to delete it from the sandbox.
 
@@ -40,11 +41,12 @@ removed after Session creation.
 
 ## Availability
 
-File mounts currently require a cloud Environment backed by Docker,
-OpenSandbox, or Daytona. E2B and Cube remain fail-closed because their pinned
-Go data-plane client buffers uploads and does not satisfy Mango's 500 MB
-streaming path. Memory mounts require Docker. GitHub repository resources and
-update-time repository token rotation are not implemented; unsupported
-variants return an explicit `422`.
+File mounts currently require a cloud Environment backed by Docker, E2B,
+CubeSandbox, OpenSandbox, or Daytona. The pinned E2B/Cube-compatible Go client
+uses whole-value file methods, so those two adapters buffer each File Resource
+in worker memory during materialization and retain provider-default file modes;
+their provider-side copy is also writable. Memory mounts require Docker. GitHub
+repository resources and update-time repository token rotation are not
+implemented; unsupported variants return an explicit `422`.
 
 See [Files](files.md) and [Memory](memory.md).
