@@ -224,24 +224,32 @@ func (s *daytonaBox) Exec(
 	ctx context.Context,
 	cmd Command,
 ) (*Result, error) {
+	return s.exec(ctx, cmd, s.timeout)
+}
+
+func (s *daytonaBox) exec(
+	ctx context.Context,
+	cmd Command,
+	timeout time.Duration,
+) (*Result, error) {
 	if cmd.Path == "" {
 		return nil, errors.New("sandbox: command path is required")
 	}
-	runCtx, cancel := commandTimeout(ctx, s.timeout)
+	runCtx, cancel := commandTimeout(ctx, timeout)
 	defer cancel()
 	stdout, stderr, code, err := s.remote.Exec(
 		runCtx,
 		remoteCommandLine(cmd),
 		s.root,
-		s.timeout,
+		timeout,
 	)
 	if err != nil {
 		if runCtx.Err() != nil {
-			return remoteResult(runCtx, s.timeout, stdout, stderr, code)
+			return remoteResult(runCtx, timeout, stdout, stderr, code)
 		}
 		return nil, fmt.Errorf("sandbox: daytona exec: %w", err)
 	}
-	return remoteResult(runCtx, s.timeout, stdout, stderr, code)
+	return remoteResult(runCtx, timeout, stdout, stderr, code)
 }
 
 func (s *daytonaBox) ReadFile(
@@ -299,7 +307,16 @@ func (s *daytonaBox) RemoveFileResource(
 
 func (s *daytonaBox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {
 	return openRemoteSessionOutputs(
-		ctx, DaytonaProviderName, s.resources, s.Exec,
+		ctx,
+		DaytonaProviderName,
+		s.resources,
+		func(executeCtx context.Context, command Command) (*Result, error) {
+			return s.exec(
+				executeCtx,
+				command,
+				remoteSessionOutputCommandTimeout(executeCtx, s.timeout),
+			)
+		},
 	)
 }
 

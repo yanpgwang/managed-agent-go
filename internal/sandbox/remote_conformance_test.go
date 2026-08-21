@@ -138,6 +138,101 @@ func TestRemoteSessionOutputConformance(t *testing.T) {
 	}
 }
 
+func TestRemoteSessionOutputUsesOperationDeadline(t *testing.T) {
+	const sandboxTimeout = 5 * time.Second
+	tests := []struct {
+		name string
+		box  func(*fakeRemoteStore, *fakeRemoteResource) SessionOutputSandbox
+	}{
+		{
+			name: OpenSandboxProviderName,
+			box: func(
+				store *fakeRemoteStore,
+				resource *fakeRemoteResource,
+			) SessionOutputSandbox {
+				return newOpenSandboxBox(
+					&fakeOpenSandboxRemote{fakeRemoteHandle: fakeRemoteHandle{
+						store: store, resource: resource,
+					}},
+					remoteDefaultRoot,
+					sandboxTimeout,
+				)
+			},
+		},
+		{
+			name: DaytonaProviderName,
+			box: func(
+				store *fakeRemoteStore,
+				resource *fakeRemoteResource,
+			) SessionOutputSandbox {
+				return newDaytonaBox(
+					&fakeDaytonaRemote{fakeRemoteHandle: fakeRemoteHandle{
+						store: store, resource: resource,
+					}},
+					defaultDaytonaRoot,
+					sandboxTimeout,
+				)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := newFakeRemoteStore(t.TempDir())
+			resource := store.create("", nil)
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			stream, err := test.box(store, resource).OpenSessionOutputs(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := stream.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if got := store.lastExecTimeout(resource.id); got < 30*time.Second {
+				t.Fatalf(
+					"Session output command timeout = %v, want operation deadline",
+					got,
+				)
+			}
+		})
+	}
+}
+
+func TestRemoteSessionOutputArchiveTimeoutIsRetryable(t *testing.T) {
+	store := newFakeRemoteStore(t.TempDir())
+	resource := store.create("", nil)
+	handle := &fakeRemoteHandle{store: store, resource: resource}
+	resources := newRemoteFileResources("test", handle)
+
+	stream, err := openRemoteSessionOutputs(
+		context.Background(),
+		"test",
+		resources,
+		func(context.Context, Command) (*Result, error) {
+			return &Result{ExitCode: -1, TimedOut: true}, nil
+		},
+	)
+	if stream != nil {
+		_ = stream.Close()
+		t.Fatal("timed-out Session output archive returned a stream")
+	}
+	if err == nil || IsPermanent(err) || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("timed-out Session output archive error = %v, want retryable timeout", err)
+	}
+	controlPath, pathErr := handle.fullPath(remoteSessionOutputControlRoot)
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	entries, readErr := os.ReadDir(controlPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("timed-out Session output archive retained %d snapshot(s)", len(entries))
+	}
+}
+
 func runFakeRemoteSessionOutputContract(
 	t *testing.T,
 	store *fakeRemoteStore,
@@ -506,12 +601,13 @@ type fakeRemoteStore struct {
 }
 
 type fakeRemoteResource struct {
-	id        string
-	name      string
-	metadata  map[string]string
-	execCalls int
-	root      string
-	destroyed bool
+	id              string
+	name            string
+	metadata        map[string]string
+	execCalls       int
+	lastExecTimeout time.Duration
+	root            string
+	destroyed       bool
 }
 
 func newFakeRemoteStore(baseDir string) *fakeRemoteStore {
@@ -580,6 +676,23 @@ func (s *fakeRemoteStore) execCallCount(id string) int {
 		return 0
 	}
 	return resource.execCalls
+}
+
+func (s *fakeRemoteStore) recordExecTimeout(id string, timeout time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if resource := s.resources[id]; resource != nil {
+		resource.lastExecTimeout = timeout
+	}
+}
+
+func (s *fakeRemoteStore) lastExecTimeout(id string) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if resource := s.resources[id]; resource != nil {
+		return resource.lastExecTimeout
+	}
+	return 0
 }
 
 func (s *fakeRemoteStore) destroy(id string) error {
@@ -1021,8 +1134,9 @@ func (s *fakeOpenSandboxRemote) Exec(
 	ctx context.Context,
 	command string,
 	_ string,
-	_ time.Duration,
+	timeout time.Duration,
 ) (string, string, int, error) {
+	s.store.recordExecTimeout(s.resource.id, timeout)
 	return s.exec(ctx, command)
 }
 
@@ -1100,8 +1214,9 @@ func (s *fakeDaytonaRemote) Exec(
 	ctx context.Context,
 	command string,
 	_ string,
-	_ time.Duration,
+	timeout time.Duration,
 ) (string, string, int, error) {
+	s.store.recordExecTimeout(s.resource.id, timeout)
 	return s.exec(ctx, command)
 }
 

@@ -9,9 +9,28 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 )
 
 const remoteSessionOutputControlRoot = "/var/lib/mango/session-outputs"
+
+// remoteSessionOutputCommandTimeout keeps archive creation under the caller's
+// operation deadline instead of inheriting the shorter per-tool Exec timeout.
+// Callers without a deadline retain the sandbox timeout as a safe fallback.
+func remoteSessionOutputCommandTimeout(
+	ctx context.Context,
+	fallback time.Duration,
+) time.Duration {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return fallback
+	}
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return time.Nanosecond
+	}
+	return remaining
+}
 
 // ensureSessionOutputLayout creates the only writable deliverable root exposed
 // to sandbox tools and a separate adapter-owned staging directory. The staging
@@ -74,6 +93,13 @@ func openRemoteSessionOutputs(
 	if err != nil {
 		_ = cleanup()
 		return nil, fmt.Errorf("sandbox: %s archive Session outputs: %w", provider, err)
+	}
+	if result != nil && result.TimedOut {
+		_ = cleanup()
+		return nil, fmt.Errorf(
+			"sandbox: %s archive Session outputs: tar timed out",
+			provider,
+		)
 	}
 	if result == nil || result.ExitCode != 0 {
 		_ = cleanup()
