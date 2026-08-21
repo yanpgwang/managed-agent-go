@@ -15,11 +15,9 @@ import (
 	"github.com/yanpgwang/mango/internal/domain"
 )
 
-// These tests drive the server through the official Anthropic Go SDK as a
-// black-box compatibility client. The SDK's own request/response types are the
-// contract; if the SDK can construct a request and decode our response without
-// error, our wire shape matches what the SDK expects. The server runs in strict
-// mode so the SDK's automatic anthropic-beta header and x-api-key are exercised.
+// These tests drive the server through the Anthropic Go SDK as optional design
+// research. Mango's OpenAPI and raw HTTP tests define the contract; successful
+// SDK calls only show that selected request and response shapes remain reusable.
 //
 // SDK-expressible JSON is asserted here; wire details the SDK cannot express
 // (e.g. exact top-level event union flattening) are covered by the raw-HTTP
@@ -36,14 +34,14 @@ func sdkClientServerAndSessions(
 ) (anthropic.Client, *httptest.Server, *testSessionService) {
 	t.Helper()
 	handler, sessions := newTestHandlerWithSessions(t, Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}, false)
 	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
 	client := anthropic.NewClient(
 		option.WithBaseURL(ts.URL),
-		option.WithAPIKey("sk-test"),
+		option.WithAuthToken("sk-test"),
 	)
 	return client, ts, sessions
 }

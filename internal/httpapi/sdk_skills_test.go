@@ -20,10 +20,10 @@ import (
 func TestSkillsSDK_AllNineCustomOperations(t *testing.T) {
 	service := newSDKSkillService()
 	server := httptest.NewServer(NewServer(Deps{Skills: service}, Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler())
 	defer server.Close()
-	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("sk-test"))
+	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAuthToken("sk-test"))
 	ctx := context.Background()
 	archive := sdkSkillZip(t, "reviewing-code")
 

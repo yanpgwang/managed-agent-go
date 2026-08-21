@@ -14,11 +14,11 @@ import (
 func TestSDK_FilesLifecycleAndBidirectionalPaging(t *testing.T) {
 	service := newTestFileService()
 	handler := NewServer(Deps{Files: service}, Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler()
 	server := httptest.NewServer(handler)
 	defer server.Close()
-	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("sk-test"))
+	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAuthToken("sk-test"))
 	ctx := context.Background()
 
 	created := make([]anthropic.FileMetadata, 0, 5)

@@ -21,8 +21,8 @@ GET    /v1/skills/{skill_id}/versions/{version}/content
 DELETE /v1/skills/{skill_id}/versions/{version}
 ```
 
-Skills routes require configured Files storage and, in strict mode,
-`anthropic-beta: skills-2025-10-02`.
+Skills routes require configured Files storage and Mango's standard bearer
+authentication. Create and Version uploads require `multipart/form-data`.
 
 ## Bundle contract
 

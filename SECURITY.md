@@ -37,8 +37,9 @@ maintainer contact without disclosing vulnerability details.
   does not model end users, roles, per-resource grants, or user-level audit
   identity; a SaaS or enterprise control plane must own those concerns and
   issue or revoke Workspace keys.
-- `-strict` additionally validates CMA version, beta, and content-type headers;
-  it does not change authorization semantics.
+- Protected HTTP routes require a Workspace key in `Authorization: Bearer`.
+  Requests with non-empty bodies must use the documented JSON or multipart
+  content type. Provider version and beta headers are not part of Mango's API.
 - PostgreSQL journals tool attempts, but an external side effect can still be
   ambiguous if execution succeeds and its durable result is lost. Exactly-once
   behavior requires idempotency from the external system.

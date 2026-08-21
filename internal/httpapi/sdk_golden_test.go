@@ -26,9 +26,7 @@ func rawRequest(t *testing.T, method, url, body string) (int, []byte) {
 	}
 	req, _ := http.NewRequestWithContext(context.Background(), method, url, r)
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("anthropic-beta", "managed-agents-2026-04-01")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("x-api-key", "sk-test")
+	req.Header.Set("authorization", "Bearer sk-test")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
@@ -215,19 +213,18 @@ func TestGolden_RejectsServerOnlyEventType(t *testing.T) {
 func TestGolden_ErrorEnvelopeShape(t *testing.T) {
 	_, ts := sdkClientAndServer(t)
 	base := ts.URL
-	// Missing beta header -> 400 with the standard envelope.
+	// A missing bearer token returns the standard authentication envelope.
 	req, _ := http.NewRequestWithContext(context.Background(), "GET", base+"/v1/agents", nil)
-	req.Header.Set("x-api-key", "sk-test")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 400 {
-		t.Fatalf("missing beta header: status %d: %s", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing bearer token: status %d: %s", resp.StatusCode, body)
 	}
-	assertErrorEnvelope(t, body, "invalid_request_error")
+	assertErrorEnvelope(t, body, "authentication_error")
 }
 
 func TestGolden_BodyLimitRejects(t *testing.T) {
@@ -238,9 +235,7 @@ func TestGolden_BodyLimitRejects(t *testing.T) {
 	big := bytes.NewBuffer(make([]byte, (32<<20)+1))
 	req, _ := http.NewRequestWithContext(context.Background(), "POST", base+"/v1/agents", big)
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("anthropic-beta", "managed-agents-2026-04-01")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("x-api-key", "sk-test")
+	req.Header.Set("authorization", "Bearer sk-test")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -267,9 +262,7 @@ func TestGolden_ChunkedBodyLimitRejects(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), "POST", base+"/v1/agents", bodyReader)
 	req.ContentLength = -1
 	req.Header.Set("content-type", "application/json")
-	req.Header.Set("anthropic-beta", "managed-agents-2026-04-01")
-	req.Header.Set("anthropic-version", "2023-06-01")
-	req.Header.Set("x-api-key", "sk-test")
+	req.Header.Set("authorization", "Bearer sk-test")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

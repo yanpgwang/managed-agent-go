@@ -33,10 +33,10 @@ func TestSDK_VaultAndStaticBearerCredentialLifecycle(t *testing.T) {
 		Clock: domain.FixedClock{T: time.Unix(1000, 0).UTC()}, MCPValidator: sdkVaultValidator{},
 	})
 	server := httptest.NewServer(NewServer(Deps{Vaults: service}, Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler())
 	t.Cleanup(server.Close)
-	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("sk-test"))
+	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAuthToken("sk-test"))
 	ctx := context.Background()
 
 	vault, err := client.Beta.Vaults.New(ctx, anthropic.BetaVaultNewParams{

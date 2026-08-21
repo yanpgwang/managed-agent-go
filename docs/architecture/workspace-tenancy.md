@@ -11,12 +11,12 @@ tenants without making Mango responsible for a SaaS product's identities.
 
 ## Contract
 
-- Every protected HTTP request presents one opaque API key.
+- Every protected HTTP request presents one opaque API key as a bearer token.
 - The key resolves to exactly one Workspace before a handler runs.
 - All keys for a Workspace have equal access to all resources in it.
 - A resource from another Workspace behaves as not found; lists are filtered.
 - Health, readiness, and the embedded OpenAPI document are public.
-- Workspace IDs are internal and never added to CMA request or response bodies.
+- Workspace IDs are internal and never added to public request or response bodies.
 
 There are no users, roles, ownership inheritance, per-resource grants, or
 permission-policy engine. A SaaS layer may authenticate many users, decide what

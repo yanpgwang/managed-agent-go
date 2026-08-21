@@ -38,7 +38,7 @@ func TestSkillService_PostgresS3SDKLifecycleAndRestartReconciliation(t *testing.
 	service := app.NewSkillService(repo, blobs, domain.NewSeqIDGen(), fixedClock{})
 	server := httptestServerForSkills(t, service)
 	defer server.Close()
-	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAPIKey("sk-test"))
+	client := anthropic.NewClient(option.WithBaseURL(server.URL), option.WithAuthToken("sk-test"))
 	ctx := context.Background()
 	archive := postgresSkillArchive(t)
 
@@ -123,7 +123,7 @@ func TestSkillService_PostgresS3SDKLifecycleAndRestartReconciliation(t *testing.
 func httptestServerForSkills(t *testing.T, service *app.SkillService) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(httpapi.NewServer(httpapi.Deps{Skills: service}, httpapi.Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler())
 }
 

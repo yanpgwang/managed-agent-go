@@ -26,7 +26,8 @@ Poll -> Ack -> Heartbeat(NO_HEARTBEAT) -> Heartbeat(previous timestamp) -> Stop
 ```
 
 - `Poll` tentatively claims the oldest available item. A stale unacknowledged
-  claim may be reclaimed; `Anthropic-Worker-ID` contributes to queue stats.
+  claim may be reclaimed. The optional `worker_id` query parameter contributes
+  to queue statistics and operational correlation; it is not a credential.
 - `Ack` removes the item from the queue and changes it from `queued` to
   `starting`.
 - The first heartbeat uses `expected_last_heartbeat=NO_HEARTBEAT`. Every later
@@ -54,10 +55,10 @@ object store are configured.
 
 ## Security boundary
 
-Workers send an Environment key as a bearer credential for Work, Session,
-event, and Skill requests. Mango authenticates that credential as a Workspace
-API key and limits all of those resources to the same Workspace. It does not
-issue narrower Environment-worker credentials, so Work `secret` remains
+Workers send a Workspace API key as a bearer credential for Work, Session,
+event, and Skill requests. Mango limits all of those resources to the same
+Workspace. It does not issue narrower Environment-worker credentials, so
+`worker_id` is not an authorization boundary and Work `secret` remains
 `null`. A surrounding control plane should add Environment-specific policy
 before exposing this surface to untrusted workers.
 

@@ -190,6 +190,14 @@ func (s *Server) pollEnvironmentWork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var block time.Duration
+	workerID := ""
+	if values, present := r.URL.Query()["worker_id"]; present {
+		if len(values) != 1 || values[0] == "" {
+			writeError(w, domain.Validation("worker_id must be a non-empty string"))
+			return
+		}
+		workerID = values[0]
+	}
 	if values, present := r.URL.Query()["block_ms"]; present {
 		if len(values) != 1 {
 			writeError(w, domain.Validation("block_ms must be an integer from 1 through 999"))
@@ -221,7 +229,7 @@ func (s *Server) pollEnvironmentWork(w http.ResponseWriter, r *http.Request) {
 		reclaim = &duration
 	}
 	work, err := s.deps.EnvironmentWork.Poll(
-		r.Context(), r.PathValue("environment_id"), r.Header.Get("Anthropic-Worker-ID"),
+		r.Context(), r.PathValue("environment_id"), workerID,
 		block, reclaim,
 	)
 	if err != nil {

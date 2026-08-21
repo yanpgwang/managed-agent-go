@@ -73,34 +73,30 @@ func TestFilesHTTP_UploadShapeAndMultipartValidation(t *testing.T) {
 	}
 }
 
-func TestFilesHTTP_RouteSpecificStrictHeadersAndLimit(t *testing.T) {
+func TestFilesHTTP_BearerMultipartAndLimit(t *testing.T) {
 	service := newTestFileService()
 	handler := NewServer(Deps{Files: service}, Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 	}).Handler()
 	body, contentType := multipartUpload(t, "strict.txt", "text/plain", []byte("ok"), false)
 
 	req := httptest.NewRequest(http.MethodPost, "/v1/files", body)
 	req.Header.Set("content-type", contentType)
-	req.Header.Set("anthropic-beta", betaValue)
-	req.Header.Set("anthropic-version", anthropicVersion)
 	req.Header.Set("x-api-key", "sk-test")
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "anthropic-beta") {
-		t.Fatalf("managed beta on Files route = %d: %s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("x-api-key-only upload = %d: %s", rec.Code, rec.Body.String())
 	}
 
 	body, contentType = multipartUpload(t, "strict.txt", "text/plain", []byte("ok"), false)
 	req = httptest.NewRequest(http.MethodPost, "/v1/files", body)
 	req.Header.Set("content-type", contentType)
-	req.Header.Set("anthropic-beta", filesBetaValue)
-	req.Header.Set("anthropic-version", anthropicVersion)
-	req.Header.Set("x-api-key", "sk-test")
+	req.Header.Set("authorization", "Bearer sk-test")
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("Files beta upload = %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("bearer upload = %d: %s", rec.Code, rec.Body.String())
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/v1/files", bytes.NewReader(nil))

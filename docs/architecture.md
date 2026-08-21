@@ -110,7 +110,7 @@ model vendor, sandbox backend, or worker topology.
 | Package | Responsibility |
 | --- | --- |
 | `cmd/mango` | Composition root, configuration, process lifecycle |
-| `internal/httpapi` | HTTP routes, strict validation, DTO mapping, SSE |
+| `internal/httpapi` | HTTP routes, transport validation, DTO mapping, SSE |
 | `internal/app` | Shared resource validation and transport-neutral use-case types |
 | `internal/blob` | S3-compatible storage for public File bytes and immutable Skill archives |
 | `internal/controlplane` | PostgreSQL-backed public Session/Event use cases |

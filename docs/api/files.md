@@ -18,8 +18,8 @@ DELETE /v1/files/{file_id}
 ```
 
 Set `MANGO_FILE_S3_BUCKET` and the corresponding endpoint, region, and
-credential variables before using these routes. In strict mode they require
-`anthropic-beta: files-api-2025-04-14`.
+credential variables before using these routes. All routes use Mango's standard
+bearer authentication; uploads require `multipart/form-data`.
 
 ## Upload and list
 

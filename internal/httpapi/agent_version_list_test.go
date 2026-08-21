@@ -116,8 +116,4 @@ func TestListAgentVersions_ValidatesLimitAndCursorScope(t *testing.T) {
 			t.Errorf("%s = %d, want 400: %s", query, recorder.Code, recorder.Body)
 		}
 	}
-	if recorder := do(server, http.MethodGet,
-		"/v1/agents/"+firstAgentID+"/versions?limit=100&beta=true", ""); recorder.Code != http.StatusOK {
-		t.Fatalf("limit=100 with SDK beta parameter = %d: %s", recorder.Code, recorder.Body)
-	}
 }

@@ -417,13 +417,9 @@ func main() {
 func runServe() {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	addr := fs.String("addr", defaultAddr, "listen address (default binds to loopback; use e.g. :8080 to expose on all interfaces)")
-	strict := fs.Bool("strict", false, "require Claude API version, beta, and content-type headers; API-key authentication is always enforced")
 	_ = fs.Parse(os.Args[2:])
 
-	cfg := httpapi.Config{
-		RequireBeta: *strict, RequireVersion: *strict, RequireContentType: *strict,
-	}
-	runPostgresAPI(*addr, cfg)
+	runPostgresAPI(*addr, httpapi.Config{})
 }
 
 func runWorkspaceCommand() {

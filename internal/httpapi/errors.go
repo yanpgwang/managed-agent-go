@@ -17,13 +17,13 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeError renders Mango's current error envelope, whose shape was retained
-// from the original Claude-shaped surface:
+// writeError renders Mango's current error envelope. Its shape was retained
+// after early design research because it remains a concise tagged envelope:
 //
 //	{"type":"error","error":{"type":"invalid_request_error","message":"..."}}
 //
-// The official Go SDK extracts the error type from error.type; matching this
-// shape lets the SDK surface typed errors against our server.
+// Mango owns this envelope. Some third-party clients can also decode it, which
+// remains optional research evidence rather than a compatibility requirement.
 func writeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	typ := "api_error"

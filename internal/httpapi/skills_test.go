@@ -5,35 +5,30 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 )
 
-func TestSkillsHTTP_RouteHeadersMultipartAndLimits(t *testing.T) {
+func TestSkillsHTTP_BearerMultipartAndLimits(t *testing.T) {
 	service := newSDKSkillService()
-	strict := NewServer(Deps{Skills: service}, Config{
-		RequireBeta: true, RequireAuth: true, RequireVersion: true, RequireContentType: true,
+	handler := NewServer(Deps{Skills: service}, Config{
+		RequireAuth: true,
 	}).Handler()
 	body, contentType := skillMultipart(t, sdkSkillZip(t, "reviewing-code"), false)
 	req := httptest.NewRequest(http.MethodPost, "/v1/skills", body)
 	req.Header.Set("content-type", contentType)
-	req.Header.Set("anthropic-beta", betaValue)
-	req.Header.Set("anthropic-version", anthropicVersion)
 	req.Header.Set("x-api-key", "sk-test")
 	rec := httptest.NewRecorder()
-	strict.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "anthropic-beta") {
-		t.Fatalf("Managed Agents beta on Skills route = %d: %s", rec.Code, rec.Body.String())
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("x-api-key-only upload = %d: %s", rec.Code, rec.Body.String())
 	}
 
 	body, contentType = skillMultipart(t, sdkSkillZip(t, "reviewing-code"), true)
 	req = httptest.NewRequest(http.MethodPost, "/v1/skills", body)
 	req.Header.Set("content-type", contentType)
-	req.Header.Set("anthropic-beta", skillsBetaValue)
-	req.Header.Set("anthropic-version", anthropicVersion)
-	req.Header.Set("x-api-key", "sk-test")
+	req.Header.Set("authorization", "Bearer sk-test")
 	rec = httptest.NewRecorder()
-	strict.ServeHTTP(rec, req)
+	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected multipart part = %d: %s", rec.Code, rec.Body.String())
 	}

@@ -60,72 +60,6 @@ func decodeErrorEnvelope(t *testing.T, body []byte) map[string]string {
 	return outer.Error
 }
 
-func TestBetaMiddleware_Strict(t *testing.T) {
-	h := betaMiddleware(Config{RequireBeta: true}, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(200)
-	}))
-	req := httptest.NewRequest("GET", "/v1/agents", nil)
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("expected 400 without beta header, got %d", rec.Code)
-	}
-	env := decodeErrorEnvelope(t, rec.Body.Bytes())
-	if env["type"] == "" || env["message"] == "" {
-		t.Errorf("expected non-empty type and message envelope, got %v", env)
-	}
-	req.Header.Set("anthropic-beta", "managed-agents-2026-04-01")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("expected 200 with beta header, got %d", rec.Code)
-	}
-
-	req = httptest.NewRequest("GET", "/v1/agents", nil)
-	req.Header.Add("anthropic-beta", "another-beta")
-	req.Header.Add("anthropic-beta", "managed-agents-2026-04-01")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Fatalf("expected 200 with beta token among multiple values, got %d", rec.Code)
-	}
-
-	req = httptest.NewRequest("GET", "/v1/agents", nil)
-	req.Header.Set("anthropic-beta", "prefix-managed-agents-2026-04-01-suffix")
-	rec = httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("expected 400 for beta-token substring, got %d", rec.Code)
-	}
-}
-
-func TestBetaMiddleware_MemoryUsesIndependentBeta(t *testing.T) {
-	h := betaMiddleware(Config{RequireBeta: true}, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	for _, test := range []struct {
-		name   string
-		header []string
-		want   int
-	}{
-		{name: "memory beta", header: []string{memoryBetaValue}, want: http.StatusOK},
-		{name: "managed beta only", header: []string{betaValue}, want: http.StatusBadRequest},
-		{name: "combined betas", header: []string{memoryBetaValue, betaValue}, want: http.StatusBadRequest},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/v1/memory_stores", nil)
-			for _, value := range test.header {
-				req.Header.Add("anthropic-beta", value)
-			}
-			rec := httptest.NewRecorder()
-			h.ServeHTTP(rec, req)
-			if rec.Code != test.want {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, test.want, rec.Body.String())
-			}
-		})
-	}
-}
-
 func TestWriteError_PreservesMemoryPreconditionCode(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeError(rec, domain.MemoryPrecondition("stale Memory"))
@@ -148,34 +82,47 @@ func TestWriteError_EnvironmentWorkPreconditionUses412(t *testing.T) {
 	}
 }
 
-func TestAuthMiddleware_Strict(t *testing.T) {
+func TestAuthMiddleware_RequiresBearerToken(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	})
 
-	// RequireAuth: true — missing key → 401 with envelope
 	h := authMiddleware(Config{RequireAuth: true}, ok)
 	req := httptest.NewRequest("GET", "/v1/agents", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 401 {
-		t.Fatalf("expected 401 without x-api-key, got %d", rec.Code)
+		t.Fatalf("expected 401 without bearer token, got %d", rec.Code)
 	}
 	env := decodeErrorEnvelope(t, rec.Body.Bytes())
 	if env["type"] == "" || env["message"] == "" {
 		t.Errorf("expected non-empty type and message envelope, got %v", env)
 	}
 
-	// RequireAuth: true — key present → 200
 	req2 := httptest.NewRequest("GET", "/v1/agents", nil)
-	req2.Header.Set("x-api-key", "sk-test")
+	req2.Header.Set("authorization", "Bearer sk-test")
 	rec2 := httptest.NewRecorder()
 	h.ServeHTTP(rec2, req2)
 	if rec2.Code != 200 {
-		t.Fatalf("expected 200 with x-api-key, got %d", rec2.Code)
+		t.Fatalf("expected 200 with bearer token, got %d", rec2.Code)
 	}
 
-	// RequireAuth: false — missing key → 200 (passes through)
+	xAPIKeyOnly := httptest.NewRequest("GET", "/v1/agents", nil)
+	xAPIKeyOnly.Header.Set("x-api-key", "sk-test")
+	xAPIKeyRec := httptest.NewRecorder()
+	h.ServeHTTP(xAPIKeyRec, xAPIKeyOnly)
+	if xAPIKeyRec.Code != http.StatusUnauthorized {
+		t.Fatalf("x-api-key-only status = %d, want 401", xAPIKeyRec.Code)
+	}
+
+	malformed := httptest.NewRequest("GET", "/v1/agents", nil)
+	malformed.Header.Set("authorization", "Basic sk-test")
+	malformedRec := httptest.NewRecorder()
+	h.ServeHTTP(malformedRec, malformed)
+	if malformedRec.Code != http.StatusUnauthorized {
+		t.Fatalf("malformed authorization status = %d, want 401", malformedRec.Code)
+	}
+
 	hNoAuth := authMiddleware(Config{RequireAuth: false}, ok)
 	req3 := httptest.NewRequest("GET", "/v1/agents", nil)
 	rec3 := httptest.NewRecorder()
@@ -211,7 +158,7 @@ func TestAuthMiddleware_AuthenticatesAndScopesWorkspace(t *testing.T) {
 	}
 
 	invalid := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
-	invalid.Header.Set("x-api-key", "sk-invalid")
+	invalid.Header.Set("authorization", "Bearer sk-invalid")
 	invalidRec := httptest.NewRecorder()
 	h.ServeHTTP(invalidRec, invalid)
 	if invalidRec.Code != http.StatusUnauthorized {
@@ -230,7 +177,7 @@ func TestAuthMiddleware_DistinguishesStoreFailureAndPublicHealth(t *testing.T) {
 	))
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/agents", nil)
-	req.Header.Set("x-api-key", "sk-any")
+	req.Header.Set("authorization", "Bearer sk-any")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusInternalServerError {
@@ -245,18 +192,16 @@ func TestAuthMiddleware_DistinguishesStoreFailureAndPublicHealth(t *testing.T) {
 	}
 }
 
-func TestStrictCompatibilityHeadersDoNotProtectPublicRoutes(t *testing.T) {
+func TestTransportMiddlewareDoesNotProtectPublicRoutes(t *testing.T) {
 	cfg := Config{
-		RequireBeta: true, RequireVersion: true, RequireContentType: true,
+		RequireAuth: true,
 		Authenticator: workspaceAuthenticatorFunc(func(context.Context, string) (string, error) {
 			return "", errors.New("authenticator must not be called")
 		}),
 	}
-	h := authMiddleware(cfg, versionMiddleware(cfg,
-		contentTypeMiddleware(cfg, betaMiddleware(cfg, http.HandlerFunc(
-			func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) },
-		)))),
-	)
+	h := authMiddleware(cfg, contentTypeMiddleware(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) },
+	)))
 	for _, path := range []string{"/healthz", "/readyz", "/openapi.yaml"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
@@ -266,35 +211,33 @@ func TestStrictCompatibilityHeadersDoNotProtectPublicRoutes(t *testing.T) {
 	}
 }
 
-func TestVersionAndContentTypeMiddleware_Strict(t *testing.T) {
+func TestContentTypeMiddlewareRequiresDocumentedMediaType(t *testing.T) {
 	ok := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 	})
-	h := versionMiddleware(Config{RequireVersion: true},
-		contentTypeMiddleware(Config{RequireContentType: true}, ok))
+	h := contentTypeMiddleware(ok)
 
 	req := httptest.NewRequest("POST", "/v1/agents", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-	if rec.Code != 400 {
-		t.Fatalf("expected 400 without anthropic-version, got %d", rec.Code)
-	}
-
-	req = httptest.NewRequest("POST", "/v1/agents", strings.NewReader(`{}`))
-	req.Header.Set("anthropic-version", anthropicVersion)
-	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 400 {
 		t.Fatalf("expected 400 without application/json, got %d", rec.Code)
 	}
 
 	req = httptest.NewRequest("POST", "/v1/agents", strings.NewReader(`{}`))
-	req.Header.Set("anthropic-version", anthropicVersion)
 	req.Header.Set("content-type", "application/json; charset=utf-8")
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
-		t.Fatalf("expected 200 with required headers, got %d", rec.Code)
+		t.Fatalf("expected 200 with application/json, got %d", rec.Code)
+	}
+
+	req = httptest.NewRequest("POST", "/v1/files", strings.NewReader("upload"))
+	req.Header.Set("content-type", "application/json")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("file upload status = %d, want 400", rec.Code)
 	}
 }
 

@@ -15,10 +15,10 @@ import (
 )
 
 // vaultIDsUpdateRejectedMessage describes the Update Session contract only.
-// Managed Agents accepts vault_ids when a Session is created, but documents the
-// update field as reserved and rejects requests that set it.
+// Mango accepts vault_ids when a Session is created, but reserves the update
+// field and rejects requests that set it.
 const vaultIDsUpdateRejectedMessage = "vault_ids is reserved for future use on session update and is " +
-	"rejected by the Managed Agents API; omit it"
+	"rejected by the Mango API; omit it"
 
 func (s *Server) registerSessionRoutes() {
 	s.mux.HandleFunc("POST /v1/sessions", s.createSession)
