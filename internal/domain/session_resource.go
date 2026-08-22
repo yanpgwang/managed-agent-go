@@ -38,10 +38,10 @@ const (
 	SessionResourceDeleting SessionResourceState = "deleting"
 )
 
-// SessionResource is the durable union of a File attachment and a Memory Store
-// attachment. File resources own a session-scoped File copy. Memory Store
-// resources snapshot presentation fields at Session creation so later Store
-// renames do not move a live sandbox mount.
+// SessionResource is the durable union of a File attachment, Memory Store
+// attachment, and Git repository snapshot. File resources own a session-scoped
+// File copy. Memory Store resources snapshot presentation fields at Session
+// creation so later Store renames do not move a live sandbox mount.
 type SessionResource struct {
 	ID                       string
 	SessionID                string
