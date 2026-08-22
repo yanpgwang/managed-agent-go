@@ -164,7 +164,18 @@ func (s *FileService) Upload(ctx context.Context, input FileUploadInput) (domain
 }
 
 func (s *FileService) Get(ctx context.Context, id string) (domain.File, error) {
-	return s.repo.Get(ctx, id)
+	return s.publicFile(ctx, id)
+}
+
+func (s *FileService) publicFile(ctx context.Context, id string) (domain.File, error) {
+	file, err := s.repo.Get(ctx, id)
+	if err != nil {
+		return domain.File{}, err
+	}
+	if file.Internal {
+		return domain.File{}, domain.NotFound("file not found")
+	}
+	return file, nil
 }
 
 func (s *FileService) List(ctx context.Context, query FileListQuery) (FileListPage, error) {
@@ -181,7 +192,7 @@ func (s *FileService) List(ctx context.Context, query FileListQuery) (FileListPa
 }
 
 func (s *FileService) Download(ctx context.Context, id string) (FileDownload, error) {
-	file, err := s.repo.Get(ctx, id)
+	file, err := s.publicFile(ctx, id)
 	if err != nil {
 		return FileDownload{}, err
 	}
@@ -200,7 +211,7 @@ func (s *FileService) Download(ctx context.Context, id string) (FileDownload, er
 // non-downloadable client uploads. Reads remain bounded to the largest valid
 // UTF-8 encoding of the documented character limit.
 func (s *FileService) ReadOutcomeRubric(ctx context.Context, id string) (string, error) {
-	file, err := s.repo.Get(ctx, id)
+	file, err := s.publicFile(ctx, id)
 	if err != nil {
 		return "", err
 	}
@@ -222,7 +233,7 @@ func (s *FileService) ReadMessageFile(
 	ctx context.Context,
 	id string,
 ) (domain.FileMessageContent, error) {
-	file, err := s.repo.Get(ctx, id)
+	file, err := s.publicFile(ctx, id)
 	if err != nil {
 		return domain.FileMessageContent{}, err
 	}

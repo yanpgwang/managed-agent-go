@@ -181,6 +181,8 @@ func (*dockerProvider) SupportsSkillBundles() bool { return true }
 
 func (*dockerProvider) SupportsMemoryStores() bool { return true }
 
+func (*dockerProvider) SupportsGitRepositories() bool { return true }
+
 func (p *dockerProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -331,7 +333,7 @@ func (p *dockerProvider) Create(
 	}
 
 	ref := Ref{Provider: p.Name(), ID: cid}
-	return ref, &dockerSandbox{
+	box := &dockerSandbox{
 		provider:           p,
 		cid:                cid,
 		timeout:            spec.Timeout,
@@ -341,7 +343,9 @@ func (p *dockerProvider) Create(
 		outputMountReady:   true,
 		skillMountReady:    true,
 		memoryMounts:       memoryMounts,
-	}, nil
+	}
+	box.initGitRepositories()
+	return ref, box, nil
 }
 
 // ensureImage preserves `docker create` parity without invoking the CLI. The
@@ -497,7 +501,7 @@ func (p *dockerProvider) attachTarget(
 	if err != nil {
 		return nil, err
 	}
-	return &dockerSandbox{
+	box := &dockerSandbox{
 		provider:           p,
 		cid:                inspected.ID,
 		timeout:            spec.Timeout,
@@ -507,7 +511,9 @@ func (p *dockerProvider) attachTarget(
 		outputMountReady:   outputMountReady,
 		skillMountReady:    skillMountReady,
 		memoryMounts:       memoryMounts,
-	}, nil
+	}
+	box.initGitRepositories()
+	return box, nil
 }
 
 // forceRemove best-effort removes a container with a fresh bounded context so
@@ -542,6 +548,7 @@ type dockerSandbox struct {
 	outputMountReady   bool
 	skillMountReady    bool
 	memoryMounts       map[string]string
+	repositories       *commandGitRepositories
 
 	// mu guards dead. Once the container is torn down (timed-out and killed, or
 	// destroyed), the sandbox is permanently dead: further calls must fail fast

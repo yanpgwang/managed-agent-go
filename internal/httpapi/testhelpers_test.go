@@ -657,20 +657,6 @@ func (s *testSessionResourceService) List(
 	return page, nil
 }
 
-func (s *testSessionResourceService) Update(
-	ctx context.Context,
-	sessionID string,
-	resourceID string,
-	_ string,
-) (domain.SessionResource, error) {
-	if _, err := s.Get(ctx, sessionID, resourceID); err != nil {
-		return domain.SessionResource{}, err
-	}
-	return domain.SessionResource{}, domain.Unsupported(
-		"File resources do not support authorization_token rotation",
-	)
-}
-
 func (s *testSessionResourceService) Delete(
 	_ context.Context,
 	sessionID string,

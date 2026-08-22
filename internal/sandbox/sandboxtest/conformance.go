@@ -124,6 +124,144 @@ func RunFileResources(t *testing.T, cfg Config) {
 	}
 }
 
+// RunGitRepositories exercises the durable, writable, offline repository
+// restore contract shared by every capable provider.
+func RunGitRepositories(t *testing.T, cfg Config) {
+	t.Helper()
+	if cfg.NewProvider == nil {
+		t.Fatal("sandboxtest: NewProvider is required")
+	}
+	if cfg.Spec.Timeout == 0 {
+		cfg.Spec.Timeout = 30 * time.Second
+	}
+	if cfg.ShellPath == "" {
+		cfg.ShellPath = "/bin/sh"
+	}
+	ctx := context.Background()
+	provider := cfg.NewProvider(t)
+	capability, ok := provider.(sandbox.GitRepositoryProvider)
+	if !ok || !capability.SupportsGitRepositories() {
+		t.Fatalf("provider %q does not advertise Git repositories", provider.Name())
+	}
+	session := sessionKey(t)
+	ref, box, err := provider.Create(ctx, session, cfg.Spec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = box.Destroy(context.Background()) })
+	repositories, ok := box.(sandbox.GitRepositorySandbox)
+	if !ok {
+		t.Fatalf("provider %q sandbox does not expose Git repositories", provider.Name())
+	}
+	archive := gitRepositoryArchive(t, map[string]string{
+		".git/HEAD": "ref: refs/heads/main\n",
+		"README.md": "canonical\n",
+	})
+	checksum := sha256.Sum256(archive)
+	mount := sandbox.GitRepositoryMount{
+		Identity: "sesrsc_repository", RuntimePath: "/workspace/mango-conformance-repo",
+		ResolvedCommit: "0123456789abcdef0123456789abcdef01234567",
+		SizeBytes:      int64(len(archive)), ChecksumSHA256: fmt.Sprintf("%x", checksum),
+	}
+	present, err := repositories.HasGitRepository(ctx, mount)
+	if err != nil || present {
+		t.Fatalf("initial HasGitRepository = %t, %v", present, err)
+	}
+	if err := repositories.ImportGitRepository(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("ImportGitRepository: %v", err)
+	}
+	assertGitRepository(t, ctx, box, repositories, mount, "canonical\n", cfg.ShellPath)
+	if err := box.WriteFile(ctx, mount.RuntimePath+"/README.md", []byte("agent edit\n")); err != nil {
+		t.Fatalf("edit Git repository: %v", err)
+	}
+	if err := repositories.ImportGitRepository(ctx, mount, bytes.NewReader(archive)); err != nil {
+		t.Fatalf("retry Git repository import: %v", err)
+	}
+	assertGitRepository(t, ctx, box, repositories, mount, "agent edit\n", cfg.ShellPath)
+
+	restarted := cfg.NewProvider(t)
+	attached, err := restarted.Attach(ctx, session, ref, cfg.Spec)
+	if err != nil {
+		t.Fatalf("Attach Git repository sandbox: %v", err)
+	}
+	attachedRepositories, ok := attached.(sandbox.GitRepositorySandbox)
+	if !ok {
+		t.Fatalf("attached provider %q sandbox lost Git repositories", provider.Name())
+	}
+	assertGitRepository(
+		t, ctx, attached, attachedRepositories, mount, "agent edit\n", cfg.ShellPath,
+	)
+	if err := attachedRepositories.RemoveGitRepository(
+		ctx, mount.RuntimePath, "sesrsc_stale",
+	); err != nil {
+		t.Fatalf("stale Git repository removal: %v", err)
+	}
+	assertGitRepository(
+		t, ctx, attached, attachedRepositories, mount, "agent edit\n", cfg.ShellPath,
+	)
+	if err := attachedRepositories.RemoveGitRepository(
+		ctx, mount.RuntimePath, mount.Identity,
+	); err != nil {
+		t.Fatalf("RemoveGitRepository: %v", err)
+	}
+	present, err = attachedRepositories.HasGitRepository(ctx, mount)
+	if err != nil || present {
+		t.Fatalf("HasGitRepository after removal = %t, %v", present, err)
+	}
+}
+
+func assertGitRepository(
+	t *testing.T,
+	ctx context.Context,
+	box sandbox.Sandbox,
+	repositories sandbox.GitRepositorySandbox,
+	mount sandbox.GitRepositoryMount,
+	want string,
+	shellPath string,
+) {
+	t.Helper()
+	present, err := repositories.HasGitRepository(ctx, mount)
+	if err != nil || !present {
+		t.Fatalf("HasGitRepository = %t, %v", present, err)
+	}
+	content, err := box.ReadFile(ctx, mount.RuntimePath+"/README.md")
+	if err != nil || string(content) != want {
+		t.Fatalf("repository README = %q, %v", content, err)
+	}
+	result, err := box.Exec(ctx, sandbox.Command{
+		Path: shellPath,
+		Args: []string{"-c", "test -f " + mount.RuntimePath + "/.git/HEAD && cat " + mount.RuntimePath + "/README.md"},
+	})
+	if err != nil || result.ExitCode != 0 || string(result.Stdout) != want {
+		t.Fatalf("shell read Git repository: result=%+v err=%v", result, err)
+	}
+}
+
+func gitRepositoryArchive(t *testing.T, files map[string]string) []byte {
+	t.Helper()
+	var archive bytes.Buffer
+	w := tar.NewWriter(&archive)
+	if err := w.WriteHeader(&tar.Header{
+		Name: ".git/", Typeflag: tar.TypeDir, Mode: 0o755,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range files {
+		if err := w.WriteHeader(&tar.Header{
+			Name: name, Typeflag: tar.TypeReg, Mode: 0o644, Size: int64(len(content)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(content)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return archive.Bytes()
+}
+
 func assertMountedFile(
 	t *testing.T,
 	ctx context.Context,

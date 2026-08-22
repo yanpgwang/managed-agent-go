@@ -97,7 +97,7 @@ func (r *retryingSessionResourceReconciler) Reconcile(
 	}
 	needsObjectStore := len(skills) > 0
 	for _, resource := range resources {
-		if resource.Type() == domain.SessionResourceTypeFile {
+		if resource.Type() != domain.SessionResourceTypeMemoryStore {
 			needsObjectStore = true
 			break
 		}
@@ -131,7 +131,7 @@ func (r *retryingSessionResourceReconciler) ReconcileThread(
 	}
 	needsObjectStore := len(runtime.Versions) > 0
 	for _, resource := range resources {
-		if resource.Type() == domain.SessionResourceTypeFile {
+		if resource.Type() != domain.SessionResourceTypeMemoryStore {
 			needsObjectStore = true
 			break
 		}
@@ -195,7 +195,7 @@ func (r *retryingSessionResourceReconciler) CleanupSession(
 	}
 	needsObjectStore := hasOutputs
 	for _, resource := range resources {
-		if resource.Type() == domain.SessionResourceTypeFile {
+		if resource.Type() != domain.SessionResourceTypeMemoryStore {
 			needsObjectStore = true
 			break
 		}
@@ -233,7 +233,7 @@ func (r unavailableSessionResourceReconciler) Reconcile(
 	}
 	needsObjectStore := len(skills) > 0
 	for _, resource := range resources {
-		if resource.Type() == domain.SessionResourceTypeFile {
+		if resource.Type() != domain.SessionResourceTypeMemoryStore {
 			needsObjectStore = true
 			break
 		}
@@ -242,7 +242,7 @@ func (r unavailableSessionResourceReconciler) Reconcile(
 		return nil
 	}
 	return sandbox.Permanent(fmt.Errorf(
-		"session File Resources or custom Skills are unavailable on this worker: %w",
+		"session File/Git Resources or custom Skills are unavailable on this worker: %w",
 		r.cause,
 	))
 }
@@ -268,7 +268,7 @@ func (r unavailableSessionResourceReconciler) ReconcileThread(
 	}
 	needsObjectStore := len(runtime.Versions) > 0
 	for _, resource := range resources {
-		if resource.Type() == domain.SessionResourceTypeFile {
+		if resource.Type() != domain.SessionResourceTypeMemoryStore {
 			needsObjectStore = true
 			break
 		}
@@ -277,7 +277,7 @@ func (r unavailableSessionResourceReconciler) ReconcileThread(
 		return nil
 	}
 	return sandbox.Permanent(fmt.Errorf(
-		"session File Resources or custom Skills are unavailable on this worker: %w",
+		"session File/Git Resources or custom Skills are unavailable on this worker: %w",
 		r.cause,
 	))
 }
@@ -341,9 +341,9 @@ func (r unavailableSessionResourceReconciler) CleanupSession(
 		)
 	}
 	for _, resource := range resources {
-		if resource.Type() == domain.SessionResourceTypeFile {
+		if resource.Type() != domain.SessionResourceTypeMemoryStore {
 			return fmt.Errorf(
-				"session File Resources are unavailable on this worker: %w",
+				"session File/Git Resources are unavailable on this worker: %w",
 				r.cause,
 			)
 		}

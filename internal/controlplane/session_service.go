@@ -128,6 +128,11 @@ func (s *SessionService) Create(
 	ctx context.Context,
 	input app.CreateSessionInput,
 ) (domain.Session, error) {
+	if len(input.Resources)+len(input.MemoryResources)+len(input.RepositoryResources) > app.MaxSessionResources {
+		return domain.Session{}, domain.Validation(
+			"resources must contain at most 500 entries",
+		)
+	}
 	if len(input.VaultIDs) > 0 && !s.vaultsEnabled {
 		return domain.Session{}, domain.Unsupported(
 			"Session Vaults are unavailable for the configured deployment",
@@ -244,6 +249,11 @@ func (s *SessionService) Create(
 			"Memory Store resources are unavailable for self-hosted Sessions",
 		)
 	}
+	if environment.ConfigType == "self_hosted" && len(input.RepositoryResources) > 0 {
+		return domain.Session{}, domain.Unsupported(
+			"Git repository resources are unavailable for self-hosted Sessions",
+		)
+	}
 	if err := domain.ValidateToolConfiguration(
 		snapshot.Tools,
 		snapshot.MCPServers,
@@ -300,6 +310,31 @@ func (s *SessionService) Create(
 			return domain.Session{}, err
 		}
 		prepared = append(prepared, fileResources...)
+	}
+	if len(input.RepositoryResources) > 0 {
+		if s.resources == nil {
+			return domain.Session{}, domain.Unsupported(
+				"Git repository resources are unavailable for the configured deployment",
+			)
+		}
+		var stagedBytes int64
+		for _, item := range prepared {
+			if item.Blob.SizeBytes > app.MaxSessionResourceBytes-stagedBytes {
+				s.resources.DiscardPrepared(ctx, prepared)
+				return domain.Session{}, domain.TooLarge(
+					"Session Resources exceed the 500 MB aggregate limit",
+				)
+			}
+			stagedBytes += item.Blob.SizeBytes
+		}
+		repositoryResources, prepareErr := s.resources.PrepareRepositoriesForSession(
+			ctx, session, input.RepositoryResources, stagedBytes,
+		)
+		if prepareErr != nil {
+			s.resources.DiscardPrepared(ctx, prepared)
+			return domain.Session{}, prepareErr
+		}
+		prepared = append(prepared, repositoryResources...)
 	}
 	if len(prepared) > 0 {
 		session.Resources = make([]domain.SessionResource, len(prepared))

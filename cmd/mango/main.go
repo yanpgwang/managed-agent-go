@@ -18,6 +18,7 @@ import (
 	"github.com/yanpgwang/mango/internal/blob"
 	"github.com/yanpgwang/mango/internal/controlplane"
 	"github.com/yanpgwang/mango/internal/domain"
+	"github.com/yanpgwang/mango/internal/gitrepo"
 	"github.com/yanpgwang/mango/internal/httpapi"
 	"github.com/yanpgwang/mango/internal/live"
 	"github.com/yanpgwang/mango/internal/mcpclient"
@@ -110,11 +111,12 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.DockerProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup:   true,
-				FileResources:  true,
-				SessionOutputs: true,
-				SkillBundles:   true,
-				MemoryStores:   true,
+				PackageSetup:    true,
+				FileResources:   true,
+				SessionOutputs:  true,
+				SkillBundles:    true,
+				MemoryStores:    true,
+				GitRepositories: true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				return sandbox.NewDockerProvider(sandbox.DockerConfig{
@@ -126,10 +128,11 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.E2BProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup:   true,
-				FileResources:  true,
-				SessionOutputs: true,
-				SkillBundles:   true,
+				PackageSetup:    true,
+				FileResources:   true,
+				SessionOutputs:  true,
+				SkillBundles:    true,
+				GitRepositories: true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				idleTimeout, err := envDuration(e2bIdleTimeoutEnv)
@@ -148,10 +151,11 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.CubeProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup:   true,
-				FileResources:  true,
-				SessionOutputs: true,
-				SkillBundles:   true,
+				PackageSetup:    true,
+				FileResources:   true,
+				SessionOutputs:  true,
+				SkillBundles:    true,
+				GitRepositories: true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				proxyPort, err := envPositiveInt(cubeProxyPortEnv)
@@ -177,11 +181,12 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.OpenSandboxProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup:   true,
-				LimitedNetwork: true,
-				FileResources:  true,
-				SessionOutputs: true,
-				SkillBundles:   true,
+				PackageSetup:    true,
+				LimitedNetwork:  true,
+				FileResources:   true,
+				SessionOutputs:  true,
+				SkillBundles:    true,
+				GitRepositories: true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				useProxy, err := envBool(openSandboxUseProxyEnv)
@@ -202,10 +207,11 @@ func sandboxProviderRegistry() (*sandbox.ProviderRegistry, error) {
 		sandbox.ProviderRegistration{
 			Name: sandbox.DaytonaProviderName,
 			Capabilities: sandbox.ProviderCapabilities{
-				PackageSetup:   true,
-				FileResources:  true,
-				SessionOutputs: true,
-				SkillBundles:   true,
+				PackageSetup:    true,
+				FileResources:   true,
+				SessionOutputs:  true,
+				SkillBundles:    true,
+				GitRepositories: true,
 			},
 			Factory: func() (sandbox.Provider, error) {
 				autoPauseMinutes, err := envPositiveInt(daytonaAutoPauseEnv)
@@ -659,6 +665,11 @@ func runPostgresAPI(addr string, cfg httpapi.Config) {
 			pgStore, fileRuntime.repository, fileRuntime.blobs, ids, clock,
 			providerCapabilities.FileResources,
 		)
+		if providerCapabilities.GitRepositories {
+			sessionResourceLifecycle.EnableGitRepositoryResources(
+				gitrepo.NewSnapshotter(os.Getenv(fileUploadTempDirEnv)),
+			)
+		}
 		sessionResources = sessionResourceLifecycle
 		if !providerCapabilities.FileResources {
 			log.Printf(

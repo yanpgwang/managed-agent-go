@@ -99,6 +99,44 @@ func TestFileService_ValidatesUploadAndMapsStreamingLimit(t *testing.T) {
 	}
 }
 
+func TestFileService_HidesInternalFiles(t *testing.T) {
+	repo := newMemoryFileRepository()
+	blobs := newMemoryBlobStore()
+	service := NewFileService(repo, blobs, domain.NewSeqIDGen(), domain.FixedClock{})
+	file := domain.File{
+		ID: "file_internal", Filename: "repository.tar", MimeType: "application/x-tar",
+		Downloadable: true, Internal: true,
+		BlobKey: "files/file_internal", State: domain.FileStateUploading,
+	}
+	if err := repo.BeginUpload(context.Background(), file); err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("internal")
+	if _, err := repo.CompleteUpload(
+		context.Background(), file.ID, ComputeBlobInfo(data),
+	); err != nil {
+		t.Fatal(err)
+	}
+	blobs.objects[file.BlobKey] = data
+
+	if _, err := service.Get(context.Background(), file.ID); err == nil {
+		t.Fatal("internal File was returned by Get")
+	}
+	if _, err := service.Download(context.Background(), file.ID); err == nil {
+		t.Fatal("internal File was returned by Download")
+	}
+	page, err := service.List(context.Background(), FileListQuery{})
+	if err != nil || len(page.Files) != 0 {
+		t.Fatalf("internal File appeared in List: %+v, %v", page, err)
+	}
+	if _, err := service.Delete(context.Background(), file.ID); err == nil {
+		t.Fatal("internal File was accepted by Delete")
+	}
+	if _, err := repo.Get(context.Background(), file.ID); err != nil {
+		t.Fatalf("rejected delete changed internal File: %v", err)
+	}
+}
+
 func TestFileService_ReadOutcomeRubricValidatesBoundedTextAndIntegrity(t *testing.T) {
 	newFixture := func(t *testing.T, data []byte) (*FileService, *memoryFileRepository, *memoryBlobStore, domain.File) {
 		t.Helper()
@@ -427,7 +465,7 @@ func (r *memoryFileRepository) List(_ context.Context, query FileListQuery) (Fil
 	defer r.mu.Unlock()
 	files := make([]domain.File, 0, len(r.files))
 	for _, file := range r.files {
-		if file.State == domain.FileStateReady && (query.ScopeID == "" ||
+		if file.State == domain.FileStateReady && !file.Internal && (query.ScopeID == "" ||
 			(file.Scope != nil && file.Scope.ID == query.ScopeID)) {
 			files = append(files, file)
 		}
@@ -449,6 +487,9 @@ func (r *memoryFileRepository) BeginDelete(_ context.Context, id string) (domain
 	defer r.mu.Unlock()
 	file, present := r.files[id]
 	if !present || file.State != domain.FileStateReady {
+		return domain.File{}, domain.NotFound("file not found")
+	}
+	if file.Internal {
 		return domain.File{}, domain.NotFound("file not found")
 	}
 	if r.protected[id] {

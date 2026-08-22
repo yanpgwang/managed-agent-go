@@ -116,9 +116,10 @@ surface but does not execute scheduled work.
 File and Memory Store resources require their existing Session sandbox
 capabilities. File-backed outcome rubrics require configured Files storage but
 do not require a sandbox mount capability. Vault references require the
-configured Vault keyring. GitHub
-repository resources are rejected explicitly because Mango does not yet have a
-sealed clone-token path. Scheduler jitter and automatic Deployment archival
+configured Vault keyring. Git repository resources are rejected explicitly
+because the current repository snapshot contract is selected only for direct
+create-time Sessions; repeat-run refresh/freeze semantics have not been defined
+for Deployment templates. Scheduler jitter and automatic Deployment archival
 when an Agent is archived are not implemented.
 
 See [capabilities and limits](../capabilities.md) for the current support boundary.

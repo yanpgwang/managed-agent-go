@@ -33,5 +33,6 @@ func TestDockerProviderConformance(t *testing.T) {
 	}
 	sandboxtest.Run(t, cfg)
 	sandboxtest.RunFileResources(t, cfg)
+	sandboxtest.RunGitRepositories(t, cfg)
 	sandboxtest.RunSessionOutputs(t, cfg)
 }

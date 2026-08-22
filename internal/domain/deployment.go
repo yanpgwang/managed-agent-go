@@ -35,8 +35,8 @@ type Deployment struct {
 }
 
 // DeploymentResource is the write-safe subset of a Session resource retained
-// by a deployment. Secret-bearing repository resources are not persisted until
-// the runtime has a sealed credential path for cloning them.
+// by a deployment. Create-time Git repository snapshots are not Deployment
+// templates in the current product slice.
 type DeploymentResource struct {
 	Type          string
 	FileID        string

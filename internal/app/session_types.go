@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"io"
 	"time"
 
 	"github.com/yanpgwang/mango/internal/domain"
@@ -14,19 +16,20 @@ const (
 // CreateSessionInput is the storage-independent command accepted by the
 // control-plane session service.
 type CreateSessionInput struct {
-	AgentID         string
-	AgentVersion    *int
-	Overrides       *domain.AgentOverrides
-	EnvironmentID   string
-	Title           string
-	Metadata        map[string]any
-	InitialEvents   []domain.EventDraft
-	Resources       []FileSessionResourceInput
-	MemoryResources []MemorySessionResourceInput
-	VaultIDs        []string
-	Budget          *domain.SessionBudget
-	DeploymentID    *string
-	DeploymentRun   *domain.DeploymentRun
+	AgentID             string
+	AgentVersion        *int
+	Overrides           *domain.AgentOverrides
+	EnvironmentID       string
+	Title               string
+	Metadata            map[string]any
+	InitialEvents       []domain.EventDraft
+	Resources           []FileSessionResourceInput
+	MemoryResources     []MemorySessionResourceInput
+	RepositoryResources []GitRepositorySessionResourceInput
+	VaultIDs            []string
+	Budget              *domain.SessionBudget
+	DeploymentID        *string
+	DeploymentRun       *domain.DeploymentRun
 }
 
 type FileSessionResourceInput struct {
@@ -38,6 +41,34 @@ type MemorySessionResourceInput struct {
 	MemoryStoreID string
 	Access        string
 	Instructions  string
+}
+
+type GitRepositoryCheckoutInput struct {
+	Type  string
+	Value string
+}
+
+type GitRepositorySessionResourceInput struct {
+	URL       string
+	Checkout  *GitRepositoryCheckoutInput
+	MountPath *string
+}
+
+type GitRepositorySnapshotRequest struct {
+	URL           string
+	CheckoutType  string
+	CheckoutValue string
+}
+
+type GitRepositorySnapshot struct {
+	ResolvedCommit string
+	Archive        io.ReadCloser
+}
+
+// GitRepositorySnapshotter resolves one public remote to an exact commit and
+// returns a bounded tar snapshot containing both the worktree and .git data.
+type GitRepositorySnapshotter interface {
+	OpenSnapshot(context.Context, GitRepositorySnapshotRequest) (GitRepositorySnapshot, error)
 }
 
 type PreparedSessionResource struct {

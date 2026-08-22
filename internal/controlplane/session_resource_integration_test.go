@@ -256,6 +256,130 @@ func TestPostgresSessionFileResourcesAreIndependentAndRecoverable(t *testing.T) 
 	}
 }
 
+func TestPostgresGitRepositoryResourceFreezesSnapshotAndMaterializesOffline(t *testing.T) {
+	fixture := newPostgresFixture(t)
+	ctx := context.Background()
+	blobs := newResourceBlobStore()
+	fileRepository := pg.NewFileRepository(fixture.store)
+	files := app.NewFileService(fileRepository, blobs, fixture.ids, fixture.clock)
+	resources := NewSessionResourceService(
+		fixture.store, fileRepository, blobs, fixture.ids, fixture.clock, true,
+	)
+	snapshotter := &staticGitRepositorySnapshotter{
+		commit:  "0123456789abcdef0123456789abcdef01234567",
+		archive: []byte("immutable repository snapshot"),
+	}
+	resources.EnableGitRepositoryResources(snapshotter)
+	sessions := NewSessionService(
+		fixture.store, fixture.agentRepo, fixture.environmentRepo,
+		temporalpkg.NewOrchestrator(fixture.store, nil), fixture.ids, fixture.clock,
+		nil, resources,
+	)
+	handler := httpapi.NewServer(httpapi.Deps{
+		Agents: app.NewAgentService(fixture.agentRepo, fixture.ids, fixture.clock),
+		Envs: app.NewEnvironmentService(
+			fixture.environmentRepo, fixture.ids, fixture.clock,
+			app.EnvironmentCapabilities{},
+		),
+		Sessions: sessions, Events: NewEventService(fixture.store),
+		Stream: app.NewHub(64), Files: files, SessionResources: resources,
+	}, httpapi.Config{}).Handler()
+	agentID := createResource(t, handler, "/v1/agents",
+		`{"name":"repo-coder","model":"claude-test"}`)
+	environmentID := createResource(t, handler, "/v1/environments",
+		`{"name":"repo-cloud","config":{"type":"cloud"}}`)
+	response := request(t, handler, http.MethodPost, "/v1/sessions",
+		`{"agent":"`+agentID+`","environment_id":"`+environmentID+`",`+
+			`"resources":[{"type":"git_repository",`+
+			`"url":"https://github.com/acme/widgets.git",`+
+			`"checkout":{"type":"branch","name":"main"}}]}`)
+	if response.Code != http.StatusOK {
+		t.Fatalf("create Git repository Session -> %d: %s", response.Code, response.Body.String())
+	}
+	var created struct {
+		ID        string `json:"id"`
+		Resources []struct {
+			ID             string         `json:"id"`
+			Type           string         `json:"type"`
+			URL            string         `json:"url"`
+			Checkout       map[string]any `json:"checkout"`
+			ResolvedCommit string         `json:"resolved_commit"`
+			MountPath      string         `json:"mount_path"`
+			FileID         string         `json:"file_id"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if len(created.Resources) != 1 {
+		t.Fatalf("resources = %+v", created.Resources)
+	}
+	repository := created.Resources[0]
+	if repository.Type != domain.SessionResourceTypeGitRepository ||
+		repository.URL != "https://github.com/acme/widgets.git" ||
+		repository.ResolvedCommit != snapshotter.commit ||
+		repository.MountPath != "/workspace/widgets" || repository.FileID != "" ||
+		repository.Checkout["type"] != "branch" || repository.Checkout["name"] != "main" {
+		t.Fatalf("Git repository response = %+v", repository)
+	}
+	if len(snapshotter.requests) != 1 ||
+		snapshotter.requests[0].CheckoutType != domain.GitRepositoryCheckoutBranch ||
+		snapshotter.requests[0].CheckoutValue != "main" {
+		t.Fatalf("snapshot requests = %+v", snapshotter.requests)
+	}
+	durableResources, err := fixture.store.SessionResourcesForReconcile(ctx, created.ID)
+	if err != nil || len(durableResources) != 1 {
+		t.Fatalf("durable Git resources = %+v, err=%v", durableResources, err)
+	}
+	archiveID := durableResources[0].FileID
+	archive, err := fileRepository.Get(ctx, archiveID)
+	if err != nil || !archive.Internal || archive.Downloadable {
+		t.Fatalf("internal repository archive = %+v, err=%v", archive, err)
+	}
+	response = request(t, handler, http.MethodGet, "/v1/files?scope_id="+created.ID, "")
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"data":[]`) {
+		t.Fatalf(
+			"repository archive leaked through Files list -> %d: %s",
+			response.Code, response.Body.String(),
+		)
+	}
+	for _, endpoint := range []string{
+		"/v1/files/" + archiveID,
+		"/v1/files/" + archiveID + "/content",
+	} {
+		response = request(t, handler, http.MethodGet, endpoint, "")
+		if response.Code != http.StatusNotFound {
+			t.Fatalf(
+				"internal repository archive GET %s -> %d: %s",
+				endpoint, response.Code, response.Body.String(),
+			)
+		}
+	}
+	response = request(t, handler, http.MethodDelete, "/v1/files/"+archiveID, "")
+	if response.Code != http.StatusNotFound {
+		t.Fatalf(
+			"internal repository archive delete -> %d: %s",
+			response.Code, response.Body.String(),
+		)
+	}
+
+	box := newResourceSandbox()
+	materializer := app.NewSessionResourceMaterializer(fixture.store, fileRepository, blobs)
+	if err := materializer.Reconcile(ctx, created.ID, box); err != nil {
+		t.Fatal(err)
+	}
+	if got := string(box.repositories[repository.MountPath]); got != string(snapshotter.archive) {
+		t.Fatalf("materialized repository snapshot = %q", got)
+	}
+	response = request(
+		t, handler, http.MethodDelete,
+		"/v1/sessions/"+created.ID+"/resources/"+repository.ID, "",
+	)
+	if response.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("runtime repository detach -> %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestPostgresSessionMemoryStoreResourceSnapshotsAndOwnsNoStore(t *testing.T) {
 	fixture := newPostgresFixture(t)
 	ctx := context.Background()
@@ -357,6 +481,23 @@ type resourceBlobStore struct {
 	objects map[string][]byte
 }
 
+type staticGitRepositorySnapshotter struct {
+	commit   string
+	archive  []byte
+	requests []app.GitRepositorySnapshotRequest
+}
+
+func (s *staticGitRepositorySnapshotter) OpenSnapshot(
+	_ context.Context,
+	request app.GitRepositorySnapshotRequest,
+) (app.GitRepositorySnapshot, error) {
+	s.requests = append(s.requests, request)
+	return app.GitRepositorySnapshot{
+		ResolvedCommit: s.commit,
+		Archive:        io.NopCloser(bytes.NewReader(s.archive)),
+	}, nil
+}
+
 func newResourceBlobStore() *resourceBlobStore {
 	return &resourceBlobStore{objects: make(map[string][]byte)}
 }
@@ -406,11 +547,14 @@ func (s *resourceBlobStore) has(key string) bool {
 }
 
 type resourceSandbox struct {
-	files map[string][]byte
+	files        map[string][]byte
+	repositories map[string][]byte
 }
 
 func newResourceSandbox() *resourceSandbox {
-	return &resourceSandbox{files: make(map[string][]byte)}
+	return &resourceSandbox{
+		files: make(map[string][]byte), repositories: make(map[string][]byte),
+	}
 }
 
 func (*resourceSandbox) Exec(context.Context, sandbox.Command) (*sandbox.Result, error) {
@@ -465,5 +609,43 @@ func (s *resourceSandbox) ImportFileResource(
 
 func (s *resourceSandbox) RemoveFileResource(_ context.Context, path string, _ string) error {
 	delete(s.files, path)
+	return nil
+}
+
+func (s *resourceSandbox) HasGitRepository(
+	_ context.Context,
+	mount sandbox.GitRepositoryMount,
+) (bool, error) {
+	data, ok := s.repositories[mount.RuntimePath]
+	if !ok {
+		return false, nil
+	}
+	info := app.ComputeBlobInfo(data)
+	return info.SizeBytes == mount.SizeBytes && info.ChecksumSHA256 == mount.ChecksumSHA256, nil
+}
+
+func (s *resourceSandbox) ImportGitRepository(
+	_ context.Context,
+	mount sandbox.GitRepositoryMount,
+	content io.Reader,
+) error {
+	data, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	info := app.ComputeBlobInfo(data)
+	if info.SizeBytes != mount.SizeBytes || info.ChecksumSHA256 != mount.ChecksumSHA256 {
+		return errors.New("repository snapshot integrity mismatch")
+	}
+	s.repositories[mount.RuntimePath] = data
+	return nil
+}
+
+func (s *resourceSandbox) RemoveGitRepository(
+	_ context.Context,
+	runtimePath string,
+	_ string,
+) error {
+	delete(s.repositories, runtimePath)
 	return nil
 }

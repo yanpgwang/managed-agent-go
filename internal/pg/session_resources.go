@@ -64,11 +64,23 @@ INSERT INTO session_resources (
 			continue
 		}
 		file := item.File
-		if resource.Type() != domain.SessionResourceTypeFile ||
+		resourceType := resource.Type()
+		if (resourceType != domain.SessionResourceTypeFile &&
+			resourceType != domain.SessionResourceTypeGitRepository) ||
 			resource.SessionID != sessionID || resource.FileID != file.ID ||
 			resource.State != domain.SessionResourceActive ||
 			file.Scope == nil || file.Scope.ID != sessionID || file.Scope.Type != "session" {
 			return errors.New("pg: invalid prepared Session Resource ownership")
+		}
+		if resourceType == domain.SessionResourceTypeFile &&
+			(resource.SourceFileID == "" || resource.RepositoryURL != "" ||
+				!file.Downloadable || file.Internal) {
+			return errors.New("pg: invalid prepared File Resource shape")
+		}
+		if resourceType == domain.SessionResourceTypeGitRepository &&
+			(resource.SourceFileID != "" || resource.RepositoryURL == "" ||
+				resource.RepositoryResolvedCommit == "" || file.Downloadable || !file.Internal) {
+			return errors.New("pg: invalid prepared Git repository Resource shape")
 		}
 		fileTag, err := tx.Exec(ctx, `
 UPDATE files
@@ -88,6 +100,33 @@ WHERE id = $1 AND workspace_id = $5 AND state = 'uploading'`,
 		}
 		if fileTag.RowsAffected() != 1 {
 			return domain.Conflict("prepared session File is no longer pending")
+		}
+		if resourceType == domain.SessionResourceTypeGitRepository {
+			_, err = tx.Exec(ctx, `
+INSERT INTO session_resources (
+    id, session_id, resource_type, file_id, repository_url,
+    repository_checkout_type, repository_checkout_value,
+    repository_resolved_commit, mount_path, state, created_at, updated_at
+) VALUES ($1, $2, 'git_repository', $3, $4, NULLIF($5, ''), NULLIF($6, ''),
+          $7, $8, 'active', $9, $10)`,
+				resource.ID,
+				resource.SessionID,
+				resource.FileID,
+				resource.RepositoryURL,
+				resource.RepositoryCheckoutType,
+				resource.RepositoryCheckoutValue,
+				resource.RepositoryResolvedCommit,
+				resource.MountPath,
+				resource.CreatedAt.UTC(),
+				resource.UpdatedAt.UTC(),
+			)
+			if isUniqueViolation(err) {
+				return domain.Conflict("a Session Resource already uses this mount_path")
+			}
+			if err != nil {
+				return err
+			}
+			continue
 		}
 		// Detach remains a recovery path if an older deployment or operator
 		// already removed the scoped File row. The tombstone still carries the
@@ -238,7 +277,9 @@ func (s *Store) GetSessionResource(
 	row := s.pool.QueryRow(ctx, `
 SELECT id, session_id, resource_type, source_file_id, file_id,
        memory_store_id, memory_access, memory_instructions,
-       memory_store_name, memory_store_description, mount_path, state,
+       memory_store_name, memory_store_description,
+       repository_url, repository_checkout_type, repository_checkout_value,
+       repository_resolved_commit, mount_path, state,
        created_at, updated_at
 FROM session_resources
 WHERE session_id = $1 AND id = $2 AND state = 'active'`, sessionID, resourceID)
@@ -261,7 +302,9 @@ func (s *Store) ListSessionResources(
 	statement := `
 SELECT id, session_id, resource_type, source_file_id, file_id,
        memory_store_id, memory_access, memory_instructions,
-       memory_store_name, memory_store_description, mount_path, state,
+       memory_store_name, memory_store_description,
+       repository_url, repository_checkout_type, repository_checkout_value,
+       repository_resolved_commit, mount_path, state,
        created_at, updated_at
 FROM session_resources
 WHERE session_id = $1 AND state = 'active'`
@@ -321,7 +364,9 @@ func (s *Store) BeginSessionResourceDeletion(
 		resourceRow := tx.QueryRow(ctx, `
 SELECT resource.id, resource.session_id, resource.resource_type, resource.source_file_id, resource.file_id,
        memory_store_id, memory_access, memory_instructions,
-       memory_store_name, memory_store_description, mount_path, resource.state,
+       memory_store_name, memory_store_description,
+       repository_url, repository_checkout_type, repository_checkout_value,
+       repository_resolved_commit, mount_path, resource.state,
        resource.created_at, resource.updated_at, file.blob_key
 FROM session_resources AS resource
 LEFT JOIN files AS file ON file.id = resource.file_id
@@ -379,7 +424,9 @@ func (s *Store) SessionResourcesForReconcile(
 	SELECT resource.id, resource.session_id, resource.resource_type,
 	       resource.source_file_id, resource.file_id,
        memory_store_id, memory_access, memory_instructions,
-       memory_store_name, memory_store_description, mount_path, resource.state,
+       memory_store_name, memory_store_description,
+       repository_url, repository_checkout_type, repository_checkout_value,
+       repository_resolved_commit, mount_path, resource.state,
 	       resource.created_at, resource.updated_at, file.blob_key
 	FROM session_resources AS resource
 	LEFT JOIN files AS file ON file.id = resource.file_id
@@ -439,6 +486,8 @@ func scanSessionResourceFields(
 	var resource domain.SessionResource
 	var sourceFileID, fileID, memoryStoreID, memoryAccess, memoryInstructions *string
 	var memoryStoreName, memoryStoreDescription *string
+	var repositoryURL, repositoryCheckoutType, repositoryCheckoutValue *string
+	var repositoryResolvedCommit *string
 	var blobKey *string
 	destinations := []any{
 		&resource.ID,
@@ -451,6 +500,10 @@ func scanSessionResourceFields(
 		&memoryInstructions,
 		&memoryStoreName,
 		&memoryStoreDescription,
+		&repositoryURL,
+		&repositoryCheckoutType,
+		&repositoryCheckoutValue,
+		&repositoryResolvedCommit,
 		&resource.MountPath,
 		&resource.State,
 		&resource.CreatedAt,
@@ -480,6 +533,18 @@ func scanSessionResourceFields(
 	}
 	if memoryStoreDescription != nil {
 		resource.MemoryStoreDescription = *memoryStoreDescription
+	}
+	if repositoryURL != nil {
+		resource.RepositoryURL = *repositoryURL
+	}
+	if repositoryCheckoutType != nil {
+		resource.RepositoryCheckoutType = *repositoryCheckoutType
+	}
+	if repositoryCheckoutValue != nil {
+		resource.RepositoryCheckoutValue = *repositoryCheckoutValue
+	}
+	if repositoryResolvedCommit != nil {
+		resource.RepositoryResolvedCommit = *repositoryResolvedCommit
 	}
 	if blobKey != nil {
 		resource.BlobKey = *blobKey

@@ -106,6 +106,8 @@ func (*openSandboxProvider) SupportsSessionOutputs() bool { return true }
 
 func (*openSandboxProvider) SupportsSkillBundles() bool { return true }
 
+func (*openSandboxProvider) SupportsGitRepositories() bool { return true }
+
 func (p *openSandboxProvider) Create(
 	ctx context.Context,
 	sessionKey string,
@@ -194,12 +196,13 @@ func (p *openSandboxProvider) attachResource(
 }
 
 type openSandboxBox struct {
-	remote    openSandboxRemote
-	root      string
-	timeout   time.Duration
-	resources *remoteFileResources
-	skills    *remoteSkillBundles
-	sync      remoteResourceSynchronization
+	remote       openSandboxRemote
+	root         string
+	timeout      time.Duration
+	resources    *remoteFileResources
+	skills       *remoteSkillBundles
+	repositories *commandGitRepositories
+	sync         remoteResourceSynchronization
 }
 
 func newOpenSandboxBox(
@@ -218,6 +221,12 @@ func newOpenSandboxBox(
 			return box.exec(
 				ctx, command, remoteOperationCommandTimeout(ctx, box.timeout),
 			)
+		},
+	)
+	box.repositories = newRemoteGitRepositories(
+		OpenSandboxProviderName, box.resources,
+		func(ctx context.Context, command Command) (*Result, error) {
+			return box.exec(ctx, command, remoteOperationCommandTimeout(ctx, box.timeout))
 		},
 	)
 	return box
@@ -277,6 +286,7 @@ func (s *openSandboxBox) ReadFile(
 ) ([]byte, error) {
 	full, err := remoteToolPath(
 		s.root, value, SessionUploadsRoot, SessionOutputsRoot, SessionSkillsRoot,
+		SessionRepositoryRoot,
 	)
 	if err != nil {
 		return nil, err
@@ -290,7 +300,7 @@ func (s *openSandboxBox) WriteFile(
 	data []byte,
 ) error {
 	full, err := remoteWritableToolPath(
-		s.root, value, SessionUploadsRoot, SessionOutputsRoot,
+		s.root, value, SessionUploadsRoot, SessionOutputsRoot, SessionRepositoryRoot,
 	)
 	if err != nil {
 		return err
@@ -337,6 +347,18 @@ func (s *openSandboxBox) ImportReadOnlySkill(
 	content io.Reader,
 ) error {
 	return s.skills.ImportReadOnlySkill(ctx, mount, content)
+}
+
+func (s *openSandboxBox) HasGitRepository(ctx context.Context, mount GitRepositoryMount) (bool, error) {
+	return s.repositories.HasGitRepository(ctx, mount)
+}
+
+func (s *openSandboxBox) ImportGitRepository(ctx context.Context, mount GitRepositoryMount, content io.Reader) error {
+	return s.repositories.ImportGitRepository(ctx, mount, content)
+}
+
+func (s *openSandboxBox) RemoveGitRepository(ctx context.Context, runtimePath, identity string) error {
+	return s.repositories.RemoveGitRepository(ctx, runtimePath, identity)
 }
 
 func (s *openSandboxBox) OpenSessionOutputs(ctx context.Context) (io.ReadCloser, error) {

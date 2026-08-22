@@ -24,12 +24,13 @@ type ProviderFactory func() (Provider, error)
 // ProviderCapabilities are admission-safe facts about an adapter. They can be
 // inspected without constructing the provider or loading its credentials.
 type ProviderCapabilities struct {
-	PackageSetup   bool
-	LimitedNetwork bool
-	FileResources  bool
-	SessionOutputs bool
-	SkillBundles   bool
-	MemoryStores   bool
+	PackageSetup    bool
+	LimitedNetwork  bool
+	FileResources   bool
+	SessionOutputs  bool
+	SkillBundles    bool
+	MemoryStores    bool
+	GitRepositories bool
 }
 
 // ProviderRegistration is one deployment-selectable sandbox adapter.
@@ -194,6 +195,17 @@ func (r *ProviderRegistry) Open(name string) (Provider, error) {
 			name,
 			declaredMemory,
 			actualMemory,
+		)
+	}
+	declaredRepositories := r.capabilities[name].GitRepositories
+	repositoryCapability, implementsRepositoryCapability := provider.(GitRepositoryProvider)
+	actualRepositories := implementsRepositoryCapability && repositoryCapability.SupportsGitRepositories()
+	if declaredRepositories != actualRepositories {
+		return nil, fmt.Errorf(
+			"sandbox: provider %q Git repository capability is registered as %t but reports %t",
+			name,
+			declaredRepositories,
+			actualRepositories,
 		)
 	}
 	return provider, nil

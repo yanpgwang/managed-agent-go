@@ -44,6 +44,70 @@ type trackingFileResourceSandbox struct {
 	removed  []string
 }
 
+type stableSessionResourceRepository struct {
+	resource domain.SessionResource
+}
+
+func (r stableSessionResourceRepository) SessionResourcesForReconcile(
+	context.Context,
+	string,
+) ([]domain.SessionResource, error) {
+	return []domain.SessionResource{r.resource}, nil
+}
+
+func (r stableSessionResourceRepository) GetSessionResource(
+	context.Context,
+	string,
+	string,
+) (domain.SessionResource, error) {
+	return r.resource, nil
+}
+
+func (stableSessionResourceRepository) FinalizeSessionResourceDeletion(
+	context.Context,
+	string,
+	string,
+) error {
+	return nil
+}
+
+type trackingGitRepositorySandbox struct {
+	mount sandbox.GitRepositoryMount
+	data  []byte
+}
+
+func (*trackingGitRepositorySandbox) Root() string { return "/workspace" }
+func (*trackingGitRepositorySandbox) Exec(context.Context, sandbox.Command) (*sandbox.Result, error) {
+	return &sandbox.Result{}, nil
+}
+func (*trackingGitRepositorySandbox) ReadFile(context.Context, string) ([]byte, error) {
+	return nil, nil
+}
+func (*trackingGitRepositorySandbox) WriteFile(context.Context, string, []byte) error { return nil }
+func (*trackingGitRepositorySandbox) Destroy(context.Context) error                   { return nil }
+func (*trackingGitRepositorySandbox) HasGitRepository(
+	context.Context,
+	sandbox.GitRepositoryMount,
+) (bool, error) {
+	return false, nil
+}
+func (s *trackingGitRepositorySandbox) ImportGitRepository(
+	_ context.Context,
+	mount sandbox.GitRepositoryMount,
+	content io.Reader,
+) error {
+	data, err := io.ReadAll(content)
+	if err != nil {
+		return err
+	}
+	s.mount = mount
+	s.data = data
+	return nil
+}
+func (*trackingGitRepositorySandbox) RemoveGitRepository(context.Context, string, string) error {
+	return nil
+}
+
 func (*trackingFileResourceSandbox) Root() string { return "/workspace" }
 func (*trackingFileResourceSandbox) Exec(context.Context, sandbox.Command) (*sandbox.Result, error) {
 	return &sandbox.Result{}, nil
@@ -131,6 +195,45 @@ func TestSessionResourceMaterializerRejectsUnsupportedSandboxPermanently(t *test
 	err := materializer.Reconcile(context.Background(), resource.SessionID, box)
 	if !sandbox.IsPermanent(err) {
 		t.Fatalf("Reconcile error = %v, want permanent", err)
+	}
+}
+
+func TestSessionResourceMaterializerRestoresGitRepositorySnapshot(t *testing.T) {
+	ctx := context.Background()
+	files := newMemoryFileRepository()
+	blobs := newMemoryBlobStore()
+	content := []byte("repository snapshot")
+	info := ComputeBlobInfo(content)
+	file := domain.File{
+		ID: "file_repository", Filename: "repository.tar", MimeType: "application/x-tar",
+		BlobKey: "files/file_repository", State: domain.FileStateUploading,
+	}
+	if err := files.BeginUpload(ctx, file); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := files.CompleteUpload(ctx, file.ID, info); err != nil {
+		t.Fatal(err)
+	}
+	blobs.objects[file.BlobKey] = append([]byte(nil), content...)
+	resource := domain.SessionResource{
+		ID: "sesrsc_repository", SessionID: "sesn_1",
+		ResourceType: domain.SessionResourceTypeGitRepository,
+		FileID:       file.ID, MountPath: "/workspace/repository",
+		RepositoryResolvedCommit: "0123456789abcdef0123456789abcdef01234567",
+		State:                    domain.SessionResourceActive,
+	}
+	box := &trackingGitRepositorySandbox{}
+	materializer := NewSessionResourceMaterializer(
+		stableSessionResourceRepository{resource: resource}, files, blobs,
+	)
+	if err := materializer.Reconcile(ctx, resource.SessionID, box); err != nil {
+		t.Fatal(err)
+	}
+	if box.mount.Identity != resource.ID || box.mount.RuntimePath != resource.MountPath ||
+		box.mount.ResolvedCommit != resource.RepositoryResolvedCommit ||
+		box.mount.SizeBytes != info.SizeBytes || box.mount.ChecksumSHA256 != info.ChecksumSHA256 ||
+		!bytes.Equal(box.data, content) {
+		t.Fatalf("restored repository mount = %+v data=%q", box.mount, box.data)
 	}
 }
 

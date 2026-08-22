@@ -112,8 +112,9 @@ which currently contains canonical Anthropic model IDs and published list
 prices, for the coordinator and every resolved roster member. A router may
 still forward those requests, but an opaque router-defined model alias is not
 assigned a guessed price.
-`resources` accepts File inputs and up to eight Memory Store inputs when the
-corresponding Docker sandbox capability is configured:
+`resources` accepts File inputs, public Git repository snapshots, and up to
+eight Memory Store inputs when the corresponding sandbox capability is
+configured:
 
 ```json
 {
@@ -128,9 +129,13 @@ beneath `/mnt/session/uploads`. Docker presents it read-only; E2B, CubeSandbox,
 OpenSandbox, and Daytona currently expose a writable sandbox-local copy. A Memory Store input
 uses `type: "memory_store"`, `memory_store_id`, optional `instructions`, and
 `read_write` or `read_only` access; it is mounted beneath `/mnt/memory` and can
-only be attached at creation. GitHub repository, self-hosted Environment, and
-local-process resources return `422`. E2B and Cube accept File resources but
-currently buffer each copy in worker memory during materialization.
+only be attached at creation. A `git_repository` input uses an anonymous HTTPS
+`url`, optional branch-or-commit `checkout`, and optional `/workspace` child
+`mount_path`; Mango freezes and returns its exact `resolved_commit`. Git
+repositories are create-time-only on Docker, E2B, CubeSandbox, OpenSandbox,
+and Daytona. Self-hosted Environment and local-process resources return `422`.
+E2B and Cube currently buffer File and repository archive transfers in worker
+memory during materialization.
 `vault_ids` is an ordered list of active Vault references. The order is frozen
 with the Session: for an MCP endpoint, the first Vault containing a matching
 credential wins. Admission requires the Vault keyring to be configured and

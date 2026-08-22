@@ -137,7 +137,7 @@ func TestSDK_SessionFileResourceLifecycle(t *testing.T) {
 			SessionID: session.ID, AuthorizationToken: "not-applicable",
 		},
 	)
-	assertAPIStatus(t, err, http.StatusUnprocessableEntity)
+	assertAPIStatus(t, err, http.StatusNotFound)
 
 	deleted, err := client.Beta.Sessions.Resources.Delete(
 		ctx,

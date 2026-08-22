@@ -48,15 +48,22 @@ func (m *SessionResourceMaterializer) Reconcile(
 		return nil
 	}
 	mounter, supported := box.(sandbox.FileResourceSandbox)
+	repositoryMounter, repositoriesSupported := box.(sandbox.GitRepositorySandbox)
 	for _, resource := range resources {
 		switch resource.State {
 		case domain.SessionResourceActive:
-			if resource.Type() != domain.SessionResourceTypeFile {
+			if resource.Type() == domain.SessionResourceTypeMemoryStore {
 				continue
 			}
-			if !supported {
+			if resource.Type() == domain.SessionResourceTypeFile && !supported {
 				return sandbox.Permanent(fmt.Errorf(
 					"sandbox: provider cannot materialize File Resource %s",
+					resource.ID,
+				))
+			}
+			if resource.Type() == domain.SessionResourceTypeGitRepository && !repositoriesSupported {
+				return sandbox.Permanent(fmt.Errorf(
+					"sandbox: provider cannot materialize Git repository Resource %s",
 					resource.ID,
 				))
 			}
@@ -64,11 +71,19 @@ func (m *SessionResourceMaterializer) Reconcile(
 			if err != nil {
 				return err
 			}
-			mount := sandbox.FileResourceMount{
-				Identity: resource.ID, RuntimePath: resource.MountPath, SizeBytes: file.SizeBytes,
-				ChecksumSHA256: file.ChecksumSHA256,
+			var present bool
+			if resource.Type() == domain.SessionResourceTypeGitRepository {
+				present, err = repositoryMounter.HasGitRepository(ctx, sandbox.GitRepositoryMount{
+					Identity: resource.ID, RuntimePath: resource.MountPath,
+					ResolvedCommit: resource.RepositoryResolvedCommit,
+					SizeBytes:      file.SizeBytes, ChecksumSHA256: file.ChecksumSHA256,
+				})
+			} else {
+				present, err = mounter.HasFileResource(ctx, sandbox.FileResourceMount{
+					Identity: resource.ID, RuntimePath: resource.MountPath,
+					SizeBytes: file.SizeBytes, ChecksumSHA256: file.ChecksumSHA256,
+				})
 			}
-			present, err := mounter.HasFileResource(ctx, mount)
 			if err != nil {
 				return err
 			}
@@ -79,7 +94,19 @@ func (m *SessionResourceMaterializer) Reconcile(
 			if err != nil {
 				return err
 			}
-			importErr := mounter.ImportFileResource(ctx, mount, body)
+			var importErr error
+			if resource.Type() == domain.SessionResourceTypeGitRepository {
+				importErr = repositoryMounter.ImportGitRepository(ctx, sandbox.GitRepositoryMount{
+					Identity: resource.ID, RuntimePath: resource.MountPath,
+					ResolvedCommit: resource.RepositoryResolvedCommit,
+					SizeBytes:      file.SizeBytes, ChecksumSHA256: file.ChecksumSHA256,
+				}, body)
+			} else {
+				importErr = mounter.ImportFileResource(ctx, sandbox.FileResourceMount{
+					Identity: resource.ID, RuntimePath: resource.MountPath,
+					SizeBytes: file.SizeBytes, ChecksumSHA256: file.ChecksumSHA256,
+				}, body)
+			}
 			closeErr := body.Close()
 			if importErr != nil {
 				return importErr
@@ -97,9 +124,16 @@ func (m *SessionResourceMaterializer) Reconcile(
 			if currentErr != nil {
 				var domainErr *domain.DomainError
 				if errors.As(currentErr, &domainErr) && domainErr.Kind == domain.KindNotFound {
-					removeErr := mounter.RemoveFileResource(
-						checkCtx, resource.MountPath, resource.ID,
-					)
+					var removeErr error
+					if resource.Type() == domain.SessionResourceTypeGitRepository {
+						removeErr = repositoryMounter.RemoveGitRepository(
+							checkCtx, resource.MountPath, resource.ID,
+						)
+					} else {
+						removeErr = mounter.RemoveFileResource(
+							checkCtx, resource.MountPath, resource.ID,
+						)
+					}
 					cancel()
 					if removeErr != nil {
 						return removeErr
@@ -125,7 +159,13 @@ func (m *SessionResourceMaterializer) Reconcile(
 				}
 				continue
 			}
-			if supported {
+			if resource.Type() == domain.SessionResourceTypeGitRepository && repositoriesSupported {
+				if err := repositoryMounter.RemoveGitRepository(
+					ctx, resource.MountPath, resource.ID,
+				); err != nil {
+					return err
+				}
+			} else if resource.Type() == domain.SessionResourceTypeFile && supported {
 				if err := mounter.RemoveFileResource(
 					ctx, resource.MountPath, resource.ID,
 				); err != nil {
