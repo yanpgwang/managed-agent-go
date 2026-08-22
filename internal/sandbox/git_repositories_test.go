@@ -111,6 +111,82 @@ func TestCommandGitRepositoriesRestoresWritableSnapshotIdempotently(t *testing.T
 	}
 }
 
+func TestCommandGitRepositoriesCleansStagingAfterTargetCollision(t *testing.T) {
+	root := t.TempDir()
+	workspace := filepath.Join(root, "workspace")
+	control := filepath.Join(root, "control")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mapPath := func(value string) string {
+		value = strings.ReplaceAll(value, gitRepositoryControlRoot, control)
+		return strings.ReplaceAll(value, domainWorkspaceRootForTest, workspace)
+	}
+	execute := func(ctx context.Context, command Command) (*Result, error) {
+		args := append([]string(nil), command.Args...)
+		for index := range args {
+			args[index] = mapPath(args[index])
+		}
+		if len(command.Args) == 2 && strings.Contains(command.Args[1], "tar -xf ") {
+			if err := os.WriteFile(filepath.Join(workspace, "repository"), []byte("collision\n"), 0o644); err != nil {
+				return nil, err
+			}
+		}
+		process := exec.CommandContext(ctx, command.Path, args...)
+		process.Stdin = bytes.NewReader(command.Stdin)
+		var stdout, stderr bytes.Buffer
+		process.Stdout, process.Stderr = &stdout, &stderr
+		err := process.Run()
+		exitCode := 0
+		if err != nil {
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) {
+				return nil, err
+			}
+			exitCode = exitErr.ExitCode()
+		}
+		return &Result{Stdout: stdout.Bytes(), Stderr: stderr.Bytes(), ExitCode: exitCode}, nil
+	}
+	upload := func(_ context.Context, destination string, content io.Reader, _ int64) error {
+		destination = mapPath(destination)
+		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+			return err
+		}
+		file, err := os.Create(destination)
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(file, content)
+		return errors.Join(copyErr, file.Close())
+	}
+
+	archive := repositoryArchiveForTest(t, map[string]string{
+		".git/HEAD": "ref: refs/heads/main\n",
+		"README.md": "hello\n",
+	})
+	sum := sha256.Sum256(archive)
+	mount := GitRepositoryMount{
+		Identity: "sesrsc_repository", RuntimePath: "/workspace/repository",
+		ResolvedCommit: "0123456789abcdef0123456789abcdef01234567",
+		SizeBytes:      int64(len(archive)), ChecksumSHA256: fmt.Sprintf("%x", sum),
+	}
+	repositories := newCommandGitRepositories("test", execute, upload)
+	err := repositories.ImportGitRepository(context.Background(), mount, bytes.NewReader(archive))
+	if err == nil || !IsPermanent(err) {
+		t.Fatalf("collision error = %v, want permanent", err)
+	}
+	archivePath, stagingPath := gitRepositoryStagingPaths(mount.RuntimePath)
+	for _, candidate := range []string{archivePath, stagingPath} {
+		if _, err := os.Lstat(mapPath(candidate)); !os.IsNotExist(err) {
+			t.Fatalf("staging artifact %s remains after collision: %v", candidate, err)
+		}
+	}
+	content, err := os.ReadFile(filepath.Join(workspace, "repository"))
+	if err != nil || string(content) != "collision\n" {
+		t.Fatalf("collision target changed: %q, %v", content, err)
+	}
+}
+
 func TestValidateGitRepositoryArchiveRejectsEscapingSymlink(t *testing.T) {
 	var archive bytes.Buffer
 	w := tar.NewWriter(&archive)

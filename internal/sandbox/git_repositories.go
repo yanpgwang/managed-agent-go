@@ -196,6 +196,9 @@ func (r *commandGitRepositories) ImportGitRepository(
 		return fmt.Errorf("sandbox: %s restore Git repository failed: %s", r.provider, diagnostic)
 	}
 	if result.ExitCode == 73 {
+		if err := r.cleanupStaging(ctx, archivePath, stagingPath); err != nil {
+			return err
+		}
 		present, err := r.has(ctx, mount)
 		if err != nil || !present {
 			if err != nil {
@@ -215,6 +218,24 @@ func (r *commandGitRepositories) ImportGitRepository(
 	}
 	if !present {
 		return errors.New("sandbox: provider did not persist the complete Git repository")
+	}
+	return nil
+}
+
+func (r *commandGitRepositories) cleanupStaging(
+	ctx context.Context,
+	archivePath string,
+	stagingPath string,
+) error {
+	script := "set -eu\n" + gitRepositoryDirectoryGuardScript(gitRepositoryStagingRoot) +
+		"rm -rf " + shellQuote(stagingPath) + "\n" +
+		"rm -f " + shellQuote(archivePath) + "\n"
+	result, err := r.execute(ctx, Command{Path: "/bin/sh", Args: []string{"-c", script}})
+	if err != nil {
+		return fmt.Errorf("sandbox: %s clean Git repository staging: %w", r.provider, err)
+	}
+	if result == nil || result.ExitCode != 0 {
+		return fmt.Errorf("sandbox: %s clean Git repository staging failed", r.provider)
 	}
 	return nil
 }
